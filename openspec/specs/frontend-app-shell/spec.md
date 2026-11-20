@@ -135,7 +135,11 @@ Every group except 系統 SHALL be hideable from Settings; a hidden group SHALL 
 
 ### Requirement: App-wide 記一筆 floating button
 
-On viewports ≥ 760px every route SHALL show one 56px `--app-primary` floating button at the bottom-right, tooltip `記一筆` with key `N`, that opens the entry form; it SHALL hide while the form is open and, while a pane is open, sit at the right offset the pane layout provides. While the page's scrolling ancestor (the document or `.hub-main` on ordinary pages, the accounting list pane in panes mode) scrolls down the button SHALL slide out (translate and fade, 160 ms; instant under `prefers-reduced-motion`) and end in `visibility: hidden`, leaving the tab order; it SHALL return on any upward scroll, when the scroll reaches the end, or after 1.2 s without scrolling, and SHALL NOT hide while it has focus. `N` SHALL open the form from any route outside text fields, also while the button is hidden. The sidebar and page headers SHALL NOT contain a 記一筆 button.
+On viewports ≥ 760px every route except `/accounting/reports` and the saved-report pages under it (query strings included) SHALL show one 56px `--app-primary` floating button at the bottom-right, tooltip `記一筆` with key `N`, that opens the entry form; it SHALL hide while the form is open and, while a pane is open, sit at the right offset the pane layout provides. While the page's scrolling ancestor (the document or `.hub-main` on ordinary pages, the accounting list pane in panes mode) scrolls down the button SHALL slide out (translate and fade, 160 ms; instant under `prefers-reduced-motion`) and end in `visibility: hidden`, leaving the tab order; it SHALL return on any upward scroll, when the scroll reaches the end, or after 1.2 s without scrolling, and SHALL NOT hide while it has focus. `N` SHALL open the form from any route outside text fields, also while the button is hidden or absent. The sidebar and page headers SHALL NOT contain a 記一筆 button.
+
+#### Scenario: No floating button on the report pages
+- **WHEN** the owner opens `/accounting/reports` or `/accounting/reports/custom/<id>?from=2026-10-01` at 1440px
+- **THEN** no floating button SHALL render, and pressing `N` outside a text field SHALL still open the entry form
 
 #### Scenario: Floating button on a portfolio page
 - **WHEN** the owner is on `/portfolio/dividends` at 1440px and presses the floating button
