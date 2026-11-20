@@ -25,9 +25,11 @@ describe('CalendarPaneService', () => {
     pane.searchState.set('loading');
     pane.searchHasMore.set(true);
     pane.filtered.set(true);
+    pane.chips.set([{ key: 'kind', label: '類型：支出' }]);
     pane.mainCurrency.set('USD');
     pane.commands.set({
       stepEntry: vi.fn(), openInvoice: vi.fn(), setQuery: vi.fn(), retryDay: vi.fn(), retrySearch: vi.fn(), loadMore: vi.fn(),
+      toggleFilters: vi.fn(), removeFilter: vi.fn(), clearFilters: vi.fn(),
     });
 
     pane.clear();
@@ -49,6 +51,7 @@ describe('CalendarPaneService', () => {
     expect(pane.searchState()).toBe('ready');
     expect(pane.searchHasMore()).toBe(false);
     expect(pane.filtered()).toBe(false);
+    expect(pane.chips()).toEqual([]);
     expect(pane.mainCurrency()).toBe('TWD');
     expect(pane.commands()).toBeNull();
   });

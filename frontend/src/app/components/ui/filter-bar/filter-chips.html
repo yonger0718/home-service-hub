@@ -1,0 +1,10 @@
+@if (chips().length > 0) {
+  <div class="filter-chips">
+    @for (chip of chips(); track chip.key) {
+      <span class="filter-chip">{{ chip.label }}<button type="button" class="chip-remove" [attr.aria-label]="'移除 ' + chip.label" (click)="remove.emit(chip.key)">×</button></span>
+    }
+    @if (chips().length >= 2) {
+      <button type="button" class="clear-all" (click)="clearAll.emit()">清除全部</button>
+    }
+  </div>
+}

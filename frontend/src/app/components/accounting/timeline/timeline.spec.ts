@@ -3225,6 +3225,85 @@ describe('LedgerTimelineComponent', () => {
       expect(pane().invoices().length).toBe(2);
     });
 
+    describe('account filter in 日曆', () => {
+      const openPanelNow = (fixture: { detectChanges(): void }, el: HTMLElement) => {
+        el.querySelector<HTMLButtonElement>('.filter-toggle')!.click();
+        fixture.detectChanges();
+        httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+      };
+      const chooseAccount = (fixture: { detectChanges(): void }, el: HTMLElement, id: string) => {
+        const select = el.querySelector<HTMLSelectElement>('.filter-account')!;
+        select.value = id;
+        select.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+        httpMock!.match(() => true).forEach(r => !r.cancelled && r.flush(r.request.url.includes('daily') ? { days: [] } : []));
+        fixture.detectChanges();
+      };
+      const chipTexts = (el: HTMLElement) => Array.from(el.querySelectorAll('.filter-chip')).map(c => text(c).replace(/\s*[×✕x]$/, '').trim());
+
+      it('puts the account select first in the opened panel, not in the primary slot', () => {
+        const { fixture, el } = renderPanes();
+        expect(el.querySelector('.slot-primary .filter-account')).toBeNull();
+        expect(el.querySelector('.filter-account')).toBeNull();
+        openPanelNow(fixture, el);
+        const first = el.querySelector('.filter-panel .slot-secondary .hub-filter-field');
+        expect(first?.querySelector('.filter-account')).not.toBeNull();
+        expect(text(first!.querySelector('.field-label'))).toBe('帳戶');
+      });
+
+      it('adds the 帳戶 chip and 篩選 1 when an account is chosen; 重設 clears it; the pane gets the chip', () => {
+        const { fixture, el } = renderPanes();
+        openPanelNow(fixture, el);
+        chooseAccount(fixture, el, '7');
+        expect(chipTexts(el)).toContain('帳戶：富邦 J卡');
+        expect(text(el.querySelector('.filter-toggle'))).toBe('篩選 1');
+        expect(pane().chips().map(c => c.label)).toEqual(['帳戶：富邦 J卡']);
+        el.querySelector<HTMLButtonElement>('.panel-reset')!.click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(pane().chips()).toEqual([]);
+      });
+
+      it('pane commands.removeFilter("account") clears the account', () => {
+        const { fixture, el } = renderPanes();
+        openPanelNow(fixture, el);
+        chooseAccount(fixture, el, '7');
+        pane().commands()!.removeFilter('account');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(pane().chips()).toEqual([]);
+      });
+
+      it('commands.toggleFilters opens the panel anchored to the given button, reading the filter bar at call time', () => {
+        const { fixture, el } = renderPanes();
+        const anchor = document.createElement('button');
+        document.body.appendChild(anchor);
+        pane().commands()!.toggleFilters(anchor);
+        fixture.detectChanges();
+        httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+        expect(el.querySelector('.filter-panel.popover')).not.toBeNull();
+        anchor.remove();
+      });
+
+      it('keeps the account in 清單 inline without a chip, and keeps the filter across 日曆 to 清單 to 日曆', () => {
+        const { fixture, el } = renderPanes();
+        openPanelNow(fixture, el);
+        chooseAccount(fixture, el, '7');
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        flushEntries([]);
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(el.querySelector('.slot-primary .filter-account')).not.toBeNull();
+        expect((el.querySelector('.filter-account') as HTMLSelectElement).value).toBe('7');
+        expect(el.querySelector('.filter-chip')).toBeNull();
+        viewButton(el, '日曆').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(pane().chips().map(c => c.label)).toEqual(['帳戶：富邦 J卡']);
+      });
+    });
+
     it('publishes the 日曆 view and the month to the pane services', () => {
       const { fixture, el } = renderPanes();
       expect(TestBed.inject(AccountingOverviewService).calendar()).toBe(true);

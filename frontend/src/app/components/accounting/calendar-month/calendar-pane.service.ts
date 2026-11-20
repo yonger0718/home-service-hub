@@ -1,6 +1,7 @@
 import { Injectable, signal } from '@angular/core';
 
 import { BreakdownRow } from '../../../models/reports.model';
+import type { FilterChip } from '../../ui/filter-bar/filter-bar';
 import { currentMonth, todayIso } from '../dates';
 import { InboxEinvoice } from '../inbox/einvoice.model';
 import { OverviewState } from '../month-overview/overview.service';
@@ -37,6 +38,12 @@ export interface CalendarCommands {
   retrySearch(): void;
   /** 載入更多 in the month search results: the next page. */
   loadMore(): void;
+  /** Open (or close) the timeline's filter panel, anchored under `anchor` (the right pane's 篩選 button). */
+  toggleFilters(anchor: HTMLElement): void;
+  /** Remove one filter chip by key. */
+  removeFilter(key: string): void;
+  /** 清除全部: search text and every filter. */
+  clearFilters(): void;
 }
 
 /**
@@ -65,6 +72,8 @@ export class CalendarPaneService {
   readonly searchHasMore = signal(false);
   /** A search or list filter is active: an empty day says 這天沒有符合條件的記錄. */
   readonly filtered = signal(false);
+  /** The timeline's active filter chips (the right pane renders them under its search row). */
+  readonly chips = signal<FilterChip[]>([]);
   /** The preference's main currency (the result days' nets are in it). */
   readonly mainCurrency = signal('TWD');
   readonly commands = signal<CalendarCommands | null>(null);
@@ -87,6 +96,7 @@ export class CalendarPaneService {
     this.searchState.set('ready');
     this.searchHasMore.set(false);
     this.filtered.set(false);
+    this.chips.set([]);
     this.mainCurrency.set('TWD');
     this.commands.set(null);
   }

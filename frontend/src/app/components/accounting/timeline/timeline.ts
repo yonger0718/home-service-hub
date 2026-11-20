@@ -472,6 +472,7 @@ export class LedgerTimelineComponent implements OnInit {
   private queryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly queryInput = viewChild<ElementRef<HTMLInputElement>>('queryInput');
   private readonly calendarGrid = viewChild(CalendarMonthComponent);
+  private readonly filterBar = viewChild(FilterBarComponent);
 
   private readonly bills = inject(BillingService);
   private readonly calendar = inject(BusinessCalendarService);
@@ -533,6 +534,8 @@ export class LedgerTimelineComponent implements OnInit {
   /** 日曆 at ≥ 1024 px: the month figures sit in the monthbar and the day's rows live in the right pane. */
   readonly wideCalendar = computed(() => this.view() === 'calendar' && this.layoutMode.mode() === 'panes');
   /** 日曆 below 1024 px (phone and sheet): one-line figures, week strip, 今天 bar. */
+  /** In 日曆 the account filter lives inside the filter panel (and gets a chip); in 清單 it stays inline. */
+  readonly accountInPanel = computed(() => this.view() === 'calendar');
   readonly narrowCalendar = computed(() => this.view() === 'calendar' && this.layoutMode.mode() !== 'panes');
   /** True when the shown month is today's month. */
   readonly isCurrentMonth = computed(() => this.month() === this.today().slice(0, 7));
@@ -931,6 +934,7 @@ export class LedgerTimelineComponent implements OnInit {
       pane.searchHasMore.set(searching && this.hasMore());
     });
     effect(() => pane.filtered.set(this.filtersActive()));
+    effect(() => pane.chips.set(this.filterChips()));
     effect(() => pane.mainCurrency.set(this.mainCurrency()));
     // One search, two boxes: the filter bar's field follows `query` unless the owner is typing in it (IME, trailing space).
     effect(() => {
@@ -963,6 +967,10 @@ export class LedgerTimelineComponent implements OnInit {
       retryDay: () => this.retryDay(),
       retrySearch: () => this.load(true),
       loadMore: () => this.loadMore(),
+      // The commands object is created once: the filter bar is read at call time, never captured.
+      toggleFilters: anchor => this.filterBar()?.toggle(anchor),
+      removeFilter: key => this.removeFilter(key),
+      clearFilters: () => this.clearFilters(),
     });
     inject(DestroyRef).onDestroy(() => {
       this.pendingInvoice = null;
@@ -1680,9 +1688,14 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
 
-  /** Secondary-filter chips: one per set category/project/etc. Account and search are never chips. */
+  /** Secondary-filter chips: one per set category/project/etc. Search is never a chip; the account is one only while it sits inside the panel (日曆). */
   readonly filterChips = computed<FilterChip[]>(() => {
     const chips: FilterChip[] = [];
+    const account = this.accountFilter();
+    if (this.accountInPanel() && account !== null) {
+      const name = this.accounts().find(a => a.id === account)?.name;
+      chips.push({ key: 'account', label: name ? `帳戶：${name}` : '帳戶' });
+    }
     const kind = this.kindFilter();
     if (kind !== null) {
       chips.push({ key: 'kind', label: `類型：${ENTRY_KIND_LABELS[kind]}` });
@@ -1715,6 +1728,7 @@ export class LedgerTimelineComponent implements OnInit {
 
   removeFilter(key: string): void {
     switch (key) {
+      case 'account': this.setAccount(''); break;
       case 'kind': this.setKind(''); break;
       case 'category': this.setCategory(''); break;
       case 'project': this.setProject(''); break;
@@ -1725,6 +1739,9 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   resetSecondaryFilters(): void {
+    if (this.accountInPanel()) {
+      this.removeFilter('account');
+    }
     for (const key of ['kind', 'category', 'project', 'tag', 'merchant', 'amount']) {
       this.removeFilter(key);
     }

@@ -100,13 +100,20 @@
       (input)="onQueryInput($event)"
       (keydown)="onQueryKeydown($event)"
     />
-    <select filterBarPrimary class="filter-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
-      <option value="" [selected]="accountFilter() === null">全部帳戶</option>
-      @for (account of accounts(); track account.id) {
-        <option [value]="account.id" [selected]="accountFilter() === account.id">{{ account.name }}</option>
-      }
-    </select>
+    @if (!accountInPanel()) {
+      <select filterBarPrimary class="filter-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
+        <ng-container *ngTemplateOutlet="accountOptions" />
+      </select>
+    }
     <div filterBarSecondary class="filter-fields">
+      @if (accountInPanel()) {
+        <label class="hub-filter-field">
+          <span class="field-label">帳戶</span>
+          <select class="filter-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
+            <ng-container *ngTemplateOutlet="accountOptions" />
+          </select>
+        </label>
+      }
       <label class="hub-filter-field">
         <span class="field-label">類型</span>
         <select class="filter-kind" aria-label="類型" (change)="setKind($any($event.target).value)">
@@ -152,6 +159,12 @@
       </div>
     </div>
   </app-filter-bar>
+  <ng-template #accountOptions>
+    <option value="" [selected]="accountFilter() === null">全部帳戶</option>
+    @for (account of accounts(); track account.id) {
+      <option [value]="account.id" [selected]="accountFilter() === account.id">{{ account.name }}</option>
+    }
+  </ng-template>
 
   @if (filtersActive()) {
     @if (view() === 'list') {
