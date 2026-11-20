@@ -951,4 +951,7 @@ def get_entry_detail(db: Session, entry_id: int) -> dict | None:
     from .einvoice_read import entry_einvoice  # lazy: einvoice_read imports this module
 
     detail["einvoice"] = entry_einvoice(db, entry)
+    from .debt_events import events_of  # lazy: debt_events imports this module
+
+    detail["debt_events"] = events_of(db, entry.id) if entry.kind in ("receivable", "payable") else []
     return detail
