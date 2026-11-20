@@ -45,6 +45,7 @@ import {
   tickLabel,
   toDateNouns,
   trendRange,
+  trendStart,
   viewRange,
   windowEmpty,
   yearPeriod,
@@ -169,6 +170,20 @@ describe('report period', () => {
   it('spans the trend over the twelve months ending at the period', () => {
     expect(trendRange(monthPeriod('2026-10'))).toEqual({ from: '2025-11-01', to: '2026-10-31' });
     expect(trendRange(yearPeriod(2026))).toEqual({ from: '2026-01-01', to: '2026-12-31' });
+  });
+});
+
+describe('trendStart', () => {
+  const zeros = (n: number) => Array<number>(n).fill(0);
+  it('starts at the first month with data, never leaving fewer than six', () => {
+    expect(trendStart([...zeros(10), 5, 7])).toBe(6);
+    expect(trendStart([0, 0, 0, 4, 1, 1, 1, 1, 1, 1, 1, 1])).toBe(3);
+  });
+  it('starts at 0 when every month has data', () => expect(trendStart(Array<number>(12).fill(3))).toBe(0));
+  it('shows the last six when nothing has data', () => expect(trendStart(zeros(12))).toBe(6));
+  it('never pads beyond what was loaded', () => {
+    expect(trendStart([0, 0, 0, 9])).toBe(0);
+    expect(trendStart([])).toBe(0);
   });
 });
 
