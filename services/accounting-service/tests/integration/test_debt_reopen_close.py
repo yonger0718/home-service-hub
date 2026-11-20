@@ -117,7 +117,9 @@ def test_a_repeated_close_of_a_closed_debt_whose_settlements_clear_it_stays_ok(c
 
 def test_a_debt_collected_beyond_its_amount_can_still_be_closed(client, db_session, seed):
     _, _, receivable_id = _closed_receivable(seed, db_session, collected="500")
-    client.post(f"/entries/{receivable_id}/reopen")
+    reopened = client.post(f"/entries/{receivable_id}/reopen")
+    assert reopened.status_code == 200, reopened.text
+    assert _state(client, receivable_id) == (False, "80.0000", False)
 
     response = client.post(f"/entries/{receivable_id}/close")
 
