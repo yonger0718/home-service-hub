@@ -1556,6 +1556,21 @@ describe('EntryDetailComponent', () => {
       expect(close).toHaveBeenCalled();
     });
 
+    it('marks its host compact (entry-detail--drawer) only once the entry has loaded: not while loading, not after a failed read', () => {
+      drawerOn();
+      const fixture = TestBed.createComponent(EntryDetailComponent);
+      fixture.detectChanges();
+      const root = el(fixture);
+      expect(root.classList.contains('entry-detail--drawer')).toBe(false);
+      expect(root.querySelector('.drawer-bar')).toBeNull();
+      http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+      http.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
+      fixture.detectChanges();
+      expect(root.querySelector('.load-error')).not.toBeNull();
+      expect(root.classList.contains('entry-detail--drawer')).toBe(false);
+      expect(root.querySelector('.drawer-bar')).toBeNull();
+    });
+
     it('shows one compact row: icon, name, kind · category path, total', () => {
       drawerOn();
       const fixture = renderDrawer(MEAL());

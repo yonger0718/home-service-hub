@@ -628,6 +628,39 @@ describe('AccountingLayoutComponent', () => {
           expect(root.querySelectorAll('.detail-pane [aria-label^="關閉"]').length).toBe(1);
         });
 
+        it('clips the drawer only for a loaded entry detail: not while it loads or after it fails, never for the reminder centre or the group page', async () => {
+          const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/accounting-layout/accounting-layout.scss'), 'utf8');
+          // The selector the stylesheet clips the drawer with, matched against the live DOM.
+          const clipped = css.match(/\n(\.pane-host\.drawer:has\([^{]*\)) \{/)?.[1] ?? '.no-clipped-rule';
+          const harness = await start('panes', ENTRY, 1100);
+          const router = TestBed.inject(Router);
+          const http = TestBed.inject(HttpTestingController);
+          const drawer = await find(harness, '.pane-host.drawer');
+          await find(harness, '.pane-host.drawer app-entry-detail');
+          expect(drawer.matches('.pane-host.drawer')).toBe(true);
+          // Loading: the default drawer pads the page's loading state.
+          expect(drawer.matches(clipped)).toBe(false);
+          await answerDetail(harness, 5);
+          expect(drawer.matches(clipped)).toBe(true);
+
+          // Another entry that fails to load: 讀取失敗 sits in the padded default drawer.
+          await router.navigateByUrl('/accounting/entries/6?month=2026-10&day=2026-10-21');
+          await vi.waitFor(() => {
+            http.match('/api/accounting/entries/6').forEach(req => req.flush('boom', { status: 500, statusText: 'Server Error' }));
+            harness.detectChanges();
+            expect(drawer.querySelector('.load-error')).not.toBeNull();
+          });
+          expect(drawer.matches(clipped)).toBe(false);
+
+          await router.navigateByUrl('/accounting/reminders');
+          await find(harness, '.pane-host.drawer app-accounting-reminders');
+          expect(drawer.matches(clipped)).toBe(false);
+
+          await router.navigateByUrl('/accounting/entries/5/group?month=2026-10&day=2026-10-21');
+          await find(harness, '.pane-host.drawer app-split-group');
+          expect(drawer.matches(clipped)).toBe(false);
+        });
+
         it("focuses the page's own ✕ when the drawer opens over a page already shown (清單 → 日曆 with an entry open)", async () => {
           localStorage.setItem('hh.accounting.timelineView', 'list');
           const harness = await start('panes', ENTRY.replace('&day=2026-10-21', ''), 1100);
@@ -2024,17 +2057,21 @@ describe('AccountingLayoutComponent', () => {
       const block = css.match(/\n\.cal-base \{([^}]*)\}/)?.[1] ?? '';
       expect(block).toContain('padding-bottom: calc(14px + var(--fab-clear, 0px))');
     });
-    it('makes the detail drawer a clipped flex column and keeps the form drawer scrolling with padding', () => {
+    it("keeps the drawer's default scroll and padding (reminders, group page, form) and clips it only for the compact detail", () => {
       const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/accounting-layout/accounting-layout.scss'), 'utf8');
-      const detail = css.match(/\n\.pane-host\.drawer \{([^}]*)\}/)?.[1] ?? '';
-      expect(detail).toContain('display: flex');
-      expect(detail).toContain('flex-direction: column');
-      expect(detail).toContain('overflow: hidden');
-      expect(detail).toContain('padding: 0');
-      expect(detail).not.toContain('overflow-y: auto');
+      const declarations = (block: string) => block.split(';').map(line => line.trim()).filter(Boolean).sort();
+      // The default drawer is exactly origin/main's: it scrolls and pads whatever page it hosts.
+      const base = css.match(/\n\.pane-host\.drawer \{([^}]*)\}/)?.[1] ?? '';
+      expect(declarations(base)).toEqual(
+        declarations(`background: var(--app-surface); border: 1px solid var(--app-border); border-radius: var(--radius-lg);
+          box-shadow: var(--app-raised-shadow); inset: 0; overflow-y: auto; padding: var(--pane-pad-top) 14px 14px;
+          position: absolute; z-index: 3;`),
+      );
+      // The clipped flex column only when the routed page is the loaded compact entry detail (its own bar / body / foot).
+      const compact = css.match(/\n\.pane-host\.drawer:has\(> app-entry-detail\.entry-detail--drawer\) \{([^}]*)\}/)?.[1] ?? '';
+      expect(declarations(compact)).toEqual(declarations('display: flex; flex-direction: column; overflow: hidden; padding: 0;'));
       const form = css.match(/\n\.pane-host\.drawer--form \{([^}]*)\}/)?.[1] ?? '';
-      expect(form).toContain('overflow-y: auto');
-      expect(form).toContain('padding: var(--pane-pad-top) 14px 14px');
+      expect(declarations(form)).toEqual(declarations('left: auto; width: min(560px, 90vw);'));
     });
   });
 });

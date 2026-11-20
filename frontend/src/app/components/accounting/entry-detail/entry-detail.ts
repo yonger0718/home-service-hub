@@ -107,7 +107,7 @@ interface Chip {
   templateUrl: './entry-detail.html',
   styleUrl: './entry-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '(keydown)': 'onKeydown($event)', '[class.entry-detail--drawer]': 'drawer()' },
+  host: { '(keydown)': 'onKeydown($event)', '[class.entry-detail--drawer]': 'compact()' },
 })
 export class EntryDetailComponent implements OnInit {
   private service = inject(AccountingService);
@@ -137,6 +137,11 @@ export class EntryDetailComponent implements OnInit {
   private readonly calendarPane = inject(CalendarPaneService);
   readonly drawer = computed(() => this.layoutMode.mode() === 'panes' && this.overview.calendar());
   readonly detail = signal<EntryDetail | null>(null);
+  /**
+   * The drawer shows the compact page (bar, scrolling body, pinned foot): only with an entry to show. While it loads, or
+   * after its read failed, the layout's default drawer pads and scrolls the loading / 讀取失敗 state.
+   */
+  readonly compact = computed(() => this.drawer() && this.detail() !== null);
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly loadError = signal(false);
   /**

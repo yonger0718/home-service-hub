@@ -97,26 +97,32 @@
   padding-bottom: calc(14px + var(--fab-clear, 0px));
 }
 
-/* The routed page over the right pane's base (≥ 1024 px, 日曆); the entry form is a wider drawer anchored right. */
+/* The routed page over the right pane's base (≥ 1024 px, 日曆); the entry form is a wider drawer anchored right. By
+   default the drawer scrolls and pads its page (the reminder centre, the group view, the form, a detail still loading
+   or failed to load). */
 .pane-host.drawer {
   background: var(--app-surface);
   border: 1px solid var(--app-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--app-raised-shadow);
-  display: flex;
-  flex-direction: column;
   inset: 0;
-  overflow: hidden;
-  padding: 0;
+  overflow-y: auto;
+  padding: var(--pane-pad-top) 14px 14px;
   position: absolute;
   z-index: 3;
 }
 
-/* The entry detail fills the host and scrolls its own body (its action bar stays pinned); the form scrolls the host. */
+/* A loaded entry detail (its host carries entry-detail--drawer only then) brings its own bar, scrolling body and pinned
+   foot: the drawer becomes a clipped column it fills. */
+.pane-host.drawer:has(> app-entry-detail.entry-detail--drawer) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
 .pane-host.drawer--form {
   left: auto;
-  overflow-y: auto;
-  padding: var(--pane-pad-top) 14px 14px;
   width: min(560px, 90vw);
 }
 
