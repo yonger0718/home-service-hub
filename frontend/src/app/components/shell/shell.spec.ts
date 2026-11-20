@@ -174,7 +174,7 @@ describe('ShellComponent', () => {
     expect(el.querySelector('app-mobile-nav')).not.toBeNull();
   });
 
-  it('shows the floating 記一筆 button on every route from 760 px', async () => {
+  it('shows the floating 記一筆 button on every route from 760 px except the report pages', async () => {
     for (const [width, url] of [[1440, '/portfolio'], [1100, '/settings'], [820, '/']] as const) {
       TestBed.resetTestingModule();
       const { fab } = await render(viewportOf(width), { url });
@@ -188,6 +188,36 @@ describe('ShellComponent', () => {
       expect(tip.textContent?.replace(/\s+/g, ' ').trim()).toBe('記一筆 N');
       expect(tip.querySelector('kbd')?.textContent).toBe('N');
     }
+  });
+
+  it('has no floating 記一筆 on the report pages, and it returns elsewhere', async () => {
+    for (const url of ['/accounting/reports?month=2026-08', '/accounting/reports', '/accounting/reports/custom/new', '/accounting/reports/custom/7']) {
+      TestBed.resetTestingModule();
+      const { fab } = await render(viewportOf(1440), { url });
+      expect(fab(), url).toBeNull();
+    }
+    for (const url of ['/accounting', '/accounting/reward-rules', '/accounting/reports-other']) {
+      TestBed.resetTestingModule();
+      const { fab } = await render(viewportOf(1440), { url });
+      expect(fab(), url).not.toBeNull();
+    }
+  });
+
+  it('toggles the floating 記一筆 as navigation enters and leaves the reports', async () => {
+    const { fab, settle, router } = await render(viewportOf(1440), { url: '/accounting/reports?month=2026-08' });
+    expect(fab()).toBeNull();
+    await router.navigateByUrl('/accounting');
+    await settle();
+    expect(fab()).not.toBeNull();
+    await router.navigateByUrl('/accounting/reports/custom/7');
+    await settle();
+    expect(fab()).toBeNull();
+  });
+
+  it('N still opens the entry form on the report pages', async () => {
+    const { router } = await render(viewportOf(1440), { url: '/accounting/reports?month=2026-08' });
+    press('n');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
   });
 
   it('has no floating button at phone width (the tab bar has its own +)', async () => {
@@ -370,11 +400,10 @@ describe('ShellComponent', () => {
     expect(fab()!.getAttribute('href')).toBe('/accounting/entry');
   });
 
-  it("記一筆 on a page whose ?month is not the calendar's (報表) links and opens a bare entry form", async () => {
-    const { fab, router } = await render(viewportOf(1440), { url: '/accounting/reports?month=2026-08' });
-    expect(fab()!.getAttribute('href')).toBe('/accounting/entry');
+  it("記一筆 (N key) on a page whose ?month is not the calendar's (報表) opens a bare entry form", async () => {
+    const { router } = await render(viewportOf(1440), { url: '/accounting/reports?month=2026-08' });
 
-    fab()!.click();
+    press('n');
     await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
   });
 

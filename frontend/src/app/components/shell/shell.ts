@@ -1,6 +1,8 @@
 import { DOCUMENT, LocationStrategy } from '@angular/common';
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
-import { Params, Router, RouterOutlet } from '@angular/router';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { NavigationEnd, Params, Router, RouterOutlet } from '@angular/router';
+import { filter } from 'rxjs';
 
 import { LayoutModeService } from '../../services/layout-mode.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
@@ -31,6 +33,8 @@ const OPEN_MODAL = '[aria-modal="true"]:not([data-global-shortcuts]), [role="ale
 const TYPING_ROLES = '[role="combobox"], [role="listbox"], [role="spinbutton"]';
 const ENTRY_FORM: ['/accounting/entry'] = ['/accounting/entry'];
 
+const NO_FAB_URL = /^\/accounting\/reports(?:[/?#]|$)/;
+
 @Component({
   selector: 'app-shell',
   imports: [RouterOutlet, SidebarComponent, MobileNavComponent, HideOnScrollDirective],
@@ -51,9 +55,17 @@ export class ShellComponent {
 
   protected readonly sidebarExpanded = computed(() => this.nav.sidebarMode() === 'expanded');
   protected readonly sidebarWidth = computed(() => (this.sidebarExpanded() ? EXPANDED_WIDTH : RAIL_WIDTH));
-  /** 記一筆 from 760 px, except over the entry form and the 760–1023 px sheet (a modal dialog). */
+  private readonly url = signal(this.router.url);
+  /**
+   * 記一筆 from 760 px, except over the entry form, the 760–1023 px sheet (a modal dialog) and the report pages (it
+   * covered the table's last column; the N shortcut and the tab bar's + still work there).
+   */
   protected readonly showFab = computed(
-    () => this.layout.mode() !== 'phone' && !this.paneState.formOpen() && !this.paneState.sheetOpen(),
+    () =>
+      this.layout.mode() !== 'phone' &&
+      !this.paneState.formOpen() &&
+      !this.paneState.sheetOpen() &&
+      !NO_FAB_URL.test(this.url()),
   );
 
   private readonly locationStrategy = inject(LocationStrategy);
@@ -70,6 +82,12 @@ export class ShellComponent {
 
   constructor() {
     inject(NavBadgeService).start();
+    this.router.events
+      .pipe(
+        filter((event): event is NavigationEnd => event instanceof NavigationEnd),
+        takeUntilDestroyed(),
+      )
+      .subscribe((event) => this.url.set(event.urlAfterRedirects));
   }
 
   /**
