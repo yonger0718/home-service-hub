@@ -99,7 +99,7 @@ Every accounting page SHALL be usable at a 390 px viewport width without horizon
 
 ### Requirement: Timeline home page
 
-The SPA SHALL provide `/accounting` as the accounting home, replacing the redirect to the accounts list. It SHALL show a month navigator with the month's expense, income and net totals from the summary endpoint, a category distribution bar under the totals (the month's expense split by top-level category: the five largest plus 其他, each segment in the category's colour, with a legend of name and amount), a filter bar (`<app-filter-bar>`; in the 日曆 view see 「Calendar search and filters」; text search and the 帳戶 control inline; 類型, 類別, 專案, 標籤, 商家 and 金額範圍 behind 篩選 at every width, with active filters as removable chips), and entries from `GET /api/accounting/entries` grouped by day with a per-day net. Each row SHALL show category icon and colour, name or category, merchant and tags, amount (red for outflow, green for inflow per the preference), the original-currency amount inline when converted, and project and account pills. Reward entries SHALL be hidden when the preference `hide_rewards_on_timeline` is true. A split group SHALL render as one row with the group's name, the sum and a count badge. Tapping a row opens the entry detail. The page SHALL load more on scroll.
+The SPA SHALL provide `/accounting` as the accounting home, replacing the redirect to the accounts list. It SHALL show a month navigator with the month's expense, income and net totals from the summary endpoint, a category distribution bar under the totals (the month's expense split by top-level category: the five largest plus 其他, each segment in the category's colour, with a legend of name and amount), a filter bar (`<app-filter-bar>`; in the 日曆 view see 「Calendar search and filters on wide screens」 and 「… on narrow screens」; text search and the 帳戶 control inline; 類型, 類別, 專案, 標籤, 商家 and 金額範圍 behind 篩選 at every width, with active filters as removable chips), and entries from `GET /api/accounting/entries` grouped by day with a per-day net. Each row SHALL show category icon and colour, name or category, merchant and tags, amount (red for outflow, green for inflow per the preference), the original-currency amount inline when converted, and project and account pills. Reward entries SHALL be hidden when the preference `hide_rewards_on_timeline` is true. A split group SHALL render as one row with the group's name, the sum and a count badge. Tapping a row opens the entry detail. The page SHALL load more on scroll.
 
 #### Scenario: Foreign-currency amount visible without hover
 - **GIVEN** an expense converted from `¥5,390` at `0.2163`
@@ -641,7 +641,7 @@ Each day cell of the 日曆 view SHALL show the date (today on a primary-colour 
 
 ### Requirement: Calendar day cell spend bar
 
-A day with expense below 0 SHALL show a bar inside its cell on a light track with side margins. Its width SHALL be the day's |expense| over the month's highest daily |expense|, at least 6 px, and no bar SHALL show on a day without spend. The legend under the grid SHALL read 當天支出（相對本月最高）, 類別, 帳單 到期日 and 結帳 信用卡結帳日.
+A past day or today with expense below 0 SHALL show a bar inside its cell on a light track with side margins; a future day SHALL show none. Its width SHALL be the day's |expense| over the month's highest daily |expense|, at least 6 px, and no bar SHALL show on a day without spend. From 1024 px the month grid SHALL have a legend under it reading 當天支出（相對本月最高）, 類別, 帳單 到期日 and 結帳 信用卡結帳日; below 1024 px none.
 
 #### Scenario: Heaviest day
 - **GIVEN** the daily summary gives October's largest expense as −12,120 on 10/19, 10/21's expense as −3,096, and 10/05 has none
@@ -721,12 +721,12 @@ The month grid SHALL draw only the weeks the month needs (4 to 6 rows). Cells be
 - **THEN** the grid SHALL have 6 rows, and the cells before 8/1 SHALL be blank
 
 #### Scenario: Week strip keeps neighbours
-- **GIVEN** 10/31 is selected at 390 px
+- **GIVEN** the week starts on Monday and 10/31 is selected at 390 px
 - **THEN** the week strip SHALL show the days of 11/01 and they SHALL stay selectable
 
 ### Requirement: Calendar search and filters on wide screens
 
-From 1024 px, in the 日曆 view the timeline's own filter row, chips and match row SHALL NOT show. The right pane's top row SHALL hold 搜尋整月 and a 篩選 button, with the active chips under it, also with a day selected. Committing a non-empty search SHALL clear the selected day. The 清單 view SHALL keep its filter row.
+From 1024 px, in the 日曆 view the timeline's own filter row, chips and match row SHALL NOT show. The right pane's top row SHALL hold 搜尋整月 and a 篩選 button, with the active chips under it, also with a day selected; 篩選 SHALL expose whether the panel is open (aria-expanded). Committing a non-empty search SHALL clear the selected day. Switching to 清單 SHALL close an open filter panel; 清單 keeps its filter row.
 
 #### Scenario: Searching with a day selected
 - **GIVEN** 10/21 is selected at 1440 px
@@ -736,6 +736,12 @@ From 1024 px, in the 日曆 view the timeline's own filter row, chips and match 
 #### Scenario: One filter place
 - **WHEN** `/accounting?month=2026-10` opens at 1440 px in the 日曆 view
 - **THEN** no filter row SHALL appear above the grid, and 篩選 SHALL open the filter panel from the right pane
+
+#### Scenario: Panel state and view change
+- **GIVEN** the filter panel was opened with the right pane's 篩選 at 1440 px
+- **THEN** 篩選 SHALL report aria-expanded true
+- **WHEN** the view is switched to 清單
+- **THEN** the panel SHALL close without sending focus to the 篩選 button it was opened from
 
 ### Requirement: Calendar account filter
 
@@ -747,15 +753,20 @@ In the 日曆 view the 帳戶 filter SHALL be the first field of the filter pane
 
 ### Requirement: Calendar search and filters on narrow screens
 
-Below 1024 px, in the 日曆 view the search and filter row SHALL sit behind a 搜尋與篩選 button on the title row, left of the gear, collapsed by default. The button SHALL show a dot and the row SHALL open by itself while a search or filter is active. Crossing 1024 px SHALL close an open panel.
+Below 1024 px, in the 日曆 view the search and filter row SHALL sit behind a 搜尋與篩選 button on the title row (left of the gear on phones), collapsed by default. The button SHALL show a dot while a search or filter is active. Entering the narrow 日曆 view with one active SHALL open the row; the owner MAY collapse it again while the dot stays. Crossing 1024 px SHALL close an open panel.
 
 #### Scenario: Collapsed by default
 - **WHEN** `/accounting` opens at 390 px in the 日曆 view with no filter
 - **THEN** only the 搜尋與篩選 button SHALL show, without a dot
 
 #### Scenario: Active filter opens the row
-- **WHEN** `/accounting?q=電費` opens at 390 px in the 日曆 view
+- **WHEN** `/accounting?merchant=全聯` opens at 390 px in the 日曆 view
 - **THEN** the row SHALL be open and the button SHALL show a dot
+
+#### Scenario: Collapsing with a filter active
+- **GIVEN** the row opened itself for an active merchant filter at 390 px
+- **WHEN** 搜尋與篩選 is pressed
+- **THEN** the row SHALL collapse and the button SHALL keep its dot
 
 ### Requirement: Calendar layout on wide screens: month summary
 
@@ -787,12 +798,17 @@ Each 這個月要處理 row SHALL be one control with a tag (帳單 or 發票), 
 
 ### Requirement: Calendar items to handle: invoices
 
-An e-invoice row whose matcher proposed exactly one candidate SHALL select its day and open it with `month` and `day` kept: an entry candidate at `/accounting/entries/{id}`; a split-group candidate at `/accounting/entries/{memberId}/group`, where `memberId` is a member of that group found in the day's `GET /entries` rows.
+An e-invoice row SHALL select its issue day. When its matcher proposed exactly one candidate, that candidate SHALL then open with `month` and `day` kept: an entry at `/accounting/entries/{id}`; a split group at `/accounting/entries/{memberId}/group`, where `memberId` is a member of that group found in the day's `GET /entries` rows. With no candidate, several, or no member row of the group that day, only the day SHALL be selected.
 
 #### Scenario: One entry candidate
 - **GIVEN** an invoice issued 2026-10-22 whose only candidate is entry 501
 - **WHEN** its row is clicked
 - **THEN** 10/22 SHALL be selected and the drawer SHALL show `/accounting/entries/501?month=2026-10&day=2026-10-22`
+
+#### Scenario: Several candidates
+- **GIVEN** an invoice issued 2026-10-22 with two candidate entries
+- **WHEN** its row is clicked
+- **THEN** the URL SHALL be `/accounting?month=2026-10&day=2026-10-22` and no drawer SHALL open
 
 ### Requirement: Calendar top merchants
 
@@ -828,6 +844,15 @@ From 1024 px, in the 日曆 view, an entry opened from the day panel SHALL rende
 - **WHEN** Esc is pressed
 - **THEN** the URL SHALL be `/accounting?month=2026-10&day=2026-10-21` and focus SHALL be on the 電費 row
 
+### Requirement: Calendar entry drawer scrolling
+
+From 1024 px, in the 日曆 view, the drawer SHALL scroll and pad the page it hosts as the pane does: the reminder centre, the group view, the entry form, and an entry detail still loading or failed to load. Only a loaded entry detail SHALL fill it with its own bar, scrolling body and pinned actions.
+
+#### Scenario: Reminder centre in the drawer
+- **GIVEN** the 日曆 view at 1440 px
+- **WHEN** the reminder centre opens over the right pane
+- **THEN** its list SHALL scroll inside the drawer with the pane's padding
+
 ### Requirement: Calendar entry drawer detail
 
 From 1024 px, in the 日曆 view only, the drawer's entry detail SHALL have a compact head (icon, name, 「支出 · 類別」 and the amount on one line) and a two-column table of 帳戶, 商家, 日期 and 時間, plus 專案, 交易類型 and 事件類型 only when not default. The action bar SHALL stay at the drawer's bottom while the body scrolls. Every other entry point SHALL render as before.
@@ -843,7 +868,7 @@ From 1024 px, in the 日曆 view only, the drawer's entry detail SHALL have a co
 
 ### Requirement: Calendar entry drawer invoice link
 
-In the drawer an entry without an invoice SHALL show a dashed 連結發票… row. It SHALL read the picker once and hint 前後 7 天有 N 張可選, or 前後 7 天沒有可選的發票 when none; a pending or failed read shows no hint and keeps the row. Once known not eligible the row SHALL be hidden. Clicking it SHALL open the picker from that same read.
+In the drawer a top-level expense or a split-group member without an invoice SHALL show a dashed 連結發票… row. It SHALL read the picker once and hint 前後 7 天有 N 張可選, or 前後 7 天沒有可選的發票 when none; while the read is pending or after it fails there SHALL be no hint and the row stays. Once the read settles as not eligible the row SHALL be hidden. Clicking it SHALL open the picker from that same read.
 
 #### Scenario: Hint count
 - **GIVEN** three unmatched invoices lie within ±7 days of the entry
@@ -855,7 +880,7 @@ In the drawer an entry without an invoice SHALL show a dashed 連結發票… ro
 
 ### Requirement: Calendar entry drawer stepping
 
-From 1024 px, with the calendar's entry drawer open, ↑ and ↓ SHALL move to the previous or next entry of the month in list order (newest first), keeping `month` and moving `day` with the entry. For that visit they SHALL replace the layout's document-level row stepping.
+From 1024 px, with the calendar's entry drawer open, ↑ and ↓ SHALL move to the previous or next entry of the month in list order (newest first), keeping `month` and moving `day` with the entry, as 上一筆 / 下一筆 do; a focused step button SHALL stay focused on the next entry. For that visit they SHALL replace the layout's document-level row stepping.
 
 #### Scenario: Stepping across days in the drawer
 - **GIVEN** the drawer shows the last entry of 10/21
