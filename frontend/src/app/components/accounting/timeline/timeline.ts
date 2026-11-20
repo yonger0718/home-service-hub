@@ -942,6 +942,17 @@ export class LedgerTimelineComponent implements OnInit {
         afterNextRender(() => this.queryInput()?.nativeElement.focus({ preventScroll: true }), { injector: this.injector });
       }
     });
+    // Collapsing the row (true -> false) inside narrow 日曆 would leave an open panel hanging: close it, focus stays put.
+    let rowOpenBefore = false;
+    effect(() => {
+      const open = this.overview.calendarFiltersOpen();
+      untracked(() => {
+        if (rowOpenBefore && !open && this.narrowCalendar()) {
+          this.filterBar()?.close(false);
+        }
+        rowOpenBefore = open;
+      });
+    });
     // Crossing 1024 px while 日曆 stays: the filters stay, but an open panel would outlive its opener, so close it
     // without sending focus to a button that is unmounting. Not on the first run.
     let panesBefore: boolean | null = null;

@@ -2367,6 +2367,22 @@ describe('LedgerTimelineComponent', () => {
         expect(TestBed.inject(CalendarPaneService).search()).toBe('全聯');
       });
 
+      it('collapsing the row with the panel open closes the panel', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        toggle(el)!.click();
+        fixture.detectChanges();
+        TestBed.inject(CalendarPaneService).commands()!.toggleFilters(document.body);
+        fixture.detectChanges();
+        dropOptionReads();
+        expect(el.querySelector('.filter-panel')).not.toBeNull();
+        toggle(el)!.click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(rowShown(el)).toBe(false);
+        expect(el.querySelector('.filter-panel')).toBeNull();
+      });
+
       it('leaving 日曆 closes the row state; coming back with nothing active starts collapsed', async () => {
         const { fixture, el } = await openNarrow('/accounting?month=2026-10');
         toggle(el)!.click();

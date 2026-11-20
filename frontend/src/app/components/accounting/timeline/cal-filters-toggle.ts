@@ -34,6 +34,10 @@ import { AccountingOverviewService } from '../month-overview/overview.service';
       color: var(--app-text);
       cursor: pointer;
     }
+    .cal-filters-toggle:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px var(--app-focus-ring);
+    }
     .cal-filters-toggle[aria-expanded='true'] {
       border-color: var(--app-primary);
     }
