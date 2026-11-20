@@ -4,7 +4,7 @@
 
 **Goal:** Every close / reopen of a debt writes an event that no entry edit or delete removes; the entry detail and the reminders page read it (#401).
 
-**Architecture:** One table without a foreign key to the entry, written by `settlement_service.set_closed` under the entry's row lock; one small read module; a new read-only router; the SPA shows the events on the entry detail and the closed remainders on the reminders page.
+**Architecture:** One table without a foreign key to the entry, written by `settlement_service.set_closed` under the entry's row lock; one small module; a new router (the list and the owner's review); the SPA shows the events on the entry detail and the closed remainders on the reminders page.
 
 **Tech Stack:** FastAPI + SQLAlchemy + Alembic (accounting-service), Angular 21 + Vitest (frontend).
 
@@ -70,6 +70,6 @@
 - Produces: `DebtEvent`, `DebtReviewItem`, `DebtReviewPage` types; `AccountingService.getDebtReviews(limit = 50): Observable<DebtReviewPage>`, `reviewDebtEvent(eventId: number): Observable<void>`; a shared `debtActorLabel(actor: string | null): string` (`spa` → `網頁`, `hermes` → `Hermes`, else the label, null → `''`).
 
 - [ ] Step 1: write the tests of the spec's SPA list; run, expect failures.
-- [ ] Step 2: implement: detail block `.debt-events` (one `.debt-event` per line); the close confirm text; reminders section `.debt-reviews` (rows `.review-row` with `.review-open` and `.review-done`, a deleted one `.review-row.deleted` without `.review-open`, the `僅顯示最近 50 筆`, read-failure and `確認失敗，請稍後再試。` lines), loaded inside `load()` with `catchError(() => of(null))`.
+- [ ] Step 2: implement: detail block `.debt-events` (one `.debt-event` per line); the close confirm text; reminders section `.debt-reviews` (rows `.review-row` with `.review-open` and `.review-done`, a deleted one `.review-row.deleted` without `.review-open`, the `僅顯示最近 50 筆`, read-failure and `確認失敗，請稍後再試。` lines), read by a request of its own that `load()` starts (a failed read shows its line and never gates the page).
 - [ ] Step 3: run the three spec files and `tsc --noEmit` (app and spec): expect pass.
 - [ ] Step 4: commit.

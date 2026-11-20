@@ -6,23 +6,24 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app import auth
-from app.models import Account, Counterparty, DebtStateEvent
+from app.models import Account, Counterparty, DebtStateEvent, LedgerEntry
 from app.services import ledger_service
 
 BOT = {"Authorization": "Bearer bot-token"}  # write only: its closes wait for the owner
 OWNER = {"Authorization": "Bearer owner-token"}  # admin
 WEB = {"Authorization": "Bearer web-token"}  # legacy
 READER = {"Authorization": "Bearer rd-token"}
+WORKER = {"Authorization": "Bearer wk-token"}  # ingest only: no ledger read
 DAY = date(2026, 9, 1)
 
 
 @pytest.fixture
 def scoped(monkeypatch):
-    monkeypatch.setenv(auth.TOKENS_ENV, "bot:bot-token,owner:owner-token,web:web-token,rd:rd-token")
-    monkeypatch.setenv(auth.SCOPES_ENV, "bot=read,write; owner=read,write,admin; web=legacy; rd=read")
+    monkeypatch.setenv(auth.TOKENS_ENV, "bot:bot-token,owner:owner-token,web:web-token,rd:rd-token,wk:wk-token")
+    monkeypatch.setenv(auth.SCOPES_ENV, "bot=read,write; owner=read,write,admin; web=legacy; rd=read; wk=ingest")
 
 
 def _receivable(seed, db, *, collected=None, closed=False, name="晚餐代墊", who="Alan", amount="-420"):
@@ -149,6 +150,17 @@ def test_a_row_without_events_answers_an_empty_list(client, db_session, seed):
     assert _detail_events(client, expense.id) == []
 
 
+def test_the_events_stay_in_the_detail_when_the_row_stops_being_a_debt(client, db_session, seed, scoped):
+    """The list still links to the entry: its detail must show why."""
+    _, receivable_id = _receivable(seed, db_session, collected="200")
+    client.post(f"/entries/{receivable_id}/close", headers=BOT)
+    db_session.execute(update(LedgerEntry).where(LedgerEntry.id == receivable_id).values(kind="expense"))
+    db_session.commit()
+
+    assert [(e["action"], e["needs_review"]) for e in _detail_events(client, receivable_id, READER)] == [("close", True)]
+    assert [item["entry_id"] for item in _to_review(client, READER)["items"]] == [receivable_id]
+
+
 def test_the_events_stay_when_the_entry_is_deleted(client, db_session, seed, scoped):
     _, receivable_id = _receivable(seed, db_session)
     client.post(f"/entries/{receivable_id}/close", headers=BOT)
@@ -175,6 +187,25 @@ def test_a_close_with_a_remainder_by_a_write_only_caller_waits_for_review(client
             "event_date": ledger_service._today().isoformat(),
         }],
     }
+
+
+def test_a_live_debt_answers_its_current_name_not_the_snapshot(client, db_session, seed, scoped):
+    _, receivable_id = _receivable(seed, db_session)
+    client.post(f"/entries/{receivable_id}/close", headers=BOT)
+    db_session.execute(update(LedgerEntry).where(LedgerEntry.id == receivable_id).values(name="改名後"))
+    db_session.commit()
+
+    assert [(item["name"], item["deleted"]) for item in _to_review(client, READER)["items"]] == [("改名後", False)]
+    assert _events(db_session)[0].entry_name == "晚餐代墊"
+
+
+def test_the_list_needs_the_read_scope(client, db_session, seed, scoped):
+    _, receivable_id = _receivable(seed, db_session)
+    client.post(f"/entries/{receivable_id}/close", headers=BOT)
+
+    response = client.get("/debt-events/to-review", headers=WORKER)
+
+    assert (response.status_code, response.json()["message"]) == (403, "scope")
 
 
 @pytest.mark.parametrize("headers", [OWNER, WEB], ids=["admin", "legacy"])

@@ -1337,7 +1337,14 @@ describe('EntryDetailComponent', () => {
         '2026/11/19 重新開啟 · 網頁 · 回到剩餘 $220',
         '2026/11/20 標記結清 · Hermes · 當時剩餘 $220 · 待確認',
       ]);
-      expect(el(fixture).querySelector('.open-state .debt-events')).not.toBeNull();
+      expect(el(fixture).querySelector('.open-state + .debt-events')).not.toBeNull();
+    });
+
+    it('keeps the record on a row that is no longer a debt (the reminders list still links to it)', () => {
+      const fixture = render(detail({ id: 42, amount: '-420.0000', name: '外套', debt_events: [EVENTS[2]] }));
+
+      expect(el(fixture).querySelector('.open-state')).toBeNull();
+      expect(lines(fixture)).toEqual(['2026/11/20 標記結清 · Hermes · 當時剩餘 $220 · 待確認']);
     });
 
     it('shows no block for a debt without events or an answer without the field', () => {

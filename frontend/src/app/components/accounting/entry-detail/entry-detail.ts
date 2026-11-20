@@ -332,14 +332,14 @@ export class EntryDetailComponent implements OnInit {
   /** #391: a closed debt (MOZE's flag, or 標記結清) can be opened again; its remainder then follows from its settlements. */
   readonly canReopen = computed(() => this.isDebt() && !this.locked() && !!this.detail()?.is_closed);
   /** #391: an open remainder can be closed; not a loan a live schedule repays (the API refuses: the schedule would end). */
-  /** #401: the closes / reopens of this debt, oldest first; an answer from before #401 carries none. */
-  readonly debtEventLines = computed(() =>
-    (this.detail()?.debt_events ?? []).map(event => ({ id: event.id, text: debtEventLine(event), waiting: event.needs_review })),
-  );
   readonly canClose = computed(() => {
     const loan = this.detail()?.loan_schedule;
     return this.canSettle() && (!loan || loan.status === 'ended');
   });
+  /** #401: the closes / reopens of this row, oldest first; an answer from before #401 carries none. */
+  readonly debtEventLines = computed(() =>
+    (this.detail()?.debt_events ?? []).map(event => ({ id: event.id, text: debtEventLine(event), waiting: event.needs_review })),
+  );
   /** What the open confirm (重新開啟 / 標記結清) does to the remainder, in the owner's words. */
   readonly debtConfirmText = computed(() => {
     const detail = this.detail();

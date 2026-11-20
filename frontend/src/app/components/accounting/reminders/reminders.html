@@ -165,7 +165,13 @@
                 <span class="sub">{{ row.sub }}</span>
               </button>
             }
-            <button type="button" class="review-done" [disabled]="reviewBusy() !== null" (click)="confirmReview(row.item)">已確認</button>
+            <button
+              type="button"
+              class="review-done"
+              [attr.aria-label]="'已確認 ' + row.title"
+              [disabled]="reviewBusy() !== null"
+              (click)="confirmReview(row.item)"
+            >已確認</button>
           </div>
         }
         @if (reviewsCut()) {

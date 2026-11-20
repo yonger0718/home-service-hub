@@ -98,14 +98,15 @@
         } @else if (breakdown(); as line) {
           <p class="breakdown">{{ line }}</p>
         }
-        @if (debtEventLines().length) {
-          <ul class="debt-events" aria-label="結清記錄">
-            @for (line of debtEventLines(); track line.id) {
-              <li class="debt-event" [class.waiting]="line.waiting">{{ line.text }}</li>
-            }
-          </ul>
-        }
       </div>
+    }
+    <!-- #401: outside the debt block: a row that stopped being a debt keeps the record of its closes. -->
+    @if (debtEventLines().length) {
+      <ul class="debt-events" aria-label="結清記錄">
+        @for (line of debtEventLines(); track line.id) {
+          <li class="debt-event" [class.waiting]="line.waiting">{{ line.text }}</li>
+        }
+      </ul>
     }
 
     <app-entry-reward-section [detail]="d" [amountText]="rewardText" [today]="today">

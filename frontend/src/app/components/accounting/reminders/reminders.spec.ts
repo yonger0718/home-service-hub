@@ -1282,6 +1282,30 @@ describe('AccountingRemindersComponent', () => {
       expect(rows(el).length).toBe(1);
       expect(text(el.querySelector('.debt-reviews .load-error'))).toBe('確認失敗，請稍後再試。');
       expect(el.querySelector<HTMLButtonElement>('.debt-reviews .review-done')!.disabled).toBe(false);
+
+      // A reload of the page reads the list again: the old failure line goes with it.
+      TestBed.inject(AccountingService).deleteEntry(1).subscribe();
+      http.expectOne(r => r.method === 'DELETE').flush(null);
+      fixture.detectChanges();
+      flushLoad([], [ALAN], ALAN_OPEN);
+      http.expectOne(r => r.url === REVIEWS_URL).flush({ items: [review()], total: 1 });
+      fixture.detectChanges();
+      expect(rows(el).length).toBe(1);
+      expect(el.querySelector('.debt-reviews .load-error')).toBeNull();
+    });
+
+    it('names each 已確認 button after its row and locks them while one is in flight', () => {
+      const { fixture, el } = renderWith([review(), review({ event_id: 8, entry_id: 75, name: '車票' })]);
+      const buttons = () => Array.from(el.querySelectorAll<HTMLButtonElement>('.debt-reviews .review-done'));
+
+      expect(buttons().map(button => button.getAttribute('aria-label'))).toEqual(['已確認 Alan · 晚餐代墊', '已確認 Alan · 車票']);
+      buttons()[0].click();
+      fixture.detectChanges();
+      expect(buttons().map(button => button.disabled)).toEqual([true, true]);
+      buttons()[1].click();
+      http.expectOne(r => r.url === '/api/accounting/debt-events/7/review').flush(null, { status: 204, statusText: 'No Content' });
+      http.expectNone(r => r.url === '/api/accounting/debt-events/8/review');
+      http.expectOne(r => r.url === REVIEWS_URL).flush({ items: [], total: 0 });
     });
 
     it('says when only the newest 50 are shown', () => {

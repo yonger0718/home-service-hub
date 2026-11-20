@@ -487,6 +487,7 @@ export class AccountingRemindersComponent {
   private load(): void {
     const id = ++this.requestId;
     this.loadReviews();
+    this.reviewError.set(false);
     this.actionError.set(null);
     this.scheduleError.set(null);
     forkJoin({
