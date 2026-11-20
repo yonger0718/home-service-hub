@@ -342,7 +342,7 @@ export class EntryDetailComponent implements OnInit {
       return '';
     }
     if (this.panel() === 'close') {
-      return `剩餘 ${formatMoney(detail.open_amount, detail.currency)} 不再列入未結清，之後可以重新開啟。`;
+      return `剩餘 ${formatMoney(detail.open_amount, detail.currency)} 不再列入未結清，備註會記下這次結清；之後可以重新開啟。`;
     }
     // The API's open amount of a debt that is not closed: |amount + Σ settled values|.
     const remaining = Math.round(Math.abs(Math.abs(Number(detail.amount)) - settledBack(detail)) * 1e4) / 1e4;

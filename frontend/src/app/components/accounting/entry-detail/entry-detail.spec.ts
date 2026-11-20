@@ -1404,7 +1404,7 @@ describe('EntryDetailComponent', () => {
       const fixture = render(RECEIVABLE);
       const confirm = openConfirm(fixture, 'close');
 
-      expect(confirm.textContent).toContain('剩餘 $220 不再列入未結清，之後可以重新開啟。');
+      expect(confirm.textContent).toContain('剩餘 $220 不再列入未結清，備註會記下這次結清；之後可以重新開啟。');
       confirm.querySelector<HTMLButtonElement>('.debt-confirm-go')!.click();
 
       const req = http.expectOne('/api/accounting/entries/42/close');

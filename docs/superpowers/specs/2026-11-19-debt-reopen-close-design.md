@@ -15,6 +15,7 @@ Production, read only, counts (2026-11-19): 342 debt originals, 308 closed (all 
 
 - The owner, in the SPA, and an API caller with `write` can reopen a closed debt and close an open one.
 - Each action changes the flag only. Amounts, settlements and links are untouched; `open_amount` and `is_settled` follow from the flag and the settlements as they do today.
+- A close that takes a remainder out of the open-debt views leaves a trace on the entry (owner decision 2026-11-20): one line in its description.
 - The SPA says what the action does to the remainder before it is confirmed.
 
 ## Non-goals / anti-goals
@@ -43,6 +44,7 @@ Permission: both routes sit under the entry router's method scope, so they need 
 - Idempotent: reopening an open debt or closing a closed one answers `200` and changes nothing.
 - `close` is refused (`422`, field `loan_schedule`) while a schedule that is not ended has a loan line on the entry: `schedule_posting` reads a closed loan as repaid and would end the schedule on its next period.
 - Closing is allowed with or without a remainder. Reopening is allowed whatever the settlements sum to.
+- **Trace.** A close that changes the flag while the open amount is not zero appends one line to the entry's `description`: `<date> 標記結清，當時剩餘 <currency> <amount>` (the date in the ledger time zone, the amount without trailing zeros; on its own line after any text already there). A close with nothing left, a repeated close and a reopen write nothing; a reopen keeps the line.
 
 ### SPA (`frontend`)
 
@@ -56,17 +58,18 @@ Each button opens a confirm panel (the delete panel's pattern: Esc / 取消 clos
 
 - reopen, remainder after reopening > 0: `重新開啟後，這筆會回到未結清：剩餘 <amount>。`
 - reopen, remainder 0: `收款已收滿，重新開啟後仍是已結清；刪除收款後才會出現剩餘金額。` (a payable: `還款已還清，…；刪除還款後…`)
-- close: `剩餘 <amount> 不再列入未結清，之後可以重新開啟。`
+- close: `剩餘 <amount> 不再列入未結清，備註會記下這次結清；之後可以重新開啟。`
 
 The remainder after reopening is `| |amount| − Σ settled values |` from the detail already loaded: the API's own open amount, so the text says what the reloaded page will show (also for a debt collected beyond its amount, which the API reports as a remainder). The confirm takes focus (it renders below the related rows); Esc / 取消 returns focus to its button. After the action the detail reloads. Buttons are hidden while the entry is locked (cutover).
 
 ### Assistant skill (after the deploy)
 
 - `POST /entries/{id}/reopen` / `close`: only when the owner asks; report the `open_amount` before and after. On `422 已結清` from settle, stop and ask instead of reopening on its own.
+- A `PUT` of a debt sends its `description` back unchanged: the close line lives there.
 
 ## Tests
 
-API: reopen clears the flag, the remainder returns and settle then works; reopen of a debt whose settlements net stays settled; close sets the flag, `open_amount` 0, settle refused; both idempotent; non-debt, settlement row and unknown id refused; close refused under a live schedule's loan line and allowed once the schedule is ended; a `write`-only label may call both, a `read`-only label may not.
+API: reopen clears the flag, the remainder returns and settle then works; reopen of a debt whose settlements net stays settled; close sets the flag, `open_amount` 0, settle refused; both idempotent; non-debt, settlement row and unknown id refused; close refused under a live schedule's loan line and allowed once the schedule is ended; a `write`-only label may call both, a `read`-only label may not; a close with a remainder appends the line (after an existing description, or alone), a close with nothing left and a repeated close do not, a reopen keeps it.
 
 SPA: the service methods post to the two routes; the state line shows the right button per state (closed, open, settled by netting, live loan, locked); each confirm text; confirm posts and reloads; an API error shows in the panel.
 
@@ -76,7 +79,7 @@ SPA: the service methods post to the two routes; the state line shows the right 
 
 ## Known limits (accepted)
 
-- No history of who closed or reopened a debt.
+- The trace is a line in an editable field, not a history: it says when a remainder was closed and how much, not who did it. An edit of the description, or a `PUT` that leaves the description out, removes it. A reopen and a close with nothing left leave no line.
 - Reopening one of the imported debts whose settlements do not net shows its old remainder until it is closed again.
 - A closed debt with a remainder keeps its effect on the account balance; only the debt views change.
 - Reopening a loan whose schedule already ended on the closed debt does not restart the schedule: it stays ended with its periods skipped, and the owner restores the periods in the schedule view.
