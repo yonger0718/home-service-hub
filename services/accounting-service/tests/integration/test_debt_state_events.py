@@ -155,6 +155,31 @@ def test_without_auth_the_actor_is_null_and_the_close_needs_no_review(client, db
     assert _to_review(client) == {"items": [], "total": 0}
 
 
+def test_a_bare_token_without_scopes_closes_with_a_null_actor_and_no_review(client, db_session, seed, monkeypatch):
+    # tokens configured, scopes not: every token is the owner's, and a token without a label has no name to record
+    monkeypatch.setenv(auth.TOKENS_ENV, "plain-token")
+    _, receivable_id = _receivable(seed, db_session)
+    plain = {"Authorization": "Bearer plain-token"}
+
+    response = client.post(f"/entries/{receivable_id}/close", headers=plain)
+
+    assert response.status_code == 200, response.text
+    [event] = response.json()["debt_events"]
+    assert (event["actor"], event["needs_review"]) == (None, False)
+    assert _to_review(client, plain) == {"items": [], "total": 0}
+
+
+def test_a_bare_token_holds_no_scope_once_scopes_are_configured(client, db_session, seed, monkeypatch):
+    monkeypatch.setenv(auth.TOKENS_ENV, "plain-token,owner:owner-token")
+    monkeypatch.setenv(auth.SCOPES_ENV, "owner=read,write,admin")
+    _, receivable_id = _receivable(seed, db_session)
+
+    response = client.post(f"/entries/{receivable_id}/close", headers={"Authorization": "Bearer plain-token"})
+
+    assert response.status_code == 403, response.text
+    assert _events(db_session) == []
+
+
 def test_the_detail_lists_the_events_oldest_first_and_only_the_last_waits(client, db_session, seed, scoped):
     _, receivable_id = _receivable(seed, db_session)
 
@@ -232,6 +257,32 @@ def test_the_list_answers_the_remainder_at_the_close_and_the_one_now(client, db_
     }
 
 
+def _amount_edit(client, card, entry_id, amount):
+    stored = client.get(f"/entries/{entry_id}", headers=BOT).json()
+    body = {"account_id": card.id, "kind": "receivable", "amount": amount, "entry_date": stored["entry_date"],
+            "counterparty_id": stored["counterparty_id"], "name": stored["name"]}
+    return client.put(f"/entries/{entry_id}", headers=BOT, json=body)
+
+
+def test_an_amount_edit_cannot_clear_a_waiting_close(client, db_session, seed, scoped):
+    """#403: the amount of a debt is locked while a settlement points at it, so no edit brings the remainder of a
+    waiting close to nothing; without settlements the edit goes through and the row shows both remainders."""
+    card, settled_id = _receivable(seed, db_session, collected="200", who="Bea")
+    _, plain_id = _receivable(seed, db_session, who="Cal")
+    for entry_id in (settled_id, plain_id):
+        assert client.post(f"/entries/{entry_id}/close", headers=BOT).status_code == 200
+
+    locked = _amount_edit(client, card, settled_id, "200")
+    zeroed = _amount_edit(client, card, plain_id, "0")
+    lowered = _amount_edit(client, card, plain_id, "100")
+
+    assert locked.status_code == 422 and {str(e["loc"][-1]) for e in locked.json()["detail"]} == {"amount"}
+    assert zeroed.status_code == 422 and {str(e["loc"][-1]) for e in zeroed.json()["detail"]} == {"amount"}
+    assert lowered.status_code == 200, lowered.text
+    amounts = {i["entry_id"]: (i["open_amount"], i["current_open_amount"]) for i in _to_review(client, OWNER)["items"]}
+    assert amounts == {settled_id: ("220.0000", "220.0000"), plain_id: ("420.0000", "100.0000")}
+
+
 def test_a_live_debt_answers_its_current_name_not_the_snapshot(client, db_session, seed, scoped):
     _, receivable_id = _receivable(seed, db_session)
     client.post(f"/entries/{receivable_id}/close", headers=BOT)
@@ -259,6 +310,20 @@ def test_a_close_by_the_owner_never_waits(client, db_session, seed, scoped, head
 
     assert response.json()["debt_events"][0]["needs_review"] is False
     assert _to_review(client, OWNER) == {"items": [], "total": 0}
+
+
+def test_a_close_by_the_owner_after_a_reopen_replaces_the_waiting_close(client, db_session, seed, scoped):
+    _, receivable_id = _receivable(seed, db_session)
+
+    client.post(f"/entries/{receivable_id}/close", headers=BOT)
+    assert _to_review(client, OWNER)["total"] == 1
+    client.post(f"/entries/{receivable_id}/reopen", headers=OWNER)
+    client.post(f"/entries/{receivable_id}/close", headers=OWNER)
+
+    assert _to_review(client, OWNER) == {"items": [], "total": 0}
+    events = _detail_events(client, receivable_id, OWNER)
+    assert [(e["action"], e["actor"], e["needs_review"]) for e in events] == [
+        ("close", "bot", False), ("reopen", "owner", False), ("close", "owner", False)]
 
 
 def test_a_reopened_debt_does_not_wait(client, db_session, seed, scoped):

@@ -443,6 +443,28 @@ describe('EntryDetailComponent', () => {
     req.flush({ deleted: [] });
   });
 
+  it('keeps the delete dialog open and says why when the API finds a child the dialog did not list (#390)', () => {
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render(detail({ id: 42 }));
+    el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
+    fixture.detectChanges();
+
+    el(fixture).querySelector<HTMLButtonElement>('.delete-confirm .delete-entry')!.click();
+    const req = http.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/42');
+    expect(req.request.params.has('cascade')).toBe(false);
+    req.flush(
+      { code: 'conflict', message: 'cascade_unconfirmed: child 44 is on another account', trace_id: 't-1' },
+      { status: 409, statusText: 'Conflict' },
+    );
+    fixture.detectChanges();
+
+    const confirm = el(fixture).querySelector('.delete-confirm')!;
+    expect(confirm).not.toBeNull();
+    expect(confirm.querySelector('.form-error')?.textContent?.trim()).toBe('附帶的手續費或折扣記在別的帳戶；請重新載入後再刪，或先刪那筆附帶記錄');
+    expect(confirm.querySelector<HTMLButtonElement>('.delete-entry')!.disabled).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it('shows the FX line and the fee inside the total', () => {
     const fixture = render(detail({
       id: 42, amount: '-1166.0000', original_amount: '-5390.0000', original_currency: 'JPY', fx_rate: '0.2163000000',

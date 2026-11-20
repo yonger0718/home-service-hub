@@ -5,9 +5,10 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import func, select
 
 from app import auth
-from app.models import LedgerEntry
+from app.models import DebtStateEvent, LedgerEntry
 
 DAY = "2026-09-10"
 
@@ -19,6 +20,11 @@ def _error_fields(response) -> set[str]:
 def _state(client, entry_id) -> tuple[bool, str, bool]:
     detail = client.get(f"/entries/{entry_id}").json()
     return detail["is_closed"], detail["open_amount"], detail["is_settled"]
+
+
+def _event_count(db) -> int:
+    db.expire_all()
+    return db.scalar(select(func.count()).select_from(DebtStateEvent))
 
 
 def _closed_receivable(seed, db, amount="-420", *, collected=None):
@@ -178,6 +184,7 @@ def test_an_imported_debt_is_locked_until_cutover(client, db_session, seed, acti
     assert (response.status_code, response.json()["message"]) == (409, "locked_until_cutover")
     db_session.expire_all()
     assert db_session.get(LedgerEntry, receivable.id).is_closed is (action == "reopen")
+    assert _event_count(db_session) == 0  # #401: a refusal leaves no record
 
 
 def _loan(seed, db):
@@ -201,6 +208,7 @@ def test_close_is_refused_while_a_live_schedule_repays_the_loan(client, db_sessi
     assert response.status_code == 422 and _error_fields(response) == {"loan_schedule"}, response.text
     assert _state(client, payable.id)[0] is False
     assert _description(client, payable.id) is None
+    assert _event_count(db_session) == 0  # #401: a refusal leaves no record
 
 
 def test_close_is_allowed_once_the_schedule_is_ended_and_reopen_is_always_allowed(client, db_session, seed):

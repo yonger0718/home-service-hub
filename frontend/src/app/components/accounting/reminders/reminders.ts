@@ -35,7 +35,7 @@ import { StatementSummary } from '../statements/statement.model';
 import { reconProgress, statementForPeriod } from '../statements/statement-view';
 import { StatementsService } from '../statements/statements.service';
 import { daysBetween, shortDate, slashDate, todayIso } from '../dates';
-import { formatMoney, formatSigned } from '../format';
+import { formatMoney, formatSigned, sameDecimal } from '../format';
 import { debtActorLabel } from '../debt-events';
 import { TimelineRow, buildDays } from '../timeline/timeline';
 import { DefinitionRow, QueueRow, definitionRows, queueRows } from './schedule-queue';
@@ -306,6 +306,8 @@ export class AccountingRemindersComponent {
   /** The review whose 已確認 is in flight. */
   readonly reviewBusy = signal<number | null>(null);
   readonly reviewError = signal(false);
+  /** The list index of the close whose 已確認 succeeded: its reload puts focus back near it (else the tab). */
+  private reviewFocusIndex: number | null = null;
   readonly reviewRows = computed(() =>
     (this.reviews()?.items ?? []).map(item => ({
       item,
@@ -314,7 +316,7 @@ export class AccountingRemindersComponent {
       // #403: the remainder moved after the close (a settlement deleted or changed, the debt edited): the owner
       // confirms what is written off now, not what it was.
       now:
-        item.current_open_amount != null && Number(item.current_open_amount) !== Number(item.open_amount)
+        item.current_open_amount != null && !sameDecimal(item.current_open_amount, item.open_amount)
           ? `目前剩餘 ${formatMoney(item.current_open_amount, item.currency)}`
           : null,
       sub: [slashDate(item.event_date), debtActorLabel(item.actor)].filter(Boolean).join(' · '),
@@ -544,15 +546,42 @@ export class AccountingRemindersComponent {
         if (id === this.reviewRequestId) {
           this.reviews.set(page);
           this.reviewsFailed.set(false);
+          this.restoreReviewFocus();
         }
       },
       error: () => {
         if (id === this.reviewRequestId) {
           this.reviews.set(null);
           this.reviewsFailed.set(true);
+          this.restoreReviewFocus();
         }
       },
     });
+  }
+
+  /**
+   * After the read that follows a 已確認, the confirmed row (and its focused button) is gone: focus the 已確認 now at
+   * its index, else the last row's, else (no row left) the checked tab. Ordinary reads leave focus alone, and so does
+   * this one when focus sits on another element by then (the user moved on while the list was read).
+   */
+  private restoreReviewFocus(): void {
+    const index = this.reviewFocusIndex;
+    this.reviewFocusIndex = null;
+    if (index === null) {
+      return;
+    }
+    afterNextRender(
+      () => {
+        const active = document.activeElement;
+        if (active !== null && active !== document.body) {
+          return;
+        }
+        const host = this.host.nativeElement;
+        const buttons = host.querySelectorAll<HTMLElement>('.debt-reviews .review-done');
+        (buttons[index] ?? buttons[buttons.length - 1] ?? host.querySelector<HTMLElement>('.tabs [aria-checked="true"]'))?.focus();
+      },
+      { injector: this.injector },
+    );
   }
 
   /** 已確認: the owner has seen this close. The row leaves the list on the next read. */
@@ -565,6 +594,7 @@ export class AccountingRemindersComponent {
     this.accounting.reviewDebtEvent(item.event_id).subscribe({
       next: () => {
         this.reviewBusy.set(null);
+        this.reviewFocusIndex = Math.max(0, this.reviews()?.items.indexOf(item) ?? 0);
         this.loadReviews();
       },
       error: () => {

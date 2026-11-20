@@ -196,7 +196,7 @@ class Summary:
     live_revisions: int = 0
     ocr_trigger: int = 0   # R5: files whose pages the OCR child read because there was no usable text layer
     ocr_fallback: int = 0  # R5: files OCR'd after their text-layer parse failed (parse/schema/422)
-    ocr_merchant_repair: int = 0  # #206: text-layer parses with `(cid:` merchants whose file the OCR child re-read
+    ocr_merchant_repair: int = 0  # #206 / #387: text-layer parses with `(cid:` or missing merchants; one OCR re-read each
     merchant_lines_repaired: int = 0  # #206: lines whose merchant text came from the OCR parse
     composite_files: int = 0  # composite statements (spec §4): files that reached the section split
     sections_parsed: int = 0
@@ -415,7 +415,8 @@ PARSE_FAILED = "parse_failed"  # _parse_submit sentinel: the parser or the API r
 
 def garbled_merchant(merchant: str) -> bool:
     """#206: a merchant the text layer could not map — the font carries no Unicode for its glyphs (pdfminer renders
-    them `(cid:N)`); seen on AMEX BR's Chinese merchant names, below the file-level OCR trigger."""
+    them `(cid:N)`); seen on AMEX BR's Chinese merchant names, below the file-level OCR trigger. The other target
+    of the same repair is a merchant the text layer dropped without a trace: `missing_merchant` (#387)."""
     return pdf.GARBAGE_GLYPH in merchant
 
 
@@ -481,8 +482,11 @@ def _repair_merchants(services: Services, data: bytes, password: str | None, can
                       summary: Summary) -> tuple[parse_schema.StatementParse, str, int]:
     """#206: the text-layer parse succeeded but some merchants are `(cid:N)` garbage (#387: or missing — empty or a
     bare country code on a purchase/refund line; `needs_merchant_repair`). One OCR read and one more
-    parser call; a garbled line takes the OCR parse's merchant only when exactly one OCR line and exactly one garbled
-    text line share its (txn_date, posted_date, printed_amount, line_kind) and that OCR merchant is clean. Amounts,
+    parser call; a target line takes the OCR parse's merchant only when exactly one OCR line and exactly one text
+    line (target or not) share its (txn_date, posted_date, printed_amount, line_kind) and that OCR merchant is usable:
+    not garbled, not empty and, on a purchase/refund line, not a bare 2-3 letter code. The last condition came with
+    #387 and holds for a #206 garbled line (AMEX) too: an OCR read of only `KFC` leaves the `(cid:N)` text in place
+    (accepted: the OCR line may have kept only the country column). Amounts,
     dates, kinds and every other field stay the text layer's, so the submission is never worse than the text parse
     alone; any OCR or parser failure keeps the text parse unchanged (a host fault still latches the parser).
     Returns (parse, provenance note, lines repaired)."""
@@ -513,7 +517,7 @@ def _repair_merchants(services: Services, data: bytes, password: str | None, can
         log.info("ocr merchant repair: parse %s", exc.reason)
         return parsed, f"ocr: merchant repair skipped (parse {exc.reason})", 0
     text_keys: dict[tuple, int] = {}
-    for line in parsed.lines:  # every text line, clean or garbled: a key shared with a clean line is ambiguous too
+    for line in parsed.lines:  # every text line, target or not: a key shared with a line that needs no repair is ambiguous too
         text_keys[_line_key(line)] = text_keys.get(_line_key(line), 0) + 1
     ocr_by_key: dict[tuple, list[parse_schema.ParsedLine]] = {}
     for line in ocr_parsed.lines:

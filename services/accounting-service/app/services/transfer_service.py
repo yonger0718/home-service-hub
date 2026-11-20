@@ -192,7 +192,9 @@ def _locked_legs(db: Session, group_id: UUID) -> tuple[LedgerEntry, LedgerEntry]
 
 
 def update_transfer(db: Session, group_id: UUID, payload: TransferIn, *, drop_children: bool = False) -> None:
-    """Replace both legs' fields, children and rule links in place (the leg ids stay).
+    """Replace both legs' fields, children and rule links in place (the leg ids stay). A leg's stored fee / discount
+    child the payload does not carry is dropped only with `drop_children` (#396; else `children_unconfirmed`, raised
+    by `sync_children` after the out leg is written: the caller's rollback takes that back).
 
     Lock order: no FX lookup happens here (the rates derive from the two amounts, nothing commits the session),
     so both legs are locked first, together, then validated and written; remember_defaults runs after the locks.
