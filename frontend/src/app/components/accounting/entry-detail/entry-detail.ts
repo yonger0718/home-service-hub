@@ -138,10 +138,15 @@ export class EntryDetailComponent implements OnInit {
   readonly drawer = computed(() => this.layoutMode.mode() === 'panes' && this.overview.calendar());
   readonly detail = signal<EntryDetail | null>(null);
   /**
-   * The drawer shows the compact page (bar, scrolling body, pinned foot): only with an entry to show. While it loads, or
-   * after its read failed, the layout's default drawer pads and scrolls the loading / 讀取失敗 state.
+   * A drawer step (↑ ↓, 上一筆 / 下一筆) away from a shown entry: its bar stays mounted while the next entry loads, so
+   * focus on a step button or ✕ never leaves the modal drawer. Cleared once that read settles.
    */
-  readonly compact = computed(() => this.drawer() && this.detail() !== null);
+  private readonly stepping = signal(false);
+  /**
+   * The drawer shows the compact page (bar, scrolling body, pinned foot): with an entry to show, or while a step loads
+   * the next one. A first load, or a failed read, sits in the layout's default drawer (padded, scrolling).
+   */
+  readonly compact = computed(() => this.drawer() && (this.detail() !== null || this.stepping()));
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly loadError = signal(false);
   /**
@@ -532,6 +537,7 @@ export class EntryDetailComponent implements OnInit {
       // Another entry: drop the shown one at once, so nothing acts on it while the new one loads. A reload of the
       // same entry keeps it (and keeps it when that reload fails).
       if (this.detail()?.id !== id) {
+        this.stepping.set(this.drawer() && (this.detail() !== null || this.stepping()));
         this.detail.set(null);
       }
       this.load(id);
@@ -649,11 +655,13 @@ export class EntryDetailComponent implements OnInit {
       .subscribe({
         next: detail => {
           if (seq === this.loadSeq) {
+            this.stepping.set(false);
             this.detail.set(detail);
           }
         },
         error: () => {
           if (seq === this.loadSeq) {
+            this.stepping.set(false);
             if (afterWrite || this.detail()?.id !== id) {
               this.detail.set(null);
             }
@@ -876,6 +884,17 @@ export class EntryDetailComponent implements OnInit {
       this.applyAccountDefault(detail, panel, panel === 'settle' && !!chosen && chosen.currency !== detail.currency);
     }
     this.panel.set(panel);
+    if (panel === 'delete' && this.drawer()) {
+      // In the drawer the confirm renders at the end of the scrolling body: bring it into view, ⏎ lands on 取消.
+      afterNextRender(
+        () => {
+          const confirm = this.host.nativeElement.querySelector<HTMLElement>('.delete-confirm');
+          confirm?.scrollIntoView?.({ block: 'nearest' });
+          confirm?.querySelector<HTMLElement>('.delete-cancel')?.focus();
+        },
+        { injector: this.injector },
+      );
+    }
     if (panel === 'reopen' || panel === 'close') {
       // The confirm renders below the related rows: focus brings it into view, and ⏎ lands on 取消, not the opener.
       this.focusInPanel('.debt-cancel');

@@ -965,6 +965,17 @@ export class LedgerTimelineComponent implements OnInit {
         panesBefore = panes;
       });
     });
+    // A view change (日曆 ↔ 清單) leaves an open panel anchored to a button that may be gone: close it, focus stays put.
+    let viewBefore: TimelineView | null = null;
+    effect(() => {
+      const view = this.view();
+      untracked(() => {
+        if (viewBefore !== null && view !== viewBefore) {
+          this.filterBar()?.close(false);
+        }
+        viewBefore = view;
+      });
+    });
     effect(() => pane.month.set(this.month()));
     effect(() => pane.today.set(this.today()));
     effect(() => pane.selectedDay.set(this.selectedDay()));
@@ -1805,6 +1816,8 @@ export class LedgerTimelineComponent implements OnInit {
     if (open) {
       this.ensureOptions();
     }
+    // The right pane's 篩選 button reflects the panel (aria-expanded / aria-controls).
+    this.pane.filterPanel.set(open ? (this.filterBar()?.panelId ?? null) : null);
   }
 
   /** The calendar view carries its month and day into an opened entry; the 清單 view drops the query. */

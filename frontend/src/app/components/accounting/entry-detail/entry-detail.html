@@ -9,24 +9,27 @@
     <p class="load-error">記錄讀取失敗，請稍後再試。</p>
   }
 
-  @if (detail(); as d) {
-    @if (drawer()) {
-      <div class="drawer-bar">
-        <button type="button" class="step-prev" aria-label="上一筆" (click)="stepEntry(-1)"><i class="pi pi-angle-up" aria-hidden="true"></i></button>
-        <button type="button" class="step-next" aria-label="下一筆" (click)="stepEntry(1)"><i class="pi pi-angle-down" aria-hidden="true"></i></button>
-        <span class="drawer-hint">↑↓ 切換</span>
-        <button type="button" class="close" data-pane-close aria-label="關閉（Esc）" (click)="close()"><i class="pi pi-times" aria-hidden="true"></i></button>
-      </div>
-      <div class="drawer-body">
+  @if (compact()) {
+    <!-- Stays mounted while a step loads the next entry (focus on a step button or ✕ stays in the drawer). -->
+    <div class="drawer-bar">
+      <button type="button" class="step-prev" aria-label="上一筆" (click)="stepEntry(-1)"><i class="pi pi-angle-up" aria-hidden="true"></i></button>
+      <button type="button" class="step-next" aria-label="下一筆" (click)="stepEntry(1)"><i class="pi pi-angle-down" aria-hidden="true"></i></button>
+      <span class="drawer-hint">↑↓ 切換</span>
+      <button type="button" class="close" data-pane-close aria-label="關閉（Esc）" (click)="close()"><i class="pi pi-times" aria-hidden="true"></i></button>
+    </div>
+    <div class="drawer-body">
+      @if (detail()) {
         <ng-container [ngTemplateOutlet]="main" />
-      </div>
+      }
+    </div>
+    @if (detail()) {
       <div class="drawer-foot">
         <ng-container [ngTemplateOutlet]="actionsTpl" />
       </div>
-    } @else {
-      <ng-container [ngTemplateOutlet]="main" />
-      <ng-container [ngTemplateOutlet]="actionsTpl" />
     }
+  } @else if (detail()) {
+    <ng-container [ngTemplateOutlet]="main" />
+    <ng-container [ngTemplateOutlet]="actionsTpl" />
   }
 </section>
 
@@ -248,7 +251,7 @@
           <p class="form-error" role="alert">{{ formError() }}</p>
         }
         <div class="btnrow">
-          <button type="button" (click)="closePanel()">取消</button>
+          <button type="button" class="delete-cancel" (click)="closePanel()">取消</button>
           @if (d.group && !d.schedule) {
             <button type="button" class="danger delete-group" [disabled]="busy()" (click)="confirmDelete('group')">刪除整組</button>
           }

@@ -189,6 +189,8 @@
 .todo-text {
   flex: 1;
   min-width: 0;
+  /* A long row never leaves one character alone on its second line. */
+  text-wrap: pretty;
 }
 
 .todo-chev {

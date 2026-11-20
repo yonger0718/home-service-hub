@@ -1,11 +1,11 @@
 <ng-template #secondary><ng-content select="[filterBarSecondary]" /></ng-template>
-<div class="filter-bar">
+<div class="filter-bar" [class.filter-bar--empty]="rowHidden() && !chipsShown()">
   <div class="filter-bar-row" [hidden]="rowHidden()">
     <div class="slot-search"><ng-content select="[filterBarSearch]" /></div>
     <div class="slot-primary"><ng-content select="[filterBarPrimary]" /></div>
     <button #toggleBtn type="button" class="filter-toggle" aria-haspopup="dialog" [attr.aria-expanded]="open()" [attr.aria-controls]="open() ? panelId : null" (click)="toggle()">篩選{{ count() > 0 ? ' ' + count() : '' }}</button>
   </div>
-  @if (!chipsHidden()) {
+  @if (chipsShown()) {
     <app-filter-chips [chips]="chips()" (remove)="remove.emit($event)" (clearAll)="clearAll.emit()" />
   }
   @if (open()) {

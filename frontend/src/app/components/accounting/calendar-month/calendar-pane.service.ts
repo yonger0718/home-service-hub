@@ -74,6 +74,8 @@ export class CalendarPaneService {
   readonly filtered = signal(false);
   /** The timeline's active filter chips (the right pane renders them under its search row). */
   readonly chips = signal<FilterChip[]>([]);
+  /** The id of the timeline's open filter panel, null while it is closed (the right pane's 篩選 aria-expanded / -controls). */
+  readonly filterPanel = signal<string | null>(null);
   /** The preference's main currency (the result days' nets are in it). */
   readonly mainCurrency = signal('TWD');
   readonly commands = signal<CalendarCommands | null>(null);
@@ -97,6 +99,7 @@ export class CalendarPaneService {
     this.searchHasMore.set(false);
     this.filtered.set(false);
     this.chips.set([]);
+    this.filterPanel.set(null);
     this.mainCurrency.set('TWD');
     this.commands.set(null);
   }

@@ -1,4 +1,6 @@
 import { Component, signal, viewChild } from '@angular/core';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -351,6 +353,50 @@ describe('FilterBarComponent', () => {
       await flush();
       expect(q('.filter-panel')).toBeNull();
       expect(focus).not.toHaveBeenCalled();
+    });
+
+    it('renders no app-filter-chips host while there are no chips or they are hidden (no flex gap under the row)', async () => {
+      expect(q('app-filter-chips')).toBeNull();
+      host.chips.set(TWO);
+      await flush();
+      expect(q('app-filter-chips')).not.toBeNull();
+      host.chipsHidden.set(true);
+      await flush();
+      expect(q('app-filter-chips')).toBeNull();
+    });
+
+    it('takes no space when neither the row nor a chip is visible; an anchored panel still opens', async () => {
+      const css = readFileSync(join(process.cwd(), 'src/app/components/ui/filter-bar/filter-bar.scss'), 'utf8');
+      expect(css.match(/\n\.filter-bar--empty \{([^}]*)\}/)?.[1] ?? '').toContain('margin-bottom: 0');
+      const bar = () => q('.filter-bar')!;
+      expect(bar().classList.contains('filter-bar--empty')).toBe(false);
+      host.rowHidden.set(true);
+      await flush();
+      expect(bar().classList.contains('filter-bar--empty')).toBe(true);
+      host.chips.set(TWO);
+      await flush();
+      expect(bar().classList.contains('filter-bar--empty')).toBe(false);
+      host.chipsHidden.set(true);
+      await flush();
+      expect(bar().classList.contains('filter-bar--empty')).toBe(true);
+      host.bar().toggle(anchor());
+      await flush();
+      expect(q('.filter-panel.popover')!.style.position).toBe('fixed');
+      host.bar().close(false);
+      await flush();
+    });
+
+    it('close() never focuses an anchor that has left the document', async () => {
+      const focus = vi.spyOn(anchor(), 'focus');
+      host.bar().toggle(anchor());
+      await flush();
+      const detached = anchor();
+      detached.remove();
+      host.bar().close();
+      await flush();
+      expect(q('.filter-panel')).toBeNull();
+      expect(focus).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(detached);
     });
 
     it('a layout change while open closes the panel without moving focus', async () => {

@@ -65,6 +65,8 @@ export class FilterBarComponent {
   readonly panelId = `filter-panel-${++nextPanelId}`;
   readonly open = signal(false);
   readonly count = computed(() => this.chips().length);
+  /** No chip host without chips: an empty block in the bar's flex column would still add the 8 px gap. */
+  readonly chipsShown = computed(() => !this.chipsHidden() && this.chips().length > 0);
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
 
   /** The outside button the panel is anchored to (null: the bar's own 篩選 button). */
@@ -135,7 +137,8 @@ export class FilterBarComponent {
     this.anchor = null;
     this.anchorTop.set(null);
     this.anchorRight.set(null);
-    if (restoreFocus) returnTo?.focus({ preventScroll: true });
+    // An anchor that left the document (its pane unmounted) is never focused.
+    if (restoreFocus && returnTo?.isConnected) returnTo.focus({ preventScroll: true });
   }
 
   /** A child that handled Escape (an open calendar or select overlay) calls preventDefault(); IME composition too. */

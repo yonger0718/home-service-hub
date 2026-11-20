@@ -10,6 +10,12 @@
   margin-bottom: 1rem;
 }
 
+/* Neither the row nor a chip on screen (日曆's hidden row): the bar takes no space; an open panel is positioned out of
+   flow (popover anchored fixed, phone sheet fixed), so it still shows. */
+.filter-bar--empty {
+  margin-bottom: 0;
+}
+
 .filter-bar-row {
   display: flex;
   flex-wrap: wrap;

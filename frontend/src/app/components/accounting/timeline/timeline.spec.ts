@@ -3466,6 +3466,42 @@ describe('LedgerTimelineComponent', () => {
         anchor.remove();
       });
 
+      it("publishes the open filter panel's id (null while closed) for the right pane's 篩選 button", () => {
+        const { fixture, el } = renderPanes();
+        expect(pane().filterPanel()).toBeNull();
+        const anchor = document.createElement('button');
+        document.body.appendChild(anchor);
+        pane().commands()!.toggleFilters(anchor);
+        fixture.detectChanges();
+        httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+        const panel = el.querySelector('.filter-panel.popover')!;
+        expect(panel.id).not.toBe('');
+        expect(pane().filterPanel()).toBe(panel.id);
+        pane().commands()!.toggleFilters(anchor);
+        fixture.detectChanges();
+        expect(pane().filterPanel()).toBeNull();
+        anchor.remove();
+      });
+
+      it('a view change (日曆 → 清單) closes an anchored panel without focusing its anchor', () => {
+        const { fixture, el } = renderPanes();
+        const anchor = document.createElement('button');
+        document.body.appendChild(anchor);
+        const focus = vi.spyOn(anchor, 'focus');
+        pane().commands()!.toggleFilters(anchor);
+        fixture.detectChanges();
+        httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+        expect(el.querySelector('.filter-panel')).not.toBeNull();
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(el.querySelector('.filter-panel')).toBeNull();
+        expect(focus).not.toHaveBeenCalled();
+        expect(pane().filterPanel()).toBeNull();
+        anchor.remove();
+      });
+
       it('keeps the account in 清單 inline without a chip, and keeps the filter across 日曆 to 清單 to 日曆', () => {
         const { fixture, el } = renderPanes();
         openPanelNow(fixture, el);

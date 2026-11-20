@@ -382,6 +382,30 @@ describe('AccountingLayoutComponent', () => {
           expect(clearFilters).toHaveBeenCalled();
         });
 
+        it('篩選 exposes the panel state: aria-expanded, and aria-controls naming the open panel', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          const button = (await find(harness, '.cal-base .cal-filter')) as HTMLButtonElement;
+          const root = harness.routeNativeElement!;
+          expect(button.getAttribute('aria-haspopup')).toBe('dialog');
+          expect(button.getAttribute('aria-expanded')).toBe('false');
+          expect(button.hasAttribute('aria-controls')).toBe(false);
+          button.click();
+          const panel = await find(harness, '.list-pane .filter-panel.popover');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(button.getAttribute('aria-expanded')).toBe('true');
+          });
+          expect(button.getAttribute('aria-controls')).toBe(panel.id);
+          expect(root.querySelector(`#${panel.id}`)).toBe(panel);
+          button.click();
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(button.getAttribute('aria-expanded')).toBe('false');
+          });
+          expect(button.hasAttribute('aria-controls')).toBe(false);
+        });
+
         it('Enter on a text with a day selected clears the day first, then sets the query', async () => {
           localStorage.setItem('hh.accounting.timelineView', 'calendar');
           const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
@@ -902,6 +926,69 @@ describe('AccountingLayoutComponent', () => {
               expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBeNull();
             });
             expect(history()).toEqual({ paths: [DAY_21, '/accounting/entries/8/group?month=2026-10&day=2026-10-21'], index: 0 });
+          });
+
+          it('下一筆 / 上一筆 by keyboard keep focus on that button of the newly shown entry, and ↓ keeps stepping from it', async () => {
+            const { harness, router } = await openRow(7);
+            const drawer = await present(harness, '.pane-host.drawer');
+            await present(harness, CLOSE);
+            const next = await present(harness, '.pane-host.drawer .drawer-bar .step-next');
+            next.focus();
+            next.click();
+            await serving(harness, () => {
+              expect(router.url).toBe(at(8, '2026-10-21'));
+              expect(drawer.querySelector('.dcompact')).not.toBeNull();
+              expect(document.activeElement).toBe(drawer.querySelector('.drawer-bar .step-next'));
+            });
+            // ↓ from the focused button (the layout's drawer keys) steps again, focus still on 下一筆.
+            key(document.activeElement!, 'ArrowDown');
+            await serving(harness, () => {
+              expect(router.url).toBe(at(9, '2026-10-21'));
+              expect(drawer.querySelector('.dcompact')).not.toBeNull();
+              expect(document.activeElement).toBe(drawer.querySelector('.drawer-bar .step-next'));
+            });
+            const prev = drawer.querySelector<HTMLElement>('.drawer-bar .step-prev')!;
+            prev.focus();
+            prev.click();
+            await serving(harness, () => {
+              expect(router.url).toBe(at(8, '2026-10-21'));
+              expect(drawer.querySelector('.dcompact')).not.toBeNull();
+              expect(document.activeElement).toBe(drawer.querySelector('.drawer-bar .step-prev'));
+            });
+          });
+
+          it('↓ from a foot action lands focus on the bar ✕ of the next entry (the action it left is gone)', async () => {
+            const { harness, router } = await openRow(7);
+            const drawer = await present(harness, '.pane-host.drawer');
+            const copy = await present(harness, '.pane-host.drawer .drawer-foot .action-copy');
+            copy.focus();
+            key(copy, 'ArrowDown');
+            await serving(harness, () => {
+              expect(router.url).toBe(at(8, '2026-10-21'));
+              expect(drawer.querySelector('.dcompact')).not.toBeNull();
+              expect(document.activeElement).toBe(drawer.querySelector(CLOSE.replace('.pane-host.drawer ', '')));
+            });
+          });
+
+          it('下一筆 onto a split row keeps focus inside the drawer while its group view replaces the detail', async () => {
+            const split: EntryGroupSummary = {
+              id: 4, kind: 'split', name: null, merchant: null, description: null, count: 2, total: '-200.0000', currency: 'TWD',
+            };
+            entries = [
+              ENTRIES[0],
+              ...[8, 10].map(id => makeEntry({ id, entry_date: '2026-10-21', posted_date: '2026-10-21', amount: '-100.0000', group: split })),
+              ENTRIES[2],
+            ];
+            const { harness, router } = await openRow(7);
+            const drawer = await present(harness, '.pane-host.drawer');
+            const next = await present(harness, '.pane-host.drawer .drawer-bar .step-next');
+            next.focus();
+            next.click();
+            await serving(harness, () => {
+              expect(router.url).toBe('/accounting/entries/8/group?month=2026-10&day=2026-10-21');
+              expect(drawer.querySelector('app-split-group')).not.toBeNull();
+              expect(drawer.contains(document.activeElement)).toBe(true);
+            });
           });
 
           it('↓ past the last row crosses to the earlier day; ✕ closes onto that new day and the next Back leaves 日曆', async () => {

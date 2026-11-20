@@ -1571,6 +1571,65 @@ describe('EntryDetailComponent', () => {
       expect(root.querySelector('.drawer-bar')).toBeNull();
     });
 
+    it('keeps the bar and its focused step button mounted while the next entry loads; a failed read drops the bar', () => {
+      drawerOn();
+      const fixture = renderDrawer(MEAL());
+      const root = el(fixture);
+      const next = root.querySelector<HTMLButtonElement>('.drawer-bar .step-next')!;
+      next.focus();
+      params.next(convertToParamMap({ id: '43' }));
+      fixture.detectChanges();
+      // Loading 43: no entry shown, but the same bar (and the same focused button) stays.
+      expect(root.querySelector('.dcompact')).toBeNull();
+      expect(root.querySelector('.drawer-foot')).toBeNull();
+      expect(root.querySelector('.drawer-bar .step-next')).toBe(next);
+      expect(document.activeElement).toBe(next);
+      expect(root.classList.contains('entry-detail--drawer')).toBe(true);
+      // A second step while 43 still loads keeps it too.
+      params.next(convertToParamMap({ id: '44' }));
+      fixture.detectChanges();
+      expect(root.querySelector('.drawer-bar .step-next')).toBe(next);
+      const stale = http.expectOne('/api/accounting/entries/43');
+      http.expectOne('/api/accounting/entries/44').flush(detail({ ...MEAL(), id: 44 }));
+      stale.flush(detail({ ...MEAL(), id: 43 }));
+      fixture.detectChanges();
+      http.match(r => r.url === '/api/accounting/einvoices/picker').forEach(req =>
+        req.flush({ entry_eligible: true, group_id: null, group_eligible: false, invoices: [] }));
+      fixture.detectChanges();
+      expect(root.querySelector('.dcompact')).not.toBeNull();
+      expect(document.activeElement).toBe(next);
+
+      params.next(convertToParamMap({ id: '45' }));
+      fixture.detectChanges();
+      http.expectOne('/api/accounting/entries/45').flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(root.querySelector('.drawer-bar')).toBeNull();
+      expect(root.querySelector('.load-error')).not.toBeNull();
+      expect(root.classList.contains('entry-detail--drawer')).toBe(false);
+    });
+
+    it('brings the 刪除 confirm into view and focuses its 取消 when it opens in the drawer', async () => {
+      drawerOn();
+      const fixture = renderDrawer(MEAL());
+      const scrolled: Element[] = [];
+      const original = HTMLElement.prototype.scrollIntoView;
+      HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
+        scrolled.push(this);
+      };
+      try {
+        el(fixture).querySelector<HTMLButtonElement>('.drawer-foot .action-delete')!.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        const confirm = el(fixture).querySelector<HTMLElement>('.drawer-body .delete-confirm')!;
+        expect(confirm).not.toBeNull();
+        expect(document.activeElement).toBe(confirm.querySelector('.btnrow button'));
+        expect(document.activeElement!.textContent!.trim()).toBe('取消');
+        expect(scrolled).toContain(confirm);
+      } finally {
+        HTMLElement.prototype.scrollIntoView = original;
+      }
+    });
+
     it('shows one compact row: icon, name, kind · category path, total', () => {
       drawerOn();
       const fixture = renderDrawer(MEAL());

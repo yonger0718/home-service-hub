@@ -68,7 +68,15 @@
                   (compositionend)="onSearchInput($event)"
                 />
               </label>
-              <button #calFilter type="button" class="cal-filter" aria-haspopup="dialog" (click)="pane.commands()?.toggleFilters(calFilter)">
+              <button
+                #calFilter
+                type="button"
+                class="cal-filter"
+                aria-haspopup="dialog"
+                [attr.aria-expanded]="pane.filterPanel() !== null"
+                [attr.aria-controls]="pane.filterPanel()"
+                (click)="pane.commands()?.toggleFilters(calFilter)"
+              >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16 M7 12h10 M10 18h4"></path></svg>
                 篩選@if (pane.chips().length > 0) {
                   {{ pane.chips().length }}
