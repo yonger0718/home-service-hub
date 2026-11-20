@@ -134,6 +134,7 @@ def set_closed(
     and links stay as they are, so `open_amount` follows from the flag and the settlements as before.
 
     Until this, only the MOZE import set `is_closed`, and a closed debt could never be settled again. Idempotent.
+    A debt with nothing left cannot be closed (#403); a repeated close of a closed one stays a no-op.
     A loan a live schedule repays cannot be closed: `schedule_posting` reads a closed loan as repaid and would end
     the schedule on its next period.
 
@@ -146,6 +147,10 @@ def set_closed(
     if target.kind not in SETTLE_SIGNS or target.is_settlement or target.settles_entry_id is not None:
         raise ValidationError("kind", "only receivable and payable originals can be closed or reopened")
     if closed and not target.is_closed:
+        # #403: a debt its settlements cleared is out of the open views already. Closed at zero it would stay closed
+        # when a settlement is later deleted, and hide the remainder that comes back.
+        if open_amount(db, target) == 0:
+            raise ValidationError("open_amount", "nothing is left to close: the settlements already cleared this debt")
         from .schedule_read import loan_schedule_for  # schedule_read imports this module: no module-level import
 
         schedule = loan_schedule_for(db, target.id)
