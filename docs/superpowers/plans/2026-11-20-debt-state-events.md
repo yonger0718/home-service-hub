@@ -13,20 +13,22 @@
 ## Global Constraints
 
 - `debt_state_event.entry_id` has no foreign key. Nothing in the delete path changes.
-- No route edits or deletes an event.
+- No route edits or deletes an event; `POST /debt-events/{event_id}/review` only sets `reviewed_at`, and needs `admin`.
 - `set_closed` no longer writes to `description`.
 - An event only when the flag really changes; a refusal or a repeated call writes nothing.
 - SPA copy exactly as in the spec.
 - The migration creates the table and nothing else; `down_revision = "c4e8a1d7b3f9"`.
-- Every new write route would need `tests/integration/test_edit_lock.py::EXPECTED_WRITES`; this plan adds none (the new route is a GET).
+- The new write route `POST /debt-events/{event_id}/review` is registered in `tests/integration/test_edit_lock.py::EXPECTED_WRITES`.
 
 ## Review Focus
 
-- close → reopen → delete of the entry: not in the closed-remainders list (the latest event of that id is a reopen) (Task 1).
+- close → reopen → delete of the entry: not in the to-review list (the latest event of that id is a reopen) (Task 1).
+- A `write`-only caller posting the review of its own close: `403`, still listed (Task 1).
 - A debt deleted while closed with a remainder: listed with `deleted: true` and its snapshot (Task 1).
 - A caller without a label (auth off, bare token): event with `actor` null, shown without the actor part (Tasks 1, 2).
 - The new SPA against the API of #400: a detail without `debt_events`, a 404 on the list (Task 2).
 - A close with nothing left: an event with `open_amount` 0, in the detail, not in the list (Tasks 1, 2).
+- A close by the owner's own token (`legacy` / `admin` / scopes off): never listed (Task 1).
 
 ---
 
@@ -42,12 +44,14 @@
 **Interfaces:**
 - Produces:
   - model `DebtStateEvent` (columns as in the spec's table);
-  - `debt_events.record(db: Session, entry: LedgerEntry, action: str, actor: str | None, open_amount: Decimal) -> None`;
-  - `debt_events.events_of(db: Session, entry_id: int) -> list[dict]` (keys `id, action, actor, open_amount, currency, event_date`), oldest first;
-  - `debt_events.closed_remainders(db: Session, limit: int) -> dict` (`{"items": [...], "total": int}`, item keys as in the spec);
-  - `settlement_service.set_closed(db, entry_id, closed, *, actor: str | None = None) -> None`;
+  - `auth.holds_admin(request: Request) -> bool`;
+  - `debt_events.record(db: Session, entry: LedgerEntry, action: str, actor: str | None, open_amount: Decimal, *, by_owner: bool) -> None`;
+  - `debt_events.review(db: Session, event_id: int) -> None` (`NotFoundError` / `ValidationError("action", …)`);
+  - `debt_events.events_of(db: Session, entry_id: int) -> list[dict]` (keys `id, action, actor, open_amount, currency, event_date, needs_review`), oldest first;
+  - `debt_events.to_review(db: Session, limit: int) -> dict` (`{"items": [...], "total": int}`, item keys as in the spec);
+  - `settlement_service.set_closed(db, entry_id, closed, *, actor: str | None = None, by_owner: bool = True) -> None`;
   - `EntryDetailOut.debt_events: list[DebtEventOut] = []`;
-  - `GET /debt-events/closed-remainders?limit=` → `ClosedRemaindersOut`.
+  - `GET /debt-events/to-review?limit=` → `DebtReviewPage`; `POST /debt-events/{event_id}/review` → `204`.
 
 - [ ] Step 1: write `test_debt_state_events.py` from the spec's API test list (token labels through `auth.TOKENS_ENV` / `auth.SCOPES_ENV` as in `test_debt_reopen_close.py`; `ledger_service._today` is not involved: `event_date` comes from `created_at`), change the description tests of `test_debt_reopen_close.py` to "description untouched", add the migration round trip. Run: expect failures (no table, no field, 404).
 - [ ] Step 2: migration + model + `debt_events` module + `set_closed` change + detail field + router + README. `event_date` = `created_at` converted to `ledger_service.LEDGER_TZ`.
@@ -62,10 +66,10 @@
 - Modify: `frontend/src/app/components/accounting/reminders/reminders.{ts,html,scss}` (+ spec)
 
 **Interfaces:**
-- Consumes: `debt_events` on the detail; `GET /debt-events/closed-remainders`.
-- Produces: `DebtEvent`, `ClosedRemainder`, `ClosedRemainders` types; `AccountingService.getClosedRemainders(limit = 50): Observable<ClosedRemainders>`; a shared `debtActorLabel(actor: string | null): string` (`spa` → `網頁`, `hermes` → `Hermes`, else the label, null → `''`).
+- Consumes: `debt_events` on the detail; `GET /debt-events/to-review`; `POST /debt-events/{event_id}/review`.
+- Produces: `DebtEvent`, `DebtReviewItem`, `DebtReviewPage` types; `AccountingService.getDebtReviews(limit = 50): Observable<DebtReviewPage>`, `reviewDebtEvent(eventId: number): Observable<void>`; a shared `debtActorLabel(actor: string | null): string` (`spa` → `網頁`, `hermes` → `Hermes`, else the label, null → `''`).
 
 - [ ] Step 1: write the tests of the spec's SPA list; run, expect failures.
-- [ ] Step 2: implement: detail block `.debt-events` (one `.debt-event` per line); the close confirm text; reminders section `.closed-remainders` (rows `.closed-row`, a deleted one `.closed-row.deleted` without a click, the `僅顯示最近 50 筆` and failure lines), loaded inside `load()` with `catchError(() => of(null))`.
+- [ ] Step 2: implement: detail block `.debt-events` (one `.debt-event` per line); the close confirm text; reminders section `.debt-reviews` (rows `.review-row` with `.review-open` and `.review-done`, a deleted one `.review-row.deleted` without `.review-open`, the `僅顯示最近 50 筆`, read-failure and `確認失敗，請稍後再試。` lines), loaded inside `load()` with `catchError(() => of(null))`.
 - [ ] Step 3: run the three spec files and `tsc --noEmit` (app and spec): expect pass.
 - [ ] Step 4: commit.
