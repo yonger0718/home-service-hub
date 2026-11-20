@@ -1420,6 +1420,23 @@ describe('AccountingRemindersComponent', () => {
         expect(document.activeElement).toBe(other);
       });
 
+      it('stays on the document through a reload that does not follow a 已確認', async () => {
+        const { fixture, el } = renderWith([review(), review({ event_id: 8, entry_id: 75, name: '車票' })]);
+        (document.activeElement as HTMLElement | null)?.blur();
+        expect(document.activeElement).toBe(document.body);
+
+        TestBed.inject(AccountingService).deleteEntry(1).subscribe();
+        http.expectOne(r => r.method === 'DELETE').flush(null);
+        fixture.detectChanges();
+        flushLoad([], [ALAN], ALAN_OPEN);
+        http.expectOne(r => r.url === REVIEWS_URL).flush({ items: [review()], total: 1 });
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        expect(el.querySelectorAll('.debt-reviews .review-done').length).toBe(1);
+        expect(document.activeElement).toBe(document.body);
+      });
+
       it('is left alone by a reload that does not follow a 已確認', async () => {
         const { fixture, el } = renderWith([review(), review({ event_id: 8, entry_id: 75, name: '車票' })]);
         const other = tab(el, '待處理');

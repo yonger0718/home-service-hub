@@ -273,9 +273,11 @@ def test_an_amount_edit_cannot_clear_a_waiting_close(client, db_session, seed, s
         assert client.post(f"/entries/{entry_id}/close", headers=BOT).status_code == 200
 
     locked = _amount_edit(client, card, settled_id, "200")
+    zeroed = _amount_edit(client, card, plain_id, "0")
     lowered = _amount_edit(client, card, plain_id, "100")
 
     assert locked.status_code == 422 and {str(e["loc"][-1]) for e in locked.json()["detail"]} == {"amount"}
+    assert zeroed.status_code == 422 and {str(e["loc"][-1]) for e in zeroed.json()["detail"]} == {"amount"}
     assert lowered.status_code == 200, lowered.text
     amounts = {i["entry_id"]: (i["open_amount"], i["current_open_amount"]) for i in _to_review(client, OWNER)["items"]}
     assert amounts == {settled_id: ("220.0000", "220.0000"), plain_id: ("420.0000", "100.0000")}
