@@ -32,6 +32,11 @@
   text-align: center;
 }
 
+.cell-blank {
+  display: block;
+  min-height: 76px;
+}
+
 .cell {
   align-items: stretch;
   background: none;

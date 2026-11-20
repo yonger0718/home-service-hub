@@ -27,6 +27,7 @@ describe('CalendarMonthComponent', () => {
 
   function render(
     inputs: Partial<{
+      month: string;
       weekStart: number;
       selected: string | null;
       today: string;
@@ -44,10 +45,11 @@ describe('CalendarMonthComponent', () => {
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({ imports: [CalendarMonthComponent] });
     const fixture = TestBed.createComponent(CalendarMonthComponent);
-    fixture.componentRef.setInput('month', '2026-10');
+    fixture.componentRef.setInput('month', inputs.month ?? '2026-10');
     fixture.componentRef.setInput('days', DAYS);
     fixture.componentRef.setInput('currency', 'TWD');
     for (const [key, value] of Object.entries(inputs)) {
+      if (key === 'month') continue;
       fixture.componentRef.setInput(key, value);
     }
     fixture.detectChanges();
@@ -58,16 +60,18 @@ describe('CalendarMonthComponent', () => {
 
   const text = (node: Element | null) => node?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
 
-  it('renders 42 day cells under a Sunday-first weekday header', () => {
+  it('renders only the weeks the month needs under a Sunday-first weekday header', () => {
     const { el } = render();
-    expect(el.querySelectorAll('button.cell').length).toBe(42);
+    expect(el.querySelectorAll('.week').length).toBe(5);
+    expect(el.querySelectorAll('button.cell').length).toBe(31);
     expect(Array.from(el.querySelectorAll('.weekdays span')).map(text)).toEqual(['日', '一', '二', '三', '四', '五', '六']);
   });
 
   it('starts the header on Monday when weekStart is 1', () => {
     const { el } = render({ weekStart: 1 });
     expect(Array.from(el.querySelectorAll('.weekdays span')).map(text)).toEqual(['一', '二', '三', '四', '五', '六', '日']);
-    expect(el.querySelector('button.cell')!.getAttribute('data-date')).toBe('2026-09-28');
+    expect(el.querySelector('.week')!.querySelectorAll('.cell-blank').length).toBe(3);
+    expect(el.querySelector('button.cell')!.getAttribute('data-date')).toBe('2026-10-01');
   });
 
   it('shows the net in the cell with tone classes and an aria label', () => {
@@ -93,13 +97,25 @@ describe('CalendarMonthComponent', () => {
     expect(emitted).toEqual(['2026-10-05']);
   });
 
-  it('disables the cells of the adjacent months and leaves them blank', () => {
-    const { cell } = render();
-    const outside = cell('2026-09-30');
-    expect(outside.disabled).toBe(true);
-    expect(outside.classList).toContain('outside');
-    expect(outside.querySelector('.net, .heat, .dots')).toBeNull();
-    expect(cell('2026-10-01').disabled).toBe(false);
+  it('month mode: adjacent-month cells are blank aria-hidden spans, not buttons', () => {
+    const { el, cell } = render({ month: '2026-11' });
+    expect(el.querySelectorAll('.week').length).toBe(5);
+    expect(el.querySelectorAll('button.cell').length).toBe(30);
+    expect(el.querySelectorAll('.cell-blank').length).toBe(5);
+    expect(el.querySelectorAll('.cell-blank[aria-hidden="true"]').length).toBe(5);
+    expect(el.querySelector('button.cell.outside')).toBeNull();
+    expect(cell('2026-12-01')).toBeNull();
+    expect(Array.from(el.querySelectorAll('.cell-blank')).every(blank => text(blank) === '')).toBe(true);
+    expect(cell('2026-11-01').disabled).toBe(false);
+  });
+
+  it('week mode: the week holding 11/30 keeps its 5 outside cells as enabled buttons', () => {
+    const { el } = render({ month: '2026-11', weekOf: '2026-11-30' });
+    expect(el.querySelectorAll('button.cell').length).toBe(7);
+    const outside = Array.from(el.querySelectorAll<HTMLButtonElement>('button.cell.outside'));
+    expect(outside.length).toBe(5);
+    expect(outside.every(button => !button.disabled)).toBe(true);
+    expect(el.querySelector('.cell-blank')).toBeNull();
   });
 
   it('week mode: an outside cell is enabled and emits its date when picked', () => {
@@ -112,12 +128,6 @@ describe('CalendarMonthComponent', () => {
     expect(outside.getAttribute('aria-pressed')).toBe('false');
     outside.click();
     expect(emitted).toEqual(['2026-09-28']);
-  });
-
-  it('month mode: an outside cell stays disabled', () => {
-    const { cell } = render({ weekStart: 0 });
-    expect(cell('2026-09-28').disabled).toBe(true);
-    expect(cell('2026-09-28').hasAttribute('aria-pressed')).toBe(false);
   });
 
   it('week mode: ArrowRight from 10/31 moves focus and tabindex to the outside cell 11/01 (Review Focus 8)', () => {

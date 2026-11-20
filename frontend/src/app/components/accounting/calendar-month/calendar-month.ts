@@ -89,7 +89,7 @@ export class CalendarMonthComponent {
 
   readonly weekdays = computed(() => Array.from({ length: 7 }, (_, i) => WEEKDAY_NAMES[(this.weekStart() + i) % 7]));
 
-  /** The 6-row grid, cut to the week of `weekOf` in week mode. */
+  /** The month's 4–6 row grid, cut to the week of `weekOf` in week mode. */
   private readonly grid = computed(() => {
     const grid = buildCalendar(this.month(), this.days(), this.weekStart());
     const weekOf = this.weekOf();

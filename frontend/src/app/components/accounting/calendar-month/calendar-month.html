@@ -7,6 +7,9 @@
   @for (row of rows(); track row[0].date) {
     <div class="week">
       @for (cell of row; track cell.date) {
+        @if (cell.outside && !weekOf()) {
+          <span class="cell-blank" aria-hidden="true"></span>
+        } @else {
         <button
           type="button"
           class="cell"
@@ -59,6 +62,7 @@
             <span class="heat" aria-hidden="true" [style.width.%]="cell.heat * 100"></span>
           }
         </button>
+        }
       }
     </div>
   }

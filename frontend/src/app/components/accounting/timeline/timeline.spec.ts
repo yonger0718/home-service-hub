@@ -1299,7 +1299,7 @@ describe('LedgerTimelineComponent', () => {
         const { fixture, el } = renderCalendar();
         fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, dotsState: 'error' });
         fixture.detectChanges();
-        expect(el.querySelectorAll('button.cell').length).toBe(42);
+        expect(el.querySelectorAll('button.cell').length).toBe(31);
         expect(el.querySelector('.dot')).toBeNull();
         expect(el.querySelector('.load-error')).toBeNull();
       });
@@ -1331,7 +1331,7 @@ describe('LedgerTimelineComponent', () => {
     it('restores 日曆 on init and loads the daily summary instead of an entry page', () => {
       const { el } = renderCalendar();
       expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
-      expect(el.querySelectorAll('app-calendar-month button.cell').length).toBe(42);
+      expect(el.querySelectorAll('app-calendar-month button.cell').length).toBe(31);
       expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .net'))).toBe('−734');
       expect(el.querySelector('.sentinel')).toBeNull();
       expect(el.querySelector('button.more')).toBeNull();
@@ -1900,13 +1900,13 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelector('.cal-figures')).toBeNull();
     });
 
-    it('phone default: 42 cells with dots and a 「今天 · 3 筆 … −$250」 bar, no rows (spec Phone default)', async () => {
+    it('phone default: 31 cells with dots and a 「今天 · 3 筆 … −$250」 bar, no rows (spec Phone default)', async () => {
       todayItems = [makeEntry({ id: 1, name: '早餐' }), makeEntry({ id: 2, name: '捷運' }), makeEntry({ id: 3, name: '咖啡' })];
       fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, dots: new Map([['2026-10-01', [{ key: '3' }, { key: '99' }] as never]]), dotsState: 'ready' });
       const { el } = await openNarrow('/accounting?month=2026-10', 'phone', {
         days: [{ date: TODAY, expense: '-1250.0000', income: '1000.0000', count: 3 }],
       });
-      expect(cells(el).length).toBe(42);
+      expect(cells(el).length).toBe(31);
       expect(el.querySelectorAll('button.cell[data-date="2026-10-01"] .dot').length).toBe(2);
       const bar = text(el.querySelector('app-calendar-today-bar'));
       expect(bar).toContain('今天 · 3 筆');
@@ -1966,7 +1966,7 @@ describe('LedgerTimelineComponent', () => {
       expect(cells(el).length).toBe(7);
       el.querySelector<HTMLButtonElement>('button.expand-month')!.click();
       fixture.detectChanges();
-      expect(cells(el).length).toBe(42);
+      expect(cells(el).length).toBe(31);
       expect(el.querySelector('button.expand-month')).toBeNull();
       expect(el.querySelector('app-calendar-today-bar')).not.toBeNull();
     });
@@ -1983,7 +1983,7 @@ describe('LedgerTimelineComponent', () => {
         expand.click();
         fixture.detectChanges();
         await fixture.whenStable();
-        expect(cells(el).length).toBe(42);
+        expect(cells(el).length).toBe(31);
         expect(document.activeElement).toBe(cell(el, '2026-10-21'));
       });
 
@@ -2211,7 +2211,7 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-21', 'panes');
       flushEntries([]);
       fixture.detectChanges();
-      expect(cells(el).length).toBe(42);
+      expect(cells(el).length).toBe(31);
       expect(el.querySelector('.monthbar-figures')).not.toBeNull();
       expect(el.querySelector('.cal-figures')).toBeNull();
       expect(el.querySelector('app-calendar-today-bar')).toBeNull();
@@ -2227,7 +2227,7 @@ describe('LedgerTimelineComponent', () => {
       expect(strip.style.touchAction || '').toBe('');
       swipe(cell(el, '2026-10-21'), [200, 30], [120, 34]);
       expect(navigate).not.toHaveBeenCalled();
-      expect(strip.querySelectorAll('button.cell').length).toBe(42);
+      expect(strip.querySelectorAll('button.cell').length).toBe(31);
     });
 
     it('the calendar grid instance survives a day pick and 展開整月, keeping focus on a cell', async () => {
