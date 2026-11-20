@@ -27,9 +27,11 @@ The SPA SHALL provide `/accounting/reports` with tabs 總覽, 趨勢與比較, �
 
 #### Scenario: Chart starts where the data starts
 - **GIVEN** 全部支出 is 0 until 2026-08 and the selected month is 2026-10
-- **THEN** the bars SHALL be the last 6 months (the minimum), headed 近 6 個月, with no empty bar before them
-- **GIVEN** the first month with data is 2026-03
-- **THEN** the bars SHALL run 3 月 to 10 月, headed 近 8 個月, and picking a category chip SHALL keep that window
+- **THEN** the bars SHALL be the last 6 months (the minimum, 5 月 to 10 月, the first three empty), headed 近 6 個月
+
+#### Scenario: More than six months of data
+- **GIVEN** the first month with 全部支出 data is 2026-03 and the selected month is 2026-10
+- **THEN** the bars SHALL run 3 月 to 10 月, headed 近 8 個月, with no empty bar before 3 月, and picking a category chip SHALL keep that window
 
 #### Scenario: Unchanged category
 - **WHEN** 訂閱 is 1,078 in both September and October
@@ -73,6 +75,14 @@ At ≥ 760 px `/accounting/reports/custom/new` and `/accounting/reports/custom/:
 - **WHEN** it is opened on 2026-12-02
 - **THEN** it SHALL cover July to December 2026
 
+### Requirement: Single-series saved report table
+
+A saved report whose split yields exactly one series SHALL NOT render the total column (合計, or 本月至今 / 本期至今 while the period runs), because it repeats the series column; this holds for finished and running periods alike.
+
+#### Scenario: One split series has no total column
+- **GIVEN** a saved report split into exactly one series
+- **THEN** the table's 合計 / 本月至今 column SHALL be absent from the head, the rows and the total row, while the comparison columns and 筆數 stay; with no split or two or more series it SHALL stay
+
 ### Requirement: Saved reports on phones
 
 Below 760 px the reports page SHALL list saved reports as chips under the tabs; opening one SHALL show its figures, chart and table, with 編輯條件 opening a bottom sheet of its conditions and 套用. Creating a report SHALL be desktop only.
@@ -92,10 +102,6 @@ A report period (`to` being its inclusive last day) SHALL be *running* while `fr
 - **GIVEN** today is 2026-11-07, November's expense so far is 4,233, October 1–7 is 6,910 and November 1–7 2025 is 5,120
 - **WHEN** 2026-11 is selected
 - **THEN** 支出 SHALL read `$4,233` with 「比 10 月同期 ▼ 2,677 · 比去年同期 ▼ 887 · 截至 11/7」
-
-#### Scenario: One split series has no total column
-- **GIVEN** a saved report split into exactly one series
-- **THEN** the table's 合計 / 本月至今 column SHALL be absent from the head, the rows and the total row, while the comparison columns and 筆數 stay; with no split or two or more series it SHALL stay
 
 #### Scenario: A month that has not started
 - **WHEN** 2026-12 is selected on 2026-11-07
@@ -215,7 +221,7 @@ The year SHALL be prefixed (2025 年 9 月, 2025/10/5) when the report spans mor
 
 ### Requirement: Reports header and button clearance
 
-From 1024 px the reports page header SHALL be one row: the title with the statistics rules line on the left, and the period control on the right. Below 1024 px the period control SHALL stay under the title; from 760 px the title wraps, and below 760 px the title, a one-line subtitle and the gear SHALL share one row.
+From 1024 px the reports page header SHALL be one row: the title with the statistics rules line on the left, and the period control on the right. Below 1024 px the period control SHALL stay under the title; from 760 px the period control wraps to its own row, and below 760 px the title, a one-line subtitle and the gear SHALL share one row.
 
 The reports page and the saved-report page SHALL keep ending with the shell's floating-button clearance, so the page does not jump even though the shell shows no 記一筆 button on them.
 

@@ -828,7 +828,7 @@ Accounts with rules SHALL be cards, two columns from 1024 px. Each card shows:
 
 ### Requirement: Reward overview units and windows
 
-Overview figures SHALL use the rule's reward unit: money, or the number and the points account's name. A card's total SHALL be given per unit, and the header's total SHALL sum money only, followed by 「＋ N 種點數」 counting the other units. A reward account marked `cash_equivalent` is money. A card's title SHALL always show the card's own window; a rule row SHALL show its own 「本期 …」 / 「本月 …」 line only when its window differs from the title's.
+Overview figures SHALL use the rule's reward unit: money, or the number and the points account's name. A card's total SHALL be given per unit, and the header's total SHALL sum money only, followed by 「＋ N 種點數」 counting the other units. A reward account marked `cash_equivalent` is money. A card's title SHALL show the card's own window when the card has usage (a closing-day card whose rules all count by calendar month shows 「每月 1 日起算 · 本月 …」; a card without usage shows only its closing day); a rule row SHALL show its own 「本期 …」 / 「本月 …」 line only when its window differs from the title's.
 
 #### Scenario: Points rule on the overview
 - **GIVEN** a card with a money rule and a rule paying points into 亞洲萬里通

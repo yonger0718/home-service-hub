@@ -792,12 +792,13 @@ html:has(.overlay, .filter-overlay) body {
   > p-datepicker, > p-select, > p-multiselect { width: 100%; min-width: 0; }
   p-datepicker .p-datepicker, p-datepicker .p-inputtext { width: 100%; }
 }
-/* App-styled tick on a native checkbox (native semantics stay). Dark: white on --app-primary is 3.24:1, so the checked fill
+/* App-styled tick on a native checkbox (native semantics stay). The unchecked border is --app-text-muted: it is the
+   only cue for an empty box, and --app-border is too faint for that. Dark: white on --app-primary is 3.24:1, so the checked fill
    uses --app-primary-ink-bg there, as filled buttons do. */
 .hub-check {
   appearance: none;
   width: 20px; height: 20px; flex: none; margin: 0;
-  border: 1.5px solid var(--app-border); border-radius: 6px;
+  border: 1.5px solid var(--app-text-muted); border-radius: 6px;
   background: var(--app-surface);
   display: inline-grid; place-content: center;
   cursor: pointer;
