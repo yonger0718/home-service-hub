@@ -94,6 +94,8 @@ export class NotificationsComponent {
   private readonly busy = signal<ReadonlyMap<string, number | null>>(new Map());
   /** Tasks whose command answered (ok or failed) and whose row may yet leave the list: focus follows them (P6). */
   private readonly answered = new Set<string>();
+  /** Tasks whose row's primary control had focus when their command was sent (a disabled button loses it in a browser). */
+  private readonly focusedAtSend = new Set<string>();
   /** The task ids in DOM order at the last render of the sections. */
   private visibleIds: readonly string[] = [];
 
@@ -211,9 +213,15 @@ export class NotificationsComponent {
       const listed = new Set(untracked(this.center.tasks).map(task => task.id));
       for (const id of released) {
         next.delete(id);
-        // Still listed once its re-read settled: the row stays, and so does focus.
+        // Still listed once its re-read settled: the row stays. Disabling the button made a browser drop focus to
+        // <body>, so it goes back to the row's control if it had it when the command was sent.
         if (listed.has(id)) {
           this.answered.delete(id);
+          if (this.focusedAtSend.delete(id)) {
+            this.refocusRow(id);
+          }
+        } else {
+          this.focusedAtSend.delete(id);
         }
       }
       this.busy.set(next);
@@ -283,6 +291,11 @@ export class NotificationsComponent {
    * scope shows a late answer without its action. The task id and the command are captured for 重試.
    */
   private send(taskId: string, command: NotifCommand): void {
+    if (this.rowControl(taskId) === document.activeElement) {
+      this.focusedAtSend.add(taskId);
+    } else {
+      this.focusedAtSend.delete(taskId);
+    }
     this.setBusy(taskId, null);
     const failed = (err: unknown) => this.failed(taskId, command, err);
     if (command.kind === 'postInstance') {
@@ -350,6 +363,29 @@ export class NotificationsComponent {
     if (this.visibleIds.includes(taskId)) {
       this.answered.add(taskId);
     }
+  }
+
+  /** The native primary control of the row showing task `id`, if it is on screen. */
+  private rowControl(id: string): HTMLElement | null {
+    const index = this.visibleIds.indexOf(id);
+    return index < 0 ? null : (this.host.querySelectorAll('app-notif-row')[index]?.querySelector<HTMLElement>(NOTIF_PRIMARY_CONTROL) ?? null);
+  }
+
+  /** After the render: a row that stayed takes back focus that fell to <body> (or nowhere); focus moved elsewhere stays. */
+  private refocusRow(id: string): void {
+    afterNextRender(
+      () => {
+        const active = document.activeElement;
+        if (active && active !== document.body) {
+          return;
+        }
+        const control = this.rowControl(id);
+        if (control && !(control as HTMLButtonElement).disabled) {
+          control.focus({ preventScroll: true });
+        }
+      },
+      { injector: this.injector },
+    );
   }
 
   /**

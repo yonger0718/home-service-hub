@@ -1205,6 +1205,68 @@ describe('NotificationsComponent', () => {
         expect(document.activeElement).toBe(control(root, LOAN.id));
       });
 
+      /**
+       * jsdom keeps focus on a button that becomes disabled (and ignores blur() on a disabled one); Chromium drops it
+       * to <body>. Move focus to a throwaway element and remove it to reproduce the browser.
+       */
+      const browserDropsFocus = () => {
+        const tmp = document.createElement('button');
+        document.body.append(tmp);
+        tmp.focus();
+        tmp.remove();
+      };
+
+      it('a row that stays after a failed write gets focus back on its control when the browser dropped it', async () => {
+        const root = open();
+        document.body.appendChild(root);
+        control(root, RENT.id)!.focus();
+        await press(root, RENT.id);
+        browserDropsFocus();
+        expect(document.activeElement).toBe(document.body);
+        await fail(posts[0], 500);
+        await settleRound(2);
+        await settle();
+        expect(button(root, RENT.id).disabled).toBe(false);
+        expect(document.activeElement).toBe(control(root, RENT.id));
+      });
+
+      it('a catch-up with a partial failure whose row stays: its control gets focus back when the browser dropped it', async () => {
+        const root = open();
+        document.body.appendChild(root);
+        control(root, FEE.id)!.focus();
+        await press(root, FEE.id);
+        browserDropsFocus();
+        await answer(catchUps[0], catchUp([31, 32], { instance_id: 33, error: '帳戶已封存' }));
+        await settleRound(2);
+        await settle();
+        expect(button(root, FEE.id).disabled).toBe(false);
+        expect(document.activeElement).toBe(control(root, FEE.id));
+      });
+
+      it('focus that was not on the row when the command was sent is not moved to it', async () => {
+        const root = open();
+        document.body.appendChild(root);
+        await press(root, RENT.id);
+        await fail(posts[0], 500);
+        await settleRound(2);
+        await settle();
+        expect(document.activeElement).toBe(document.body);
+      });
+
+      it('a row that stays does not take focus the owner moved elsewhere meanwhile', async () => {
+        const root = open();
+        document.body.appendChild(root);
+        control(root, RENT.id)!.focus();
+        await press(root, RENT.id);
+        browserDropsFocus();
+        const elsewhere = root.querySelector<HTMLElement>('a.notif-reminders')!;
+        elsewhere.focus();
+        await fail(posts[0], 500);
+        await settleRound(2);
+        await settle();
+        expect(document.activeElement).toBe(elsewhere);
+      });
+
       it('a row that stays (the write did not commit) keeps focus on its own control', async () => {
         const root = open();
         document.body.appendChild(root);
