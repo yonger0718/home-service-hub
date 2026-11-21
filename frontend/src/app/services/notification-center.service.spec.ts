@@ -160,7 +160,7 @@ describe('NotificationCenterService', () => {
         { provide: AccountingService, useValue: accountingStub },
         { provide: PortfolioService, useValue: { getRecalcStatus } },
         { provide: InboxService, useValue: { get: getInbox, actions: getActions, changed: inboxChanged } },
-        { provide: StatementsService, useValue: { list: listStatements } },
+        { provide: StatementsService, useValue: { list: listStatements, changed: signal(0) } },
       ],
     });
   });
@@ -896,7 +896,7 @@ describe('NotificationCenterService', () => {
         { provide: AccountingService, useValue: accountingStub },
         { provide: PortfolioService, useValue: { getRecalcStatus } },
         { provide: InboxService, useValue: { get: getInbox, actions: getActions, changed: inboxChanged } },
-        { provide: StatementsService, useValue: { list: listStatements } },
+        { provide: StatementsService, useValue: { list: listStatements, changed: signal(0) } },
       ],
     });
     const fresh = service();

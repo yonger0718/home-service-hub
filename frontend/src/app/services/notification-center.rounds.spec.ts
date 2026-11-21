@@ -7,6 +7,7 @@ import { makeInbox } from '../components/accounting/inbox/testing';
 import { makeAccount, makeEntry, makeInstance } from '../components/accounting/testing/fixtures';
 import { AccountingService } from './accounting.service';
 import { InboxService } from '../components/accounting/inbox/inbox.service';
+import { StatementsService } from '../components/accounting/statements/statements.service';
 import { NotificationCenterService, READ_TIMEOUT_MS } from './notification-center.service';
 
 /**
@@ -358,5 +359,48 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
     reads.payments.flush(payments());
     await settle();
     expect(center.settledRound()).toBe(2);
+  });
+
+  /** Answers the round just started (no card reads unless asked) and checks it settled. */
+  async function settleRound(id: number): Promise<void> {
+    await flushRound(take(), { accounts: [CARD], queue: [RENT] });
+    const reads = cardReads();
+    reads.summary.flush(spend('-1000.0000'));
+    reads.payments.flush(payments());
+    await settle();
+    expect(center.settledRound()).toBe(id);
+  }
+
+  it('a statement-page reconcile and confirm (the real calls) each start a round', async () => {
+    await firstRound();
+    const statements = TestBed.inject(StatementsService);
+
+    statements.reconcile(11, 5).subscribe();
+    http
+      .expectOne(req => req.method === 'POST' && req.url === `${API}/accounts/11/statements/5/reconcile`)
+      .flush({ claims: 0, cases_opened: [], explained: 0, unmatched_entries: 0, skipped: null });
+    TestBed.tick();
+    expect(center.round()).toBe(2);
+    await settleRound(2);
+
+    statements.confirm(11, 5, { force: false, note: null }).subscribe();
+    http.expectOne(req => req.method === 'POST' && req.url === `${API}/accounts/11/statements/5/confirm`).flush({});
+    TestBed.tick();
+    expect(center.round()).toBe(3);
+    await settleRound(3);
+  });
+
+  it('one inbox answer that bumps both inbox.changed and entriesChanged (as inbox-panel does) starts one round', async () => {
+    await firstRound();
+    TestBed.inject(InboxService)
+      .apply({ cases: [{ case_id: 1, case_version: 1 }], action: 'dismiss', params: {}, answer: '測試' })
+      .subscribe(() => accounting.markEntriesChanged());
+    http
+      .expectOne(req => req.method === 'POST' && req.url === `${API}/reconciliation/inbox/apply`)
+      .flush({ results: [], rule_id: null, rule_error: null });
+    TestBed.tick();
+    expect(center.round()).toBe(2);
+    // One set of round reads (take() expects exactly one of each); the change round re-reads the card once.
+    await settleRound(2);
   });
 });

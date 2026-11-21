@@ -47,6 +47,9 @@ export const BADGE_REFRESH_MIN_MS = 30_000;
  * A read of a round that has not answered after this long counts as failed for that round (the HTTP request is
  * aborted), and so does a round's card-statement wait: every round settles, `failureLine` names the source, and the
  * next open / focus / timer starts a fresh round (amends R26: an unanswered read would otherwise block `refresh()`).
+ *
+ * Worst case a round settles after ~2 × this (~40 s): the card-statement wait starts only when the accounts answer
+ * lands, so accounts answering just inside the limit followed by a hanging card statement takes both windows.
  */
 export const READ_TIMEOUT_MS = 20_000;
 
@@ -243,13 +246,16 @@ export class NotificationCenterService {
       }
     });
 
-    // An in-app write (entry, schedule, account, backup import, a reconciliation inbox action) supersedes any round
-    // in flight: its answers may predate the write.
+    // An in-app write (entry, schedule, account, backup import, a reconciliation inbox action, a statement-page
+    // reconcile / confirm) supersedes any round in flight: its answers may predate the write. Triggers bumped in the
+    // same callback (an inbox answer bumps `inbox.changed` and then `entriesChanged`) coalesce into one effect run,
+    // so one round.
     let firstRun = true;
     effect(() => {
       this.accounting.entriesChanged();
       this.accounting.accountsChanged();
       this.inbox.changed();
+      this.statements.changed();
       if (firstRun) {
         firstRun = false;
         return;
