@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>有發票沒有帳 · 手機</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 390px; height: 1320px; position: relative; overflow: hidden; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+
+  <header style="display: flex; align-items: center; gap: 8px; padding: 12px 12px 4px">
+    <a href="NotifPhone.dc.html" aria-label="返回通知" style="width: 42px; height: 42px; border-radius: 21px; background: {{t.surface}}; border: 1px solid {{t.border}}; box-sizing: border-box; color: {{t.text}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>
+    </a>
+    <span style="flex: 1; display: flex; flex-direction: column">
+      <h1 style="margin: 0; font-size: 20px; font-weight: 800">有發票沒有帳</h1>
+      <small style="font-size: 12px; color: {{t.muted}}">{{headline}}</small>
+    </span>
+  </header>
+  <p style="margin: 6px 16px 10px; font-size: 13px; color: {{t.muted}}; line-height: 1.5">這些發票找不到對應的帳。記一筆、選一筆連上，或標成不用記帳；同一家常常不用記的話，可以以後都不提醒。</p>
+
+  <sc-if value="{{hasToast}}" hint-placeholder-val="{{false}}">
+    <div role="status" style="margin: 0 12px 10px; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 14px; background: {{t.toastBg}}; color: {{t.toastFg}}; font-size: 14px">
+      <span style="flex: 1">{{toast}}</span>
+      <button type="button" onClick="{{undo}}" style="min-height: 32px; padding: 0 10px; border-radius: 9px; border: 0; background: transparent; color: {{t.toastLink}}; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer">復原</button>
+    </div>
+  </sc-if>
+
+  <div style="padding: 0 12px 40px; display: flex; flex-direction: column; gap: 12px">
+    <sc-for list="{{groups}}" as="g" hint-placeholder-count="4">
+      <section aria-label="{{g.seller}}" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 12px; padding: 14px 14px 10px">
+          <span style="width: 40px; height: 40px; border-radius: 12px; background: {{t.soft}}; display: flex; align-items: center; justify-content: center; flex: none">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3z M9 8h6 M9 12h6"></path></svg>
+          </span>
+          <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+            <b style="font-size: 16px; font-weight: 800">{{g.seller}}</b>
+            <small style="font-size: 12px; color: {{t.muted}}">{{g.meta}}</small>
+          </span>
+          <b style="font-size: 16px; font-weight: 800">{{g.total}}</b>
+        </div>
+        <sc-for list="{{g.rows}}" as="r" hint-placeholder-count="2">
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px 14px; border-top: 1px solid {{t.line}}">
+            <span style="display: flex; align-items: baseline; gap: 8px">
+              <b style="font-size: 14px; font-weight: 700">{{r.date}}</b>
+              <small style="flex: 1; font-size: 12px; color: {{t.muted}}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.items}}</small>
+              <b style="font-size: 14px; font-weight: 700">{{r.amt}}</b>
+            </span>
+            <span style="display: flex; gap: 6px">
+              <a href="EntryPhone.dc.html" style="flex: 1; min-height: 38px; border-radius: 10px; background: {{t.primarySoft}}; color: {{t.primary}}; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; text-decoration: none">記一筆</a>
+              <button type="button" style="flex: 1; min-height: 38px; border-radius: 10px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 13px; font-weight: 600">選帳…</button>
+              <button type="button" onClick="{{r.dismiss}}" style="flex: 1; min-height: 38px; border-radius: 10px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer">不用記帳</button>
+            </span>
+          </div>
+        </sc-for>
+        <sc-if value="{{g.multi}}" hint-placeholder-val="{{true}}">
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px 14px; border-top: 1px solid {{t.line}}; background: {{t.soft}}">
+            <button type="button" onClick="{{g.dismissAll}}" style="flex: 1 1 140px; min-height: 40px; border-radius: 11px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer">{{g.dismissAllLabel}}</button>
+            <sc-if value="{{g.canMute}}" hint-placeholder-val="{{false}}">
+              <button type="button" onClick="{{g.mute}}" style="flex: 1 1 140px; min-height: 40px; border-radius: 11px; border: 0; background: {{t.primarySoft}}; color: {{t.primary}}; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer">這家以後都不提醒</button>
+            </sc-if>
+          </div>
+        </sc-if>
+        <sc-if value="{{g.canMuteSolo}}" hint-placeholder-val="{{false}}">
+          <div style="padding: 10px 14px 14px; border-top: 1px solid {{t.line}}; background: {{t.soft}}">
+            <button type="button" onClick="{{g.mute}}" style="width: 100%; min-height: 40px; border-radius: 11px; border: 0; background: {{t.primarySoft}}; color: {{t.primary}}; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer">這家以後都不提醒</button>
+          </div>
+        </sc-if>
+        <sc-if value="{{g.hasMuteNote}}" hint-placeholder-val="{{false}}">
+          <small style="display: block; padding: 0 14px 12px; background: {{t.soft}}; font-size: 12px; color: {{t.muted}}">{{g.muteNote}}</small>
+        </sc-if>
+      </section>
+    </sc-for>
+
+    <sc-if value="{{empty}}" hint-placeholder-val="{{false}}">
+      <div style="padding: 40px 16px; text-align: center; color: {{t.muted}}; font-size: 14px">都整理好了</div>
+    </sc-if>
+
+    <a href="InvoiceSpec.dc.html" style="display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-radius: 14px; border: 1px dashed {{t.border}}; color: {{t.muted}}; font-size: 13px; text-decoration: none">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1"></path></svg>
+      <span style="flex: 1">不想看到這頁？記帳設定 › 發票 可以關掉提醒</span>
+      <span>›</span>
+    </a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":390,"height":1320}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { gone: [], muted: [], toast: '', last: null };
+  }
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', soft: '#1b212b', border: '#313a48', line: '#252c38', text: '#f3f6fb', muted: '#99a3b3',
+      primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)', toastBg: '#e6ebf5', toastFg: '#151821', toastLink: '#533afd',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', soft: '#f5f7fa', border: '#d8dee7', line: '#e8ecf2', text: '#151821', muted: '#5f6673',
+      primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)', toastBg: '#1d2433', toastFg: '#ffffff', toastLink: '#b3a9ff',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)'
+    };
+    // dismissed：這家已被標「不用記帳」幾次（mute_prompt_after = 3）
+    const DATA = [
+      { id: 'books', seller: '博客來', taxId: '96922355', dismissed: 3, rows: [
+        ['b1', '10/25', '咖啡的歷史 · 1 項', 680], ['b2', '10/18', '日文檢定 N2 單字 · 1 項', 420], ['b3', '10/03', '筆記本、原子筆 · 3 項', 740]
+      ] },
+      { id: 'px', seller: '全聯福利中心 延吉店', taxId: '22662550', dismissed: 1, rows: [
+        ['p1', '10/27', '衛生紙、洗衣精 · 2 項', 312], ['p2', '10/09', '香蕉 · 1 項', 120]
+      ] },
+      { id: 'cpc', seller: '台灣中油 光復站', taxId: '03707901', dismissed: 0, rows: [
+        ['c1', '10/12', '95 無鉛汽油 · 1 項', 1050]
+      ] },
+      { id: 'mcd', seller: '麥當勞 南京店', taxId: '', dismissed: 0, rows: [
+        ['m1', '10/30', '大麥克餐 · 1 項', 159]
+      ] }
+    ];
+    const money = (n) => '$' + n.toLocaleString('en-US');
+    const gone = this.state.gone;
+    const muted = this.state.muted;
+    const hide = (ids, msg) => this.setState({ gone: [...this.state.gone, ...ids], toast: msg, last: { gone: ids } });
+    const groups = DATA.filter((g) => muted.indexOf(g.id) < 0).map((g) => {
+      const rows = g.rows.filter(([id]) => gone.indexOf(id) < 0);
+      const total = rows.reduce((s, r) => s + r[3], 0);
+      const canMute = !!g.taxId && g.dismissed >= 3;
+      return {
+        seller: g.seller, show: rows.length > 0,
+        meta: rows.length + ' 張' + (g.taxId ? ' · 統編 ' + g.taxId : ' · 沒有統編') + (g.dismissed ? ' · 已標不用記帳 ' + g.dismissed + ' 次' : ''),
+        total: money(total), multi: rows.length > 1, canMute: canMute && rows.length > 1, canMuteSolo: canMute && rows.length === 1,
+        hasMuteNote: !g.taxId, muteNote: '沒有統編的商家無法設定不提醒',
+        dismissAllLabel: '這 ' + rows.length + ' 張都不用記帳',
+        dismissAll: () => hide(rows.map((r) => r[0]), '已把 ' + g.seller + ' 的 ' + rows.length + ' 張標成不用記帳'),
+        mute: () => this.setState({ muted: [...this.state.muted, g.id], toast: '以後不再提醒 ' + g.seller + '（' + rows.length + ' 張一起收起）', last: { muted: g.id } }),
+        rows: rows.map(([id, date, items, amt]) => ({ date, items, amt: money(amt), dismiss: () => hide([id], '已把 ' + g.seller + ' ' + date + ' 標成不用記帳') }))
+      };
+    }).filter((g) => g.show);
+    const left = groups.reduce((s, g) => s + g.rows.length, 0);
+    return {
+      t, groups, empty: groups.length === 0,
+      headline: left + ' 張 · ' + groups.length + ' 家 · 不計入通知數字',
+      hasToast: !!this.state.toast, toast: this.state.toast,
+      undo: () => {
+        const last = this.state.last || {};
+        this.setState({
+          gone: last.gone ? this.state.gone.filter((id) => last.gone.indexOf(id) < 0) : this.state.gone,
+          muted: last.muted ? this.state.muted.filter((id) => id !== last.muted) : this.state.muted,
+          toast: '', last: null
+        });
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>
