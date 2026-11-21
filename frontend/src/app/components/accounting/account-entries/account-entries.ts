@@ -8,7 +8,7 @@ import { AccountDetail, AccountPeriodSummary, ENTRY_KIND_LABELS, EntryKind, Ledg
 import { AccountingService } from '../../../services/accounting.service';
 import { AccountIconComponent } from '../account-icon/account-icon';
 import { injectToasts } from '../../../services/toast.service';
-import { retryOnNetwork } from '../http-errors';
+import { guardedRetry } from '../../../services/toast-retry';
 import { LOGO_ACCEPT, logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf } from '../accounting-ui';
@@ -136,9 +136,28 @@ export class AccountingAccountEntriesComponent implements OnInit {
     this.sendLogo(this.accountId(), file);
   }
 
-  /** The upload and its error handling; 重試 re-sends the same file to the same account. */
+  private readonly logoInFlight = new Set<number>();
+  private readonly logoFailToast = new Map<number, number>();
+
+  /**
+   * The upload and its error handling, one at a time per account. Starting one dismisses that account's older 失敗
+   * toast (its stale 重試 would overwrite the newer logo); 重試 re-sends the same file to the same account.
+   */
   private sendLogo(id: number, file: File): void {
+    if (this.logoInFlight.has(id)) {
+      return;
+    }
+    const older = this.logoFailToast.get(id);
+    if (older !== undefined) {
+      this.toasts.dismiss(older);
+      this.logoFailToast.delete(id);
+    }
+    this.logoInFlight.add(id);
     this.uploadingLogo.set(true);
+    const settle = (): void => {
+      this.logoInFlight.delete(id);
+      this.uploadingLogo.set(this.logoInFlight.size > 0);
+    };
     this.accountingService.uploadAccountLogo(id, file).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: detail => {
         if (detail.id === id && id === this.accountId()) {
@@ -146,12 +165,16 @@ export class AccountingAccountEntriesComponent implements OnInit {
         }
       },
       error: err => {
-        this.uploadingLogo.set(false);
+        settle();
         if (id === this.accountId()) {
-          this.toasts.error(logoUploadErrorMessage(err), { retry: retryOnNetwork(err, () => this.sendLogo(id, file)) });
+          const text = logoUploadErrorMessage(err);
+          const remember = (toastId: number): void => void this.logoFailToast.set(id, toastId);
+          remember(this.toasts.error(text, {
+            retry: guardedRetry(err, this.toasts, text, () => this.logoInFlight.has(id), () => this.sendLogo(id, file), remember),
+          }));
         }
       },
-      complete: () => this.uploadingLogo.set(false),
+      complete: settle,
     });
   }
 

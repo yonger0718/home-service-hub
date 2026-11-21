@@ -2185,6 +2185,57 @@ describe('AccountSettingsComponent', () => {
       expect(fixture.componentInstance.uploadingLogo()).toBe(false);
     });
 
+    it('a new upload dismisses the older failure toast; its stale 重試 sends nothing and B alone decides the logo', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const toast = TestBed.inject(ToastService);
+      openSource(fixture, '上傳圖片');
+      const a = file();
+      choose(fixture, a);
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      const staleRetry = toast.current()!.action!;
+      const b = file();
+      choose(fixture, b);
+      expect(toast.current()).toBeNull();
+      const pending = http.expectOne(URL);
+      expect(pending.request.body).toBe(b);
+      staleRetry.run();
+      http.expectNone(URL);
+      expect(fixture.componentInstance.uploadingLogo()).toBe(true);
+      pending.flush({ ...DETAIL, logo_hash: 'hb' });
+      http.match(r => r.url.includes('/logo.png'));
+      expect(fixture.componentInstance.logoHash()).toBe('hb');
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
+    it('a second logo write for the same account while one is in flight sends nothing and leaves busy alone', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      openSource(fixture, '上傳圖片');
+      choose(fixture, file());
+      const first = http.expectOne(URL);
+      fixture.componentInstance.uploadLogoFile(file());
+      fixture.componentInstance.removeLogo();
+      http.expectNone(URL);
+      expect(fixture.componentInstance.uploadingLogo()).toBe(true);
+      first.flush({ ...DETAIL, logo_hash: 'ha' });
+      http.match(r => r.url.includes('/logo.png'));
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
+    it('重試 pressed while no logo write is in flight still re-sends and applies the result', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const toast = TestBed.inject(ToastService);
+      openSource(fixture, '上傳圖片');
+      choose(fixture, file());
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      toast.current()!.action!.run();
+      http.expectOne(URL).flush({ ...DETAIL, logo_hash: 'hc' });
+      http.match(r => r.url.includes('/logo.png'));
+      expect(fixture.componentInstance.logoHash()).toBe('hc');
+    });
+
     it('toasts the mapped message on a 422 and clears the busy state', async () => {
       await setup('11');
       const fixture = render(DETAIL);

@@ -630,6 +630,37 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
       expect(second).toMatchObject({ kind: 'error', action: { label: '重試' } });
     });
 
+    it('a new upload dismisses the older failure toast; its stale 重試 sends nothing and B alone decides', () => {
+      const { fixture, input, toast } = setup();
+      choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      const staleRetry = toast.current()!.action!;
+      const b = new File([new Uint8Array(2)], 'b.png', { type: 'image/png' });
+      choose(input, b);
+      expect(toast.current()).toBeNull();
+      const pending = http.expectOne(URL);
+      expect(pending.request.body).toBe(b);
+      staleRetry.run();
+      http.expectNone(URL);
+      expect(fixture.componentInstance.uploadingLogo()).toBe(true);
+      pending.flush({ ...ACCOUNT, logo_hash: 'hb' });
+      http.match(r => r.url.includes('/logo.png'));
+      expect(fixture.componentInstance.account()?.logo_hash).toBe('hb');
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
+    it('a second upload for the same account while one is in flight sends nothing', () => {
+      const { fixture, input } = setup();
+      choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
+      const first = http.expectOne(URL);
+      choose(input, new File([new Uint8Array(1)], 'b.png', { type: 'image/png' }));
+      http.expectNone(URL);
+      expect(fixture.componentInstance.uploadingLogo()).toBe(true);
+      first.flush({ ...ACCOUNT, logo_hash: 'abc' });
+      http.match(r => r.url.includes('/logo.png'));
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
     it('a 422 logo upload offers no 重試', () => {
       const { input, toast } = setup();
       choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));

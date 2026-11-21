@@ -35,7 +35,8 @@ import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { shortDate, todayIso } from '../dates';
 import { balanceNegative, balanceText, valuationHint } from '../account-balance';
 import { decimalText, formatMoney } from '../format';
-import { fieldErrors, retryOnNetwork, writeErrorMessage } from '../http-errors';
+import { fieldErrors, writeErrorMessage } from '../http-errors';
+import { guardedRetry } from '../../../services/toast-retry';
 import { injectToasts } from '../../../services/toast.service';
 import { logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
@@ -985,11 +986,35 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.runLogoWrite(id, this.service.deleteAccountLogo(id), () => this.logoHash.set(null), () => this.sendLogoRemoval(id));
   }
 
-  /** Only the account still open feels the busy flag and the new hash; a failure is reported whichever is open. */
+  /** Accounts with a logo write in flight: upload, remove and retry share one slot per account. */
+  private readonly logoInFlight = new Set<number>();
+  /** The 失敗 toast of an account's last failed logo write (re-raised ids included). */
+  private readonly logoFailToast = new Map<number, number>();
+
+  /**
+   * One logo write at a time per account. Starting one dismisses that account's older 失敗 toast, so a stale 重試
+   * (it would overwrite the newer logo) is gone. Only the account still open feels the busy flag and the new hash,
+   * and only the write that set the flag clears it; a failure is reported whichever account is open.
+   */
   private runLogoWrite<T>(id: number, request: Observable<T>, apply: (result: T) => void, again: () => void): void {
+    if (this.logoInFlight.has(id)) {
+      return;
+    }
+    const older = this.logoFailToast.get(id);
+    if (older !== undefined) {
+      this.toasts.dismiss(older);
+      this.logoFailToast.delete(id);
+    }
+    this.logoInFlight.add(id);
     if (id === this.loadedId()) {
       this.uploadingLogo.set(true);
     }
+    const settle = (): void => {
+      this.logoInFlight.delete(id);
+      if (id === this.loadedId()) {
+        this.uploadingLogo.set(false);
+      }
+    };
     request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: result => {
         if (id === this.loadedId()) {
@@ -997,16 +1022,12 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         }
       },
       error: err => {
-        if (id === this.loadedId()) {
-          this.uploadingLogo.set(false);
-        }
-        this.toasts.error(logoUploadErrorMessage(err), { retry: retryOnNetwork(err, again) });
+        settle();
+        const text = logoUploadErrorMessage(err);
+        const remember = (toastId: number): void => void this.logoFailToast.set(id, toastId);
+        remember(this.toasts.error(text, { retry: guardedRetry(err, this.toasts, text, () => this.logoInFlight.has(id), again, remember) }));
       },
-      complete: () => {
-        if (id === this.loadedId()) {
-          this.uploadingLogo.set(false);
-        }
-      },
+      complete: settle,
     });
   }
 
