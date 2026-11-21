@@ -237,15 +237,55 @@ describe('ToastOutletComponent', () => {
     expect(seen).not.toHaveBeenCalled();
   });
 
-  it('scss: fixed, z-index 1150, width limited by --toast-fab-clear, above the tab bar below 760 px, no colour literal', () => {
+  it('scss: fixed, z-index above every PrimeNG overlay, width limited by --toast-fab-clear, no colour literal', () => {
     const css = readFileSync(join(process.cwd(), 'src/app/components/shell/toast-outlet/toast-outlet.scss'), 'utf8');
     expect(css).toContain('position: fixed');
-    expect(css).toContain('z-index: 1150');
     expect(css).toContain('var(--toast-fab-clear');
     expect(css).toContain('max(240px, min(440px');
-    expect(css).toContain('bottom: calc(64px + env(safe-area-inset-bottom');
     expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(css).not.toMatch(/rgba?\(/);
+  });
+
+  it('scss: z-index clears the PrimeNG counter ceiling and the app\'s own layers', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app/components/shell/toast-outlet/toast-outlet.scss'), 'utf8');
+    const z = Number(/:host\s*{[^}]*?z-index:\s*(\d+)/.exec(css)![1]);
+    // PrimeNG bases: modal / tooltip 1100, overlay / menu 1000; every key change adds its base + 2, same key +2.
+    // Eight alternating layers (far beyond a real session) top out at 1100 + 8 * (1100 + 2) = 9916.
+    expect(z).toBeGreaterThan(1100 + 8 * (1100 + 2));
+    expect(z).toBeGreaterThan(1200); // account-picker / picker / sheet layers
+  });
+
+  it('scss: below 760 px the toast clears the tab bar and its raised + button by 12 px, from the same tokens', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app/components/shell/toast-outlet/toast-outlet.scss'), 'utf8');
+    const nav = readFileSync(join(process.cwd(), 'src/app/components/mobile-nav/mobile-nav.scss'), 'utf8');
+    const styles = readFileSync(join(process.cwd(), 'src/styles.scss'), 'utf8');
+    expect(styles).toMatch(/--m-nav-h:\s*64px/);
+    expect(styles).toMatch(/--m-plus-lift:\s*14px/);
+    expect(nav).toContain('height: var(--m-nav-h)');
+    expect(nav).toContain('margin: calc(-1 * var(--m-plus-lift))');
+    expect(css).toContain('bottom: calc(var(--m-nav-h) + var(--m-plus-lift) + env(safe-area-inset-bottom, 0px) + 12px)');
+  });
+
+  it('a click on 重試 over a dismissable-mask dialog retries and leaves the dialog open', () => {
+    const wrapper = document.createElement('div'); // PrimeNG listens for mousedown on the wrapper and closes only when target === wrapper
+    const closed = vi.fn();
+    wrapper.addEventListener('mousedown', event => {
+      if (wrapper.isSameNode(event.target as Node)) closed();
+    });
+    const documentClick = vi.fn(); // PrimeNG overlays (select panel) treat a document click outside as dismiss
+    document.addEventListener('click', documentClick);
+    document.body.appendChild(wrapper);
+    const retry = vi.fn();
+    scope.error('失敗', { retry });
+    flush();
+    const button = q('.toast-action')!;
+    button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    button.click();
+    document.removeEventListener('click', documentClick);
+    wrapper.remove();
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(closed).not.toHaveBeenCalled();
+    expect(documentClick).not.toHaveBeenCalled();
   });
 
   it('no PrimeNG toast remains', () => {

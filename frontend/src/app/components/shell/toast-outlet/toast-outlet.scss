@@ -1,8 +1,16 @@
 /* One toast, bottom-left of the content area (above the tab bar below 760 px). The shell sets `--toast-fab-clear` so
-   the width never reaches the floating 記一筆. z-index 1150: above the tab bar / sheets / PrimeNG masks, below pickers. */
+   the width never reaches the floating 記一筆.
+
+   z-index 10000: always above PrimeNG overlays. PrimeNG hands out overlay z-indexes dynamically (ZIndexUtils): base
+   modal / tooltip 1100, overlay / menu 1000 (no `zIndex` override in app.config), +2 per open overlay of the same
+   kind and +base+2 whenever the kind changes (a dialog's mask measured 2103). A fixed value is enough because the
+   counter only climbs with nested overlays and is reverted on close: eight alternating layers reach 9916, far past
+   any real session. The app's own sheets / pickers top out at 1200. The outlet is a direct child of .hub-layout,
+   which has no transform / filter / z-index, so it sits in the root stacking context beside the body-appended
+   overlays; keep it there. No popover / top layer: it would change the focus handling in toast-focus.ts. */
 :host {
   position: fixed;
-  z-index: 1150;
+  z-index: 10000;
   left: calc(var(--sidebar-w, 0px) + 24px);
   bottom: 30px;
   width: max(240px, min(440px, calc(100vw - var(--sidebar-w, 0px) - 24px - var(--toast-fab-clear, 98px))));
@@ -14,7 +22,8 @@
     left: 12px;
     right: 12px;
     width: auto;
-    bottom: calc(64px + env(safe-area-inset-bottom, 0px) + 12px);
+    /* The tab bar plus its raised + button (tokens shared with mobile-nav.scss), then 12px of air. */
+    bottom: calc(var(--m-nav-h) + var(--m-plus-lift) + env(safe-area-inset-bottom, 0px) + 12px);
   }
 }
 

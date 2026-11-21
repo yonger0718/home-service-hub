@@ -52,6 +52,9 @@ import { outermostModal, toastCycleTarget } from './toast-focus';
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     'data-toast-outlet': '',
+    // PrimeNG dismisses overlays on a document click / mousedown outside them: a toast press is not one.
+    '(click)': '$event.stopPropagation()',
+    '(mousedown)': '$event.stopPropagation()',
     '(pointerenter)': 'onPointerEnter()',
     '(pointerleave)': 'onPointerLeave()',
     '(document:pointermove)': 'onPointerMove($event)',

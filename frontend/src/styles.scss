@@ -13,6 +13,10 @@
 :root {
   color-scheme: light;
 
+  /* Phone tab bar: its height and how far the raised + button protrudes above it (mobile-nav, toast-outlet). */
+  --m-nav-h: 64px;
+  --m-plus-lift: 14px;
+
   /* ---- Neutral foundation ------------------------------------------------ */
   --app-bg: #f1f3f6;            /* page background — cool off-white */
   --app-surface: #fafcff;       /* card / panel surface */
