@@ -116,7 +116,12 @@ interface ReadBatch {
   failed: boolean;
   /** Only a reload of everything may take down a stale failure toast. */
   full: boolean;
+  /** The account the reads were started for, and (full batches) the `readGeneration` they belong to. */
+  accountId: number;
+  generation: number;
 }
+
+type ReadOutcome = 'ok' | 'failed' | 'cancelled';
 
 function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent {
   return event !== null;
@@ -312,6 +317,8 @@ export class PortfolioAccountDetailComponent implements OnInit {
 
   /** The 帳戶讀取失敗 toast of the last failed batch, for the reload that clears it. */
   private readFailureToastId: number | null = null;
+  /** Bumped by every reload and account switch: a full batch of an older generation is ignored entirely. */
+  private readGeneration = 0;
 
   private cssVar(name: string): string {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -360,6 +367,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   });
 
   private selectAccount(id: number): void {
+    this.readGeneration++;
     this.clearAccountState();
     if (!id) return;
     const mergeRelated = this.readMergeRelated(id);
@@ -727,25 +735,33 @@ export class PortfolioAccountDetailComponent implements OnInit {
 
   /** Account, balance history and the transactions page, as one batch of reads. */
   private readAll(): void {
+    this.readGeneration++;
     const batch = this.startReads(3, true);
     this.loadAccount(batch);
     this.loadBalanceHistory(batch);
     this.fetchTransactions(batch);
   }
 
-  private startReads(pending: number, full: boolean): ReadBatch {
-    return { pending, failed: false, full };
+  private startReads(pending: number, full: boolean, accountId = this.effectiveId()): ReadBatch {
+    return { pending, failed: false, full, accountId, generation: this.readGeneration };
+  }
+
+  /** A read of a superseded batch (a newer reload, or another account shown since) is ignored: no toast, no dismissal. */
+  private isLive(batch: ReadBatch): boolean {
+    return batch.accountId === this.effectiveId() && (!batch.full || batch.generation === this.readGeneration);
   }
 
   /**
    * One read of `batch` ended. The first failure raises 帳戶讀取失敗 (重試 = the whole reload); the rest of the batch
    * raises nothing more. When a full reload ends without a failure, a 失敗 toast from an earlier one is dismissed.
    */
-  private readSettled(batch: ReadBatch, ok: boolean): void {
-    if (!ok && !batch.failed) {
+  private readSettled(batch: ReadBatch, outcome: ReadOutcome): void {
+    if (!this.isLive(batch)) return;
+    if (outcome === 'failed' && !batch.failed) {
       batch.failed = true;
       this.readFailureToastId = this.toasts.error('帳戶讀取失敗', { retry: () => this.reload() });
     }
+    // A cancelled read (a newer page request replaced it) neither fails nor holds the batch open.
     batch.pending--;
     if (batch.pending === 0 && batch.full && !batch.failed && this.readFailureToastId !== null) {
       this.toasts.dismiss(this.readFailureToastId);
@@ -758,9 +774,9 @@ export class PortfolioAccountDetailComponent implements OnInit {
       next: list => {
         const account = list.items.find(item => item.id === this.effectiveId()) ?? null;
         this.account.set(account);
-        this.readSettled(batch, true);
+        this.readSettled(batch, 'ok');
       },
-      error: () => this.readSettled(batch, false),
+      error: () => this.readSettled(batch, 'failed'),
     });
   }
 
@@ -772,7 +788,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
     this.loadingHistory.set(true);
     this.portfolioService.getBalanceHistory(id, range).subscribe({
       next: history => {
-        this.readSettled(batch, true);
+        this.readSettled(batch, 'ok');
         // A late answer for an account no longer shown (a quick switch) must not replace the current chart.
         if (history.account_id !== this.effectiveId()) return;
         this.balanceHistory.set(history);
@@ -780,7 +796,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
       },
       error: () => {
         this.loadingHistory.set(false);
-        this.readSettled(batch, false);
+        this.readSettled(batch, 'failed');
       },
     });
   }
@@ -789,14 +805,22 @@ export class PortfolioAccountDetailComponent implements OnInit {
     this.filterQuery$.next({ query: this.query(), immediate: true, batch });
   }
 
-  private requestTransactions(accountId: number, query: CashTransactionQuery, batch: ReadBatch = this.startReads(1, false)): Observable<CashTransactionPaged> {
+  private requestTransactions(accountId: number, query: CashTransactionQuery, batch: ReadBatch = this.startReads(1, false, accountId)): Observable<CashTransactionPaged> {
     this.loadingTransactions.set(true);
     const requestQuery = this.withMergeRelated(query);
+    let answered = false;
     return this.portfolioService.getCashTransactions(accountId, requestQuery).pipe(
-      tap(() => this.readSettled(batch, true)),
+      tap(() => {
+        answered = true;
+        this.readSettled(batch, 'ok');
+      }),
       catchError(() => {
-        this.readSettled(batch, false);
+        answered = true;
+        this.readSettled(batch, 'failed');
         return of({ items: [], total: 0, offset: requestQuery.offset ?? 0, limit: requestQuery.limit ?? DEFAULT_PAGE_SIZE });
+      }),
+      finalize(() => {
+        if (!answered) this.readSettled(batch, 'cancelled');
       }),
     );
   }

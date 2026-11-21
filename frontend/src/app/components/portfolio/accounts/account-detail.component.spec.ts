@@ -829,6 +829,50 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
         expect(txnsReq(7)).toBeTruthy();
       });
 
+      it('reads of a superseded account that fail late raise nothing; the new account\'s reads decide', () => {
+        const fixture = render({ accountId: 7, embedded: true });
+        const summaries = () => httpMock.match(req => req.url === '/api/portfolio/accounts/' && req.params.get('include_inactive') === 'true');
+        const oldSummary = summaries();
+        expect(oldSummary).toHaveLength(1);
+        const oldHistory = historyReq(7);
+        const oldTxns = txnsReq(7);
+        fixture.componentRef.setInput('accountId', 9);
+        fixture.detectChanges();
+        expect(oldTxns.cancelled).toBe(true);
+        fixture.detectChanges();
+        const newSummary = summaries();
+        expect(newSummary).toHaveLength(1);
+
+        oldSummary[0].flush({}, down);
+        oldHistory.flush({}, down);
+        expect(current()).toBeNull();
+
+        newSummary[0].flush(summaryFor(9));
+        historyReq(9).flush({ account_id: 9, currency: 'TWD', points: [] });
+        txnsReq(9).flush({ items: [rowFor(91, 9)], total: 1, offset: 0, limit: 25 });
+        fixture.detectChanges();
+        expect(current()).toBeNull();
+        expect(fixture.nativeElement.querySelector('h2')?.textContent).toContain('帳戶 9');
+      });
+
+      it('a reload whose transactions read is cancelled by a filter change still settles and dismisses the stale toast', () => {
+        const fixture = render({ accountId: 7, embedded: true });
+        summaryReq().flush({}, down);
+        historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+        txnsReq(7).flush({ items: [], total: 0, offset: 0, limit: 25 });
+        expect(current()?.text).toBe('帳戶讀取失敗');
+
+        TestBed.inject(PortfolioService).notifyCashLedgerChanged();
+        const second = httpMock.expectOne(req => req.url === '/api/portfolio/accounts/7/cash-transactions');
+        // A page change sends its own read at once; it replaces (cancels) the reload's page.
+        fixture.componentInstance.onPageChange({ first: 25, rows: 25 });
+        summaryReq().flush(summaryFor(7));
+        historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+        expect(second.cancelled).toBe(true);
+        expect(current()).toBeNull();
+        txnsReq(7).flush({ items: [], total: 0, offset: 0, limit: 25 });
+      });
+
       it('a later reload that succeeds dismisses the stale failure toast', () => {
         const fixture = render({ accountId: 7, embedded: true });
         summaryReq().flush({}, down);
