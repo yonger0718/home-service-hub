@@ -3,6 +3,7 @@
 }
 
 .banner {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
@@ -10,6 +11,11 @@
   padding: 12px 14px;
   border-radius: 14px;
   color: var(--app-text);
+}
+
+/* The close button is pinned top-right and the row reserves its width, so only the action ever wraps. */
+.banner--closable {
+  padding-right: 48px;
 }
 
 .banner--error {
@@ -36,8 +42,9 @@
 }
 
 .banner-body {
-  flex: 1 1 220px;
+  flex: 1 1 180px;
   min-width: 0;
+  overflow-wrap: anywhere;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -75,10 +82,11 @@
 }
 
 .banner-close {
-  flex: none;
+  position: absolute;
+  top: 6px;
+  right: 8px;
   width: 34px;
   height: 34px;
-  margin: -6px -8px -6px 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;

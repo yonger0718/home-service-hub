@@ -23,8 +23,8 @@ export class BannerDismissals {
 
   dismiss(id: string): void {
     if (this.ids().has(id)) return;
-    const next = new Set(this.ids());
-    next.add(id);
+    // Merge with storage so an id dismissed in another tab is not dropped.
+    const next = new Set([...readStored(), ...this.ids(), id]);
     this.ids.set(next);
     try {
       localStorage.setItem(BANNER_DISMISSALS_KEY, JSON.stringify([...next]));

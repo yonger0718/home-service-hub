@@ -32,4 +32,12 @@ describe('BannerDismissals', () => {
     expect(svc.isDismissed('x-info')).toBe(true);
     expect(JSON.parse(localStorage.getItem(BANNER_DISMISSALS_KEY) ?? '[]')).toEqual(['x-info']);
   });
+
+  it('dismiss merges with ids stored by another tab', () => {
+    const svc = TestBed.inject(BannerDismissals);
+    localStorage.setItem(BANNER_DISMISSALS_KEY, JSON.stringify(['other-tab']));
+    svc.dismiss('mine');
+    expect(JSON.parse(localStorage.getItem(BANNER_DISMISSALS_KEY) ?? '[]').sort()).toEqual(['mine', 'other-tab']);
+    expect(svc.isDismissed('other-tab')).toBe(true);
+  });
 });

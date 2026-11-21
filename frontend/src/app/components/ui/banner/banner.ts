@@ -14,7 +14,7 @@ const ICONS: Record<BannerTone, string> = {
   selector: 'app-banner',
   template: `
     @if (!hidden()) {
-      <div class="banner banner--{{ tone() }}" [attr.role]="tone() === 'error' ? 'alert' : 'status'">
+      <div class="banner banner--{{ tone() }}" [class.banner--closable]="closable()" [attr.role]="tone() === 'error' ? 'alert' : 'status'">
         <i class="banner-icon pi {{ icon() }}" aria-hidden="true"></i>
         <div class="banner-body">
           <b class="banner-title">{{ heading() }}</b>

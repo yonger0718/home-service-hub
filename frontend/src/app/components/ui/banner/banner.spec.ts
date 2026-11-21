@@ -145,6 +145,32 @@ describe('BannerComponent', () => {
     expect(again.q('.banner')).toBeNull();
   });
 
+  it('warn ignores dismissId: no close, not hidden when the id is stored', () => {
+    localStorage.setItem(BANNER_DISMISSALS_KEY, JSON.stringify(['test-warn']));
+    const { host, fixture, q } = make();
+    host.tone.set('warn');
+    host.dismissId.set('test-warn');
+    fixture.detectChanges();
+    expect(q('.banner')).not.toBeNull();
+    expect(q('.banner-close')).toBeNull();
+    expect(q('.banner')?.classList).not.toContain('banner--closable');
+  });
+
+  it('layout: close is pinned top-right and its width reserved; only the action wraps; body breaks long words', () => {
+    const { host, fixture, q } = make();
+    host.tone.set('info');
+    host.dismissId.set('test-info');
+    fixture.detectChanges();
+    expect(q('.banner')?.classList).toContain('banner--closable');
+    // DOM order: text, action, close
+    const kids = Array.from(q('.banner')!.children).map((c) => c.className.split(' ')[0]);
+    expect(kids).toEqual(['banner-icon', 'banner-body', 'banner-action', 'banner-close']);
+    const scss = readFileSync(join(process.cwd(), 'src/app/components/ui/banner/banner.scss'), 'utf8');
+    expect(scss).toMatch(/\.banner-close\s*\{[^}]*position:\s*absolute;[^}]*top:[^}]*right:/);
+    expect(scss).toMatch(/\.banner--closable\s*\{\s*padding-right:\s*48px/);
+    expect(scss).toMatch(/\.banner-body\s*\{[^}]*flex:\s*1 1 180px;[^}]*overflow-wrap:\s*anywhere/);
+  });
+
   it('scss uses tokens only', () => {
     const scss = readFileSync(join(process.cwd(), 'src/app/components/ui/banner/banner.scss'), 'utf8');
     for (const t of [

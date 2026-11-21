@@ -399,6 +399,18 @@ describe('banner headings on their tints over the page background', () => {
       expect(ratio(hex(theme, '--app-text'), tint('--app-primary-soft'))).toBeGreaterThanOrEqual(4.5);
     });
 
+    it.each(unders)('detail text (--app-text) ≥ 4.5:1 on the 錯誤 and 注意 tints over %s', (_label, under) => {
+      const base = under(theme);
+      for (const token of ['--c-red-soft', '--app-banner-warn-soft']) {
+        expect(ratio(hex(theme, '--app-text'), composite(rgba(theme, token), base))).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+
+    it.each(unders)('資訊 close icon (--app-text-muted) ≥ 3:1 on its tint over %s', (_label, under) => {
+      const tint = composite(rgba(theme, '--app-primary-soft'), under(theme));
+      expect(ratio(hex(theme, '--app-text-muted'), tint)).toBeGreaterThanOrEqual(3);
+    });
+
     it.each(unders)('資訊 icon (--app-primary) ≥ 3:1 on its tint over %s', (_label, under) => {
       const tint = composite(rgba(theme, '--app-primary-soft'), under(theme));
       expect(ratio(hex(theme, '--app-primary'), tint)).toBeGreaterThanOrEqual(3);
