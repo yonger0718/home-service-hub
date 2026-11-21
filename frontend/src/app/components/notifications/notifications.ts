@@ -121,15 +121,32 @@ export class NotificationsComponent {
     () => this.center.loaded() && this.chip() !== 'all' && this.counts()[this.chip()] === 0 && this.counts().all > 0,
   );
 
+  /**
+   * Nothing to show yet: no round has settled, or a later round is in flight and there is no task to show. The
+   * all-clear is a claim about the CURRENT round, so "no task" from the last settled round is not enough while a
+   * newer round may still find one (e.g. a card added elsewhere whose statement read is pending): treated like the
+   * first load. With tasks listed, a later round changes nothing: rows, section numbers, chip counts and subtitle stay
+   * as the last settled round left them (the last known truth; hiding the numbers on every refresh, e.g. after each
+   * 入帳, would flicker). A failed or truncated source keeps its own treatment and is never replaced by this.
+   */
+  private readonly pending = computed(
+    () =>
+      !this.center.loaded() ||
+      (this.center.loading() &&
+        this.center.tasks().length === 0 &&
+        this.center.failedSources().length === 0 &&
+        !this.center.truncated()),
+  );
+
   /** The counts are exact: a round settled and no source failed (a failed source's tasks are missing: lower bounds). */
-  protected readonly countsFinal = computed(() => this.center.loaded() && this.center.failedSources().length === 0);
+  protected readonly countsFinal = computed(() => !this.pending() && this.center.failedSources().length === 0);
 
   /**
    * Never absent (the chips would shift down when it appeared). Before the first round settles `summary()` is
    * NO_TASKS, and with a source failed the counts are lower bounds: neither claims an all-clear or a count.
    */
   protected readonly subtitle = computed<string>(() => {
-    if (!this.center.loaded()) {
+    if (this.pending()) {
       return '讀取中…';
     }
     if (this.center.failedSources().length > 0) {
@@ -151,7 +168,7 @@ export class NotificationsComponent {
 
   /** 追蹤中 is a ledger thing: hidden under 投資, and without rows. */
   protected readonly trackingRows = computed(() =>
-    this.center.loaded() && this.chip() !== 'portfolio' ? this.center.trackingRows() : [],
+    !this.pending() && this.chip() !== 'portfolio' ? this.center.trackingRows() : [],
   );
   protected readonly trackingSum = computed(() =>
     this.trackingRows()
@@ -166,10 +183,11 @@ export class NotificationsComponent {
    * links and the failure line only).
    */
   protected readonly state: Signal<'loading' | 'empty' | 'list'> = computed(() => {
+    // With tasks: always the list, whatever round is in flight (see `pending`).
     if (this.center.tasks().length > 0) {
       return 'list';
     }
-    if (!this.center.loaded()) {
+    if (this.pending()) {
       return 'loading';
     }
     return this.center.failedSources().length === 0 && !this.center.truncated() ? 'empty' : 'list';
@@ -191,6 +209,18 @@ export class NotificationsComponent {
 
   constructor() {
     this.center.refresh({ reason: 'open' });
+
+    // The all-clear leaves (a later round is in flight, or a task arrived): focus on its 看追蹤中 button would fall to
+    // <body>, so it goes to the checked chip, as after a 重試.
+    effect(() => {
+      if (this.state() === 'empty') {
+        return;
+      }
+      const active = document.activeElement;
+      if (active && this.host.querySelector('.notif-empty')?.contains(active)) {
+        this.host.querySelector<HTMLElement>('.notif-chips button[aria-checked="true"]')?.focus({ preventScroll: true });
+      }
+    });
 
     // A 重試 ends when its round has settled: success hands focus on, a repeat failure gives it back to 重試.
     effect(() => {

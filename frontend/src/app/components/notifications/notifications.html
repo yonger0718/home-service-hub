@@ -38,7 +38,7 @@
   }
 
   <!-- One element for "no task yet" and "partial list": the same @if spot, so the live region is announced once. -->
-  @if (!center.loaded()) {
+  @if (!center.loaded() || state() === 'loading') {
     <p class="notif-loading" role="status">讀取中…</p>
   }
 

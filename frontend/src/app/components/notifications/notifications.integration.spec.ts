@@ -505,6 +505,50 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(loadingRow()).toBeNull();
     });
 
+    it('a later round that finds a new due card: no all-clear, zero chips while its statement reads are held; then the bill', async () => {
+      const round1 = await openFresh();
+      round1.accounts.flush([]);
+      round1.counterparties.flush([]);
+      round1.queue.flush([]);
+      round1.inbox.flush(makeInbox([]));
+      round1.latest.flush('', { status: 404, statusText: 'Not Found' });
+      round1.actions.flush([]);
+      await settle();
+      expect(center.settledRound()).toBe(1);
+      expect(emptyBlock()).not.toBeNull();
+      const chipText = () => [...root.querySelectorAll('.notif-chips button')].map(b => b.textContent?.trim()).join('|');
+      const sub = () => root.querySelector('.page-subtitle')?.textContent?.trim();
+      expect(sub()).toBe('沒有要處理的事');
+
+      center.invalidate();
+      TestBed.tick();
+      expect(center.round()).toBe(2);
+      const round2 = take();
+      round2.accounts.flush([CARD]);
+      round2.counterparties.flush([]);
+      round2.queue.flush([]);
+      round2.inbox.flush(makeInbox([]));
+      round2.latest.flush('', { status: 404, statusText: 'Not Found' });
+      round2.actions.flush([]);
+      await settle();
+      await answerCard('-1000.0000', true);
+      expect(center.loading()).toBe(true);
+      expect(emptyBlock()).toBeNull();
+      expect(root.textContent).not.toContain('都處理好了');
+      expect(sub()).toBe('讀取中…');
+      expect(chipText()).not.toMatch(/\d/);
+      expect(root.querySelectorAll('p.notif-loading[role="status"]').length).toBe(1);
+
+      http.match(get(`${API}/accounts/11/entries`)).forEach(req => req.flush({ items: [], total: 0, limit: 100, offset: 0 }));
+      await settle();
+      expect(center.loading()).toBe(false);
+      expect(billRow()).not.toBeNull();
+      expect(emptyBlock()).toBeNull();
+      expect(loadingRow()).toBeNull();
+      expect(chipText()).toContain('1');
+      expect(sub()).toContain('1 件');
+    });
+
     it('an inbox answering counts.ask_items 3 with 1000 folded items: the catch-all row and the partial line, no 都處理好了', async () => {
       const round = await openFresh();
       const folded = Array.from({ length: 1000 }, (_, i) => makeItem({ case_id: 5000 + i, folded: true, question: 'proposed' }));

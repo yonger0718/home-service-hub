@@ -298,6 +298,54 @@ describe('NotificationsComponent', () => {
       expect(subtitle(root)).toBe('沒有要處理的事');
     });
 
+    describe('a later round in flight', () => {
+      const digits = (root: HTMLElement) => [...root.querySelectorAll('.notif-chips button')].map(b => text(b)).join('|');
+
+      it('no task and a round in flight: 讀取中…, no all-clear, no zero chips; settled with zero tasks the all-clear returns', async () => {
+        tasks.set([]);
+        const root = mount();
+        expect(q(root, '.notif-empty')).not.toBeNull();
+        round.set(2);
+        await settle();
+        expect(q(root, '.notif-empty')).toBeNull();
+        expect(root.textContent).not.toContain('都處理好了');
+        expect(subtitle(root)).toBe('讀取中…');
+        expect(digits(root)).not.toMatch(/\d/);
+        expect(root.querySelectorAll('p.notif-loading[role="status"]').length).toBe(1);
+        expect(q(root, 'details.notif-tracking')).toBeNull();
+        settledRound.set(2);
+        await settle();
+        expect(q(root, '.notif-empty')).not.toBeNull();
+        expect(subtitle(root)).toBe('沒有要處理的事');
+        expect(q(root, '.notif-loading')).toBeNull();
+        expect(digits(root)).toMatch(/0/);
+      });
+
+      it('tasks present and a round in flight: rows, numbers and subtitle stay as the last settled round left them', async () => {
+        const root = mount();
+        const before = { sub: subtitle(root), chips: digits(root), rows: root.querySelectorAll('app-notif-row').length };
+        round.set(2);
+        await settle();
+        expect(subtitle(root)).toBe(before.sub);
+        expect(digits(root)).toBe(before.chips);
+        expect(root.querySelectorAll('app-notif-row').length).toBe(before.rows);
+        expect(q(root, '.notif-loading')).toBeNull();
+        expect(q(root, '.sec-count')).not.toBeNull();
+      });
+
+      it('focus on 看追蹤中 when the all-clear leaves goes to the checked chip', async () => {
+        tasks.set([]);
+        const root = mount();
+        const link = q(root, 'button.empty-tracking') as HTMLButtonElement;
+        link.focus();
+        expect(document.activeElement).toBe(link);
+        round.set(2);
+        await settle();
+        expect(q(root, '.notif-empty')).toBeNull();
+        expect(document.activeElement).toBe(q(root, '.notif-chips button[aria-checked="true"]'));
+      });
+    });
+
     it('看追蹤中 opens the 追蹤中 block and focuses its summary', async () => {
       tasks.set([]);
       const root = mount();
@@ -422,15 +470,6 @@ describe('NotificationsComponent', () => {
       button.click();
       await settle();
       expect(invalidate).toHaveBeenCalledTimes(1);
-    });
-
-    it('the all-clear stays while a later round runs', async () => {
-      tasks.set([]);
-      const root = mount();
-      round.set(2);
-      await settle();
-      expect(q(root, '.notif-empty')).not.toBeNull();
-      expect(q(root, '.notif-loading')).toBeNull();
     });
 
     it('under the 投資 chip the all-clear hides the next-bill line and the tracking link', async () => {
