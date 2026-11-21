@@ -1,5 +1,5 @@
 // D2 cap bar: track on the soft surface, posted fill in primary, estimated fill at 30 % — near the cap both take
-// the warning ink (the existing callout ink until a banner token lands).
+// the banner-warn amber.
 .cap-bar {
   --cap-fill: var(--app-primary);
   display: grid;
@@ -32,7 +32,7 @@
 }
 
 .near {
-  --cap-fill: var(--tone-neg-pill-ink, var(--c-red-pill-ink));
+  --cap-fill: var(--app-banner-warn);
 
   .cap-text {
     color: var(--cap-fill);
