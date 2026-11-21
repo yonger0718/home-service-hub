@@ -124,14 +124,70 @@ describe('ToastOutletComponent', () => {
   it('focus moving between the toast controls keeps the pause', () => {
     scope.error('x', { retry: vi.fn() });
     flush();
-    svc.pause('focus');
-    q('.toast-action')!.dispatchEvent(
-      new FocusEvent('focusout', { bubbles: true, relatedTarget: q('.toast-close') }),
-    );
-    // still held: a done toast raised now would not start its timer
-    scope.done('A');
-    vi.advanceTimersByTime(10_000);
-    expect(svc.current()).not.toBeNull();
+    const resume = vi.spyOn(svc, 'resume');
+    q('.toast-action')!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: q('.toast-close') }));
+    expect(resume).not.toHaveBeenCalled();
+    q('.toast-close')!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: q('#outside') }));
+    expect(resume).toHaveBeenCalledWith('focus');
+  });
+
+  it('a focused 重試 replaced by page code does not leave the next 完成 stuck', async () => {
+    scope.error('儲存失敗', { retry: vi.fn() });
+    flush();
+    const retry = q('.toast-action')!;
+    retry.focus();
+    retry.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    scope.done('已儲存');
+    flush();
+    await fixture.whenStable();
+    vi.advanceTimersByTime(5000);
+    expect(svc.current()).toBeNull();
+  });
+
+  it('focus that is really still inside the toast now shown keeps the timer paused', async () => {
+    scope.done('A', { undo: vi.fn() });
+    flush();
+    const button = q('.toast-action')!;
+    button.focus(); // the same button is reused for the next toast, so focus is genuinely inside
+    scope.done('B', { undo: vi.fn() });
+    flush();
+    await fixture.whenStable();
+    expect(document.activeElement).toBe(q('.toast-action'));
+    vi.advanceTimersByTime(20_000);
+    expect(svc.current()?.text).toBe('B');
+    q('.toast-action')!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: q('#outside') }));
+    vi.advanceTimersByTime(5000);
+    expect(svc.current()).toBeNull();
+  });
+
+  it('a toast raised while the pointer is still over the outlet starts paused', async () => {
+    scope.error('儲存失敗');
+    flush();
+    q('app-toast-outlet')!.dispatchEvent(new Event('pointerenter'));
+    q('.toast-close')!.click();
+    flush();
+    scope.done('已儲存');
+    flush();
+    await fixture.whenStable();
+    vi.advanceTimersByTime(20_000);
+    expect(svc.current()?.text).toBe('已儲存');
+    q('app-toast-outlet')!.dispatchEvent(new Event('pointerleave'));
+    vi.advanceTimersByTime(5000);
+    expect(svc.current()).toBeNull();
+  });
+
+  it('a pointer that moved away while no toast was shown does not pause the next one', async () => {
+    scope.error('儲存失敗');
+    flush();
+    q('app-toast-outlet')!.dispatchEvent(new Event('pointerenter'));
+    q('.toast-close')!.click();
+    flush();
+    q('#other')!.dispatchEvent(new Event('pointermove', { bubbles: true }));
+    scope.done('已儲存');
+    flush();
+    await fixture.whenStable();
+    vi.advanceTimersByTime(5000);
+    expect(svc.current()).toBeNull();
   });
 
   it('a new toast never moves focus', () => {

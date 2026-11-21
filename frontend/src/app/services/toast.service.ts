@@ -114,6 +114,8 @@ export class ToastService {
     this.stopTimer();
     this.unregisterOwner?.();
     this.unregisterOwner = null;
+    // Pause reasons belong to the toast they were raised on: the outlet re-asserts the true ones for the new toast.
+    this.held.clear();
     const id = this.nextId++;
     this.callback = label && run ? run : null;
     this.state.set({ id, kind, text, action: label && run ? { label, run: () => this.runAction(id) } : null });

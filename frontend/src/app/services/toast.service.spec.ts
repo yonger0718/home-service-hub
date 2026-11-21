@@ -58,6 +58,22 @@ describe('ToastService', () => {
     expect(s.current()?.text).toBe('B');
   });
 
+  it('a replaced timer leaves no timer behind', () => {
+    t.done('A');
+    expect(vi.getTimerCount()).toBe(1);
+    t.error('B');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('pause reasons are not carried from one toast to the next', () => {
+    t.error('A', { retry: vi.fn() });
+    s.pause('focus');
+    s.pause('hover');
+    t.done('B');
+    vi.advanceTimersByTime(5000);
+    expect(s.current()).toBeNull();
+  });
+
   it('dismiss(id) of an older toast leaves the current one', () => {
     const old = t.error('A');
     t.error('B');
