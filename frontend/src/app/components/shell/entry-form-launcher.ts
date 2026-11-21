@@ -2,6 +2,7 @@ import { LocationStrategy } from '@angular/common';
 import { Injectable, computed, inject } from '@angular/core';
 import { Params, Router } from '@angular/router';
 
+import { ENTRY_FORM_PATH } from '../accounting/keyboard-shortcuts';
 import { DirtyFormRegistry } from '../accounting/dirty-form.service';
 import { timelineCalendarParams } from '../accounting/timeline/calendar-url';
 import { NavigationStateService } from './navigation-state.service';
@@ -29,18 +30,27 @@ export class EntryFormLauncher {
     ),
   );
 
-  /** A link click: a modified click (new tab / window) is left to the browser. */
+  /** A link click: on the new-entry form itself it does nothing; a modified click (new tab / window) is left to the browser. */
   open(event: MouseEvent): void {
     if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
       return;
     }
     event.preventDefault();
+    if (this.onNewEntryForm()) {
+      return;
+    }
     this.go();
   }
 
   /** Opens the entry form (dirty-form check first), e.g. for the N key. */
   go(): void {
     this.registry.requestClose(() => void this.router.navigate(ENTRY_FORM, { queryParams: this.calendarQuery() }));
+  }
+
+  /** The new-entry form (not the edit form of an entry): the link would lead to the page already open. */
+  private onNewEntryForm(): boolean {
+    const path = this.router.url.split(/[?#]/)[0];
+    return ENTRY_FORM_PATH.test(path) && path === ENTRY_FORM[0];
   }
 
   private calendarQuery(): Params {

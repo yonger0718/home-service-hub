@@ -365,8 +365,10 @@
     }
   }
 
+  /* 4 px here + the rail's 4 px gap = the 8 px under the button (gap + divider margin). */
   .sidebar-new-entry {
     height: 44px;
+    margin-top: 4px;
     min-height: 0;
     width: 44px;
 

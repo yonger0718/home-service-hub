@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { Component, WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
@@ -258,6 +261,7 @@ describe('SidebarComponent 記一筆', () => {
     expect(entry.getAttribute('href')).toBe('/accounting/entry');
     expect(entry.getAttribute('aria-label')).toBe('記一筆（快捷鍵 N）');
     expect(entry.querySelector('.side-tip')).toBeNull();
+    expect(entry.querySelector('.pi-plus')).not.toBeNull();
     const nav = host.querySelector('nav.side-nav')!;
     expect(nav.firstElementChild).toBe(entry);
     expect(entry.nextElementSibling!.classList.contains('side-group')).toBe(true);
@@ -275,6 +279,72 @@ describe('SidebarComponent 記一筆', () => {
     expect(text(entry.querySelector('.side-tip'))).toContain('記一筆');
     expect(entry.querySelector('.pi-plus')).not.toBeNull();
     expect(host.querySelector('nav.side-nav')!.firstElementChild).toBe(entry);
+    // One line: the label and the key sit in one inline wrapper, not as two flex-column items.
+    expect(entry.querySelectorAll('.side-tip > *').length).toBe(1);
+    expect(entry.querySelector('.side-tip > .tip-line kbd')).not.toBeNull();
+  });
+
+  it('rail at compact height keeps the link and the nav items the same size and has the 4 px extra gap above', async () => {
+    const { host } = await render(1100, '/portfolio', {}, 700);
+    expect(host.classList.contains('compact')).toBe(true);
+    expect(host.classList.contains('rail')).toBe(true);
+    expect(link(host).length).toBe(1);
+    const css = readFileSync(join(__dirname, 'sidebar.scss'), 'utf8');
+    expect(css).toMatch(/:host\(\.compact\.rail\)[\s\S]*\.side-item,\s*\.sidebar-new-entry\s*\{\s*height:\s*38px;\s*width:\s*38px/);
+  });
+
+  it('rail adds 4 px above the link, so the gap under the logo row equals the 8 px below it', () => {
+    const css = readFileSync(join(__dirname, 'sidebar.scss'), 'utf8');
+    expect(css).toMatch(/:host\(\.rail\)\s*\{[\s\S]*?\.sidebar-new-entry\s*\{[^}]*margin-top:\s*4px/);
+  });
+
+  it('on the new-entry form a plain click does nothing: no dirty prompt, no navigation', async () => {
+    const { host } = await render(1440, '/accounting/entry');
+    const router = TestBed.inject(Router);
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const dirty: DirtyAware = { isDirty: () => true, showDiscardPrompt: vi.fn() };
+    registry.register(dirty);
+    const navigate = vi.spyOn(router, 'navigate');
+
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    link(host)[0].dispatchEvent(click);
+
+    expect(click.defaultPrevented).toBe(true);
+    expect(dirty.showDiscardPrompt).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(router.url).toBe('/accounting/entry');
+  });
+
+  it('on the new-entry form with a query a plain click also does nothing', async () => {
+    const { host } = await render(1440, '/accounting/entry?month=2026-10');
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    link(host)[0].dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('on the edit form of an entry a dirty form is still asked first', async () => {
+    const { host } = await render(1440, '/accounting/entries/9/edit');
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const dirty: DirtyAware = { isDirty: () => true, showDiscardPrompt: vi.fn() };
+    registry.register(dirty);
+
+    link(host)[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+
+    expect(dirty.showDiscardPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('a ctrl-click on the new-entry form is left to the browser', async () => {
+    const { host } = await render(1440, '/accounting/entry');
+    let prevented: boolean | null = null;
+    const swallow = (event: Event) => {
+      prevented = event.defaultPrevented;
+      event.preventDefault();
+    };
+    document.addEventListener('click', swallow, { once: true });
+    link(host)[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ctrlKey: true }));
+    expect(prevented).toBe(false);
   });
 
   it('is shown on the report pages and the entry form (no hiding conditions)', async () => {
