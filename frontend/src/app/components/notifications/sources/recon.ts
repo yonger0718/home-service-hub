@@ -27,36 +27,44 @@ export function askAccountIds(inbox: InboxOut): number[] {
 
 /** One task per statement with unfolded ask items; `progress` by statement id (absent → no bar, no meta). */
 export function reconTasks(inbox: InboxOut, progress: ReadonlyMap<number, ReconProgress>): NotifTask[] {
-  const tasks: NotifTask[] = [];
+  // Keyed by statement id alone (the task id): a statement id seen under two accounts merges into the first one's task.
+  const byStatement = new Map<
+    number,
+    { accountId: number; accountName: string; periodEnd: string; n: number }
+  >();
   for (const account of inbox.accounts) {
-    const byStatement = new Map<number, { periodEnd: string; n: number }>();
     for (const item of account.items) {
       if (item.folded || !isAskQuestion(item.question)) continue;
       const entry = byStatement.get(item.statement.id);
       if (entry) entry.n += 1;
-      else byStatement.set(item.statement.id, { periodEnd: item.statement.period_end, n: 1 });
-    }
-    for (const [statementId, { periodEnd, n }] of byStatement) {
-      const known = progress.get(statementId) ?? null;
-      tasks.push({
-        id: `recon:${statementId}`,
-        source: 'ledger',
-        from: 'recon',
-        tier: 'confirm',
-        icon: 'pi-check-square',
-        title: `對帳 · ${account.name}（至 ${shortDate(periodEnd)}）`,
-        when: `${n} 筆要你決定`,
-        meta: known ? `已對上 ${known.k} / ${known.n} 行` : null,
-        amount: null,
-        progress: known,
-        primary: { label: '對帳', route: reconTaskRoute(account.id, statementId) },
-        secondary: [],
-        sortKey: periodEnd,
-        fingerprint: `${n}`,
-      });
+      else
+        byStatement.set(item.statement.id, {
+          accountId: account.id,
+          accountName: account.name,
+          periodEnd: item.statement.period_end,
+          n: 1,
+        });
     }
   }
-  return tasks;
+  return [...byStatement].map(([statementId, { accountId, accountName, periodEnd, n }]) => {
+    const known = progress.get(statementId) ?? null;
+    return {
+      id: `recon:${statementId}`,
+      source: 'ledger',
+      from: 'recon',
+      tier: 'confirm',
+      icon: 'pi-check-square',
+      title: `對帳 · ${accountName}（至 ${shortDate(periodEnd)}）`,
+      when: `${n} 筆要你決定`,
+      meta: known ? `已對上 ${known.k} / ${known.n} 行` : null,
+      amount: null,
+      progress: known,
+      primary: { label: '對帳', route: reconTaskRoute(accountId, statementId) },
+      secondary: [],
+      sortKey: periodEnd,
+      fingerprint: `${n}`,
+    } satisfies NotifTask;
+  });
 }
 
 export function einvoiceTask(counts: Pick<InboxCounts, 'einvoice_ask'>): NotifTask | null {
@@ -80,19 +88,23 @@ export function einvoiceTask(counts: Pick<InboxCounts, 'einvoice_ask'>): NotifTa
   };
 }
 
-/** R25: `counts.ask_items` minus the unfolded items received; 0 when everything is listed (never negative). */
-export function inboxMissing(inbox: InboxOut): number {
-  const received = inbox.accounts.reduce(
-    (sum, account) =>
-      sum + account.items.filter((item) => !item.folded && isAskQuestion(item.question)).length,
-    0,
-  );
-  return Math.max(0, (inbox.counts.ask_items ?? 0) - received);
+/**
+ * R25: how many unfolded ask items the page cut off. `counts.ask_items` minus the unfolded items received, never
+ * negative. When `counts` or `ask_items` is absent (an older API; the model types call them required) the total is
+ * unknown: `'unknown'` if the response is full (all items received, folded included, >= `limit`), else 0.
+ */
+export function inboxMissing(inbox: InboxOut, limit: number = INBOX_READ_LIMIT): number | 'unknown' {
+  const received = inbox.accounts.flatMap((account) => account.items);
+  const total = (inbox.counts as Partial<InboxCounts> | undefined)?.ask_items;
+  if (typeof total !== 'number') return received.length >= limit ? 'unknown' : 0;
+  const listed = received.filter((item) => !item.folded && isAskQuestion(item.question)).length;
+  return Math.max(0, total - listed);
 }
 
-/** R25: the catch-all task for `missing > 0`, else null. */
-export function reconOverflowTask(missing: number): NotifTask | null {
-  if (missing <= 0) return null;
+/** R25: the catch-all task for `missing > 0` (no number when `'unknown'`), else null. */
+export function reconOverflowTask(missing: number | 'unknown'): NotifTask | null {
+  if (missing !== 'unknown' && missing <= 0) return null;
+  const known = missing !== 'unknown';
   return {
     id: 'recon:more',
     source: 'ledger',
@@ -100,13 +112,13 @@ export function reconOverflowTask(missing: number): NotifTask | null {
     tier: 'confirm',
     icon: 'pi-list',
     title: '還有對帳項目未列出',
-    when: `還有 ${missing} 筆要你決定`,
+    when: known ? `還有 ${missing} 筆要你決定` : '還有項目要你決定',
     meta: '到提醒中心的待處理查看',
     amount: null,
     progress: null,
     primary: REMINDERS_TODO,
     secondary: [],
     sortKey: '9999-12-30',
-    fingerprint: `${missing}`,
+    fingerprint: known ? `${missing}` : 'more',
   };
 }

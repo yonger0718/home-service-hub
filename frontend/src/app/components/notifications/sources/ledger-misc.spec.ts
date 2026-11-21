@@ -110,6 +110,52 @@ describe('debtsRow', () => {
   });
 });
 
+describe('importReviewTask wire format', () => {
+  it('falls back to the unpaired transfers when there is no needs_review', () => {
+    const r = run({ summary: { unpaired_transfers: [{}, {}] } as unknown as ImportRun['summary'] });
+    expect(importReviewTask(r)).toMatchObject({ title: '匯入紀錄 · 2 筆待確認', fingerprint: '2' });
+  });
+
+  it('shows the local date of an offset-aware started_at near midnight', () => {
+    const started = '2026-10-24T23:30:00+00:00';
+    const d = new Date(started);
+    const p = (n: number) => String(n).padStart(2, '0');
+    expect(importReviewTask(run({ started_at: started }))!.when).toBe(
+      `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`,
+    );
+  });
+});
+
+describe('debtsRow edge data', () => {
+  it('a person with open_count but empty or all-zero amounts counts but adds no side; nobody else gives empty meta', () => {
+    const empty: Counterparty = { id: 1, name: '丁', open_amounts: [], open_count: 2 };
+    const zero: Counterparty = { id: 2, name: '戊', open_amounts: [{ currency: 'TWD', amount: '0.0000' }], open_count: 1 };
+    expect(debtsRow([empty, zero, person('甲', '100')])).toMatchObject({
+      title: '借還款 · 3 位',
+      meta: '應收 $100（甲）',
+      count: 3,
+    });
+    expect(debtsRow([empty, zero])).toMatchObject({ title: '借還款 · 2 位', meta: '' });
+  });
+
+  it('應收 in one currency and 應付 in another puts the person on both sides, counted once', () => {
+    const both: Counterparty = {
+      id: 1,
+      name: '甲',
+      open_count: 2,
+      open_amounts: [{ currency: 'TWD', amount: '300' }, { currency: 'USD', amount: '-5' }],
+    };
+    const row = debtsRow([both]);
+    expect(row!.count).toBe(1);
+    expect(row!.meta).toBe('應收 $300（甲）· 應付 US$5（甲）');
+  });
+
+  it('float sums format cleanly', () => {
+    const row = debtsRow([person('甲', '0.1', 1, 'USD'), person('乙', '0.2', 1, 'USD')]);
+    expect(row!.meta).toBe('應收 US$0.3（甲、乙）');
+  });
+});
+
 describe('upcomingRow', () => {
   it('two tracking bills', () => {
     expect(upcomingRow([bill('測試銀行卡帳單', '2026-10-27'), bill('測試二卡帳單', '2026-10-30')])).toEqual({
@@ -141,6 +187,31 @@ describe('handledText', () => {
       action('2026-10-20T09:00:00Z', 99),
     ];
     expect(handledText(list, now, 50)).toBe('1 件');
+  });
+
+  it('a full page with reverted ones still reads N+ (more may lie beyond the page)', () => {
+    const page = Array.from({ length: 50 }, (_, i) => action('2026-10-23T09:00:00Z', i < 3 ? 99 : null));
+    expect(handledText(page, now, 50)).toBe('47+ 件');
+  });
+
+  it('a full page whose oldest action is outside the window is exact', () => {
+    const page = [...Array.from({ length: 49 }, () => action('2026-10-23T09:00:00Z')), action('2026-10-10T09:00:00Z')];
+    expect(handledText(page, now, 50)).toBe('49 件');
+  });
+
+  it('a short page is exact', () => {
+    expect(handledText([action('2026-10-23T09:00:00Z'), action('2026-10-22T09:00:00Z')], now, 50)).toBe('2 件');
+  });
+
+  it('a missing reverted_by_action_id does not drop the action', () => {
+    expect(handledText([{ created_at: '2026-10-23T09:00:00Z' } as ReconciliationAction], now, 50)).toBe('1 件');
+  });
+
+  it('the 7-day boundary holds with the +08:00 wire format near midnight', () => {
+    // now = 2026-10-24T12:00Z, so the window opens 2026-10-17T12:00Z = 20:00+08:00.
+    expect(handledText([action('2026-10-17T20:00:00+08:00')], now, 50)).toBe('1 件');
+    expect(handledText([action('2026-10-17T19:59:00+08:00')], now, 50)).toBeNull();
+    expect(handledText([action('2026-10-18T00:30:00+08:00')], now, 50)).toBe('1 件');
   });
 
   it('a full page inside the window reads 50+ 件; none gives null', () => {

@@ -147,6 +147,57 @@ describe('inboxMissing', () => {
   });
 });
 
+describe('inboxMissing without counts', () => {
+  const noTotal = (list: InboxItem[]): InboxOut => {
+    const inbox = inboxWith(list);
+    delete (inbox as Partial<InboxOut>).counts;
+    return inbox;
+  };
+
+  it('absent counts and a short response: not truncated', () => {
+    expect(inboxMissing(noTotal(items(3, 31)))).toBe(0);
+  });
+
+  it('absent counts and a full response: truncated, count unknown', () => {
+    const full = noTotal(items(INBOX_READ_LIMIT, 31, { folded: true }));
+    expect(inboxMissing(full)).toBe('unknown');
+    expect(inboxMissing(full, INBOX_READ_LIMIT + 1)).toBe(0);
+  });
+
+  it('absent ask_items and a full response: truncated, count unknown', () => {
+    const inbox = inboxWith(items(5, 31));
+    delete (inbox.counts as Partial<InboxCounts>).ask_items;
+    expect(inboxMissing(inbox, 5)).toBe('unknown');
+  });
+
+  it('a statement exactly at the limit with nothing missing gives 0 and no catch-all', () => {
+    const inbox = inboxWith(items(INBOX_READ_LIMIT, 31), { ask_items: INBOX_READ_LIMIT });
+    expect(inboxMissing(inbox)).toBe(0);
+    expect(reconOverflowTask(inboxMissing(inbox))).toBeNull();
+  });
+
+  it('the unknown catch-all has no number', () => {
+    expect(reconOverflowTask('unknown')).toMatchObject({
+      id: 'recon:more',
+      title: '還有對帳項目未列出',
+      when: '還有項目要你決定',
+      fingerprint: 'more',
+    });
+  });
+});
+
+describe('reconTasks duplicate statement id', () => {
+  it('a statement id under two accounts gives one task with the summed count', () => {
+    const inbox = makeInbox([
+      makeInboxAccount({ id: 11, name: '測試銀行卡', items: items(2, 31) }),
+      makeInboxAccount({ id: 12, name: '測試二卡', items: items(3, 31) }),
+    ]);
+    const tasks = reconTasks(inbox, new Map());
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({ id: 'recon:31', when: '5 筆要你決定' });
+  });
+});
+
 describe('reconOverflowTask', () => {
   it('4 gives the catch-all task', () => {
     expect(reconOverflowTask(4)).toMatchObject({

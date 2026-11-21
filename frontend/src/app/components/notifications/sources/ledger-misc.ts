@@ -49,6 +49,13 @@ function sideText(label: string, side: Side): string | null {
   return `${label} ${amounts}（${shown}${more}）`;
 }
 
+const round4 = (value: number): number => Math.round(value * 10000) / 10000;
+
+/**
+ * A person counts by `open_count > 0`; the sides come from non-zero amounts only (a person with 應收 in one currency
+ * and 應付 in another is on both sides, counted once). `NotifTrackingRow.meta` is a non-nullable string, so when no
+ * side has anything it is `''` (the view shows no second line for an empty meta).
+ */
 export function debtsRow(counterparties: readonly Counterparty[]): NotifTrackingRow | null {
   const people = counterparties.filter((c) => (c.open_count ?? 0) > 0);
   if (people.length === 0) return null;
@@ -57,15 +64,13 @@ export function debtsRow(counterparties: readonly Counterparty[]): NotifTracking
   for (const person of people) {
     let isOwed = false;
     let isOwing = false;
-    for (const { currency, amount } of person.open_amounts) {
+    for (const { currency, amount } of person.open_amounts ?? []) {
       const value = Number(amount);
-      if (value > 0) {
-        owed.totals.set(currency, (owed.totals.get(currency) ?? 0) + value);
-        isOwed = true;
-      } else if (value < 0) {
-        owing.totals.set(currency, (owing.totals.get(currency) ?? 0) + value);
-        isOwing = true;
-      }
+      if (!Number.isFinite(value) || value === 0) continue;
+      const side = value > 0 ? owed : owing;
+      side.totals.set(currency, round4((side.totals.get(currency) ?? 0) + value));
+      if (value > 0) isOwed = true;
+      else isOwing = true;
     }
     if (isOwed) owed.names.push(person.name);
     if (isOwing) owing.names.push(person.name);
@@ -96,16 +101,21 @@ export function upcomingRow(trackingBills: readonly NotifTask[]): NotifTrackingR
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** P8. `now` is an ISO datetime. Returns e.g. `12 件`, `50+ 件`, or null for 0. */
+/**
+ * P8. `now` is an ISO datetime. Returns e.g. `12 件`, `50+ 件`, or null for 0. N counts the received actions of the
+ * last 7 days that were not reverted. `+` appears when the page was full (`actions.length >= limit`) and the oldest
+ * action received is still inside the window, so the window may continue past the page; otherwise N is exact.
+ * `created_at` is an offset-aware ISO string on the wire, which `Date` parses exactly.
+ */
 export function handledText(
   actions: readonly ReconciliationAction[],
   now: string,
   limit: number,
 ): string | null {
   const since = new Date(now).getTime() - WEEK_MS;
-  const n = actions.filter(
-    (a) => a.reverted_by_action_id === null && new Date(a.created_at).getTime() >= since,
-  ).length;
+  const times = actions.map((a) => new Date(a.created_at).getTime());
+  const n = actions.filter((a, i) => a.reverted_by_action_id == null && times[i] >= since).length;
   if (n === 0) return null;
-  return n >= limit ? `${limit}+ 件` : `${n} 件`;
+  const more = actions.length >= limit && Math.min(...times) >= since;
+  return more ? `${n}+ 件` : `${n} 件`;
 }
