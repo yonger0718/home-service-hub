@@ -190,6 +190,20 @@ describe('ToastOutletComponent', () => {
     expect(svc.current()).toBeNull();
   });
 
+  it('a pointer that moved away from a replacing toast without a pointerleave lets its timer run', async () => {
+    scope.error('儲存失敗');
+    flush();
+    q('app-toast-outlet')!.dispatchEvent(new Event('pointerenter'));
+    scope.done('已儲存');
+    flush();
+    await fixture.whenStable();
+    vi.advanceTimersByTime(20_000);
+    expect(svc.current()?.text).toBe('已儲存');
+    q('#other')!.dispatchEvent(new Event('pointermove', { bubbles: true }));
+    vi.advanceTimersByTime(5000);
+    expect(svc.current()).toBeNull();
+  });
+
   it('a new toast never moves focus', () => {
     const outside = q('#outside')!;
     outside.focus();

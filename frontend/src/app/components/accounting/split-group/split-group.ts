@@ -37,7 +37,7 @@ import {
   readGroupNavState,
 } from './group-nav';
 import { BannerComponent } from '../../ui/banner/banner';
-import { focusPageIfLost } from '../retry-focus';
+import { focusPageIfLost, focusRetryIfLost } from '../retry-focus';
 
 /**
  * The 多類別 group view (PR-9): the split as one record, MOZE style. Routed by one of its members
@@ -141,6 +141,8 @@ export class SplitGroupComponent implements OnInit {
     this.retrying.set(false);
     if (ok) {
       focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
     }
   }
 

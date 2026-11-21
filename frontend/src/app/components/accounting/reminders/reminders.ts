@@ -42,7 +42,7 @@ import { TimelineRow, buildDays } from '../timeline/timeline';
 import { DefinitionRow, QueueRow, definitionRows, queueRows } from './schedule-queue';
 import { ScheduleSheetComponent } from './schedule-sheet/schedule-sheet';
 import { BannerComponent } from '../../ui/banner/banner';
-import { focusPageIfLost } from '../retry-focus';
+import { focusPageIfLost, focusRetryIfLost } from '../retry-focus';
 
 /** Open receivables / payables read for the counts and dates, and per expanded counterparty. */
 export const REMINDER_ENTRY_LIMIT = 500;
@@ -506,6 +506,8 @@ export class AccountingRemindersComponent {
     this.retrying.set(false);
     if (ok) {
       focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
     }
   }
 

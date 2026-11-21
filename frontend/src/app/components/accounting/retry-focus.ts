@@ -9,9 +9,24 @@ export function focusPageIfLost(host: HTMLElement, injector: Injector, selector:
   afterNextRender(
     () => {
       const active = document.activeElement;
-      if (active && active !== document.body && host.contains(active)) {
+      if (active && active !== document.body) {
         return;
       }
+      host.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
+    },
+    { injector },
+  );
+}
+
+/**
+ * After a 重試 failed again the banner is the same node, and the only change is its button enabling. The button was
+ * disabled while the read ran, and a browser may have dropped focus to `<body>` meanwhile: focus goes back to
+ * `selector` (the 重試 button) then; focus the owner moved elsewhere is left alone.
+ */
+export function focusRetryIfLost(host: HTMLElement, injector: Injector, selector: string): void {
+  afterNextRender(
+    () => {
+      const active = document.activeElement;
       if (active && active !== document.body) {
         return;
       }

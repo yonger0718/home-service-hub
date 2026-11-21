@@ -22,7 +22,7 @@ import { importReviewCount } from '../import-review-count';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BtnComponent } from '../../ui/btn/btn';
 import { BannerComponent } from '../../ui/banner/banner';
-import { focusPageIfLost } from '../retry-focus';
+import { focusPageIfLost, focusRetryIfLost } from '../retry-focus';
 
 /** A credit card row's third line: what is left on its current statement and when it is due. */
 export interface CardDue {
@@ -314,6 +314,8 @@ export class AccountingAccountsComponent {
     this.retrying.set(false);
     if (ok) {
       focusPageIfLost(this.host.nativeElement, this.injector, 'section.ledger-accounts');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
     }
   }
 

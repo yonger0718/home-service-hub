@@ -53,7 +53,7 @@ import { RewardAmountText } from './reward-cards';
 import { AppEntryRewardSectionComponent } from './reward-section';
 import { storedGroupNet } from './split-card';
 import { BannerComponent } from '../../ui/banner/banner';
-import { focusPageIfLost } from '../retry-focus';
+import { focusPageIfLost, focusRetryIfLost } from '../retry-focus';
 
 /**
  * What a settlement is worth in the debt's currency (design D3): its `amount` in the same currency, else its
@@ -660,6 +660,8 @@ export class EntryDetailComponent implements OnInit {
     this.retrying.set(false);
     if (ok) {
       focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
     }
   }
 

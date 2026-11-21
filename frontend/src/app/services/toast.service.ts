@@ -124,9 +124,7 @@ export class ToastService {
     this.state.set({ id, kind, text, action: label && run ? { label, run: () => this.runAction(id) } : null });
     if (kind === 'done') {
       this.remaining = TOAST_DONE_MS;
-      if (this.held.size === 0) {
-        this.startTimer();
-      }
+      this.startTimer();
     }
     return id;
   }

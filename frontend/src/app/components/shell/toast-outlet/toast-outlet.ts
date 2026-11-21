@@ -110,6 +110,7 @@ export class ToastOutletComponent {
   protected onPointerMove(event: PointerEvent): void {
     if (this.pointerInside && event.target instanceof Node && !this.host.contains(event.target)) {
       this.pointerInside = false;
+      this.toasts.resume('hover');
     }
   }
 

@@ -731,6 +731,47 @@ describe('AccountingAccountsComponent', () => {
     expect(el.contains(document.activeElement)).toBe(true);
   });
 
+  it('a 重試 that fails again puts focus back on the button when it was lost while the button was disabled; focus the owner moved elsewhere is left alone', async () => {
+    const fixture = TestBed.createComponent(AccountingAccountsComponent);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    const answerImportReads = () => {
+      for (const pending of http.match('/api/accounting/imports/latest')) if (!pending.cancelled) pending.flush(LATEST);
+      for (const pending of http.match('/api/accounting/preference')) if (!pending.cancelled) pending.flush(PREFERENCE_BODY);
+    };
+    http.expectOne(ACCOUNTS_GET).flush('boom', { status: 500, statusText: 'Server Error' });
+    answerImportReads();
+    fixture.detectChanges();
+    fixture.detectChanges();
+    const button = el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!;
+    const other = document.createElement('button');
+    document.body.appendChild(other);
+
+    button.focus();
+    button.click();
+    fixture.detectChanges();
+    // A browser may drop focus from a button that became disabled.
+    other.focus();
+    other.blur();
+    expect(document.activeElement).toBe(document.body);
+    http.expectOne(ACCOUNTS_GET).flush('boom', { status: 500, statusText: 'Server Error' });
+    answerImportReads();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(button.disabled).toBe(false);
+    expect(document.activeElement).toBe(button);
+
+    button.click();
+    fixture.detectChanges();
+    other.focus();
+    http.expectOne(ACCOUNTS_GET).flush('boom', { status: 500, statusText: 'Server Error' });
+    answerImportReads();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(document.activeElement).toBe(other);
+    other.remove();
+  });
+
   it('offers 重試 on a failed account list and reloads it', () => {
     const fixture = TestBed.createComponent(AccountingAccountsComponent);
     fixture.detectChanges();

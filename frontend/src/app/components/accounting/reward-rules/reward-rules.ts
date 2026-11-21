@@ -20,7 +20,7 @@ import {
   RULE_STATE_LABELS, RewardUnit, mutedLine, postingSummary, rateChip, rewardFigure, ruleTitle, usageUnit, windowText,
 } from '../reward-rule-text';
 import { BannerComponent } from '../../ui/banner/banner';
-import { focusPageIfLost } from '../retry-focus';
+import { focusPageIfLost, focusRetryIfLost } from '../retry-focus';
 
 export type RewardRuleFilter = RewardRuleState | 'all';
 
@@ -320,6 +320,8 @@ export class RewardRulesOverviewComponent {
     this.retrying.set(false);
     if (ok) {
       focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
     }
   }
 

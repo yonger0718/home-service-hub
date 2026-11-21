@@ -42,7 +42,7 @@ import {
 } from './report-math';
 import { ReportTrendComponent } from './trend-tab';
 import { BannerComponent } from '../../ui/banner/banner';
-import { focusPageIfLost } from '../retry-focus';
+import { focusPageIfLost, focusRetryIfLost } from '../retry-focus';
 
 export type ReportTab = 'overview' | 'trend' | 'rank' | 'plan';
 
@@ -374,6 +374,8 @@ export class AccountingReportsComponent {
     this.retrying.set(false);
     if (ok) {
       focusPageIfLost(this.host.nativeElement, this.injector, 'section.rp');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
     }
   }
 

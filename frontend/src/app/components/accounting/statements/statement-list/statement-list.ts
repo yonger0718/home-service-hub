@@ -14,7 +14,7 @@ import {
 } from '../statement-view';
 import { StatementsService } from '../statements.service';
 import { BannerComponent } from '../../../ui/banner/banner';
-import { focusPageIfLost } from '../../retry-focus';
+import { focusPageIfLost, focusRetryIfLost } from '../../retry-focus';
 
 /** `/accounting/accounts/:id/statements`: live rows, plus the historical periods summary table. */
 @Component({
@@ -73,6 +73,8 @@ export class StatementListComponent {
     this.retrying.set(false);
     if (ok) {
       focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
     }
   }
 

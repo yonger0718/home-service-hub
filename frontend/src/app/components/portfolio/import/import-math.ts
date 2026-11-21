@@ -179,7 +179,7 @@ export function attemptLine(a: ImportAttempt): string {
 
 /**
  * Banner (a) (Decision 9): only for a failed attempt that wrote nothing (`created 0`), so the
- * 整批未寫入 sentence is always true. Row errors → `{file} 有 {n} 列錯誤`; else `{file}，{reason}`.
+ * 沒有寫入任何資料 sentence is always true. Row errors → `{file} 有 {n} 列錯誤`; else `{file}，{reason}`.
  */
 export function failureBanner(a: ImportAttempt | undefined): { heading: string; detail: string } | null {
   if (!a || a.ok || (a.created ?? 0) > 0) return null;
