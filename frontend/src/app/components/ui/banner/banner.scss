@@ -1,0 +1,90 @@
+:host {
+  display: block;
+}
+
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  color: var(--app-text);
+}
+
+.banner--error {
+  background: var(--c-red-soft);
+  --banner-ink: var(--c-red-pill-ink);
+}
+
+.banner--warn {
+  background: var(--app-banner-warn-soft);
+  --banner-ink: var(--app-banner-warn);
+}
+
+.banner--info {
+  background: var(--app-primary-soft);
+  --banner-ink: var(--app-text);
+  --banner-icon: var(--app-primary);
+}
+
+.banner-icon {
+  flex: none;
+  font-size: 20px;
+  line-height: 20px;
+  color: var(--banner-icon, var(--banner-ink));
+}
+
+.banner-body {
+  flex: 1 1 220px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.banner-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--banner-ink);
+}
+
+.banner-detail {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--app-text);
+}
+
+.banner-action {
+  flex: none;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--app-border);
+  background: var(--app-surface);
+  color: var(--app-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.banner-close {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  margin: -6px -8px -6px 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+}

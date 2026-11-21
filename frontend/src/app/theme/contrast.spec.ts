@@ -380,3 +380,28 @@ describe('toast inks on the inverse surface', () => {
     });
   });
 });
+
+describe('banner headings on their tints over the page background', () => {
+  describe.each([
+    ['light', light],
+    ['dark', dark],
+  ])('%s theme', (_name, theme) => {
+    const unders: [string, (t: Record<string, string>) => string][] = [
+      ['--app-bg', (t) => hex(t, '--app-bg')],
+      ['--app-surface', (t) => hex(t, '--app-surface')],
+    ];
+
+    it.each(unders)('錯誤 / 注意 / 資訊 headings ≥ 4.5:1 on their tint over %s', (_label, under) => {
+      const base = under(theme);
+      const tint = (token: string) => composite(rgba(theme, token), base);
+      expect(ratio(hex(theme, '--c-red-pill-ink'), tint('--c-red-soft'))).toBeGreaterThanOrEqual(4.5);
+      expect(ratio(hex(theme, '--app-banner-warn'), tint('--app-banner-warn-soft'))).toBeGreaterThanOrEqual(4.5);
+      expect(ratio(hex(theme, '--app-text'), tint('--app-primary-soft'))).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it.each(unders)('資訊 icon (--app-primary) ≥ 3:1 on its tint over %s', (_label, under) => {
+      const tint = composite(rgba(theme, '--app-primary-soft'), under(theme));
+      expect(ratio(hex(theme, '--app-primary'), tint)).toBeGreaterThanOrEqual(3);
+    });
+  });
+});
