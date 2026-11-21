@@ -1,6 +1,6 @@
 import { DestroyRef, Injectable, Injector, Signal, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DOCUMENT } from '@angular/common';
-import { Observable, catchError, map, of } from 'rxjs';
+import { Observable, catchError, from, map, of, timeout } from 'rxjs';
 
 import { BillingEvent, reminderDues } from '../components/accounting/billing/billing-math';
 import { WEEKENDS_ONLY } from '../components/accounting/billing/business-days';
@@ -42,6 +42,13 @@ import { PortfolioService } from './portfolio.service';
 
 /** A focus / visible / timer refresh starting sooner than this after the last started round is skipped. */
 export const BADGE_REFRESH_MIN_MS = 30_000;
+
+/**
+ * A read of a round that has not answered after this long counts as failed for that round (the HTTP request is
+ * aborted), and so does a round's card-statement wait: every round settles, `failureLine` names the source, and the
+ * next open / focus / timer starts a fresh round (amends R26: an unanswered read would otherwise block `refresh()`).
+ */
+export const READ_TIMEOUT_MS = 20_000;
 
 /** `open`: the 通知 page opened (not throttled); `focus`: window focus or page visible again; `timer`: a periodic caller. */
 export type NotifRefreshReason = 'open' | 'focus' | 'timer';
@@ -159,11 +166,20 @@ export class NotificationCenterService {
     this.allTasks().filter(task => task.tier === 'tracking' && task.from === 'bills'),
   );
 
-  /** Id of the newest started round; 0 before the first. Ids only grow. */
+  /**
+   * Id of the newest started round; 0 before the first. Ids only grow. Read inside a write's own callback it still
+   * names the pre-write round (the write triggers start the next round in an effect, later): a caller that must see
+   * post-write data calls `invalidate()` and waits for `settledRound() >= ` the id it returns.
+   */
   readonly round: Signal<number> = this.roundId.asReadonly();
   /** Id of the newest round whose every task source has settled (ok or failed); a superseded round never becomes it. */
   readonly settledRound: Signal<number> = this.settledId.asReadonly();
+  /** A round is in flight (started, not settled); false before the first round. */
   readonly loading: Signal<boolean> = computed(() => this.round() > this.settledRound());
+  /**
+   * Some round has settled: the page's loading gate (before it, show 讀取中…, never 都處理好了). `summary()` is
+   * `NO_TASKS` until then too, so `NO_TASKS` alone does not mean "nothing to do".
+   */
   readonly loaded: Signal<boolean> = computed(() => this.settledRound() > 0);
 
   /** Counted tasks (追蹤中 excluded), in `sortTasks` order. */
@@ -227,12 +243,13 @@ export class NotificationCenterService {
       }
     });
 
-    // An in-app write (entry, schedule, account, backup import) supersedes any round in flight: its answers may
-    // predate the write.
+    // An in-app write (entry, schedule, account, backup import, a reconciliation inbox action) supersedes any round
+    // in flight: its answers may predate the write.
     let firstRun = true;
     effect(() => {
       this.accounting.entriesChanged();
       this.accounting.accountsChanged();
+      this.inbox.changed();
       if (firstRun) {
         firstRun = false;
         return;
@@ -285,7 +302,10 @@ export class NotificationCenterService {
     this.readRecalc();
   }
 
-  /** Starts a round now, superseding any round in flight (its answers are dropped). Returns the new round's id. */
+  /**
+   * Starts a round now, superseding any round in flight (its answers are dropped), and returns that round's id: a
+   * caller (a write that failed, 重試) waits for `settledRound() >= id` to know it sees data read after the call.
+   */
   invalidate(): number {
     return this.startRound();
   }
@@ -349,13 +369,16 @@ export class NotificationCenterService {
       this.mark('bills', round, 'ok');
       return;
     }
-    void settled.then(() => {
-      if (round !== untracked(this.roundId)) {
-        return;
-      }
-      const failed = untracked(this.dues).some(event => this.bills.failed(event));
-      this.mark('bills', round, failed ? 'failed' : 'ok');
-    });
+    // Raced against READ_TIMEOUT_MS: a statement still unanswered then fails the source for this round. The read
+    // itself belongs to the shared BillingService and is not aborted; its late answer cannot change this round's
+    // verdict (`mark` keeps the first answer of a source per round).
+    from(settled)
+      .pipe(
+        timeout(READ_TIMEOUT_MS),
+        map(() => untracked(this.dues).some(event => this.bills.failed(event))),
+        catchError(() => of(true)),
+      )
+      .subscribe(failed => this.mark('bills', round, failed ? 'failed' : 'ok'));
   }
 
   /** Statement progress of the accounts with ask items (silent: a failed list leaves its statements without a bar). */
@@ -392,21 +415,28 @@ export class NotificationCenterService {
       });
   }
 
-  /** Applies `request`'s answer (null on any error) while `round` is the newest started round. */
+  /**
+   * Applies `request`'s answer (null on any error, and after READ_TIMEOUT_MS without one: the request is then
+   * unsubscribed, so no late answer arrives) while `round` is the newest started round.
+   */
   private read<T>(round: number, request: Observable<T>, apply: (value: T | null) => void): void {
-    request.pipe(catchError(() => of(null))).subscribe(value => {
+    request.pipe(timeout(READ_TIMEOUT_MS), catchError(() => of(null))).subscribe(value => {
       if (round === untracked(this.roundId)) {
         apply(value);
       }
     });
   }
 
-  /** Records a task source's answer for `round`; the round settles once all five have answered for it. */
+  /**
+   * Records a task source's answer for `round`; the round settles once all five have answered for it. The first
+   * answer of a source in a round is final (a late one, e.g. a statement landing after the bills timeout, is ignored).
+   */
   private mark(source: NotifSourceKey, round: number, state: 'ok' | 'failed'): void {
-    if (round !== untracked(this.roundId)) {
+    const current = untracked(this.status);
+    if (round !== untracked(this.roundId) || current[source].round === round) {
       return;
     }
-    const status = { ...untracked(this.status), [source]: { round, state } };
+    const status = { ...current, [source]: { round, state } };
     this.status.set(status);
     if (TASK_SOURCES.every(key => status[key].round === round)) {
       this.settledId.set(round);

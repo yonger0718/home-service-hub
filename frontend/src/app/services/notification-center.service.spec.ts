@@ -10,13 +10,14 @@ import { makeInbox, makeInboxAccount, makeItem } from '../components/accounting/
 import { StatementSummary } from '../components/accounting/statements/statement.model';
 import { StatementsService } from '../components/accounting/statements/statements.service';
 import { makeAccount, makeEntry, makeInstance } from '../components/accounting/testing/fixtures';
+import { NO_TASKS } from '../components/notifications/notif-task';
 import { INBOX_READ_LIMIT } from '../components/notifications/sources/recon';
 import { BusinessDays, Counterparty, ImportRun, LedgerAccount, ScheduleInstance } from '../models/accounting.model';
 import { RecalcStatus } from '../models/portfolio.model';
 import { AccountingService } from './accounting.service';
 import { ImportHistoryService } from './import-history.service';
 import { NavigationPreferencesService } from './navigation-preferences.service';
-import { BADGE_REFRESH_MIN_MS, NotificationCenterService } from './notification-center.service';
+import { BADGE_REFRESH_MIN_MS, NotificationCenterService, READ_TIMEOUT_MS } from './notification-center.service';
 import { PortfolioService } from './portfolio.service';
 
 /** Today in this spec: Saturday 2026-10-24. */
@@ -118,6 +119,7 @@ describe('NotificationCenterService', () => {
   let getInbox: ReturnType<typeof vi.fn>;
   let getActions: ReturnType<typeof vi.fn>;
   let listStatements: ReturnType<typeof vi.fn>;
+  let inboxChanged: WritableSignal<number>;
 
   beforeEach(() => {
     localStorage.clear();
@@ -135,6 +137,7 @@ describe('NotificationCenterService', () => {
     getInbox = vi.fn(inbox.fn);
     getActions = vi.fn(actions.fn);
     listStatements = vi.fn(statements.fn);
+    inboxChanged = signal(0);
     accountingStub = {
       entriesChanged: signal(0),
       accountsChanged: signal(0),
@@ -156,7 +159,7 @@ describe('NotificationCenterService', () => {
       providers: [
         { provide: AccountingService, useValue: accountingStub },
         { provide: PortfolioService, useValue: { getRecalcStatus } },
-        { provide: InboxService, useValue: { get: getInbox, actions: getActions } },
+        { provide: InboxService, useValue: { get: getInbox, actions: getActions, changed: inboxChanged } },
         { provide: StatementsService, useValue: { list: listStatements } },
       ],
     });
@@ -403,20 +406,28 @@ describe('NotificationCenterService', () => {
     expect('import' in svc.badges()).toBe(false);
   });
 
-  it('slow first load across the 30 s window: a focus starts nothing while it is in flight; its answers apply', async () => {
+  it('slow first load across the 30 s window: the unanswered round fails at 20 s; a focus at 31 s starts a fresh one', async () => {
     const svc = service();
     svc.start();
-    vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
-    window.dispatchEvent(new Event('focus'));
-    expect(getRecalcStatus).toHaveBeenCalledTimes(1);
-    expect(svc.round()).toBe(1);
+    vi.advanceTimersByTime(READ_TIMEOUT_MS);
+    TestBed.tick();
+    expect(svc.settledRound()).toBe(1);
+    expect(svc.failedSources()).toEqual(['bills', 'schedules', 'recon', 'importReview', 'debts']);
+    // Timed out reads are unsubscribed: round 1 can no longer answer.
+    expect(latest.subjects[0].observed).toBe(false);
 
-    await answer(0, { latest: importRun(5), recalc: { kind: 'import', state: 'failed' } });
+    vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000 - READ_TIMEOUT_MS);
+    window.dispatchEvent(new Event('focus'));
+    expect(svc.round()).toBe(2);
+    expect(getRecalcStatus).toHaveBeenCalledTimes(2);
+
+    await answer(1, { latest: importRun(5), recalc: { kind: 'import', state: 'failed' } });
     expect(svc.badges()).toEqual({
       'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
       import: { dot: true, tone: 'red', label: '最近一次匯入失敗' },
     });
-    expect(svc.settledRound()).toBe(1);
+    expect(svc.settledRound()).toBe(2);
+    expect(svc.failedSources()).toEqual([]);
   });
 
   it('stale accounts snapshot never reaches the statements (ensure or refresh)', async () => {
@@ -725,10 +736,16 @@ describe('NotificationCenterService', () => {
     expect(accountingStub['getAccounts']).toHaveBeenCalledTimes(2);
   });
 
-  it('refresh (any reason) while a round is in flight starts nothing', () => {
+  it('refresh (any reason) while a round is in flight starts nothing', async () => {
+    // In flight past the 30 s throttle: the accounts answer at 19 s, the card statement then has its own 20 s.
+    const entries = calls<{ items: never[]; total: number; limit: number; offset: number }>();
+    accountingStub['getEntries'] = vi.fn(entries.fn);
     const svc = service();
     svc.start();
-    vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
+    vi.advanceTimersByTime(19_000);
+    await answer(0, { accounts: [card(11, 20)] });
+    vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000 - 19_000);
+    expect(svc.loading()).toBe(true);
     svc.refresh({ reason: 'open' });
     svc.refresh({ reason: 'focus' });
     svc.refresh({ reason: 'timer' });
@@ -788,7 +805,8 @@ describe('NotificationCenterService', () => {
     await answer(0, { accounts: [card(11, 20)] });
     expect(svc.settledRound()).toBe(0);
     expect(svc.loading()).toBe(true);
-    expect(svc.summary().total).toBe(0);
+    // The bill itself is still unresolved (not just hidden by the summary's loaded gate).
+    expect(ids(svc)).toEqual([]);
 
     land(entries.subjects[0], { items: [], total: 0, limit: 100, offset: 0 });
     await microtasks();
@@ -877,7 +895,7 @@ describe('NotificationCenterService', () => {
       providers: [
         { provide: AccountingService, useValue: accountingStub },
         { provide: PortfolioService, useValue: { getRecalcStatus } },
-        { provide: InboxService, useValue: { get: getInbox, actions: getActions } },
+        { provide: InboxService, useValue: { get: getInbox, actions: getActions, changed: inboxChanged } },
         { provide: StatementsService, useValue: { list: listStatements } },
       ],
     });
@@ -941,5 +959,154 @@ describe('NotificationCenterService', () => {
     TestBed.tick();
     expect(svc.summary()).toEqual(before);
     expect(svc.tasks()).toHaveLength(3);
+  });
+
+  // ---- follow-up: more interleavings -----------------------------------------------------------------------------
+
+  it('before any round: round 0, not loading, not loaded, NO_TASKS, nothing failed', () => {
+    const svc = service();
+    expect(svc.round()).toBe(0);
+    expect(svc.settledRound()).toBe(0);
+    expect(svc.loading()).toBe(false);
+    expect(svc.loaded()).toBe(false);
+    expect(svc.summary()).toEqual(NO_TASKS);
+    expect(svc.tasks()).toEqual([]);
+    expect(svc.trackingRows()).toEqual([]);
+    expect(svc.failedSources()).toEqual([]);
+    expect(svc.truncated()).toBe(false);
+    expect(svc.handled()).toBeNull();
+  });
+
+  it("a superseded round's bills promise resolving late (after its accounts answer) changes nothing", async () => {
+    const entries = calls<{ items: never[]; total: number; limit: number; offset: number }>();
+    accountingStub['getEntries'] = vi.fn(entries.fn);
+    const svc = service();
+    svc.start();
+    // Round 1: accounts answered, the card's payments read still open → its bills promise is pending.
+    await answer(0, { accounts: [card(11, 20)] });
+    expect(svc.settledRound()).toBe(0);
+
+    const id = svc.invalidate();
+    await answer(1, { accounts: 'error' });
+    expect(svc.settledRound()).toBe(id);
+    expect(svc.failedSources()).toEqual(['bills']);
+
+    // Round 1's statement lands and its promise resolves: round 1 stays unsettled, round 2's failure stands.
+    land(entries.subjects[0], { items: [], total: 0, limit: 100, offset: 0 });
+    await microtasks();
+    TestBed.tick();
+    expect(svc.settledRound()).toBe(id);
+    expect(svc.failedSources()).toEqual(['bills']);
+    expect(ids(svc)).toEqual([]);
+  });
+
+  it('invalidate() twice in a row: only the newest round applies, each source read once per round', async () => {
+    const svc = service();
+    svc.start();
+    expect(svc.invalidate()).toBe(2);
+    expect(svc.invalidate()).toBe(3);
+    for (const name of ['getAccounts', 'getCounterparties', 'getScheduleInstances', 'getLatestImport']) {
+      expect(accountingStub[name], name).toHaveBeenCalledTimes(3);
+    }
+    expect(getInbox).toHaveBeenCalledTimes(3);
+    expect(getActions).toHaveBeenCalledTimes(3);
+    expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+    expect(accountingStub['getBusinessDays']).toHaveBeenCalledTimes(1);
+
+    await answer(2, { queue: [instance(3, 3, '測試房租', TODAY)] });
+    expect(svc.settledRound()).toBe(3);
+    await answer(1, { queue: [instance(2, 2, '測試分期', TODAY)] });
+    await answer(0, { queue: [instance(1, 1, '測試月費', TODAY)] });
+    expect(ids(svc)).toEqual(['sched:3']);
+    expect(svc.settledRound()).toBe(3);
+  });
+
+  it('open while a round is in flight starts nothing; invalidate() then supersedes it', async () => {
+    const svc = service();
+    svc.start();
+    svc.refresh({ reason: 'open' });
+    expect(svc.round()).toBe(1);
+    expect(svc.invalidate()).toBe(2);
+    expect(accountingStub['getAccounts']).toHaveBeenCalledTimes(2);
+    expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+
+    await answer(0, { latest: importRun(4) });
+    expect(svc.settledRound()).toBe(0);
+    await answer(1);
+    expect(svc.settledRound()).toBe(2);
+    expect(ids(svc)).toEqual([]);
+  });
+
+  it('a focus within 30 s after an invalidate() is skipped', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0);
+    vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
+    svc.invalidate();
+    await answer(1);
+    vi.advanceTimersByTime(5_000);
+    window.dispatchEvent(new Event('focus'));
+    expect(svc.round()).toBe(2);
+    expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('a source that errors synchronously fails only itself and the round still settles', async () => {
+    accountingStub['getCounterparties'] = vi.fn(() => throwError(() => new Error('boom')));
+    const svc = service();
+    svc.start();
+    expect(svc.failedSources()).toEqual(['debts']);
+    expect(svc.settledRound()).toBe(0);
+    await answer(0, { queue: [instance(1, 1, '測試房租', TODAY)] });
+    expect(svc.settledRound()).toBe(1);
+    expect(svc.failedSources()).toEqual(['debts']);
+    expect(ids(svc)).toEqual(['sched:1']);
+  });
+
+  it('an inbox write after start() starts a round; before start() it does nothing', async () => {
+    const svc = service();
+    TestBed.tick();
+    inboxChanged.set(1);
+    TestBed.tick();
+    expect(svc.round()).toBe(0);
+
+    svc.start();
+    await answer(0);
+    inboxChanged.set(2);
+    TestBed.tick();
+    expect(svc.round()).toBe(2);
+    expect(getInbox).toHaveBeenCalledTimes(2);
+  });
+
+  // ---- follow-up: a hung read fails after READ_TIMEOUT_MS ----------------------------------------------------------
+
+  it('a read that never answers fails its source after 20 s; the round settles and the next refresh starts a new one', async () => {
+    expect(READ_TIMEOUT_MS).toBe(20_000);
+    const svc = service();
+    svc.start();
+    await answer(0, { queue: 'skip', latest: importRun(1) });
+    vi.advanceTimersByTime(READ_TIMEOUT_MS - 1);
+    TestBed.tick();
+    expect(svc.settledRound()).toBe(0);
+
+    vi.advanceTimersByTime(1);
+    TestBed.tick();
+    expect(svc.settledRound()).toBe(1);
+    expect(svc.failedSources()).toEqual(['schedules']);
+    expect(ids(svc)).toEqual(['import:1']);
+
+    svc.refresh({ reason: 'open' });
+    expect(svc.round()).toBe(2);
+  });
+
+  it('a hung statement-progress read times out silently: the task has no bar', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { inbox: inboxWith(1) });
+    expect(svc.settledRound()).toBe(1);
+    expect(statements.subjects[0].observed).toBe(true);
+    vi.advanceTimersByTime(READ_TIMEOUT_MS);
+    expect(statements.subjects[0].observed).toBe(false);
+    expect(svc.failedSources()).toEqual([]);
+    expect(svc.tasks()[0].progress).toBeNull();
   });
 });

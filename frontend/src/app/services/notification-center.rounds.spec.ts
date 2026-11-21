@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeInbox } from '../components/accounting/inbox/testing';
 import { makeAccount, makeEntry, makeInstance } from '../components/accounting/testing/fixtures';
 import { AccountingService } from './accounting.service';
-import { NotificationCenterService } from './notification-center.service';
+import { InboxService } from '../components/accounting/inbox/inbox.service';
+import { NotificationCenterService, READ_TIMEOUT_MS } from './notification-center.service';
 
 /**
  * R26 / R27 with the real AccountingService, BillingService, InboxService, StatementsService and PortfolioService over
@@ -43,7 +44,8 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
   let accounting: AccountingService;
 
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['Date'] });
+    // Timers too: the 20 s read timeout runs on them. Promises stay real.
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     vi.setSystemTime(new Date(2026, 9, 24, 10, 0, 0));
     TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
     http = TestBed.inject(HttpTestingController);
@@ -257,5 +259,104 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
     await settle();
     expect(center.tasks().some(task => task.id === 'sched:1')).toBe(false);
     expect(center.settledRound()).toBe(id);
+  });
+
+  // ---- follow-up: hung reads (READ_TIMEOUT_MS) and the inbox write trigger -------------------------------------------
+
+  /** Advances the fake clock, then lets effects and promises run. */
+  async function wait(ms: number): Promise<void> {
+    vi.advanceTimersByTime(ms);
+    await settle();
+  }
+
+  it('a GET never answered: after 20 s the round settles with that source failed, the others intact; open starts a new round', async () => {
+    center.start();
+    TestBed.tick();
+    flushCalendar();
+    const first = take();
+    await flushRound(first, { accounts: [CARD], queue: [RENT] }, ['inbox']);
+    const reads = cardReads();
+    reads.summary.flush(spend('-1000.0000'));
+    reads.payments.flush(payments());
+    await settle();
+    expect(center.settledRound()).toBe(0);
+
+    await wait(READ_TIMEOUT_MS - 1);
+    expect(center.settledRound()).toBe(0);
+    await wait(1);
+    expect(center.settledRound()).toBe(1);
+    expect(center.failedSources()).toEqual(['recon']);
+    expect(center.tasks().map(task => task.id)).toEqual(['bill:11:2026-10-20', 'sched:1']);
+    // The timed-out read was unsubscribed: HttpClient aborted it, so no late answer can arrive.
+    expect(first.inbox.cancelled).toBe(true);
+
+    center.refresh({ reason: 'open' });
+    expect(center.round()).toBe(2);
+    await flushRound(take(), { accounts: [CARD], queue: [RENT] });
+    const again = cardReads();
+    again.summary.flush(spend('-1000.0000'));
+    again.payments.flush(payments());
+    await settle();
+    expect(center.settledRound()).toBe(2);
+    expect(center.failedSources()).toEqual([]);
+  });
+
+  it('a read answering at 19.9 s is applied normally', async () => {
+    center.start();
+    TestBed.tick();
+    flushCalendar();
+    const first = take();
+    await flushRound(first, {}, ['queue']);
+    await wait(19_900);
+    expect(first.queue.cancelled).toBe(false);
+    first.queue.flush([RENT]);
+    await settle();
+    expect(center.settledRound()).toBe(1);
+    expect(center.failedSources()).toEqual([]);
+    expect(center.tasks().map(task => task.id)).toEqual(['sched:1']);
+
+    await wait(1_000);
+    expect(center.failedSources()).toEqual([]);
+  });
+
+  it('a hung card statement: 20 s after the statements call the bills source fails; its late answer does not flip it back', async () => {
+    center.start();
+    TestBed.tick();
+    flushCalendar();
+    await flushRound(take(), { accounts: [CARD], queue: [RENT] });
+    const reads = cardReads();
+    reads.summary.flush(spend('-1000.0000'));
+    await wait(READ_TIMEOUT_MS - 1);
+    expect(center.settledRound()).toBe(0);
+    await wait(1);
+    expect(center.settledRound()).toBe(1);
+    expect(center.failedSources()).toEqual(['bills']);
+    expect(center.tasks().map(task => task.id)).toEqual(['sched:1']);
+
+    // The statement read belongs to the shared BillingService (the timeline and reminders read it too): it is not
+    // aborted, and its late answer lands there. The round's verdict stands: 帳單 stays failed until the next round.
+    reads.payments.flush(payments());
+    await settle();
+    expect(center.settledRound()).toBe(1);
+    expect(center.failedSources()).toEqual(['bills']);
+  });
+
+  it('an inbox write (the real apply) starts a round', async () => {
+    await firstRound();
+    const inbox = TestBed.inject(InboxService);
+    inbox
+      .apply({ cases: [{ case_id: 1, case_version: 1 }], action: 'dismiss', params: {}, answer: '測試' })
+      .subscribe();
+    http
+      .expectOne(req => req.method === 'POST' && req.url === `${API}/reconciliation/inbox/apply`)
+      .flush({ results: [], rule_id: null, rule_error: null });
+    TestBed.tick();
+    expect(center.round()).toBe(2);
+    await flushRound(take(), { accounts: [CARD], queue: [RENT] });
+    const reads = cardReads();
+    reads.summary.flush(spend('-1000.0000'));
+    reads.payments.flush(payments());
+    await settle();
+    expect(center.settledRound()).toBe(2);
   });
 });
