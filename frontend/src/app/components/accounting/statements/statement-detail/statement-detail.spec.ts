@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountPeriodSummary, LedgerEntry } from '../../../../models/accounting.model';
 import { LayoutModeService } from '../../../../services/layout-mode.service';
-import { AccountingToastService } from '../../accounting-toast';
+import { ToastService } from '../../../../services/toast.service';
 import { formatMoney } from '../../format';
 import { makeEntry } from '../../testing/fixtures';
 import { ReconciliationCase, StatementDetail, StatementLine } from '../statement.model';
@@ -495,7 +495,7 @@ describe('StatementDetailComponent', () => {
   });
 
   it('toasts when confirm or reconcile is a replay, and when reconcile is skipped', () => {
-    const toast = vi.spyOn(TestBed.inject(AccountingToastService), 'show');
+    const toast = TestBed.inject(ToastService);
     const fixture = loaded(statement({ open_case_count: 0 }));
     const el = fixture.nativeElement as HTMLElement;
 
@@ -512,7 +512,7 @@ describe('StatementDetailComponent', () => {
         policy: { applied: 0, proposed: 0 },
       });
     fixture.detectChanges();
-    expect(toast).toHaveBeenCalledWith('有待確認的變更，這次沒有重跑對帳');
+    expect(toast.current()).toMatchObject({ kind: 'error', text: '有待確認的變更，這次沒有重跑對帳' });
     flushDetail(statement({ open_case_count: 0 }));
     fixture.detectChanges();
 
@@ -533,7 +533,7 @@ describe('StatementDetailComponent', () => {
         replayed: true,
       });
     fixture.detectChanges();
-    expect(toast).toHaveBeenCalledWith('這次與上次相同，沒有重複執行');
+    expect(toast.current()).toMatchObject({ kind: 'done', text: '這次與上次相同，沒有重複執行' });
     flushDetail(statement({ open_case_count: 0, status: 'reconciled' }));
     fixture.detectChanges();
   });

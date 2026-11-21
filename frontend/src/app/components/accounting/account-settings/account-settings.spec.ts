@@ -6,7 +6,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, RouterLink, UrlTree, convertToParamMap, provideRouter } from '@angular/router';
 import { By } from '@angular/platform-browser';
 import { BehaviorSubject } from 'rxjs';
-import { AccountingToastService } from '../accounting-toast';
+import { ToastService } from '../../../services/toast.service';
 import { MockInstance, afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { AccountDetail, LedgerAccount, RewardRule, RewardUsage } from '../../../models/accounting.model';
@@ -2119,12 +2119,12 @@ describe('AccountSettingsComponent', () => {
     it('refuses an oversize file without a request and toasts', async () => {
       await setup('11');
       const fixture = render(DETAIL);
-      const show = vi.spyOn(TestBed.inject(AccountingToastService), 'show');
+      const toast = TestBed.inject(ToastService);
       openSource(fixture, '上傳圖片');
       choose(fixture, { size: 6 * 1024 * 1024, type: 'image/png' } as unknown as File);
       expect(el(fixture).querySelector<HTMLInputElement>('input[type=file]')!.value).toBe('');
       http.expectNone(URL);
-      expect(show).toHaveBeenCalledWith('圖片太大（上限 5 MB）');
+      expect(toast.current()).toMatchObject({ kind: 'error', text: '圖片太大（上限 5 MB）', action: null });
     });
 
     it('navigating away clears logoHash and the busy flag before the next account loads', async () => {
@@ -2146,13 +2146,39 @@ describe('AccountSettingsComponent', () => {
     it('toasts the mapped message on a 422 and clears the busy state', async () => {
       await setup('11');
       const fixture = render(DETAIL);
-      const show = vi.spyOn(TestBed.inject(AccountingToastService), 'show');
+      const toast = TestBed.inject(ToastService);
       openSource(fixture, '上傳圖片');
       choose(fixture, file());
       fixture.detectChanges();
       expect(fixture.componentInstance.uploadingLogo()).toBe(true);
       http.expectOne(URL).flush({ message: 'logo_format' }, { status: 422, statusText: 'Unprocessable Entity' });
-      expect(show).toHaveBeenCalledWith('只接受 PNG、JPEG、WebP');
+      expect(toast.current()).toMatchObject({ kind: 'error', text: '只接受 PNG、JPEG、WebP', action: null });
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
+    it('a 500 logo upload offers 重試, which uploads the same file again', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const toast = TestBed.inject(ToastService);
+      openSource(fixture, '上傳圖片');
+      const picked = file();
+      choose(fixture, picked);
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      expect(toast.current()).toMatchObject({ kind: 'error', action: { label: '重試' } });
+      toast.current()!.action!.run();
+      const again = http.expectOne(URL);
+      expect(again.request.method).toBe('PUT');
+      expect(again.request.body).toBe(picked);
+      again.flush({ ...DETAIL, logo_hash: 'h2' });
+    });
+
+    it('a 422 logo upload offers no 重試', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      openSource(fixture, '上傳圖片');
+      choose(fixture, file());
+      http.expectOne(URL).flush({ message: 'logo_format' }, { status: 422, statusText: 'Unprocessable Entity' });
+      expect(TestBed.inject(ToastService).current()?.action).toBeNull();
       expect(fixture.componentInstance.uploadingLogo()).toBe(false);
     });
   });

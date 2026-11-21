@@ -61,7 +61,7 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
-import { AccountingToastService } from '../accounting-toast';
+import { injectToasts } from '../../../services/toast.service';
 import { NO_ENTER_SAVE_TAGS, accountLabel, isHandledKey, restoreOverlayFocus, trapFocus } from '../accounting-ui';
 import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
 import { evaluateAmount, prettyExpression, roundHalfAway } from '../amount-math';
@@ -348,7 +348,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   readonly transferEdit = signal<TransferEdit | null>(null);
   readonly transferPanel = viewChild(TransferPanelComponent);
   readonly categoryPicker = viewChild(CategoryPickerComponent);
-  private readonly toast = inject(AccountingToastService);
+  private readonly toasts = injectToasts();
   /** 進階 單次 / 週期 / 分期 (Task 21); 單次 is the plain entry. */
   readonly scheduleDraft = signal<ScheduleDraft>(defaultDraft(todayIso()));
   /** 編輯整個排程: the definition being edited (`?schedule=<id>`), else null. */
@@ -2297,7 +2297,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           return;
         }
         if (isImportRunning(error)) {
-          this.toast.show(IMPORT_RUNNING_TOAST);
+          this.toasts.error(IMPORT_RUNNING_TOAST);
           return;
         }
         this.fieldErrors.set(fieldErrors(error));
@@ -2318,14 +2318,14 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           this.saving.set(false);
           this.createdScheduleId.set(null);
           if (result.failed !== null) {
-            this.toast.show(CATCH_UP_FAILED_TOAST);
+            this.toasts.error(CATCH_UP_FAILED_TOAST);
           }
           this.finish(keepGoing);
         },
         error: (error: unknown) => {
           this.saving.set(false);
           if (isImportRunning(error)) {
-            this.toast.show(IMPORT_RUNNING_TOAST);
+            this.toasts.error(IMPORT_RUNNING_TOAST);
           }
           this.error.set(CATCH_UP_RETRY_TEXT);
         },

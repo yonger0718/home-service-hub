@@ -21,7 +21,8 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { BusinessCalendarService } from '../../../services/business-calendar.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { AccountingToastService, scheduleActionError } from '../accounting-toast';
+import { injectToasts } from '../../../services/toast.service';
+import { scheduleActionError } from '../http-errors';
 import { isHandledKey } from '../accounting-ui';
 import { BillingEvent, billingCards, dueCountdown, reminderDues } from '../billing/billing-math';
 import { AccountIconComponent } from '../account-icon/account-icon';
@@ -269,7 +270,7 @@ export class AccountingRemindersComponent {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly layoutMode = inject(LayoutModeService);
-  private readonly toast = inject(AccountingToastService);
+  private readonly toasts = injectToasts();
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly injector = inject(Injector);
   private requestId = 0;
@@ -690,7 +691,7 @@ export class AccountingRemindersComponent {
       },
       error: (error: unknown) => {
         this.setBusy(row.id, false);
-        this.actionError.set(scheduleActionError(error, this.toast));
+        this.actionError.set(scheduleActionError(error, this.toasts));
       },
     });
   }
@@ -795,7 +796,7 @@ export class AccountingRemindersComponent {
       next: () => this.setRetrying(row.id, false),
       error: (error: unknown) => {
         this.setRetrying(row.id, false);
-        this.scheduleError.set(scheduleActionError(error, this.toast));
+        this.scheduleError.set(scheduleActionError(error, this.toasts));
       },
     });
   }

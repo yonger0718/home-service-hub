@@ -27,7 +27,8 @@ import {
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { AccountingToastService, scheduleActionError } from '../accounting-toast';
+import { injectToasts } from '../../../services/toast.service';
+import { scheduleActionError } from '../http-errors';
 import { NO_ENTER_SAVE_TAGS, textOn, colorOf, fxConversionLine, iconOf, isHandledKey } from '../accounting-ui';
 import {
   amountString,
@@ -166,7 +167,7 @@ export class EntryDetailComponent implements OnInit {
   readonly formNote = signal('');
   readonly formError = signal<string | null>(null);
   readonly busy = signal(false);
-  private readonly toast = inject(AccountingToastService);
+  private readonly toasts = injectToasts();
   /** The definition of the shown entry's period (scope choice, repost amounts); request-id guarded. */
   readonly scheduleDefinition = signal<ScheduleDefinitionDetail | null>(null);
   readonly repostAmounts = signal<string[]>([]);
@@ -640,7 +641,7 @@ export class EntryDetailComponent implements OnInit {
           return;
         }
         this.busy.set(false);
-        this.formError.set(scheduleActionError(err, this.toast));
+        this.formError.set(scheduleActionError(err, this.toasts));
       },
     });
   }
@@ -829,7 +830,7 @@ export class EntryDetailComponent implements OnInit {
             return;
           }
           this.busy.set(false);
-          this.formError.set(scheduleActionError(error, this.toast));
+          this.formError.set(scheduleActionError(error, this.toasts));
         },
       });
   }

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Counterparty, DebtReviewItem, LedgerAccount, LedgerEntry, ScheduleDefinition, ScheduleInstance } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { AccountingToastService } from '../accounting-toast';
+import { ToastService } from '../../../services/toast.service';
 import { makeAccount, makeDefinition, makeEntry, makeInstance } from '../testing/fixtures';
 import { BillState } from '../billing/billing.service';
 import { StatementSummary } from '../statements/statement.model';
@@ -934,7 +934,7 @@ describe('AccountingRemindersComponent', () => {
         { detail: 'import_running' }, { status: 409, statusText: 'Conflict' },
       );
       fixture.detectChanges();
-      expect(TestBed.inject(AccountingToastService).message()).toBe('匯入進行中，請稍後再試');
+      expect(TestBed.inject(ToastService).current()).toMatchObject({ kind: 'error', text: '匯入進行中，請稍後再試' });
       expect(item(el, 31)).not.toBeNull();
       expect(el.querySelector('.action-error')).toBeNull();
     });

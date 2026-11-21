@@ -18,7 +18,8 @@ import { map } from 'rxjs';
 import { ENTRY_KIND_LABELS, EntryDetail } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { AccountingToastService, scheduleActionError } from '../accounting-toast';
+import { injectToasts } from '../../../services/toast.service';
+import { scheduleActionError } from '../http-errors';
 import { colorOf, iconOf, isHandledKey } from '../accounting-ui';
 import { slashDate } from '../dates';
 import { storedGroupNet } from '../entry-detail/split-card';
@@ -67,7 +68,7 @@ export class SplitGroupComponent implements OnInit {
   private layoutMode = inject(LayoutModeService);
   private host = inject<ElementRef<HTMLElement>>(ElementRef);
   private injector = inject(Injector);
-  private readonly toast = inject(AccountingToastService);
+  private readonly toasts = injectToasts();
 
   /** The member the route names (`:eid` under a passbook, else `:id`). */
   readonly routeEntryId = signal<number | null>(null);
@@ -243,7 +244,7 @@ export class SplitGroupComponent implements OnInit {
             return;
           }
           this.busy.set(false);
-          this.formError.set(scheduleActionError(error, this.toast));
+          this.formError.set(scheduleActionError(error, this.toasts));
         },
       });
   }

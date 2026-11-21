@@ -11,7 +11,7 @@ import { MockInstance, afterEach, beforeEach, describe, expect, it, vi } from 'v
 
 import { Counterparty, Project } from '../../../models/accounting.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { AccountingToastService } from '../accounting-toast';
+import { ToastService } from '../../../services/toast.service';
 import { FxValue } from '../fx-sheet/fx-sheet';
 import { makeAccount, makeAccountDetail, makeCategory, makeDefinition, makePreference } from '../testing/fixtures';
 import { DirtyFormRegistry } from '../dirty-form.service';
@@ -217,7 +217,7 @@ describe('EntryFormComponent schedules', () => {
     );
     settle();
     expect(left()).toBe(false);
-    expect(TestBed.inject(AccountingToastService).message()).toBe('匯入進行中，請稍後再試');
+    expect(TestBed.inject(ToastService).current()).toMatchObject({ kind: 'error', text: '匯入進行中，請稍後再試' });
     expect(text(el.querySelector('.form-error'))).toBe('排程已建立，入帳未完成；按 ✓ 重試入帳');
 
     localStorage.setItem(RECENT_ACCOUNTS_KEY, '[3]');
@@ -237,7 +237,7 @@ describe('EntryFormComponent schedules', () => {
     catchUpRequest().error(new ProgressEvent('error'));
     settle();
     expect(left()).toBe(false);
-    expect(TestBed.inject(AccountingToastService).message()).toBeNull();
+    expect(TestBed.inject(ToastService).current()).toBeNull();
     expect(text(el.querySelector('.form-error'))).toBe('排程已建立，入帳未完成；按 ✓ 重試入帳');
     expect((el.querySelector('fieldset.content') as HTMLFieldSetElement).disabled).toBe(true);
     expect((el.querySelector('button.save') as HTMLButtonElement).disabled).toBe(false);
@@ -260,9 +260,24 @@ describe('EntryFormComponent schedules', () => {
       posted: [], failed: { instance_id: 31, error: 'lines[0].account_id: 帳戶已封存' }, definition: makeDefinition({ id: 9 }),
     });
     settle();
-    expect(TestBed.inject(AccountingToastService).message()).toBe('排程已建立；這一期入帳失敗，請到待完成交易處理');
+    expect(TestBed.inject(ToastService).current()).toMatchObject({ kind: 'error', text: '排程已建立；這一期入帳失敗，請到待完成交易處理' });
     expect(left()).toBe(true);
     httpMock.expectNone(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions');
+  });
+
+  it('the catch-up 失敗 survives the form closing', async () => {
+    const { el, left } = await netflix(null);
+    keys(el, '✓');
+    definitionRequest().flush(makeDefinition({ id: 9, anchor_date: '2026-10-03' }));
+    settle();
+    catchUpRequest().flush({
+      posted: [], failed: { instance_id: 31, error: 'lines[0].account_id: 帳戶已封存' }, definition: makeDefinition({ id: 9 }),
+    });
+    settle();
+    expect(left()).toBe(true);
+    // The toast has no action, so the form's ownership ending changes nothing visible.
+    expect(TestBed.inject(ToastService).current()?.text).toBe('排程已建立；這一期入帳失敗，請到待完成交易處理');
+    expect(TestBed.inject(ToastService).current()?.action).toBeNull();
   });
 
   it('leaves a back-dated start to 待完成交易', async () => {

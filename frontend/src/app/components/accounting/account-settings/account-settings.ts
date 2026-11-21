@@ -35,8 +35,8 @@ import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { shortDate, todayIso } from '../dates';
 import { balanceNegative, balanceText, valuationHint } from '../account-balance';
 import { decimalText, formatMoney } from '../format';
-import { fieldErrors, writeErrorMessage } from '../http-errors';
-import { AccountingToastService } from '../accounting-toast';
+import { fieldErrors, retryOnNetwork, writeErrorMessage } from '../http-errors';
+import { injectToasts } from '../../../services/toast.service';
 import { logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
 import { AccountLookSectionComponent, lookSummary } from './look-section/look-section';
@@ -275,7 +275,7 @@ interface LoadedAccount {
 })
 export class AccountSettingsComponent implements OnInit, DirtyAware {
   private service = inject(AccountingService);
-  private readonly toast = inject(AccountingToastService);
+  private readonly toasts = injectToasts();
   private route = inject(ActivatedRoute);
   private router = inject(Router);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
@@ -957,7 +957,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
       return;
     }
     if (logoFileTooLarge(file)) {
-      this.toast.show('圖片太大（上限 5 MB）');
+      this.toasts.error('圖片太大（上限 5 MB）');
       return;
     }
     this.uploadingLogo.set(true);
@@ -970,7 +970,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
       error: err => {
         if (id === this.loadedId()) {
           this.uploadingLogo.set(false);
-          this.toast.show(logoUploadErrorMessage(err));
+          this.toasts.error(logoUploadErrorMessage(err), { retry: retryOnNetwork(err, () => this.uploadLogoFile(file)) });
         }
       },
       complete: () => {
@@ -996,7 +996,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
       error: err => {
         if (id === this.loadedId()) {
           this.uploadingLogo.set(false);
-          this.toast.show(logoUploadErrorMessage(err));
+          this.toasts.error(logoUploadErrorMessage(err), { retry: retryOnNetwork(err, () => this.removeLogo()) });
         }
       },
       complete: () => {
