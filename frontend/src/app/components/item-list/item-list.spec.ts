@@ -1,6 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { HttpErrorResponse } from '@angular/common/http';
-import { of, throwError } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 import { provideRouter } from '@angular/router';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 
@@ -175,6 +175,19 @@ describe('ItemListComponent', () => {
 
       toasts().current()!.action!.run();
       expect(itemServiceMock.createTransaction.mock.calls.map(call => [call[0], call[1].type])).toEqual([[2, 'CONSUME'], [2, 'CONSUME']]);
+    });
+
+    it('with the server down the reload that follows a failed quantity change is silent: the visible toast stays the save\'s 失敗 with 重試', () => {
+      const reload = new Subject<ItemResponse[]>();
+      itemServiceMock.createTransaction.mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 0 })));
+      itemServiceMock.getAllFiltered.mockReturnValueOnce(reload);
+      component.adjustQuantity(items[1], -1);
+      const failure = toasts().current();
+      expect(failure).toEqual(expect.objectContaining({ kind: 'error', text: '操作失敗' }));
+      expect(failure?.action?.label).toBe('重試');
+
+      reload.error(new HttpErrorResponse({ status: 0 }));
+      expect(toasts().current()).toBe(failure);
     });
 
     it('a 重試 of an image upload that succeeds after another item was opened does not write into that form', () => {

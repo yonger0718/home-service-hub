@@ -250,10 +250,10 @@ describe('Dividend filter-wide summary', () => {
     const fixture = TestBed.createComponent(PortfolioDividendListComponent);
     const component = fixture.componentInstance;
     const fetch = component.fetch.bind(component);
-    vi.spyOn(component, 'fetch').mockImplementation(() => {
+    vi.spyOn(component, 'fetch').mockImplementation((...args) => {
       inFetch = true;
       try {
-        fetch();
+        fetch(...args);
       } finally {
         inFetch = false;
       }
@@ -1317,6 +1317,24 @@ describe('Dividend filter-wide summary', () => {
         fixture.destroy();
       });
 
+      it('with the server down the reload that follows a failed receipt confirmation is silent: the visible toast stays the save\'s 失敗 with 重試', () => {
+        service['confirmDividendReceipt'].mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 0 })));
+        const fixture = rendered([tw]);
+        open(fixture, 21);
+        fill(fixture, '2026-11-18', '7');
+        formButton(fixture, '確認已收到並入帳').click();
+        const failure = shown();
+        expect(failure).toEqual(expect.objectContaining({ kind: 'error', text: '收款確認未完成：請重新載入後核對' }));
+        expect(failure?.action?.label).toBe('重試');
+
+        listCalls[1].response.error(new HttpErrorResponse({ status: 0 }));
+        summaryCalls[1].response.error(new HttpErrorResponse({ status: 0 }));
+        fixture.detectChanges();
+        expect(shown()).toBe(failure);
+        expect(fixture.componentInstance.loading()).toBe(false);
+        fixture.destroy();
+      });
+
       it('a receipt 重試 pressed while a fresh confirmation is in flight sends nothing and keeps the toast', () => {
         const pendingAnswer = new Subject<Dividend>();
         service['confirmDividendReceipt']
@@ -1834,6 +1852,22 @@ describe('Dividend filter-wide summary', () => {
 
       button(fixture, '儲存').click();
       expect(service['updateDividendDeductions']).toHaveBeenCalledWith(31, { fee: 10, tax: 12.5, revision: 1 });
+      fixture.destroy();
+    });
+
+    it('with the server down the reload that follows a failed deductions update is silent: the visible toast stays the save\'s 失敗 with 重試', () => {
+      service['updateDividendDeductions'] = vi.fn().mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 0 })));
+      const fixture = rendered([tw]);
+      openDeductions(fixture, tw);
+      button(fixture, '儲存').click();
+      const failure = shown();
+      expect(failure).toEqual(expect.objectContaining({ kind: 'error', text: '扣款更新未完成：請重新載入後核對' }));
+      expect(failure?.action?.label).toBe('重試');
+
+      listCalls[1].response.error(new HttpErrorResponse({ status: 0 }));
+      summaryCalls[1].response.error(new HttpErrorResponse({ status: 0 }));
+      fixture.detectChanges();
+      expect(shown()).toBe(failure);
       fixture.destroy();
     });
 

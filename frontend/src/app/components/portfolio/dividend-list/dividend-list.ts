@@ -264,19 +264,20 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
 
   private sendReceipt(row: Dividend, body: { receipt_date: string; account_id: number; revision: number }, session: number): void {
     this.receiptBusy.set(true);
-    const settle = () => {
+    const settle = (silent = false) => {
       this.receiptBusy.set(false);
       if (session === this.formSession) {
         this.closeReceipt();
         this.focusRowButton(row.id);
       }
-      this.reload();
+      this.reload({ silent });
     };
     this.receiptSub?.unsubscribe();
     this.receiptSub = this.portfolioService.confirmDividendReceipt(row.id, body).subscribe({
       next: () => settle(),
       error: err => {
-        settle();
+        // The save's 失敗 toast (with 重試) is the news; a reload that fails too must not replace it.
+        settle(true);
         const text = toastText('收款確認未完成', serverReason(err));
         this.toasts.error(text, {
           retry: guardedRetry(err, this.toasts, text, () => this.receiptBusy() || this.deductionsBusy(), () => this.sendReceipt(row, body, session)),
@@ -345,19 +346,20 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
 
   private sendDeductions(row: Dividend, body: { fee: number; tax: number; revision: number }, session: number): void {
     this.deductionsBusy.set(true);
-    const settle = () => {
+    const settle = (silent = false) => {
       this.deductionsBusy.set(false);
       if (session === this.formSession) {
         this.closeDeductions();
         this.focusRowAction(row.id);
       }
-      this.reload();
+      this.reload({ silent });
     };
     this.deductionsSub?.unsubscribe();
     this.deductionsSub = this.portfolioService.updateDividendDeductions(row.id, body).subscribe({
       next: () => settle(),
       error: err => {
-        settle();
+        // The save's 失敗 toast (with 重試) is the news; a reload that fails too must not replace it.
+        settle(true);
         const text = toastText('扣款更新未完成', serverReason(err));
         this.toasts.error(text, {
           retry: guardedRetry(err, this.toasts, text, () => this.receiptBusy() || this.deductionsBusy(), () => this.sendDeductions(row, body, session)),
@@ -455,7 +457,8 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.deductionsSub?.unsubscribe();
   }
 
-  fetch() {
+  /** `silent`: a failure raises no toast (a reload started from a save's error path must not replace that toast). */
+  fetch(options: { readonly silent?: boolean } = {}) {
     const seq = ++this.fetchSeq;
     this.loading.set(true);
     this.listSub?.unsubscribe();
@@ -469,7 +472,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       error: () => {
         if (seq !== this.fetchSeq) return;
         this.loading.set(false);
-        this.toasts.error('查詢失敗，請檢查篩選條件');
+        if (!options.silent) this.toasts.error('查詢失敗，請檢查篩選條件');
       },
     });
   }
@@ -517,9 +520,9 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   }
 
   /** The filter-wide set and the list page; on every filter, sort or data change (a page change only fetches). */
-  private reload() {
+  private reload(options: { readonly silent?: boolean } = {}) {
     this.loadAll();
-    this.fetch();
+    this.fetch(options);
   }
 
   private updateFilters(patch: Partial<DividendQuery>, debounce = false) {

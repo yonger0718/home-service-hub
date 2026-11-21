@@ -108,10 +108,13 @@ export class ItemListComponent implements OnInit {
     this.itemService.getLocations().subscribe(locs => this.allLocations = locs);
   }
 
-  loadItems(): void {
+  /** `silent`: a failure raises no toast (a reload started from a save's error path must not replace that toast). */
+  loadItems(options: { readonly silent?: boolean } = {}): void {
     this.itemService.getAllFiltered(this.searchKeyword, this.lowStockOnly).subscribe({
       next: data => this.items.set(data),
-      error: () => this.toasts.error('無法載入物品清單', { retry: () => this.loadItems() })
+      error: () => {
+        if (!options.silent) this.toasts.error('無法載入物品清單', { retry: () => this.loadItems() });
+      }
     });
   }
 
@@ -251,7 +254,7 @@ export class ItemListComponent implements OnInit {
         }
       },
       error: err => {
-        this.loadItems();
+        this.loadItems({ silent: true });
         const text = err?.error?.message || '操作失敗';
         this.toasts.error(text, {
           retry: guardedRetry(err, this.toasts, text, () => this.adjusting.has(itemId), () => this.sendAdjust(itemId, delta)),
