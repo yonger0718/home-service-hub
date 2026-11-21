@@ -1,12 +1,12 @@
 <section class="entry-detail split-group" aria-label="多類別">
-  <h1 class="visually-hidden">多類別</h1>
+  <h1 class="visually-hidden" tabindex="-1">多類別</h1>
   @if (loadError()) {
     @if (!detail() && !inSheet()) {
       <div class="error-head">
         <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>
       </div>
     }
-    <app-banner class="page-load-error" tone="error" heading="記錄讀取失敗，請稍後再試。" actionLabel="重試" (action)="retry()" />
+    <app-banner class="page-load-error" tone="error" heading="記錄讀取失敗，請稍後再試。" actionLabel="重試" [actionDisabled]="retrying()" (action)="retry()" />
   }
 
   @if (detail(); as d) {

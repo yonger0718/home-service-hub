@@ -17,7 +17,7 @@
   </div>
 </ng-template>
 
-<section class="rp">
+<section class="rp" tabindex="-1">
   <app-page-header [subtitle]="rules()">
     @if (!isPhone()) { <ng-container [ngTemplateOutlet]="periodControl" /> }
   </app-page-header>
@@ -49,7 +49,7 @@
   }
 
   @if (state() === 'error') {
-    <app-banner class="page-load-error" tone="error" heading="報表讀取失敗" actionLabel="重試" (action)="reload()" />
+    <app-banner class="page-load-error" tone="error" heading="報表讀取失敗" actionLabel="重試" [actionDisabled]="retrying()" (action)="retry()" />
   } @else {
     <div class="rp-figures" [attr.aria-busy]="state() === 'loading'">
       @for (figure of figures(); track figure.label) {

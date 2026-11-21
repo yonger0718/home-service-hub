@@ -37,7 +37,7 @@ import {
   readGroupNavState,
 } from './group-nav';
 import { BannerComponent } from '../../ui/banner/banner';
-
+import { focusPageIfLost } from '../retry-focus';
 
 /**
  * The 多類別 group view (PR-9): the split as one record, MOZE style. Routed by one of its members
@@ -131,9 +131,26 @@ export class SplitGroupComponent implements OnInit {
 
   private lastLoadId: number | null = null;
 
+  /** A 重試 in flight: the banner stays (same element, nothing re-announced) with its button disabled. */
+  readonly retrying = signal(false);
+
+  private endRetry(ok: boolean): void {
+    if (!this.retrying()) {
+      return;
+    }
+    this.retrying.set(false);
+    if (ok) {
+      focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    }
+  }
+
   /** 重試 on the read-failure banner: the entry the route last asked for. */
   retry(): void {
+    if (this.retrying()) {
+      return;
+    }
     if (this.lastLoadId !== null) {
+      this.retrying.set(true);
       this.load(this.lastLoadId);
     }
   }
@@ -141,7 +158,6 @@ export class SplitGroupComponent implements OnInit {
   private load(id: number): void {
     this.lastLoadId = id;
     const seq = ++this.loadSeq;
-    this.loadError.set(false);
     this.service
       .getEntry(id)
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -160,11 +176,14 @@ export class SplitGroupComponent implements OnInit {
             return;
           }
           this.detail.set(detail);
+          this.loadError.set(false);
+          this.endRetry(true);
         },
         error: () => {
           if (seq === this.loadSeq) {
             this.detail.set(null);
             this.loadError.set(true);
+            this.endRetry(false);
           }
         },
       });

@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal, ElementRef, Injector } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 
@@ -14,7 +14,7 @@ import {
 } from '../statement-view';
 import { StatementsService } from '../statements.service';
 import { BannerComponent } from '../../../ui/banner/banner';
-
+import { focusPageIfLost } from '../../retry-focus';
 
 /** `/accounting/accounts/:id/statements`: live rows, plus the historical periods summary table. */
 @Component({
@@ -26,6 +26,8 @@ import { BannerComponent } from '../../../ui/banner/banner';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class StatementListComponent {
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
   private readonly route = inject(ActivatedRoute);
   private readonly statementsApi = inject(StatementsService);
   private readonly layoutMode = inject(LayoutModeService);
@@ -60,7 +62,25 @@ export class StatementListComponent {
     });
   }
 
+
+  /** A 重試 in flight: the banner stays (same element, nothing re-announced) with its button disabled. */
+  readonly retrying = signal(false);
+
+  private endRetry(ok: boolean): void {
+    if (!this.retrying()) {
+      return;
+    }
+    this.retrying.set(false);
+    if (ok) {
+      focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    }
+  }
+
   retry(): void {
+    if (this.retrying()) {
+      return;
+    }
+    this.retrying.set(true);
     this.load();
   }
 
@@ -68,7 +88,6 @@ export class StatementListComponent {
     const accountId = this.accountId();
     const id = ++this.requestId;
     this.loading.set(true);
-    this.loadError.set(false);
     this.statements.set([]);
     this.statementsApi.list(accountId).subscribe({
       next: (rows) => {
@@ -77,6 +96,8 @@ export class StatementListComponent {
         }
         this.statements.set(rows);
         this.loading.set(false);
+        this.loadError.set(false);
+        this.endRetry(true);
       },
       error: () => {
         if (id !== this.requestId) {
@@ -84,6 +105,7 @@ export class StatementListComponent {
         }
         this.loading.set(false);
         this.loadError.set(true);
+        this.endRetry(false);
       },
     });
   }

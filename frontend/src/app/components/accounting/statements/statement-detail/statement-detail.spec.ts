@@ -217,12 +217,43 @@ describe('StatementDetailComponent', () => {
     const el = fixture.nativeElement as HTMLElement;
     expect(text(el.querySelector('.period'))).toContain('2026/09/20');
     expect(text(el.querySelector('.compare .load-error'))).toBe('帳本讀取失敗');
-    expect(el.querySelector('.page-load-error')).toBeNull();
   });
 
   it('a section read failure (帳本) shows no page banner', () => {
     const fixture = loaded(statement(), 'error');
     expect(fixture.nativeElement.querySelector('.page-load-error')).toBeNull();
+  });
+
+  it('重試 keeps the banner through the read (same node, button disabled, a double press reads once); a second failure keeps it; success removes it and focus stays in the page', async () => {
+    const fixture = render();
+    http.expectOne('/api/accounting/accounts/6/statements/1').flush('nope', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    fixture.detectChanges();
+    const banner = el.querySelector('.page-load-error')!;
+    const button = banner.querySelector<HTMLButtonElement>('.banner-action')!;
+    button.focus();
+    button.click();
+    button.click();
+    fixture.detectChanges();
+    expect(button.disabled).toBe(true);
+    const again = http.expectOne('/api/accounting/accounts/6/statements/1');
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    again.flush('nope', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.page-load-error')).toHaveLength(1);
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    expect(button.disabled).toBe(false);
+    button.focus();
+    button.click();
+    fixture.detectChanges();
+    flushDetail(statement());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(el.querySelector('.page-load-error')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(el.contains(document.activeElement)).toBe(true);
   });
 
   it('a failed statement read shows an 錯誤 banner with 帳單讀取失敗 and 重試; 重試 reads again and the banner leaves on success', () => {
@@ -235,7 +266,7 @@ describe('StatementDetailComponent', () => {
     expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
     el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
     fixture.detectChanges();
-    expect(el.querySelector('app-skeleton')).not.toBeNull();
+    expect(el.querySelector('.page-load-error')).not.toBeNull();
     flushDetail(statement());
     fixture.detectChanges();
     expect(el.querySelector('.page-load-error')).toBeNull();

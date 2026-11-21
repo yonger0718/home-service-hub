@@ -689,6 +689,48 @@ describe('AccountingAccountsComponent', () => {
     expect(rows(el)[0].querySelector('.bal')?.textContent?.trim()).toBe('$9,999');
   });
 
+  it('重試 keeps the banner through the read (same node, button disabled, a double press reads once); a second failure keeps it; success removes it and focus stays in the page', async () => {
+    const fixture = TestBed.createComponent(AccountingAccountsComponent);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    const answerImportReads = () => {
+      for (const pending of http.match('/api/accounting/imports/latest')) if (!pending.cancelled) pending.flush(LATEST);
+      for (const pending of http.match('/api/accounting/preference')) if (!pending.cancelled) pending.flush(PREFERENCE_BODY);
+    };
+    http.expectOne(ACCOUNTS_GET).flush('boom', { status: 500, statusText: 'Server Error' });
+    answerImportReads();
+    fixture.detectChanges();
+    fixture.detectChanges();
+    const banner = el.querySelector('.page-load-error')!;
+    const button = banner.querySelector<HTMLButtonElement>('.banner-action')!;
+    button.focus();
+    button.click();
+    button.click();
+    fixture.detectChanges();
+    expect(button.disabled).toBe(true);
+    const again = http.expectOne(ACCOUNTS_GET);
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    again.flush('boom', { status: 500, statusText: 'Server Error' });
+    answerImportReads();
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.page-load-error')).toHaveLength(1);
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    expect(button.disabled).toBe(false);
+    button.focus();
+    button.click();
+    fixture.detectChanges();
+    http.expectOne(ACCOUNTS_GET).flush(ACCOUNTS);
+    answerImportReads();
+    fixture.detectChanges();
+    flushBills();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(el.querySelector('.page-load-error')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(el.contains(document.activeElement)).toBe(true);
+  });
+
   it('offers 重試 on a failed account list and reloads it', () => {
     const fixture = TestBed.createComponent(AccountingAccountsComponent);
     fixture.detectChanges();
@@ -707,7 +749,8 @@ describe('AccountingAccountsComponent', () => {
 
     el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
     fixture.detectChanges();
-    expect(el.querySelector('app-skeleton')).not.toBeNull();
+    // The banner stays through the read (no skeleton behind it) until the read succeeds.
+    expect(el.querySelector('.page-load-error')).not.toBeNull();
     http.expectOne(ACCOUNTS_GET).flush(ACCOUNTS);
     http.expectOne('/api/accounting/imports/latest').flush(LATEST);
     for (const pending of http.match('/api/accounting/preference')) {

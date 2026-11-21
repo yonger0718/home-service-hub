@@ -53,7 +53,7 @@ import { RewardAmountText } from './reward-cards';
 import { AppEntryRewardSectionComponent } from './reward-section';
 import { storedGroupNet } from './split-card';
 import { BannerComponent } from '../../ui/banner/banner';
-
+import { focusPageIfLost } from '../retry-focus';
 
 /**
  * What a settlement is worth in the debt's currency (design D3): its `amount` in the same currency, else its
@@ -650,9 +650,26 @@ export class EntryDetailComponent implements OnInit {
 
   private lastLoadId: number | null = null;
 
+  /** A 重試 in flight: the banner stays (same element, nothing re-announced) with its button disabled. */
+  readonly retrying = signal(false);
+
+  private endRetry(ok: boolean): void {
+    if (!this.retrying()) {
+      return;
+    }
+    this.retrying.set(false);
+    if (ok) {
+      focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    }
+  }
+
   /** 重試 on the read-failure banner: the entry the route last asked for. */
   retry(): void {
+    if (this.retrying()) {
+      return;
+    }
     if (this.lastLoadId !== null) {
+      this.retrying.set(true);
       this.load(this.lastLoadId);
     }
   }
@@ -661,7 +678,6 @@ export class EntryDetailComponent implements OnInit {
   load(id: number, afterWrite = false): void {
     this.lastLoadId = id;
     const seq = ++this.loadSeq;
-    this.loadError.set(false);
     this.service
       .getEntry(id)
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -670,6 +686,8 @@ export class EntryDetailComponent implements OnInit {
           if (seq === this.loadSeq) {
             this.stepping.set(false);
             this.detail.set(detail);
+            this.loadError.set(false);
+            this.endRetry(true);
           }
         },
         error: () => {
@@ -679,6 +697,7 @@ export class EntryDetailComponent implements OnInit {
               this.detail.set(null);
             }
             this.loadError.set(true);
+            this.endRetry(false);
           }
         },
       });

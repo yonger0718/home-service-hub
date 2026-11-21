@@ -2,7 +2,7 @@
   <header class="rr-header">
     <div class="rr-heading">
       <button type="button" class="rr-back" (click)="back()">‹ 記帳設定</button>
-      <h1>回饋規則</h1>
+      <h1 tabindex="-1">回饋規則</h1>
       @if (overview()) {
         <p class="rr-headline">{{ headline() }}</p>
       }
@@ -31,7 +31,7 @@
   }
 
   @if (error(); as message) {
-    <app-banner class="page-load-error" tone="error" [heading]="message" actionLabel="重試" (action)="retry()" />
+    <app-banner class="page-load-error" tone="error" [heading]="message" actionLabel="重試" [actionDisabled]="retrying()" (action)="retry()" />
   }
 
   <div class="rr-grid" [attr.aria-busy]="loading() || null">

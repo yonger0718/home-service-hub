@@ -40,7 +40,7 @@ import {
 } from '../statement-view';
 import { StatementsService } from '../statements.service';
 import { BannerComponent } from '../../../ui/banner/banner';
-
+import { focusPageIfLost } from '../../retry-focus';
 
 type SegmentKey = 'matched' | 'statement' | 'ledger';
 
@@ -163,7 +163,25 @@ export class StatementDetailComponent implements DirtyAware {
     this.host.nativeElement.querySelector<HTMLElement>('.force-note')?.focus();
   }
 
+
+  /** A 重試 in flight: the banner stays (same element, nothing re-announced) with its button disabled. */
+  readonly retrying = signal(false);
+
+  private endRetry(ok: boolean): void {
+    if (!this.retrying()) {
+      return;
+    }
+    this.retrying.set(false);
+    if (ok) {
+      focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    }
+  }
+
   retry(): void {
+    if (this.retrying()) {
+      return;
+    }
+    this.retrying.set(true);
     this.load();
   }
 
@@ -332,7 +350,6 @@ export class StatementDetailComponent implements DirtyAware {
     const statementId = this.statementId();
     const id = ++this.requestId;
     this.loading.set(true);
-    this.loadError.set(false);
     this.summaryError.set(false);
     this.entriesError.set(false);
     this.detail.set(null);
@@ -349,6 +366,8 @@ export class StatementDetailComponent implements DirtyAware {
         }
         this.detail.set(detail);
         this.loading.set(false);
+        this.loadError.set(false);
+        this.endRetry(true);
         this.loadLedger(id, detail);
       },
       error: () => {
@@ -357,6 +376,7 @@ export class StatementDetailComponent implements DirtyAware {
         }
         this.loading.set(false);
         this.loadError.set(true);
+        this.endRetry(false);
       },
     });
   }

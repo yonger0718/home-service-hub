@@ -294,4 +294,7 @@
   text-decoration: none;
 }
 
-.page-load-error { display: block; margin: 8px 0 12px; }
+.page-load-error { margin: 8px 0 12px; }
+
+/* Focus lands here after a 重試 succeeded (programmatic only). */
+section:focus { outline: none; }

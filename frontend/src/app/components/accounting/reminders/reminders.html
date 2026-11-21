@@ -3,7 +3,7 @@
     @if (isPhone()) {
       <a routerLink="/accounting" class="back-link" aria-label="返回記錄">‹</a>
     }
-    <h1>提醒中心</h1>
+    <h1 tabindex="-1">提醒中心</h1>
   </header>
 
   <div class="tabs" role="radiogroup" aria-label="提醒類型">
@@ -13,7 +13,7 @@
   </div>
 
   @if (loadError()) {
-    <app-banner class="page-load-error" tone="error" heading="提醒讀取失敗，請稍後再試。" actionLabel="重試" (action)="retry()" />
+    <app-banner class="page-load-error" tone="error" heading="提醒讀取失敗，請稍後再試。" actionLabel="重試" [actionDisabled]="retrying()" (action)="retry()" />
   } @else {
     <!-- The panel bumps entriesChanged after each answer; the load() effect then re-reads the inbox. -->
     @if (showInbox()) {

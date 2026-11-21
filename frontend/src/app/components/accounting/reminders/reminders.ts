@@ -42,7 +42,7 @@ import { TimelineRow, buildDays } from '../timeline/timeline';
 import { DefinitionRow, QueueRow, definitionRows, queueRows } from './schedule-queue';
 import { ScheduleSheetComponent } from './schedule-sheet/schedule-sheet';
 import { BannerComponent } from '../../ui/banner/banner';
-
+import { focusPageIfLost } from '../retry-focus';
 
 /** Open receivables / payables read for the counts and dates, and per expanded counterparty. */
 export const REMINDER_ENTRY_LIMIT = 500;
@@ -496,7 +496,24 @@ export class AccountingRemindersComponent {
   }
 
   /** 重試 on the read-failure banner. */
+  /** A 重試 in flight: the banner stays (same element, nothing re-announced) with its button disabled. */
+  readonly retrying = signal(false);
+
+  private endRetry(ok: boolean): void {
+    if (!this.retrying()) {
+      return;
+    }
+    this.retrying.set(false);
+    if (ok) {
+      focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    }
+  }
+
   retry(): void {
+    if (this.retrying()) {
+      return;
+    }
+    this.retrying.set(true);
     this.load();
   }
 
@@ -535,6 +552,7 @@ export class AccountingRemindersComponent {
         }
         this.loadError.set(false);
         this.loaded.set(true);
+        this.endRetry(true);
       },
       error: () => {
         if (id !== this.requestId) {
@@ -542,6 +560,7 @@ export class AccountingRemindersComponent {
         }
         this.loadError.set(true);
         this.loaded.set(true);
+        this.endRetry(false);
       },
     });
   }

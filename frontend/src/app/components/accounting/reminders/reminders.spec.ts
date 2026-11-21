@@ -727,10 +727,10 @@ describe('AccountingRemindersComponent', () => {
     expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
   });
 
-  it('重試 reads again, keeps one banner while it fails again, and the banner leaves on success', () => {
+  it('重試 keeps the banner through the read (same node, button disabled, a double press reads once); a second failure keeps it; success removes it and focus stays in the page', async () => {
     const fixture = TestBed.createComponent(AccountingRemindersComponent);
     fixture.detectChanges();
-    const failAll = () => {
+    const readAll = () => {
       http.expectOne('/api/accounting/counterparties').flush([]);
       http.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
       http.expectOne(r => r.url === '/api/accounting/schedules/instances').flush([]);
@@ -738,25 +738,35 @@ describe('AccountingRemindersComponent', () => {
       http.expectOne(r => r.url === INBOX_URL).flush(inboxOut());
     };
     const el = fixture.nativeElement as HTMLElement;
-    failAll();
+    readAll();
     http.expectOne(r => r.url === '/api/accounting/accounts').flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
-    const first = el.querySelector('.page-load-error');
-    expect(first).not.toBeNull();
-
-    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    const banner = el.querySelector('.page-load-error')!;
+    const button = banner.querySelector<HTMLButtonElement>('.banner-action')!;
+    button.focus();
+    button.click();
+    button.click();
     fixture.detectChanges();
-    failAll();
+    expect(button.disabled).toBe(true);
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    readAll();
     http.expectOne(r => r.url === '/api/accounting/accounts').flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
     expect(el.querySelectorAll('.page-load-error')).toHaveLength(1);
-    expect(el.querySelector('.page-load-error')).toBe(first);
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    expect(button.disabled).toBe(false);
 
-    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
-    failAll();
+    button.focus();
+    button.click();
+    fixture.detectChanges();
+    readAll();
     http.expectOne(r => r.url === '/api/accounting/accounts').flush([]);
     fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
     expect(el.querySelector('.page-load-error')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(el.contains(document.activeElement)).toBe(true);
   });
 
   describe('待完成交易', () => {

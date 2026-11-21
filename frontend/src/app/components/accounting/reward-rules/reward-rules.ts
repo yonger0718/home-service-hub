@@ -20,7 +20,7 @@ import {
   RULE_STATE_LABELS, RewardUnit, mutedLine, postingSummary, rateChip, rewardFigure, ruleTitle, usageUnit, windowText,
 } from '../reward-rule-text';
 import { BannerComponent } from '../../ui/banner/banner';
-
+import { focusPageIfLost } from '../retry-focus';
 
 export type RewardRuleFilter = RewardRuleState | 'all';
 
@@ -303,8 +303,23 @@ export class RewardRulesOverviewComponent {
 
   /** 重試 on the read-failure banner: the same query again. */
   retry(): void {
-    if (this.lastQuery) {
-      this.load(this.lastQuery);
+    if (this.retrying() || !this.lastQuery) {
+      return;
+    }
+    this.retrying.set(true);
+    this.load(this.lastQuery);
+  }
+
+  /** A 重試 in flight: the banner stays (same element, nothing re-announced) with its button disabled. */
+  readonly retrying = signal(false);
+
+  private endRetry(ok: boolean): void {
+    if (!this.retrying()) {
+      return;
+    }
+    this.retrying.set(false);
+    if (ok) {
+      focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
     }
   }
 
@@ -314,15 +329,17 @@ export class RewardRulesOverviewComponent {
     this.lastQuery = query;
     this.loadSub?.unsubscribe();
     this.loading.set(true);
-    this.error.set(null);
     this.loadSub = this.accountingService.getRewardRuleOverview(query).subscribe({
       next: overview => {
         this.overview.set(overview);
         this.loading.set(false);
+        this.error.set(null);
+        this.endRetry(true);
       },
       error: err => {
         this.error.set(writeErrorMessage(err));
         this.loading.set(false);
+        this.endRetry(false);
       },
     });
   }

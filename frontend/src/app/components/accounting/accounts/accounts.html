@@ -1,4 +1,4 @@
-<section class="ledger-accounts">
+<section class="ledger-accounts" tabindex="-1">
   @if (!embedded()) {
     <app-page-header>
       <app-btn class="add-account" variant="soft" icon="pi-plus" (click)="addAccount()">新增帳戶</app-btn>
@@ -42,7 +42,7 @@
   </ng-template>
 
   @if (loadError()) {
-    <app-banner class="page-load-error" tone="error" heading="帳戶讀取失敗，請稍後再試。" actionLabel="重試" (action)="retry()" />
+    <app-banner class="page-load-error" tone="error" heading="帳戶讀取失敗，請稍後再試。" actionLabel="重試" [actionDisabled]="retrying()" (action)="retry()" />
   } @else if (!loaded()) {
     <app-skeleton rows="3" />
   } @else if (accounts().length === 0) {
