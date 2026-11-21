@@ -273,7 +273,7 @@ describe('NotificationsComponent', () => {
       expect(empty.querySelector('i.pi.pi-check-circle')).not.toBeNull();
       expect(text(empty.querySelector('h2'))).toBe('都處理好了');
       expect(text(q(root, 'p.empty-next'))).toBe('下一件：測試銀行卡帳單 · 10/27 截止 · $1,824');
-      expect(text(q(root, 'a.empty-tracking'))).toBe('看追蹤中的 5 件 ›');
+      expect(text(q(root, 'button.empty-tracking'))).toBe('看追蹤中的 5 件 ›');
       expect(q(root, '.notif-loading')).toBeNull();
       expect(subtitle(root)).toBe('沒有要處理的事');
     });
@@ -283,11 +283,12 @@ describe('NotificationsComponent', () => {
       const root = mount();
       const details = q(root, 'details.notif-tracking') as HTMLDetailsElement;
       expect(details.open).toBe(false);
-      const link = q(root, 'a.empty-tracking')!;
-      const click = new MouseEvent('click', { bubbles: true, cancelable: true });
-      link.dispatchEvent(click);
+      // A real button: Enter and Space activate it natively, with no href to follow.
+      expect(q(root, 'a.empty-tracking')).toBeNull();
+      const link = q(root, 'button.empty-tracking') as HTMLButtonElement;
+      expect(link.type).toBe('button');
+      link.click();
       await settle();
-      expect(click.defaultPrevented).toBe(true);
       expect(details.open).toBe(true);
       expect(document.activeElement).toBe(details.querySelector('summary'));
     });
@@ -298,7 +299,7 @@ describe('NotificationsComponent', () => {
       const root = mount();
       expect(text(q(root, '.notif-empty h2'))).toBe('都處理好了');
       expect(q(root, 'p.empty-next')).toBeNull();
-      expect(q(root, 'a.empty-tracking')).toBeNull();
+      expect(q(root, 'button.empty-tracking')).toBeNull();
       expect(q(root, 'details.notif-tracking')).toBeNull();
     });
 
@@ -528,18 +529,29 @@ describe('NotificationsComponent', () => {
       expect(q(root, '.notif-partial')).toBeNull();
     });
 
-    it('tasks arriving while another source is still loading render at once (no 讀取中… over a list)', async () => {
+    it('tasks arriving while another source is still loading render at once, with 讀取中… after the sections (one element)', async () => {
       loaded.set(false);
       tasks.set([]);
       const root = mount();
-      expect(q(root, '.notif-loading')).not.toBeNull();
+      const before = q(root, 'p.notif-loading')!;
+      expect(before).not.toBeNull();
       tasks.set([task('b1', 'today')]);
       await settle();
       expect(root.querySelectorAll('app-notif-row').length).toBe(1);
-      expect(q(root, '.notif-loading')).toBeNull();
+      const after = q(root, 'p.notif-loading')!;
+      expect(after).toBe(before);
+      expect(after.getAttribute('role')).toBe('status');
+      expect(root.querySelectorAll('[role="status"]').length).toBe(1);
+      const section = q(root, 'section.notif-section')!;
+      expect(section.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(q(root, '.notif-empty')).toBeNull();
       // Counts stay hidden until a round settles, so they never show a low number that then grows.
       expect(q(root, '.chip-count')).toBeNull();
+
+      loaded.set(true);
+      await settle();
+      expect(q(root, '.notif-loading')).toBeNull();
+      expect(root.querySelectorAll('app-notif-row').length).toBe(1);
     });
 
     it('a later round keeps the list on screen while it loads', async () => {
@@ -629,7 +641,7 @@ describe('NotificationsComponent', () => {
       expect(text(chips(root)[2])).toBe('投資0');
       expect(root.querySelectorAll('app-notif-row').length).toBe(0);
       expect(text(root.querySelector('p.notif-none'))).toBe('這個來源目前沒有要處理的事');
-      // Everything done: the note goes too (Task 10 owns what shows instead).
+      // Everything done: the note goes too (nothing else shows in its place).
       tasks.set([]);
       await settle();
       expect(root.querySelector('p.notif-none')).toBeNull();

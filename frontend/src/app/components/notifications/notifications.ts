@@ -67,8 +67,9 @@ const TRACKING_UNIT: Record<NotifTrackingRow['id'], { name: string; unit: string
 
 /**
  * `/notifications`: one column (R20). Header with the count, source chips (a radiogroup, as 提醒中心's tabs), the
- * counted tasks by tier, the folded 追蹤中 (never counted) and the links out. 入帳 / 全部入帳 run in place (R4); Task 10
- * owns the loading / failure / empty states.
+ * counted tasks by tier, the folded 追蹤中 (never counted) and the links out. 入帳 / 全部入帳 run in place (R4). Before the first round
+ * settles a 讀取中… row ends the page (the only one, whether or not tasks have arrived); then the empty state or the
+ * failure line.
  */
 @Component({
   selector: 'app-notifications',
@@ -152,7 +153,8 @@ export class NotificationsComponent {
   );
 
   /**
-   * loading: no round has settled and no task has arrived yet. empty: nothing to do and nothing unread (a failed or
+   * loading: no round has settled and no task has arrived yet (the 讀取中… row itself shows until a round settles,
+   * with or without tasks). empty: nothing to do and nothing unread (a failed or
    * truncated source is not "nothing"). list: everything else, including a failed source with no task (chips, 追蹤中,
    * links and the failure line only).
    */
@@ -245,8 +247,7 @@ export class NotificationsComponent {
   }
 
   /** 看追蹤中: opens the folded block, scrolls it into view and focuses its summary. */
-  protected openTracking(event: Event): void {
-    event.preventDefault();
+  protected openTracking(): void {
     const details = this.host.querySelector<HTMLDetailsElement>('details.notif-tracking');
     if (!details) {
       return;
