@@ -1,0 +1,251 @@
+/* One column at every width (R20). Colours: tokens only. */
+:host {
+  display: block;
+}
+
+.notif-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 720px;
+  min-width: 0;
+
+  @media (min-width: 760px) {
+    padding-bottom: 96px; /* the last row clears the floating 記一筆 */
+  }
+}
+
+/* Phone: the shared header brings 16 px of its own bottom margin on top of the page's 14 px gap (30 px, ~40 px
+   measured with the 44 px header row); header to chips is the same 14 px as chips to the first section. */
+@media (max-width: 759.98px) {
+  app-page-header {
+    margin-bottom: 0;
+  }
+}
+
+.notif-chips {
+  display: flex;
+  gap: 6px;
+
+  button {
+    align-items: center;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    color: var(--app-text);
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 700;
+    gap: 6px;
+    min-height: 36px;
+    padding: 0 14px;
+
+    &[aria-checked='true'] {
+      background: var(--app-accent);
+      border-color: var(--app-accent);
+      color: var(--app-surface);
+
+      .chip-count {
+        color: inherit;
+        opacity: 0.8;
+      }
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--app-primary);
+      outline-offset: 2px;
+    }
+  }
+}
+
+.chip-count {
+  color: var(--app-text-muted);
+  font-weight: 600;
+}
+
+.notif-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  h2 {
+    align-items: center;
+    color: var(--app-text-muted);
+    display: flex;
+    font-size: 0.75rem;
+    font-weight: 700;
+    gap: 8px;
+    letter-spacing: 0.08em;
+    margin: 0;
+    padding: 0 6px;
+  }
+}
+
+.sec-dot {
+  background: var(--app-text-muted);
+  border-radius: 4px;
+  height: 8px;
+  width: 8px;
+}
+
+.notif-section--alert .sec-dot {
+  background: var(--c-red-ink);
+}
+
+.sec-count {
+  color: var(--app-text-muted);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.notif-card {
+  background: var(--app-surface);
+  border-radius: 18px;
+  box-shadow: var(--app-card-shadow);
+  list-style: none;
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+
+  li:first-child app-notif-row {
+    border-top: 0;
+  }
+}
+
+.notif-none {
+  color: var(--app-text-muted);
+  margin: 0;
+  padding: 8px 6px;
+}
+
+.notif-tracking {
+  background: var(--app-surface);
+  border-radius: 18px;
+  box-shadow: var(--app-card-shadow);
+  overflow: hidden;
+
+  summary {
+    align-items: center;
+    cursor: pointer;
+    display: flex;
+    font-size: 0.9rem;
+    font-weight: 700;
+    gap: 10px;
+    min-height: 52px;
+    padding: 0 16px;
+
+    &:focus-visible {
+      outline: 2px solid var(--app-primary);
+      outline-offset: -2px;
+    }
+  }
+}
+
+.tracking-head {
+  flex: 1;
+}
+
+.tracking-note {
+  color: var(--app-text-muted);
+  font-weight: 500;
+}
+
+.tracking-sum {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.tracking-row {
+  align-items: center;
+  border-top: 1px solid var(--app-border);
+  display: flex;
+  gap: 12px;
+  min-height: 60px;
+  padding: 10px 16px;
+}
+
+.tracking-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+
+  small {
+    color: var(--app-text-muted);
+    font-size: 0.75rem;
+  }
+}
+
+.tracking-link {
+  color: var(--app-primary);
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 8px 4px;
+  text-decoration: none;
+}
+
+.notif-handled,
+.notif-reminders {
+  align-self: flex-start;
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 6px;
+  text-decoration: none;
+}
+
+.notif-loading {
+  color: var(--app-text-muted);
+  margin: 0;
+  padding: 8px 6px;
+}
+
+.notif-empty {
+  align-items: center;
+  background: var(--app-surface);
+  border-radius: 18px;
+  box-shadow: var(--app-card-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 28px 16px;
+  text-align: center;
+
+  .pi {
+    color: var(--app-primary);
+    font-size: 2rem;
+  }
+
+  h2 {
+    font-size: 1.05rem;
+    margin: 0;
+  }
+
+  p {
+    color: var(--app-text-muted);
+    font-size: 0.85rem;
+    margin: 0;
+  }
+}
+
+.empty-tracking {
+  background: none;
+  border: 0;
+  color: var(--app-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 8px;
+}
+
+.notif-partial {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  margin: 0;
+  padding: 0 6px;
+}

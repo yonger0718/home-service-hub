@@ -1,0 +1,60 @@
+<span class="notif-icon" aria-hidden="true">
+  @if (isPi()) {
+    <i [class]="piClass()"></i>
+  } @else {
+    {{ task().icon }}
+  }
+</span>
+<div class="notif-body">
+  <div class="notif-head">
+    <span class="notif-title" [attr.title]="task().title">{{ task().title }}</span>
+    <span class="notif-tag">{{ tag() }}</span>
+    @if (task().amount) {
+      <span class="notif-amount">{{ task().amount }}</span>
+    }
+  </div>
+  @if (task().when || task().meta) {
+    <div class="notif-line">
+      @if (task().when) {
+        <b class="notif-when">{{ task().when }}</b>
+      }
+      @if (task().meta) {
+        <span class="notif-meta">{{ task().when ? ' · ' + task().meta : task().meta }}</span>
+      }
+    </div>
+  }
+  @if (barWidth(); as width) {
+    <div class="notif-bar" aria-hidden="true"><span [style.width]="width"></span></div>
+  }
+</div>
+<div class="notif-actions">
+  @if (command(); as cmd) {
+    <app-btn
+      class="notif-primary"
+      [variant]="solid() ? 'primary' : 'soft'"
+      [loading]="busy()"
+      [disabled]="busy()"
+      [ariaLabel]="name(cmd.label)"
+      (click)="run.emit(cmd.command)"
+      >{{ cmd.label }}</app-btn
+    >
+  } @else if (link(); as l) {
+    <a
+      class="notif-primary notif-primary--link"
+      [class.solid]="solid()"
+      [routerLink]="l.route"
+      [queryParams]="l.queryParams"
+      [attr.aria-label]="name(l.label)"
+      >{{ l.label }}</a
+    >
+  }
+  @for (s of task().secondary; track s.label) {
+    <a
+      class="notif-secondary"
+      [routerLink]="s.route"
+      [queryParams]="s.queryParams"
+      [attr.aria-label]="name(s.label)"
+      >{{ s.label }}</a
+    >
+  }
+</div>

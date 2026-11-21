@@ -9,6 +9,7 @@ import { NavigationPreferencesService } from './services/navigation-preferences.
  * Every deep-linkable accounting path must also match Caddy's `@hub_spa` matcher (docs/deploy). PR-9 adds the 多類別
  * group view: `/accounting/entries/[0-9]+/group` and `/accounting/accounts/[0-9]+/entries/[0-9]+/group`. The reward rules
  * phase 1 adds the 回饋規則總覽 page: `/accounting/reward-rules`.
+ * The notification center adds `/notifications` (top level, outside `/accounting`).
  */
 
 /**
@@ -87,6 +88,7 @@ export const routes: Routes = [
   { path: 'inventory', loadComponent: () => import('./components/item-list/item-list').then(m => m.ItemListComponent) },
   { path: 'shopping-list', loadComponent: () => import('./components/shopping-list/shopping-list').then(m => m.ShoppingListComponent) },
   { path: 'settings', loadComponent: () => import('./components/settings/settings').then(m => m.SettingsComponent) },
+  { path: 'notifications', loadComponent: () => import('./components/notifications/notifications').then(m => m.NotificationsComponent) },
   
   // Portfolio routes
   { path: 'portfolio', loadComponent: () => import('./components/portfolio/dashboard/dashboard').then(m => m.PortfolioDashboardComponent) },

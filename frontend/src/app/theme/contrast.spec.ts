@@ -417,3 +417,23 @@ describe('banner headings on their tints over the page background', () => {
     });
   });
 });
+
+describe('notification count pill', () => {
+  describe.each([
+    ['light', light],
+    ['dark', dark],
+  ])('%s theme', (_name, theme) => {
+    it('--app-count-ink ≥ 4.5:1 on the red pill (--c-red-ink) and on the primary pill (--app-primary)', () => {
+      const ink = hex(theme, '--app-count-ink');
+      expect(ratio(ink, hex(theme, '--c-red-ink'))).toBeGreaterThanOrEqual(4.5);
+      expect(ratio(ink, hex(theme, '--app-primary'))).toBeGreaterThanOrEqual(4.5);
+    });
+  });
+
+  it('the global .notif-count paints the pill from those tokens', () => {
+    const rule = block(styles, '.notif-count');
+    expect(rule).toContain('var(--app-count-ink)');
+    expect(rule).toContain('var(--app-primary)');
+    expect(block(styles, '.notif-count--red')).toContain('var(--c-red-ink)');
+  });
+});

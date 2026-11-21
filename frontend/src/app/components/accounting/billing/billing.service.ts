@@ -45,6 +45,14 @@ interface Pending {
   spends: Map<number, { spend: string; currency: string } | null>;
   /** Per account id: the amounts of its `transfer_in` entries in the payment window. */
   payments: Map<number, string[] | null>;
+  /** True once every read of the round has landed (ok or failed) and the state was committed. */
+  committed: boolean;
+}
+
+/** A caller of `ensure` / `refresh` waiting for the latest round of each of its keys to commit. */
+interface Waiter {
+  keys: readonly string[];
+  resolve: () => void;
 }
 
 /** Cache key of a due event's statement: the card, the cycle and the due date (a changed due rule is a new key). */
@@ -85,6 +93,7 @@ export class BillingService {
    */
   private readonly failures = signal<ReadonlyMap<string, string | null>>(new Map());
   private readonly rounds = new Map<string, Pending>();
+  private waiters: Waiter[] = [];
   private requestId = 0;
 
   /**
@@ -97,8 +106,11 @@ export class BillingService {
    * Requests the statements of `dues` not yet asked for in the current change round. The payment window is capped at
    * `today` when read; a day rollover alone does not re-read (a payment only appears through an entry write, which
    * starts a new round), so a future-dated payment is picked up on the next change round.
+   *
+   * Resolves when no statement of `dues` has a read in flight: the latest round of each (whoever started it) has
+   * committed, a failed read included. Never rejects; callers that only want the signals ignore it.
    */
-  ensure(dues: readonly BillingEvent[], today: string): void {
+  ensure(dues: readonly BillingEvent[], today: string): Promise<void> {
     const generation = untracked(this.generation);
     for (const event of dues) {
       const round = this.rounds.get(billKey(event));
@@ -106,6 +118,7 @@ export class BillingService {
         this.start(event, today, generation);
       }
     }
+    return this.settled(dues);
   }
 
   /** Reads the statement again in a new round (the reminder centre's 重試 after a failed read). */
@@ -116,19 +129,39 @@ export class BillingService {
   /**
    * Reads every statement of `dues` again in a new round, even one already read in the current change round: payments
    * made on another device, or a failed read, show up without a local write. As with any round, the previous figures
-   * stay shown until the new answers have fully landed, and an older round's answers are dropped.
+   * stay shown until the new answers have fully landed, and an older round's answers are dropped. Resolves as
+   * `ensure` does.
    */
-  refresh(dues: readonly BillingEvent[], today: string): void {
+  refresh(dues: readonly BillingEvent[], today: string): Promise<void> {
     const generation = untracked(this.generation);
     for (const event of dues) {
       this.start(event, today, generation);
     }
+    return this.settled(dues);
+  }
+
+  /** A promise resolved once the latest round of every key of `dues` has committed (at once when none is in flight). */
+  private settled(dues: readonly BillingEvent[]): Promise<void> {
+    const keys = [...new Set(dues.map(billKey))];
+    return new Promise<void>(resolve => {
+      const waiter: Waiter = { keys, resolve };
+      if (this.landed(waiter)) {
+        resolve();
+      } else {
+        this.waiters.push(waiter);
+      }
+    });
+  }
+
+  private landed(waiter: Waiter): boolean {
+    return waiter.keys.every(key => this.rounds.get(key)?.committed ?? true);
   }
 
   private start(event: BillingEvent, today: string, generation: number): void {
     const key = billKey(event);
     const round: Pending = {
       generation, fingerprint: fingerprint(event), id: ++this.requestId, spends: new Map(), payments: new Map(),
+      committed: false,
     };
     this.rounds.set(key, round);
     const cards = [event.accountId, ...(event.childIds ?? [])];
@@ -147,6 +180,14 @@ export class BillingService {
         return next;
       });
       this.states.update(states => new Map(states).set(key, this.resolve(event, round, cards)));
+      round.committed = true;
+      const waiting = this.waiters;
+      this.waiters = waiting.filter(waiter => !this.landed(waiter));
+      for (const waiter of waiting) {
+        if (!this.waiters.includes(waiter)) {
+          waiter.resolve();
+        }
+      }
     };
     const current = () => this.rounds.get(key)?.id === round.id;
     // Combined cards (副卡) are read with the master, over the same period and window, as part of the same round.

@@ -58,13 +58,17 @@
 }
 
 .tab-dot {
-  background: var(--c-red);
+  background: var(--c-red-ink);
   border-radius: 50%;
   height: 8px;
   position: absolute;
   right: calc(50% - 20px);
   top: 10px;
   width: 8px;
+}
+
+.tab-dot--primary {
+  background: var(--app-primary);
 }
 
 /* Raised centre "+" — the app's primary action (design D23). */

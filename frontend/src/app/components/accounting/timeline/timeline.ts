@@ -16,13 +16,12 @@ import {
 } from '@angular/core';
 import { DOCUMENT, Location, NgTemplateOutlet } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { NavigationEnd, Params, Router } from '@angular/router';
+import { NavigationEnd, Params, Router, RouterLink } from '@angular/router';
 import { filter, forkJoin, fromEvent } from 'rxjs';
 
 import {
   AllEntriesQuery,
   CategoryNode,
-  Counterparty,
   DEFAULT_PREFERENCE,
   DailySummary,
   ENTRY_KIND_LABELS,
@@ -41,7 +40,6 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { BillingEvent, billingEvents, payDateOf, reminderDues, upcomingDues } from '../billing/billing-math';
 import { BillState, BillingService, billKey } from '../billing/billing.service';
-import { countReminders } from '../billing/reminder-count';
 import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { GroupNavState, groupCommands, listOpenState, readGroupNavState, stepState } from '../split-group/group-nav';
@@ -52,8 +50,6 @@ import { CalendarTodayBarComponent } from '../calendar-month/calendar-today-bar'
 import { CalendarDataService } from '../calendar-month/calendar-data.service';
 import { CalendarPaneService, MonthDue, TodayCard } from '../calendar-month/calendar-pane.service';
 import { categoryColorMap } from '../calendar-month/calendar-math';
-import { inboxBellCount } from '../inbox/inbox-view';
-import { InboxService } from '../inbox/inbox.service';
 import type { InboxEinvoice } from '../inbox/einvoice.model';
 import { parseTags } from '../entry-form/entry-draft';
 import { addDays, currentMonth, dayLabel, monthLabel, monthRange, todayIso } from '../dates';
@@ -440,7 +436,7 @@ export type ProjectFilter = number | typeof NO_PROJECT | null;
 @Component({
   selector: 'app-ledger-timeline',
   standalone: true,
-  imports: [PageHeaderComponent, CalendarDayPanelComponent, SwipeXDirective, CalendarMonthComponent, CalendarTodayBarComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent, FilterBarComponent, CalFiltersToggleComponent],
+  imports: [RouterLink, PageHeaderComponent, CalendarDayPanelComponent, SwipeXDirective, CalendarMonthComponent, CalendarTodayBarComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent, FilterBarComponent, CalFiltersToggleComponent],
   templateUrl: './timeline.html',
   styleUrls: ['../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -482,23 +478,16 @@ export class LedgerTimelineComponent implements OnInit {
 
   private readonly bills = inject(BillingService);
   private readonly calendar = inject(BusinessCalendarService);
-  private readonly inbox = inject(InboxService);
   protected readonly overview = inject(AccountingOverviewService);
   private readonly pane = inject(CalendarPaneService);
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
-  /** For the 🔔 count only (counterparties with an open amount). */
-  private readonly counterparties = signal<Counterparty[]>([]);
-  private counterpartyRequestId = 0;
-  /** For the 🔔 count only: the 待完成交易 queue (`queue=true`). */
+  /** The 待完成交易 queue (`queue=true`), for the overview's due list. */
   private readonly queue = signal<ScheduleInstance[]>([]);
   /** Not reset on a reload (the old queue stays shown): 'loading' only until the first answer. */
   private readonly queueState = signal<OverviewState>('loading');
   private queueRequestId = 0;
-  /** For the 🔔 count only: reconciliation inbox cards waiting for the owner's answer (`counts.ask`). */
-  private readonly inboxAsk = signal(0);
-  private inboxRequestId = 0;
   readonly month = signal(currentMonth());
   readonly summary = signal<MonthSummary | null>(null);
   readonly summaryLoading = signal(true);
@@ -718,17 +707,6 @@ export class LedgerTimelineComponent implements OnInit {
     }
     return lines;
   });
-  /** 🔔 count (`countReminders`, shared with the nav badge), including 待處理 inbox cards to decide. */
-  readonly reminderCount = computed(() =>
-    countReminders({
-      dues: this.reminderEvents(),
-      bill: event => this.bills.bill(event),
-      counterparties: this.counterparties(),
-      queue: this.queue(),
-      today: this.today(),
-      inboxAsk: this.inboxAsk(),
-    }),
-  );
   /** The list view's 近 7 天 banner: upcoming due days with a remaining balance. */
   readonly upcomingBills = computed(() => this.upcomingEvents().filter(event => this.openBill(event) !== null));
   readonly missingRates = computed(() =>
@@ -860,14 +838,12 @@ export class LedgerTimelineComponent implements OnInit {
       untracked(() => this.bills.ensure(events, this.today()));
     });
 
-    // The 🔔's counterparties: open amounts move with entry writes; a backup import (accountsChanged) replaces them.
+    // The queue feeds the overview's due list: it moves with entry writes; a backup import (accountsChanged) replaces it.
     effect(() => {
       this.accounting.entriesChanged();
       this.accounting.accountsChanged();
       untracked(() => {
-        this.loadCounterparties();
         this.loadQueue();
-        this.loadInboxCount();
       });
     });
 
@@ -1494,45 +1470,13 @@ export class LedgerTimelineComponent implements OnInit {
           this.queueState.set('ready');
         }
       },
-      // The 🔔 is a hint (the reminder centre reports its own load errors); the overview's due list shows 讀取失敗.
+      // The overview's due list shows 讀取失敗.
       error: () => {
         if (id === this.queueRequestId) {
           this.queueState.set('error');
         }
       },
     });
-  }
-
-  /** `counts` are computed server-side whatever the limit, so one card is enough. */
-  private loadInboxCount(): void {
-    const id = ++this.inboxRequestId;
-    this.inbox.get({ limit: 1 }).subscribe({
-      next: data => {
-        if (id === this.inboxRequestId) {
-          this.inboxAsk.set(inboxBellCount(data.counts));
-        }
-      },
-      // Swallowed like the queue: the reminder centre reports its own inbox load error.
-      error: () => undefined,
-    });
-  }
-
-  private loadCounterparties(): void {
-    const id = ++this.counterpartyRequestId;
-    this.accounting.getCounterparties().subscribe({
-      next: counterparties => {
-        if (id === this.counterpartyRequestId) {
-          this.counterparties.set(counterparties);
-        }
-      },
-      // Intentionally swallowed: the 🔔 count is a hint. On failure it keeps the last known counterparties (none on
-      // first load), and the reminder centre itself reports its own load errors.
-      error: () => undefined,
-    });
-  }
-
-  openReminders(): void {
-    void this.router.navigate(['/accounting/reminders']);
   }
 
   setView(view: TimelineView): void {

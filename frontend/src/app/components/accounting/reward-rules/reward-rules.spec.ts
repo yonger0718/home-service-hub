@@ -13,6 +13,7 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
+import { NO_TASKS } from '../../notifications/notif-task';
 import { RewardRulesOverviewComponent } from './reward-rules';
 
 @Component({ template: '' })
@@ -103,7 +104,7 @@ describe('RewardRulesOverviewComponent', () => {
         provideHttpClient(),
         provideHttpClientTesting(),
         { provide: MATCH_MEDIA, useValue: null },
-        { provide: NavBadgeService, useValue: { badges: signal({}) } },
+        { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } },
       ],
     });
     http = TestBed.inject(HttpTestingController);

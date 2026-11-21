@@ -67,6 +67,8 @@
   /* ink variants for small (≤ 13 px) trend-coloured TEXT: ≥ 4.5:1 on --app-surface / --app-surface-soft
      (#c53a3f 5.04 / 4.57, #177a55 5.17 / 4.69). Large figures keep the bright pair above. */
   --c-red-ink: #c53a3f;  --c-green-ink: #177a55;
+  /* count pill text (.notif-count): white on --c-red-ink 5.2:1, on --app-primary 6.2:1 */
+  --app-count-ink: #ffffff;
   /* pill ink for small text on a translucent tint (--c-*-soft, --app-state-warning-bg): ≥ 4.5:1 with the tint
      composited over --app-surface / --app-surface-soft (#b5353a 4.94 / 4.53 on red-soft, 5.11 / 4.66 on the warning
      tint; #146b4b 5.56 / 5.06 on green-soft). Only pills / badges use it; plain small text keeps the ink pair. */
@@ -216,6 +218,8 @@
   --c-red-soft: rgba(255, 99, 105, 0.16);  --c-green-soft: rgba(67, 201, 138, 0.16);
   /* the dark hues already pass for small text (5.90 / 5.17 and 8.11 / 7.12 on surface / soft) */
   --c-red-ink: #ff6369;  --c-green-ink: #43c98a;
+  /* dark: --app-bg on --c-red-ink 6.5:1, on --app-primary 5.8:1 (white would be 2.9 / 3.2) */
+  --app-count-ink: #0f1218;
   /* pill ink on the tints over #171c24 / #202733: #ff8085 5.70 / 4.96 on red-soft, 5.41 / 4.72 on the warning tint
      (#ff6369 was 4.75 / 4.14 and 4.52 / 3.94); #43c98a already passes (5.96 / 5.20 on green-soft). */
   --c-red-pill-ink: #ff8085;  --c-green-pill-ink: #43c98a;
@@ -943,4 +947,26 @@ app-sidebar,
 @keyframes slideIn {
   from { opacity: 0; transform: translateX(20px); }
   to { opacity: 1; transform: translateX(0); }
+}
+
+/* 通知 count pill: the sidebar item and the phone header bell only (aria-hidden; the link's name carries the count). */
+.notif-count {
+  align-items: center;
+  background: var(--app-primary);
+  border-radius: var(--radius-pill);
+  box-sizing: border-box;
+  color: var(--app-count-ink);
+  display: inline-flex;
+  flex: none;
+  font-size: 10px;
+  font-weight: 800;
+  height: 16px;
+  justify-content: center;
+  line-height: 1;
+  min-width: 16px;
+  padding: 0 4px;
+}
+
+.notif-count--red {
+  background: var(--c-red-ink);
 }

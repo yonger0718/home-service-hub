@@ -57,7 +57,8 @@ Not clickable on the canvas (drawn only): the period controls, the field pickers
 |---|---|
 | `#5f6673` / `#99a3b3` muted text | `--app-text-muted` |
 | `#c9373c` / `#ff6369` overdue, failure text | `--c-red-ink` |
-| red count pill | background `--c-red-ink`, white text (white on `--c-red` is 3.9:1, too low for 11 px) |
+| count pill | background `--c-red-ink` / `--app-primary`, text `--app-count-ink` (white in light, the page background in dark: white is 2.9:1 on the dark red) |
+| navigation dots | `--c-red-ink` for overdue or failed, `--app-primary` otherwise |
 | `#6b6596` / `#aba6d0` dividend amount | `--app-dividend`; at ≤ 13 px add an ink variant (`#6b6596` is 5.2:1 on `--app-surface`; the token is 4.0:1) |
 | `#b5323a` / `#ff8a8e` 多花 | new `--app-spend-more` |
 | `#2f6f9f` / `#7fb5e0` 少花 | new `--app-spend-less` |
