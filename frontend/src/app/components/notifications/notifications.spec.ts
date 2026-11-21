@@ -13,7 +13,7 @@ import { ToastService } from '../../services/toast.service';
 import { IMPORT_RUNNING_TOAST } from '../accounting/schedule-math';
 import { NotificationCenterService } from '../../services/notification-center.service';
 import { MATCH_MEDIA, PHONE_QUERY } from '../../services/layout-mode.service';
-import { NotifSummary, NotifTask, NotifTier, NotifTrackingRow, summarize } from './notif-task';
+import { NotifSourceKey, NotifSummary, NotifTask, NotifTier, NotifTrackingRow, summarize } from './notif-task';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
 import { NotificationsComponent } from './notifications';
 
@@ -56,6 +56,9 @@ describe('NotificationsComponent', () => {
   const loaded = signal(true);
   const round = signal(1);
   const settledRound = signal(1);
+  const truncated = signal(false);
+  const failedSources = signal<readonly NotifSourceKey[]>([]);
+  const nextUpcoming = signal<NotifTask | null>(null);
   const refresh = vi.fn();
   /** As the service: starts the next round and returns its id. */
   const invalidate = vi.fn(() => {
@@ -85,12 +88,12 @@ describe('NotificationsComponent', () => {
     trackingRows,
     handled,
     loaded,
-    loading: signal(false),
+    loading: computed(() => round() > settledRound()),
     round,
     settledRound,
-    truncated: signal(false),
-    failedSources: signal([]),
-    nextUpcoming: signal(null),
+    truncated,
+    failedSources,
+    nextUpcoming,
     summary: computed<NotifSummary>(() => summarize(tasks())),
     badges: signal({}),
     refresh,
@@ -133,6 +136,9 @@ describe('NotificationsComponent', () => {
     loaded.set(true);
     round.set(1);
     settledRound.set(1);
+    truncated.set(false);
+    failedSources.set([]);
+    nextUpcoming.set(null);
     refresh.mockClear();
     invalidate.mockClear();
     accounting.postScheduleInstance.mockClear();
@@ -221,11 +227,283 @@ describe('NotificationsComponent', () => {
       expect(subtitle(root)).toContain('5 件要處理');
       expect(root.querySelectorAll('app-notif-row').length).toBe(5);
     });
-    it('also hides the tasks and 追蹤中 that the service already holds', () => {
+    it('hides 追蹤中 that the service already holds', () => {
       loaded.set(false);
       const root = mount();
-      expect(root.querySelectorAll('app-notif-row').length).toBe(0);
       expect(root.querySelector('details.notif-tracking')).toBeNull();
+    });
+  });
+
+  describe('states: loading, empty, a failed source', () => {
+    const BILL_NEXT = task('bill:11:2026-10-27', 'tracking', {
+      title: '測試銀行卡帳單',
+      when: '10/27 截止',
+      amount: '$1,824',
+    });
+    const CATCH_ALL = task('recon:more', 'confirm', { from: 'recon', title: '還有對帳項目未列出', when: '還有 12 筆要你決定' });
+    const q = (root: HTMLElement, sel: string) => root.querySelector<HTMLElement>(sel);
+
+    it('before the first answers: 讀取中… as a polite status, no 都處理好了, chips still there', () => {
+      loaded.set(false);
+      tasks.set([]);
+      const root = mount();
+      const loading = q(root, 'p.notif-loading')!;
+      expect(text(loading)).toBe('讀取中…');
+      expect(loading.getAttribute('role')).toBe('status');
+      expect(q(root, '.notif-empty')).toBeNull();
+      expect(root.querySelectorAll('.notif-chips button').length).toBe(3);
+      expect(q(root, 'a.notif-reminders')).not.toBeNull();
+    });
+
+    it('the loading row is the same element when a round starts and settles around it (not re-announced)', async () => {
+      loaded.set(false);
+      tasks.set([]);
+      const root = mount();
+      const before = q(root, 'p.notif-loading');
+      round.set(2);
+      await settle();
+      expect(q(root, 'p.notif-loading')).toBe(before);
+    });
+
+    it('loaded and nothing to do: 都處理好了 (h2, check icon), the next bill and the tracking link', () => {
+      tasks.set([]);
+      nextUpcoming.set(BILL_NEXT);
+      const root = mount();
+      const empty = q(root, 'div.notif-empty')!;
+      expect(empty.querySelector('i.pi.pi-check-circle')).not.toBeNull();
+      expect(text(empty.querySelector('h2'))).toBe('都處理好了');
+      expect(text(q(root, 'p.empty-next'))).toBe('下一件：測試銀行卡帳單 · 10/27 截止 · $1,824');
+      expect(text(q(root, 'a.empty-tracking'))).toBe('看追蹤中的 5 件 ›');
+      expect(q(root, '.notif-loading')).toBeNull();
+      expect(subtitle(root)).toBe('沒有要處理的事');
+    });
+
+    it('看追蹤中 opens the 追蹤中 block and focuses its summary', async () => {
+      tasks.set([]);
+      const root = mount();
+      const details = q(root, 'details.notif-tracking') as HTMLDetailsElement;
+      expect(details.open).toBe(false);
+      const link = q(root, 'a.empty-tracking')!;
+      const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+      link.dispatchEvent(click);
+      await settle();
+      expect(click.defaultPrevented).toBe(true);
+      expect(details.open).toBe(true);
+      expect(document.activeElement).toBe(details.querySelector('summary'));
+    });
+
+    it('nothing to do and nothing tracked: 都處理好了 alone', () => {
+      tasks.set([]);
+      trackingRows.set([]);
+      const root = mount();
+      expect(text(q(root, '.notif-empty h2'))).toBe('都處理好了');
+      expect(q(root, 'p.empty-next')).toBeNull();
+      expect(q(root, 'a.empty-tracking')).toBeNull();
+      expect(q(root, 'details.notif-tracking')).toBeNull();
+    });
+
+    it('only tracking rows: the all-clear shows with the tracking link, and 追蹤中 below it', () => {
+      tasks.set([]);
+      const root = mount();
+      expect(q(root, '.notif-empty')).not.toBeNull();
+      expect(q(root, 'details.notif-tracking')).not.toBeNull();
+    });
+
+    it('a chip chosen while empty keeps the all-clear and adds no 「這個來源…」 note', async () => {
+      tasks.set([]);
+      const root = mount();
+      root.querySelectorAll<HTMLButtonElement>('.notif-chips button')[2].click();
+      await settle();
+      expect(q(root, '.notif-empty')).not.toBeNull();
+      expect(q(root, '.notif-none')).toBeNull();
+    });
+
+    it('with tasks there is no all-clear and no loading row', () => {
+      const root = mount();
+      expect(q(root, '.notif-empty')).toBeNull();
+      expect(q(root, '.notif-loading')).toBeNull();
+    });
+
+    it('a failed inbox: 「無法讀取：對帳」 is the last element of the page, the other tasks stay', () => {
+      failedSources.set(['recon']);
+      const root = mount();
+      const page = q(root, '.notif-page')!;
+      const last = page.lastElementChild!;
+      expect(last.classList.contains('notif-failed')).toBe(true);
+      expect(text(last)).toBe('無法讀取：對帳 重試');
+      expect(root.querySelectorAll('app-notif-row').length).toBe(5);
+    });
+
+    it('two failed sources read 「無法讀取：帳單、對帳」', () => {
+      failedSources.set(['bills', 'recon']);
+      const root = mount();
+      expect(text(q(root, '.notif-failed span'))).toBe('無法讀取：帳單、對帳');
+    });
+
+    it('a failed source with no task left: no 都處理好了, no 讀取中…, no subtitle; the failure line, chips and links show', () => {
+      tasks.set([]);
+      failedSources.set(['recon']);
+      const root = mount();
+      expect(q(root, '.notif-empty')).toBeNull();
+      expect(q(root, '.notif-loading')).toBeNull();
+      expect(root.textContent).not.toContain('沒有要處理的事');
+      expect(root.textContent).not.toContain('都處理好了');
+      expect(q(root, '.page-subtitle')).toBeNull();
+      expect(text(q(root, '.notif-failed'))).toBe('無法讀取：對帳 重試');
+      expect(root.querySelectorAll('.notif-chips button').length).toBe(3);
+      expect(q(root, 'details.notif-tracking')).not.toBeNull();
+    });
+
+    it('the failure line is announced as an alert once, and 重試 names what it retries', () => {
+      failedSources.set(['bills', 'recon']);
+      const root = mount();
+      expect(q(root, '.notif-failed [role="alert"]')).not.toBeNull();
+      expect(q(root, 'button.notif-retry')!.getAttribute('aria-label')).toBe('重試讀取帳單、對帳');
+    });
+
+    it('重試 calls invalidate(); the line stays and the button is disabled while loading; the line leaves on recovery', async () => {
+      failedSources.set(['recon']);
+      settledRound.set(1);
+      const root = mount();
+      const line = q(root, '.notif-failed');
+      const button = q(root, 'button.notif-retry') as HTMLButtonElement;
+      expect(button.disabled).toBe(false);
+      button.click();
+      await settle();
+      expect(invalidate).toHaveBeenCalledTimes(1);
+      expect(q(root, '.notif-failed')).toBe(line);
+      expect((q(root, 'button.notif-retry') as HTMLButtonElement).disabled).toBe(true);
+      failedSources.set([]);
+      settledRound.set(round());
+      await settle();
+      expect(q(root, '.notif-failed')).toBeNull();
+    });
+
+    it('a retry that succeeds hands focus to the chosen chip when 重試 held it', async () => {
+      failedSources.set(['recon']);
+      const root = mount();
+      const button = q(root, 'button.notif-retry') as HTMLButtonElement;
+      button.focus();
+      button.click();
+      await settle();
+      failedSources.set([]);
+      settledRound.set(round());
+      await settle();
+      expect(q(root, '.notif-failed')).toBeNull();
+      expect(document.activeElement).toBe(q(root, '.notif-chips button[aria-checked="true"]'));
+    });
+
+    it('a retry that fails again keeps the line and returns focus to 重試 when focus fell to <body>', async () => {
+      failedSources.set(['recon']);
+      const root = mount();
+      const button = q(root, 'button.notif-retry') as HTMLButtonElement;
+      button.focus();
+      button.click();
+      await settle();
+      // A browser may drop focus from the button it just disabled.
+      const tmp = document.createElement('button');
+      document.body.append(tmp);
+      tmp.focus();
+      tmp.remove();
+      expect(document.activeElement).toBe(document.body);
+      settledRound.set(round());
+      await settle();
+      expect(q(root, '.notif-failed')).not.toBeNull();
+      expect(document.activeElement).toBe(q(root, 'button.notif-retry'));
+    });
+
+    it('a retry that fails again leaves focus the owner moved elsewhere alone', async () => {
+      failedSources.set(['recon']);
+      const root = mount();
+      (q(root, 'button.notif-retry') as HTMLButtonElement).click();
+      await settle();
+      const chip = q(root, '.notif-chips button')!;
+      chip.focus();
+      settledRound.set(round());
+      await settle();
+      expect(document.activeElement).toBe(chip);
+    });
+
+    it('truncated: 「對帳項目較多，僅列出部分」 comes before the failure line and the catch-all row is in 要你確認', () => {
+      tasks.set([CATCH_ALL]);
+      truncated.set(true);
+      failedSources.set(['bills']);
+      const root = mount();
+      const partial = q(root, 'p.notif-partial')!;
+      expect(text(partial)).toBe('對帳項目較多，僅列出部分');
+      expect(partial.nextElementSibling).toBe(q(root, '.notif-failed'));
+      const confirm = root.querySelector('section.notif-section')!;
+      expect(text(confirm.querySelector('h2'))).toContain('要你確認');
+      expect(text(confirm)).toContain('還有對帳項目未列出');
+    });
+
+    it('truncated with no other task: the catch-all row shows, 都處理好了 does not', () => {
+      tasks.set([CATCH_ALL]);
+      truncated.set(true);
+      const root = mount();
+      expect(root.querySelectorAll('app-notif-row').length).toBe(1);
+      expect(q(root, '.notif-empty')).toBeNull();
+    });
+
+    it('truncated with nothing listed (a guard): still no 都處理好了', () => {
+      tasks.set([]);
+      truncated.set(true);
+      const root = mount();
+      expect(q(root, '.notif-empty')).toBeNull();
+      expect(q(root, 'p.notif-partial')).not.toBeNull();
+    });
+
+    it('not truncated: no such line', () => {
+      const root = mount();
+      expect(q(root, '.notif-partial')).toBeNull();
+    });
+
+    it('tasks arriving while another source is still loading render at once (no 讀取中… over a list)', async () => {
+      loaded.set(false);
+      tasks.set([]);
+      const root = mount();
+      expect(q(root, '.notif-loading')).not.toBeNull();
+      tasks.set([task('b1', 'today')]);
+      await settle();
+      expect(root.querySelectorAll('app-notif-row').length).toBe(1);
+      expect(q(root, '.notif-loading')).toBeNull();
+      expect(q(root, '.notif-empty')).toBeNull();
+      // Counts stay hidden until a round settles, so they never show a low number that then grows.
+      expect(q(root, '.chip-count')).toBeNull();
+    });
+
+    it('a later round keeps the list on screen while it loads', async () => {
+      const root = mount();
+      round.set(2);
+      await settle();
+      expect(root.querySelectorAll('app-notif-row').length).toBe(5);
+      expect(q(root, '.notif-loading')).toBeNull();
+      expect(q(root, '.notif-empty')).toBeNull();
+    });
+
+    it('重試 pressed while a row is busy does not release it; only the newer round that settles does', async () => {
+      const rent = task('sched:1', 'today', {
+        from: 'schedules',
+        primary: { label: '入帳', command: { kind: 'postInstance', instanceId: 7, name: '測試房租' } },
+      });
+      tasks.set([rent]);
+      failedSources.set(['recon']);
+      round.set(4);
+      settledRound.set(4);
+      const root = mount();
+      const control = () => q(root, `app-notif-row[data-task-id="sched:1"] ${NOTIF_PRIMARY_CONTROL}`) as HTMLButtonElement;
+      control().click();
+      await settle();
+      posts[0].next({} as ScheduleInstance);
+      posts[0].complete();
+      await settle();
+      expect(control().disabled).toBe(true);
+      (q(root, 'button.notif-retry') as HTMLButtonElement).click(); // invalidate(): round 5
+      await settle();
+      expect(control().disabled).toBe(true);
+      settledRound.set(5); // round 5 started after the write answered: now it may release
+      await settle();
+      expect(control().disabled).toBe(false);
     });
   });
 

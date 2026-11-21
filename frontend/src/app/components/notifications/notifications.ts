@@ -22,6 +22,7 @@ import { guardedRetry } from '../../services/toast-retry';
 import { writeErrorMessage } from '../accounting/http-errors';
 import { IMPORT_RUNNING_TOAST, isImportRunning } from '../accounting/schedule-math';
 import { apiErrorText, splitApiCode } from '../accounting/statements/statement-view';
+import { focusPageIfLost, focusRetryIfLost } from '../accounting/retry-focus';
 import { PageHeaderComponent } from '../shell/page-header/page-header';
 import {
   COUNTED_TIERS,
@@ -33,6 +34,7 @@ import {
   SOURCE_TAGS,
   TIER_LABELS,
   chipCounts,
+  failureLine,
 } from './notif-task';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
 
@@ -101,9 +103,6 @@ export class NotificationsComponent {
   /** The counted tiers that have a task under the chosen chip, rows in the service's order. */
   protected readonly sections: Signal<{ tier: NotifTier; label: string; tasks: NotifTask[] }[]> =
     computed(() => {
-      if (!this.center.loaded()) {
-        return [];
-      }
       const chip = this.chip();
       const tasks = this.center.tasks().filter((t) => chip === 'all' || t.source === chip);
       return COUNTED_TIERS.map((tier) => ({
@@ -125,7 +124,8 @@ export class NotificationsComponent {
     }
     const { total, overdue } = this.center.summary();
     if (total === 0) {
-      return '沒有要處理的事';
+      // A failed source's tasks are dropped: zero here is not "all clear".
+      return this.center.failedSources().length > 0 ? null : '沒有要處理的事';
     }
     const parts = [`${total} 件要處理`];
     if (overdue > 0) {
@@ -147,8 +147,52 @@ export class NotificationsComponent {
       .join(' · '),
   );
 
+  /**
+   * loading: no round has settled and no task has arrived yet. empty: nothing to do and nothing unread (a failed or
+   * truncated source is not "nothing"). list: everything else, including a failed source with no task (chips, 追蹤中,
+   * links and the failure line only).
+   */
+  protected readonly state: Signal<'loading' | 'empty' | 'list'> = computed(() => {
+    if (this.center.tasks().length > 0) {
+      return 'list';
+    }
+    if (!this.center.loaded()) {
+      return 'loading';
+    }
+    return this.center.failedSources().length === 0 && !this.center.truncated() ? 'empty' : 'list';
+  });
+
+  /** 下一件: the nearest tracked bill, under the all-clear (ledger only, as 追蹤中). */
+  protected readonly nextLine = computed<string | null>(() => {
+    const next = this.chip() === 'portfolio' ? null : this.center.nextUpcoming();
+    return next ? `下一件：${[next.title, next.when, next.amount].filter(Boolean).join(' · ')}` : null;
+  });
+  protected readonly trackingCount = computed(() => this.trackingRows().reduce((n, row) => n + row.count, 0));
+
+  /** The bottom lines before the failure line. */
+  protected readonly notes: Signal<string[]> = computed(() => (this.center.truncated() ? ['對帳項目較多，僅列出部分'] : []));
+
+  protected readonly failure = computed(() => failureLine(this.center.failedSources()));
+  protected readonly retryName = computed(() => `重試讀取${(this.failure() ?? '').replace('無法讀取：', '')}`);
+  /** A 重試 of the reads is running: the line stays (same element) and the button waits. */
+  protected readonly retrying = signal(false);
+
   constructor() {
     this.center.refresh({ reason: 'open' });
+
+    // A 重試 ends when its round has settled: success hands focus on, a repeat failure gives it back to 重試.
+    effect(() => {
+      if (!this.retrying() || this.center.loading()) {
+        return;
+      }
+      this.retrying.set(false);
+      const host = this.host;
+      if (untracked(this.center.failedSources).length === 0) {
+        focusPageIfLost(host, this.injector, '.notif-chips button[aria-checked="true"]');
+      } else {
+        focusRetryIfLost(host, this.injector, 'button.notif-retry');
+      }
+    });
 
     // Release every row whose waiting round has been passed by a settled one.
     effect(() => {
@@ -187,6 +231,27 @@ export class NotificationsComponent {
         }
       }
     });
+  }
+
+  protected retry(): void {
+    if (this.retrying() || this.center.loading()) {
+      return;
+    }
+    this.retrying.set(true);
+    this.center.invalidate();
+  }
+
+  /** 看追蹤中: opens the folded block, scrolls it into view and focuses its summary. */
+  protected openTracking(event: Event): void {
+    event.preventDefault();
+    const details = this.host.querySelector<HTMLDetailsElement>('details.notif-tracking');
+    if (!details) {
+      return;
+    }
+    details.open = true;
+    const summary = details.querySelector<HTMLElement>('summary');
+    summary?.scrollIntoView?.({ block: 'nearest' });
+    summary?.focus({ preventScroll: true });
   }
 
   protected pick(chip: NotifChip): void {

@@ -8,7 +8,8 @@ import { errorLoggingInterceptor } from '../../interceptors/error-logging.interc
 import { MATCH_MEDIA } from '../../services/layout-mode.service';
 import { NotificationCenterService } from '../../services/notification-center.service';
 import { ToastService } from '../../services/toast.service';
-import { makeInbox } from '../accounting/inbox/testing';
+import { makeInbox, makeInboxAccount, makeItem } from '../accounting/inbox/testing';
+import { InboxOut } from '../accounting/inbox/inbox.model';
 import { makeAccount, makeInstance } from '../accounting/testing/fixtures';
 import { NOTIF_PRIMARY_CONTROL } from './notif-row/notif-row';
 import { NotificationsComponent } from './notifications';
@@ -426,6 +427,114 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已入帳：測試房租' }));
       await flushRound(take(), []);
       expect(rentRow()).toBeNull();
+    });
+  });
+  describe('states over the real services', () => {
+    /** The page opened with nothing yet answered (round 1). */
+    async function openFresh(): Promise<RoundRequests> {
+      boot(false);
+      center.start();
+      TestBed.tick();
+      http.expectOne(get(`${API}/calendar/business-days`)).flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
+      fixture = TestBed.createComponent(NotificationsComponent);
+      fixture.autoDetectChanges();
+      root = fixture.nativeElement as HTMLElement;
+      return take();
+    }
+
+    /** Every account-level read of the round, with `inbox`; the card statements are not answered. */
+    async function answerReads(round: RoundRequests, inbox: InboxOut): Promise<void> {
+      round.accounts.flush([CARD]);
+      round.counterparties.flush([]);
+      round.queue.flush([]);
+      round.inbox.flush(inbox);
+      round.latest.flush('', { status: 404, statusText: 'Not Found' });
+      round.actions.flush([]);
+      await settle();
+    }
+
+    /** The card's summary and, unless `holdPayments`, its entries (the payments read). */
+    async function answerCard(spend: string, holdPayments = false): Promise<TestRequest[]> {
+      for (const req of http.match(get(`${API}/accounts/11/summary`))) {
+        req.flush({
+          account_id: 11, currency: 'TWD', date_from: '', date_to: '', spend, income: '0', rewards: '0',
+          net: spend, end_balance: spend, count: 1,
+        });
+      }
+      for (const req of http.match(get('/api/portfolio/imports/recalc/status'))) {
+        req.flush({ state: 'idle' });
+      }
+      await settle();
+      const held = holdPayments ? [] : http.match(get(`${API}/accounts/11/entries`));
+      for (const req of held) {
+        req.flush({ items: [], total: 0, limit: 100, offset: 0 });
+      }
+      await settle();
+      return held;
+    }
+
+    const loadingRow = () => root.querySelector('.notif-loading');
+    const emptyBlock = () => root.querySelector('.notif-empty');
+    const billRow = () => root.querySelector('app-notif-row[data-task-id^="bill:"]');
+
+    it("first open with a slow card statement: 讀取中… until the card's last read lands, then the bill row, 都處理好了 never in between", async () => {
+      const round = await openFresh();
+      await answerReads(round, makeInbox([]));
+      await answerCard('-1000.0000', true);
+      expect(center.loaded()).toBe(false);
+      expect(loadingRow()).not.toBeNull();
+      expect(emptyBlock()).toBeNull();
+      http.match(get(`${API}/accounts/11/entries`)).forEach(req => req.flush({ items: [], total: 0, limit: 100, offset: 0 }));
+      await settle();
+      expect(center.loaded()).toBe(true);
+      expect(billRow()).not.toBeNull();
+      expect(loadingRow()).toBeNull();
+      expect(emptyBlock()).toBeNull();
+    });
+
+    it('first open with nothing to do: 都處理好了 only after the card statements answered', async () => {
+      const round = await openFresh();
+      await answerReads(round, makeInbox([]));
+      await answerCard('0', true);
+      expect(emptyBlock()).toBeNull();
+      expect(loadingRow()).not.toBeNull();
+      http.match(get(`${API}/accounts/11/entries`)).forEach(req => req.flush({ items: [], total: 0, limit: 100, offset: 0 }));
+      await settle();
+      expect(center.loaded()).toBe(true);
+      expect(emptyBlock()?.querySelector('h2')?.textContent).toContain('都處理好了');
+      expect(loadingRow()).toBeNull();
+    });
+
+    it('an inbox answering counts.ask_items 3 with 1000 folded items: the catch-all row and the partial line, no 都處理好了', async () => {
+      const round = await openFresh();
+      const folded = Array.from({ length: 1000 }, (_, i) => makeItem({ case_id: 5000 + i, folded: true, question: 'proposed' }));
+      await answerReads(round, makeInbox([makeInboxAccount({ id: 12, name: '測試帳戶', items: folded })], { ask_items: 3, ask: 3 }));
+      await answerCard('0');
+      expect(center.loaded()).toBe(true);
+      expect(emptyBlock()).toBeNull();
+      expect(root.textContent).toContain('還有對帳項目未列出');
+      expect(root.querySelector('p.notif-partial')?.textContent?.trim()).toBe('對帳項目較多，僅列出部分');
+    });
+
+    it('a failed inbox with nothing else: the failure line and no 都處理好了; 重試 re-reads and the all-clear returns when it answers', async () => {
+      const round = await openFresh();
+      round.accounts.flush([CARD]);
+      round.counterparties.flush([]);
+      round.queue.flush([]);
+      round.inbox.flush('boom', { status: 500, statusText: 'Server Error' });
+      round.latest.flush('', { status: 404, statusText: 'Not Found' });
+      round.actions.flush([]);
+      await settle();
+      await answerCard('0');
+      expect(center.loaded()).toBe(true);
+      expect(emptyBlock()).toBeNull();
+      expect(root.querySelector('.notif-failed')?.textContent).toContain('無法讀取：對帳');
+      root.querySelector<HTMLButtonElement>('button.notif-retry')!.click();
+      await settle();
+      await answerReads(take(), makeInbox([]));
+      await answerCard('0');
+      expect(root.querySelector('.notif-failed')).toBeNull();
+      expect(emptyBlock()).not.toBeNull();
     });
   });
 });
