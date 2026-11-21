@@ -1,4 +1,4 @@
-import { BrokerCsvImportResult, ImportResult, ImportRow, RecalcStatus, UnresolvedName } from '../../../models/portfolio.model';
+import { BrokerCsvImportResult, ImportResult, ImportRow, RecalcStatus, RecalcStepStatus, UnresolvedName } from '../../../models/portfolio.model';
 import type { TagVariant } from '../../ui/tag/tag';
 
 export type ImportType = 'transactions' | 'dividends' | 'broker';
@@ -206,6 +206,15 @@ export const STEP_STATUS_LABEL: Record<string, string> = {
 export function labelOf(map: Record<string, string>, raw: string | null | undefined): string {
   if (raw == null) return '';
   return Object.prototype.hasOwnProperty.call(map, raw) ? map[raw] : raw;
+}
+
+export type RecalcStep = RecalcStepStatus;
+
+/** Steps a re-run can fix: `failed`, or `partial` that is not only deferred dividend events. */
+export function retryableSteps(status: RecalcStatus): RecalcStep[] {
+  return (status.steps ?? []).filter(
+    s => s.status === 'failed' || (s.status === 'partial' && !(s.detail?.deferred_events?.length ?? 0)),
+  );
 }
 
 /** Banner (b): a failed import recalc (rows may have been written, so no nothing-written sentence). */

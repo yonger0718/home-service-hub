@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BrokerCsvImportResult, ImportResult, ImportRow } from '../../../models/portfolio.model';
+import { BrokerCsvImportResult, DeferredDividendEvent, ImportResult, ImportRow } from '../../../models/portfolio.model';
 import {
   ImportAttempt,
   RECALC_STATE_LABEL,
@@ -27,6 +27,7 @@ import {
   previewRow,
   recalcBanner,
   recalcPanelVisible,
+  retryableSteps,
   rowResult,
   stepFor,
   typeFromQuery,
@@ -672,5 +673,23 @@ describe('recalc labels (#111)', () => {
     expect(Object.keys(RECALC_STATE_LABEL).sort()).toEqual(['completed', 'failed', 'idle', 'partial', 'running']);
     expect(Object.keys(RECALC_STEP_LABEL).sort()).toEqual(['awaiting_lock', 'dividend_auto_record', 'networth_backfill', 'symbol_map_backfill']);
     expect(Object.keys(STEP_STATUS_LABEL).sort()).toEqual(['failed', 'ok', 'partial', 'skipped']);
+  });
+});
+
+describe('retryableSteps', () => {
+  it('keeps failed steps and partial steps without deferred events', () => {
+    const event = { symbol: '2330', ex_date: '2026-09-18', reason: 'deferred' } as unknown as DeferredDividendEvent;
+    const status = {
+      state: 'partial' as const,
+      steps: [
+        { name: 'a', status: 'failed' as const },
+        { name: 'b', status: 'ok' as const },
+        { name: 'c', status: 'partial' as const },
+        { name: 'd', status: 'partial' as const, detail: { deferred_events: [event] } },
+        { name: 'e', status: 'skipped' as const },
+      ],
+    };
+    expect(retryableSteps(status).map(s => s.name)).toEqual(['a', 'c']);
+    expect(retryableSteps({ state: 'partial' })).toEqual([]);
   });
 });
