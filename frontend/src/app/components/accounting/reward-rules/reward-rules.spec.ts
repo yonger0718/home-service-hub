@@ -465,9 +465,12 @@ describe('RewardRulesOverviewComponent', () => {
   it('expired banner: shown with the count, hidden under state=expired, 只看已過期 filters', async () => {
     const { el, harness } = await open();
     const banner = el.querySelector('.rr-banner')!;
-    expect(banner.getAttribute('role')).toBe('status');
-    expect(text(banner.querySelector('.rr-banner-text'))).toBe('1 條規則已過期但仍啟用，之後的消費不會再估算回饋');
-    const button = banner.querySelector<HTMLButtonElement>('button')!;
+    expect(banner.tagName).toBe('APP-BANNER');
+    expect(banner.querySelector('.banner--warn')).not.toBeNull();
+    expect(banner.querySelector('[role="status"]')).not.toBeNull();
+    expect(text(banner.querySelector('.banner-title'))).toBe('1 條規則已過期但仍啟用');
+    expect(text(banner.querySelector('.banner-detail'))).toBe('之後的消費不會再估算回饋');
+    const button = banner.querySelector<HTMLButtonElement>('.banner-action')!;
     expect(text(button)).toBe('只看已過期');
 
     button.click();

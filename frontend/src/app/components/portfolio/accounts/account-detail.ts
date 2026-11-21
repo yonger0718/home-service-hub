@@ -49,6 +49,7 @@ import { guardedRetry } from '../../../services/toast-retry';
 import { AppearanceService } from '../../../services/appearance.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { formatMoney } from '../../ui/format';
+import { BannerComponent } from '../../ui/banner/banner';
 import { SwitchComponent } from '../../ui/switch/switch';
 import { TagComponent } from '../../ui/tag/tag';
 import { BROKER_OPTIONS } from './accounts-list';
@@ -115,6 +116,7 @@ function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent
   standalone: true,
   imports: [
     PageHeaderComponent,
+    BannerComponent,
     FilterBarComponent,
     FormsModule,
     ReactiveFormsModule,

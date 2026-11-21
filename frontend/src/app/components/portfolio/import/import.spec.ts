@@ -1348,7 +1348,9 @@ describe('Portfolio import controls', () => {
   });
   describe('banner, recent imports, side column', () => {
     const norm = (t: string | null | undefined) => (t ?? '').replace(/\s+/g, ' ').trim();
-    const banner = (fixture: { nativeElement: HTMLElement }) => norm(el(fixture).querySelector('.import-banner')?.textContent);
+    const bannerText = (b: Element | null | undefined) =>
+      b ? `${norm(b.querySelector('.banner-title')?.textContent)} / ${norm(b.querySelector('.banner-detail')?.textContent)}` : '';
+    const banner = (fixture: { nativeElement: HTMLElement }) => bannerText(el(fixture).querySelector('app-banner.import-banner'));
     const history = () => TestBed.inject(ImportHistoryService);
     const NOW = new Date(2026, 9, 21, 22, 10);
 
@@ -1367,13 +1369,13 @@ describe('Portfolio import controls', () => {
     it('a commit HTTP 500 records a failed attempt with the reason and shows banner (a)', () => {
       const fixture = commitWith(throwError(() => ({ status: 500, error: { detail: '伺服器錯誤' } })));
       expect(history().attempts()[0]).toMatchObject({ ok: false, file: 'a.csv', type: 'transactions', reason: '伺服器錯誤' });
-      expect(banner(fixture)).toBe('最近一次匯入失敗（10/21 22:10）：a.csv，伺服器錯誤，整批未寫入。修正後重新上傳即可。');
+      expect(banner(fixture)).toBe('最近一次匯入失敗 / 10/21 22:10 · a.csv · 伺服器錯誤，沒有寫入任何資料。');
     });
 
     it('a 200 commit with created 0 and one row error shows banner (a) with 有 1 列錯誤', () => {
       const fixture = commitWith(of({ ...preview, dry_run: false, created: 0, errors: [{ row_index: 4, message: '價格欄位為空' }] }));
       expect(history().attempts()[0]).toMatchObject({ ok: false, created: 0, errors: 1 });
-      expect(banner(fixture)).toBe('最近一次匯入失敗（10/21 22:10）：a.csv 有 1 列錯誤，整批未寫入。修正後重新上傳即可。');
+      expect(banner(fixture)).toBe('最近一次匯入失敗 / 10/21 22:10 · a.csv · 有 1 列錯誤，沒有寫入任何資料。');
     });
 
     it('a partial commit (created 18 with 2 row errors) is a success: no banner, head ok', () => {
@@ -1432,8 +1434,8 @@ describe('Portfolio import controls', () => {
       localStorage.setItem('hh-import-history', JSON.stringify([FAILED_HEAD]));
       const fixture = setup();
       expect(history().attempts()[0]).toMatchObject({ ok: false, file: 'a.csv' });
-      expect(el(fixture).querySelectorAll('.import-banner').length).toBe(1);
-      expect(banner(fixture)).toBe('最近一次匯入失敗（10/21 22:10）：a.csv 有 1 列錯誤，整批未寫入。修正後重新上傳即可。');
+      expect(el(fixture).querySelectorAll('app-banner.import-banner').length).toBe(1);
+      expect(banner(fixture)).toBe('最近一次匯入失敗 / 10/21 22:10 · a.csv · 有 1 列錯誤，沒有寫入任何資料。');
     });
 
     it('a failed head attempt and a failed recalc show two banners, (a) first', () => {
@@ -1441,10 +1443,10 @@ describe('Portfolio import controls', () => {
       service.getRecalcStatus.mockReturnValue(of({
         kind: 'import', state: 'failed', steps: [{ name: 'dividend_auto_record', status: 'failed', error: 'TWSE timeout' }],
       }));
-      const banners = Array.from(el(setup()).querySelectorAll('.import-banner')).map(b => norm(b.textContent));
+      const banners = Array.from(el(setup()).querySelectorAll('app-banner.import-banner')).map(b => bannerText(b));
       expect(banners).toEqual([
-        '最近一次匯入失敗（10/21 22:10）：a.csv 有 1 列錯誤，整批未寫入。修正後重新上傳即可。',
-        '最近一次匯入的重算失敗：TWSE timeout',
+        '最近一次匯入失敗 / 10/21 22:10 · a.csv · 有 1 列錯誤，沒有寫入任何資料。',
+        '最近一次匯入的重算失敗 / TWSE timeout',
       ]);
     });
 
@@ -1454,9 +1456,9 @@ describe('Portfolio import controls', () => {
         steps: [{ name: 'dividend_auto_record', status: 'failed', error: 'TWSE timeout' }],
       }));
       const fixture = setup();
-      const banners = el(fixture).querySelectorAll('.import-banner');
+      const banners = el(fixture).querySelectorAll('app-banner.import-banner');
       expect(banners.length).toBe(1);
-      expect(norm(banners[0].textContent)).toBe('最近一次匯入的重算失敗：TWSE timeout');
+      expect(bannerText(banners[0])).toBe('最近一次匯入的重算失敗 / TWSE timeout');
       expect(text(fixture)).not.toContain('整批未寫入');
       expect(text(fixture)).not.toContain('沒有寫入任何資料');
       expect(text(fixture)).toContain('匯入重算：失敗');
@@ -1464,8 +1466,23 @@ describe('Portfolio import controls', () => {
 
     it('a failed recalc without a step error names the current step label', () => {
       service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', current_step: 'networth_backfill', steps: [] }));
-      const banners = Array.from(el(setup()).querySelectorAll('.import-banner')).map(b => norm(b.textContent));
-      expect(banners).toEqual(['最近一次匯入的重算失敗：淨值回補']);
+      const banners = Array.from(el(setup()).querySelectorAll('app-banner.import-banner')).map(b => bannerText(b));
+      expect(banners).toEqual(['最近一次匯入的重算失敗 / 淨值回補']);
+    });
+
+    it('both import banners are 錯誤: role alert, no close, no action', () => {
+      localStorage.setItem('hh-import-history', JSON.stringify([FAILED_HEAD]));
+      service.getRecalcStatus.mockReturnValue(of({
+        kind: 'import', state: 'failed', steps: [{ name: 'dividend_auto_record', status: 'failed', error: 'TWSE timeout' }],
+      }));
+      const banners = Array.from(el(setup()).querySelectorAll('app-banner.import-banner'));
+      expect(banners.length).toBe(2);
+      for (const b of banners) {
+        expect(b.querySelector('.banner--error')).not.toBeNull();
+        expect(b.querySelector('[role="alert"]')).not.toBeNull();
+        expect(b.querySelector('.banner-close')).toBeNull();
+        expect(b.querySelector('.banner-action')).toBeNull();
+      }
     });
 
     it('a failed quote-only refresh shows no banner', () => {

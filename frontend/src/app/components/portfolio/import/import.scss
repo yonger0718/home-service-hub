@@ -358,33 +358,6 @@
   max-width: 1180px;
 }
 
-.import-banner {
-  align-items: center;
-  background: var(--c-red-soft);
-  border-radius: 16px;
-  display: flex;
-  font-size: 0.875rem;
-  gap: 0.6rem 0.85rem;
-  flex-wrap: wrap;
-  line-height: 1.5;
-  padding: 0.75rem 1rem;
-
-  i {
-    color: var(--c-red);
-    flex: none;
-  }
-
-  span {
-    flex: 1 1 360px;
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-
-  b {
-    font-weight: 800;
-  }
-}
-
 .imp-layout {
   align-items: flex-start;
   display: flex;

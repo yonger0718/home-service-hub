@@ -595,14 +595,14 @@ describe('failureBanner', () => {
   it('row errors: {file} 有 {n} 列錯誤 with the nothing-written sentence', () => {
     const a: ImportAttempt = { at, file: 'a.csv', type: 'transactions', ok: false, created: 0, errors: 1 };
     expect(failureBanner(a)).toEqual({
-      lead: '最近一次匯入失敗',
-      body: '（10/21 22:10）：a.csv 有 1 列錯誤，整批未寫入。修正後重新上傳即可。',
+      heading: '最近一次匯入失敗',
+      detail: '10/21 22:10 · a.csv · 有 1 列錯誤，沒有寫入任何資料。',
     });
   });
 
   it('HTTP failure: {file}，{reason}', () => {
     const a: ImportAttempt = { at, file: 'a.csv', type: 'broker', ok: false, created: 0, reason: 'HTTP 500' };
-    expect(failureBanner(a)?.body).toBe('（10/21 22:10）：a.csv，HTTP 500，整批未寫入。修正後重新上傳即可。');
+    expect(failureBanner(a)?.detail).toBe('10/21 22:10 · a.csv · HTTP 500，沒有寫入任何資料。');
   });
 
   it('no banner for a success, a partial write or no attempt', () => {
@@ -615,22 +615,21 @@ describe('failureBanner', () => {
 
 describe('recalcBanner', () => {
   it('a failed import recalc names the first step error, without the nothing-written sentence', () => {
-    const text = recalcBanner({ kind: 'import', state: 'failed', current_step: 'networth_backfill', steps: [
+    const banner = recalcBanner({ kind: 'import', state: 'failed', current_step: 'networth_backfill', steps: [
       { name: 'symbol_map_backfill', status: 'ok' }, { name: 'networth_backfill', status: 'failed', error: 'TWSE timeout' },
     ] });
-    expect(text).toBe('最近一次匯入的重算失敗：TWSE timeout');
-    expect(text).not.toContain('整批未寫入');
-    expect(text).not.toContain('沒有寫入任何資料');
+    expect(banner).toEqual({ heading: '最近一次匯入的重算失敗', detail: 'TWSE timeout' });
+    expect(banner?.detail).not.toContain('沒有寫入任何資料');
   });
 
   it('falls back to the current_step label, then 未知錯誤', () => {
-    expect(recalcBanner({ state: 'failed', current_step: 'networth_backfill', steps: [] })).toBe('最近一次匯入的重算失敗：淨值回補');
-    expect(recalcBanner({ state: 'failed', current_step: 'awaiting_lock' })).toBe('最近一次匯入的重算失敗：等待鎖定');
-    expect(recalcBanner({ state: 'failed' })).toBe('最近一次匯入的重算失敗：未知錯誤');
+    expect(recalcBanner({ state: 'failed', current_step: 'networth_backfill', steps: [] })?.detail).toBe('淨值回補');
+    expect(recalcBanner({ state: 'failed', current_step: 'awaiting_lock' })?.detail).toBe('等待鎖定');
+    expect(recalcBanner({ state: 'failed' })?.detail).toBe('未知錯誤');
   });
 
   it('an unknown current_step falls back to its raw name', () => {
-    expect(recalcBanner({ state: 'failed', current_step: 'future_step' })).toBe('最近一次匯入的重算失敗：future_step');
+    expect(recalcBanner({ state: 'failed', current_step: 'future_step' })?.detail).toBe('future_step');
   });
 
   it('none for a quote-only run or a non-failed state', () => {

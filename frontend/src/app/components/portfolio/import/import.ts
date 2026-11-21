@@ -29,6 +29,7 @@ import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-tog
 import { SideTagComponent } from '../../ui/side-tag/side-tag';
 import { TagComponent } from '../../ui/tag/tag';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { BannerComponent } from '../../ui/banner/banner';
 import {
   ImportRowError,
   ImportType,
@@ -75,6 +76,7 @@ interface UploadRequest {
   standalone: true,
   imports: [
     PageHeaderComponent,
+    BannerComponent,
     CommonModule,
     FormsModule,
     ButtonModule,

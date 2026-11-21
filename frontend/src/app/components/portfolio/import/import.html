@@ -3,17 +3,11 @@
 <div class="import-page" [class.panes]="panes()">
   <app-page-header></app-page-header>
 
-  @if (failure(); as banner) {
-    <div class="import-banner" role="alert">
-      <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
-      <span><b>{{ banner.lead }}</b>{{ banner.body }}</span>
-    </div>
+  @if (failure(); as b) {
+    <app-banner class="import-banner" tone="error" [heading]="b.heading" [detail]="b.detail" />
   }
-  @if (recalcFailure(); as banner) {
-    <div class="import-banner" role="alert">
-      <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
-      <span>{{ banner }}</span>
-    </div>
+  @if (recalcFailure(); as b) {
+    <app-banner class="import-banner" tone="error" [heading]="b.heading" [detail]="b.detail" />
   }
 
   <ol class="steps" aria-label="匯入步驟">

@@ -1304,8 +1304,40 @@ describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
     expect(text(root.querySelector('.balance-value'))).toBe('−$12,345');
     expect(root.querySelector('.account-meta')?.textContent).toContain('期初 −$5,000');
     expect(text(root.querySelector('.account-meta p-tag'))).toBe('已停用');
-    expect(text(root.querySelector('.overdraft-text'))).toBe('帳戶餘額為負（−$12,345），可能漏記入金。');
+    const banner = root.querySelector('app-banner.overdraft-banner')!;
+    expect(text(banner.querySelector('.banner-title'))).toBe('帳戶餘額為負（−$12,345）');
+    expect(text(banner.querySelector('.banner-detail'))).toBe('可能漏記入金。');
+    expect(banner.querySelector('.banner--warn')).not.toBeNull();
     expect(root.querySelector('.account-header-card')?.textContent).not.toContain('-NT$');
+  });
+
+  it('新增入金歸零 opens the top-up form, and the banner is not offered while the account is not ready', () => {
+    const fixture = render();
+    httpMock.expectOne(req => req.url === '/api/portfolio/accounts/' && req.params.get('include_inactive') === 'true').flush({
+      items: [{
+        id: 7, broker: 'cathay', nickname: '元大交割戶', currency: 'TWD', opening_balance: '-5000', opening_date: '2026-01-01',
+        is_active: true, created_at: '2026-01-01T00:00:00Z', native_balance: '-12345', target_balance: '-12345', target_currency: 'TWD',
+      }],
+      target_currency: null, total_target_balance: null, skipped_currencies: [],
+    });
+    httpMock.expectOne(req => req.url === '/api/portfolio/accounts/7/balance-history').flush({ account_id: 7, currency: 'TWD', points: [] });
+    flushTxns([]);
+    fixture.detectChanges();
+    const action = () => el(fixture).querySelector<HTMLButtonElement>('app-banner.overdraft-banner .banner-action')!;
+    expect(text(action())).toBe('新增入金歸零');
+    expect(action().disabled).toBe(false);
+    action().click();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.transactionDialogVisible()).toBe(true);
+    expect(fixture.componentInstance.transactionForm.value.amount).toBe(fixture.componentInstance.overdraftAmount());
+
+    fixture.componentInstance.transactionDialogVisible.set(false);
+    fixture.componentRef.setInput('accountId', 9);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.accountReady()).toBe(false);
+    // The detail clears the stale account while another one loads, so the banner (and its action) is gone, never clickable.
+    expect(el(fixture).querySelector('app-banner.overdraft-banner')).toBeNull();
+    httpMock.match(() => true);
   });
 
   it('formatCurrency: U+2212 before negatives in every currency, none for zero or positives', () => {
