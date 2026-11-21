@@ -674,7 +674,7 @@ Each day cell of the 日曆 view SHALL show up to three dots for the day's large
 
 ### Requirement: Calendar day cell marks and accessible name
 
-At ≥ 1024 px a cell SHALL show text tags top-right: 帳單 (warning colour; 已繳 once the statement is fully paid) on bill due days, then 結帳 on a card's statement day. Below 1024 px the cell SHALL show corner dots instead: warning for 帳單, muted for 結帳 and 已繳. An inbox e-invoice awaiting a match SHALL mark its `issue_date` (發票待對帳 at ≥ 1024 px, a dot below).
+At ≥ 1024 px a cell SHALL show text tags top-right: 帳單 (amber, text `--app-banner-warn` on a `--app-banner-warn-soft` tint; 已繳 once the statement is fully paid) on bill due days, then 結帳 on a card's statement day. Below 1024 px the cell SHALL show corner dots instead: solid `--app-banner-warn` for 帳單, muted for 結帳 and 已繳. An inbox e-invoice awaiting a match SHALL mark its `issue_date` (發票待對帳 at ≥ 1024 px, a dot below).
 
 #### Scenario: Invoice waiting on a day
 - **GIVEN** the inbox holds an unmatched invoice from 路易莎 issued 2026-10-22
@@ -683,7 +683,7 @@ At ≥ 1024 px a cell SHALL show text tags top-right: 帳單 (warning colour; �
 
 #### Scenario: Bill and closing tags
 - **GIVEN** a card's statement closes on 10/05 and its bill is due 10/20
-- **THEN** at 1440 px 10/05 SHALL show a 結帳 tag and 10/20 a warning-colour 帳單 tag; at 390 px 10/20 SHALL show a warning dot and 10/05 a muted dot
+- **THEN** at 1440 px 10/05 SHALL show a 結帳 tag and 10/20 an amber 帳單 tag; at 390 px 10/20 SHALL show an amber dot and 10/05 a muted dot
 
 ### Requirement: Calendar day cell accessible name
 
@@ -1011,13 +1011,13 @@ The cap bar, shared by the overview cards and the account settings rows, SHALL s
 
 - posted and estimated parts in the primary colour (the estimate lighter);
 - text 「$used+est / $cap · 剩 $N」, in the rule's reward unit;
-- at 90 % or more of the cap, the warning ink and 「快到上限」;
+- at 90 % or more of the cap, the `--app-banner-warn` ink and 「快到上限」;
 - an accessible name with the posted, estimated and cap amounts.
 
 #### Scenario: Card with a near cap
 - **GIVEN** 玉山 Pi 卡's 全聯・家樂福加碼 5% has a $200 cap, $180 posted and $13 estimated this period
 - **WHEN** the overview renders at 1440 px
-- **THEN** its row SHALL read 「$193 / $200 · 快到上限」 in the warning ink
+- **THEN** its row SHALL read 「$193 / $200 · 快到上限」 in the `--app-banner-warn` ink
 
 ### Requirement: Reward rule rows
 
