@@ -186,8 +186,8 @@
 }
 
 .tag-bill {
-  background: color-mix(in srgb, var(--app-warning) 12%, transparent);
-  color: var(--app-warning);
+  background: var(--app-banner-warn-soft);
+  color: var(--app-banner-warn);
 }
 
 /* The past fill is --app-surface-soft too, so the neutral tag is a muted wash to stay visible. */
@@ -269,9 +269,12 @@
   width: 6px;
 }
 
-.inv-dot,
-.bill-dot {
+.inv-dot {
   background: var(--app-warning);
+}
+
+.bill-dot {
+  background: var(--app-banner-warn);
 }
 
 .closing-dot,

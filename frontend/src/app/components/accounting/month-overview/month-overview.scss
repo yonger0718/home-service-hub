@@ -177,8 +177,8 @@
 }
 
 .tag-bill {
-  background: color-mix(in srgb, var(--app-warning) 12%, transparent);
-  color: var(--app-warning);
+  background: var(--app-banner-warn-soft);
+  color: var(--app-banner-warn);
 }
 
 .tag-invoice {
