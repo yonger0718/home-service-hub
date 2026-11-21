@@ -100,4 +100,69 @@ describe('notif-task', () => {
     expect(isCommand({ label: '入帳', command: { kind: 'postInstance', instanceId: 1, name: '測試月費' } })).toBe(true);
     expect(isCommand({ label: '記繳款', route: '/accounting' })).toBe(false);
   });
+
+  it('an overdue task alone is red with one overdue clause', () => {
+    expect(summarize([task({ tier: 'overdue' })])).toEqual({
+      total: 1,
+      overdue: 1,
+      tone: 'red',
+      label: '通知，1 件要處理，1 件已逾期',
+    });
+  });
+
+  it('chipCounts splits mixed sources and ignores tracking of each', () => {
+    const tasks = [
+      task({ source: 'ledger', tier: 'overdue' }),
+      task({ source: 'ledger', tier: 'today' }),
+      task({ source: 'portfolio', tier: 'system' }),
+      task({ source: 'ledger', tier: 'tracking' }),
+      task({ source: 'portfolio', tier: 'tracking' }),
+    ];
+    expect(chipCounts(tasks)).toEqual({ all: 3, ledger: 2, portfolio: 1 });
+  });
+
+  it('sortTasks puts system after confirm and before tracking', () => {
+    const ids = sortTasks([
+      task({ id: 'tr', tier: 'tracking' }),
+      task({ id: 'sy', tier: 'system' }),
+      task({ id: 'co', tier: 'confirm' }),
+      task({ id: 'to', tier: 'today' }),
+    ]).map((t) => t.id);
+    expect(ids).toEqual(['to', 'co', 'sy', 'tr']);
+  });
+
+  it('sortTasks orders tracking-only input by sortKey', () => {
+    const ids = sortTasks([
+      task({ id: 'b', tier: 'tracking', sortKey: '2026-10-26' }),
+      task({ id: 'a', tier: 'tracking', sortKey: '2026-10-25' }),
+    ]).map((t) => t.id);
+    expect(ids).toEqual(['a', 'b']);
+  });
+
+  it('sortTasks of an empty list is an empty new array', () => {
+    const input: NotifTask[] = [];
+    const out = sortTasks(input);
+    expect(out).toEqual([]);
+    expect(out).not.toBe(input);
+  });
+
+  it('failureLine with a single key', () => {
+    expect(failureLine(['debts'])).toBe('無法讀取：借還款');
+  });
+
+  it('equal sortKey orders by id', () => {
+    const ids = sortTasks([
+      task({ id: 'z', sortKey: '2026-10-24' }),
+      task({ id: 'a', sortKey: '2026-10-24' }),
+    ]).map((t) => t.id);
+    expect(ids).toEqual(['a', 'z']);
+  });
+
+  it('a date-only sortKey sorts before a datetime of the same day', () => {
+    const ids = sortTasks([
+      task({ id: 'dt', sortKey: '2026-10-24T08:00:00' }),
+      task({ id: 'd', sortKey: '2026-10-24' }),
+    ]).map((t) => t.id);
+    expect(ids).toEqual(['d', 'dt']);
+  });
 });
