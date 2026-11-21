@@ -14,6 +14,7 @@ import { ShellComponent } from './components/shell/shell';
 import { SubNavComponent } from './components/shell/sub-nav/sub-nav';
 import { SidebarComponent } from './components/sidebar/sidebar';
 import { NavBadgeService } from './services/nav-badge.service';
+import { NO_TASKS } from './components/notifications/notif-task';
 import { LayoutModeService, MATCH_MEDIA, PANES_QUERY, PHONE_QUERY } from './services/layout-mode.service';
 
 const PAGES: [string, string][] = [
@@ -162,7 +163,7 @@ function stubViewport(width: number): void {
       provideRouter(routes),
       provideHttpClient(),
       provideHttpClientTesting(),
-      { provide: NavBadgeService, useValue: { badges: signal({}) } },
+      { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } },
       {
         provide: MATCH_MEDIA,
         useValue: (query: string) =>
@@ -428,7 +429,7 @@ describe('accounting navigation', () => {
       expect(item.label).toBe(label);
 
       TestBed.configureTestingModule({ imports: [SidebarComponent, SubNavComponent],
-        providers: [provideRouter([{ path: '**', children: [] }]), { provide: NavBadgeService, useValue: { badges: signal({}) } }],
+        providers: [provideRouter([{ path: '**', children: [] }]), { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } }],
       });
       await TestBed.inject(Router).navigateByUrl(url);
       const sidebar = TestBed.createComponent(SidebarComponent);

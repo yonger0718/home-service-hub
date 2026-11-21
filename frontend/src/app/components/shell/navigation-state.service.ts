@@ -8,6 +8,7 @@ import { NavBadgeService } from '../../services/nav-badge.service';
 import { NavigationPreferencesService } from '../../services/navigation-preferences.service';
 import { PaneStateService } from '../../services/pane-state.service';
 import { timelineCalendarParams } from '../accounting/timeline/calendar-url';
+import { NO_TASKS, NotifSummary } from '../notifications/notif-task';
 import {
   NAV_GROUPS,
   NOTIFICATIONS_GROUP,
@@ -55,6 +56,10 @@ export class NavigationStateService {
   readonly tabBar: Signal<TabBarLayout> = computed(() => buildTabBar(NAV_GROUPS, this.prefs.hiddenGroups()));
   readonly badges: Signal<Readonly<Record<string, NavBadge>>> = computed(() =>
     this.prefs.showBadges() ? this.navBadges.badges() : NO_BADGES,
+  );
+  /** The 通知 count for the entry points (sidebar item, phone bell); `NO_TASKS` with badges off. */
+  readonly notifications: Signal<NotifSummary> = computed(() =>
+    this.prefs.showBadges() ? this.navBadges.summary() : NO_TASKS,
   );
   readonly sidebarMode: Signal<SidebarDefault> = computed(() =>
     resolveSidebarMode({

@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LayoutMode, LayoutModeService, MATCH_MEDIA, PHONE_QUERY } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
+import { NO_TASKS } from '../../notifications/notif-task';
 import { PageHeaderComponent, PageMenuItem } from './page-header';
 
 @Component({ template: '' })
@@ -62,7 +63,7 @@ async function renderBack(urls: string[], opts: { mode?: LayoutMode; hidden?: st
       ]),
       provideLocationMocks(),
       { provide: MATCH_MEDIA, useValue: null },
-      { provide: NavBadgeService, useValue: { badges: signal({}) } },
+      { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } },
     ],
   });
   TestBed.inject(LayoutModeService).set(opts.mode ?? 'phone');
@@ -96,7 +97,7 @@ async function render(
           removeEventListener: () => {},
         }),
       },
-      { provide: NavBadgeService, useValue: { badges: signal({}) } },
+      { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } },
     ],
   });
   await TestBed.inject(Router).navigateByUrl(url);
@@ -124,7 +125,7 @@ describe('PageHeaderComponent', () => {
         providers: [
           provideRouter([{ path: '**', component: BlankPage }]),
           { provide: MATCH_MEDIA, useValue: null },
-          { provide: NavBadgeService, useValue: { badges: signal({}) } },
+          { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } },
         ],
       });
       const fixture = TestBed.createComponent(SubtitleHost);
@@ -299,7 +300,7 @@ describe('PageHeaderComponent', () => {
         providers: [
           provideRouter([{ path: '**', component: BlankPage }]),
           { provide: MATCH_MEDIA, useValue: null },
-          { provide: NavBadgeService, useValue: { badges: signal({}) } },
+          { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } },
         ],
       });
       TestBed.inject(LayoutModeService).set(mode);

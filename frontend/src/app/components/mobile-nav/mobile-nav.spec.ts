@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { MATCH_MEDIA } from '../../services/layout-mode.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
+import { NO_TASKS } from '../notifications/notif-task';
 import { NavBadge } from '../shell/navigation';
 import { MobileNavComponent } from './mobile-nav';
 
@@ -28,7 +29,7 @@ async function render(url: string, opts: { hidden?: string[]; badges?: boolean; 
     providers: [
       provideRouter([{ path: '**', component: BlankPage }]),
       { provide: MATCH_MEDIA, useValue: () => ({ matches: true, addEventListener: () => {}, removeEventListener: () => {} }) },
-      { provide: NavBadgeService, useValue: { badges: signal(opts.values ?? BADGES) } },
+      { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal(opts.values ?? BADGES) } },
     ],
   });
   await TestBed.inject(Router).navigateByUrl(url);

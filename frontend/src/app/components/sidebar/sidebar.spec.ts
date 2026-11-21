@@ -15,6 +15,7 @@ import {
 } from '../../services/layout-mode.service';
 import { DirtyAware, DirtyFormRegistry } from '../accounting/dirty-form.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
+import { NO_TASKS } from '../notifications/notif-task';
 import { NavigationPreferencesService } from '../../services/navigation-preferences.service';
 import { NAV_ITEMS, NavBadge } from '../shell/navigation';
 import { SidebarComponent } from './sidebar';
@@ -61,7 +62,7 @@ async function render(
     providers: [
       provideRouter([{ path: '**', component: BlankPage }]),
       { provide: MATCH_MEDIA, useValue: fakeMatchMedia(width, height) },
-      { provide: NavBadgeService, useValue: { badges } },
+      { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges } },
     ],
   });
   await TestBed.inject(Router).navigateByUrl(url);

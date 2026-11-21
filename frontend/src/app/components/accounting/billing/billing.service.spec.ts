@@ -409,4 +409,106 @@ describe('BillingService', () => {
     billing.ensure([shifted], '2026-10-26');
     http.expectNone(r => r.url.startsWith('/api/accounting/accounts/'));
   });
+
+  // ---- R27: ensure / refresh return a promise that resolves once their reads have settled -------------------------
+
+  /** Lets pending promise callbacks run. */
+  async function microtasks(): Promise<void> {
+    for (let i = 0; i < 5; i++) {
+      await Promise.resolve();
+    }
+  }
+
+  /** Tracks a returned promise: `resolved` / `rejected` flip when it settles. */
+  function track(promise: Promise<void>): { resolved: boolean; rejected: boolean } {
+    const state = { resolved: false, rejected: false };
+    promise.then(
+      () => (state.resolved = true),
+      () => (state.rejected = true),
+    );
+    return state;
+  }
+
+  /** A second card (測試銀行卡) with its own statement. */
+  const OTHER: BillingEvent = { ...SEPT, accountId: 10, name: '測試銀行卡' };
+
+  it("refresh resolves only after every card's summary and payments reads have landed", async () => {
+    const done = track(billing.refresh([SEPT, OTHER], TODAY));
+    const first = requests(SEPT);
+    const second = requests(OTHER);
+    first.summary.flush(spendBody(9, '-100.0000'));
+    first.payments.flush(noPayments);
+    second.summary.flush(spendBody(10, '-200.0000'));
+    await microtasks();
+    expect(done.resolved).toBe(false);
+
+    second.payments.flush(noPayments);
+    await microtasks();
+    expect(done.resolved).toBe(true);
+    expect(billing.bill(OTHER)?.remaining).toBe(200);
+  });
+
+  it('ensure resolves at once when nothing is in flight and nothing new is asked', async () => {
+    billing.ensure([SEPT], TODAY);
+    answer(requests(), '-100.0000');
+
+    const done = track(billing.ensure([SEPT], TODAY));
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/'));
+    await microtasks();
+    expect(done.resolved).toBe(true);
+  });
+
+  it('ensure during a re-read resolves when that re-read commits', async () => {
+    billing.ensure([SEPT], TODAY);
+    answer(requests(), '-100.0000');
+    billing.refresh([SEPT], TODAY);
+    const reread = requests();
+
+    const done = track(billing.ensure([SEPT], TODAY));
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/'));
+    await microtasks();
+    expect(done.resolved).toBe(false);
+
+    answer(reread, '-100.0000', ['40.0000']);
+    await microtasks();
+    expect(done.resolved).toBe(true);
+    expect(billing.bill(SEPT)?.remaining).toBe(60);
+  });
+
+  it('a read superseded by a newer round resolves with the newer round, not earlier', async () => {
+    const done = track(billing.refresh([SEPT], TODAY));
+    const first = requests();
+    billing.refresh([SEPT], TODAY);
+    const second = requests();
+
+    answer(first, '-111.0000');
+    await microtasks();
+    expect(done.resolved).toBe(false);
+
+    answer(second, '-222.0000');
+    await microtasks();
+    expect(done.resolved).toBe(true);
+    expect(billing.bill(SEPT)?.statement).toBe(222);
+  });
+
+  it('a failed read settles the promise (it never rejects)', async () => {
+    const done = track(billing.ensure([SEPT], TODAY));
+    const reqs = requests();
+    reqs.summary.flush('boom', { status: 500, statusText: 'Server Error' });
+    await microtasks();
+    expect(done.resolved).toBe(false);
+
+    reqs.payments.flush(noPayments);
+    await microtasks();
+    expect(done).toEqual({ resolved: true, rejected: false });
+    expect(billing.failed(SEPT)).toBe(true);
+  });
+
+  it('empty dues resolve at once', async () => {
+    const ensured = track(billing.ensure([], TODAY));
+    const refreshed = track(billing.refresh([], TODAY));
+    await microtasks();
+    expect(ensured).toEqual({ resolved: true, rejected: false });
+    expect(refreshed).toEqual({ resolved: true, rejected: false });
+  });
 });
