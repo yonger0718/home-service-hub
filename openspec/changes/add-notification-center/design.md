@@ -10,7 +10,7 @@ Since this change was written, the e-invoice link shipped (`docs/superpowers/spe
 
 - **The inbox response** gains `einvoices` (`ambiguous`, `near` and `unmatched` invoices with candidates and `offer_mute`) and `counts.einvoice_ask` (`ambiguous` + `near`).
 - **Write-scope actions:** `POST /einvoices/{id}/link|unlink|dismiss|undismiss`, `GET/DELETE /einvoices/mutes[/{tax_id}]` (a mute is created by `dismiss` with `{mute_seller: true}`), `GET /einvoices/dismissed` and `PATCH /einvoices/preferences {remind_unmatched}`.
-- **Today's SPA:** a minimal 發票待對帳 section in the inbox panel, the bell as `ask + einvoice_ask` at three call sites, and a plain 發票 section in entry detail. The design doc leaves a "dedicated UI design pass" to later; D10–D12 are that pass.
+- **Today's SPA:** a minimal 發票待對帳 section in the inbox panel, the bell as `ask + einvoice_ask` at four call sites, and a plain 發票 section in entry detail. The design doc leaves a "dedicated UI design pass" to later; D10–D12 are that pass.
 
 Data the SPA does not read yet: the inbox item's `transfer` field (R6c §7, #150); `GET /api/portfolio/imports/cathay-statement/pending` (`{items:[{trade_date,status,reason,since,last_at}], total, truncated}`) and `/runs/latest` (`{latest, latest_ok}`); `GET /reconciliation/audit?event=auto_pay_skipped&since=` (detail carries `reason` and the amounts).
 
@@ -82,16 +82,16 @@ Group items show a dot when their page has a task: 股利 (dividend batch), 匯�
 
 All `ambiguous` and `near` invoices form **one task**, 「電子發票 · N 張要確認」, counting 1. Its meta names up to three sellers.
 
-The task opens `/notifications/einvoices`: the right pane at ≥ 1024 px, full screen below, with the same frame as the reconciliation flow (D5). Progress shows `n / N`, keys 1–3 / S / ← → / Esc work as in D5, and the end state names linked / 都不是 / skipped and links to D11's page.
+The task opens `/notifications/einvoices`: the right pane at ≥ 1024 px, full screen below, with the same frame as the reconciliation flow (D5). Progress shows `n / N`; keys 1–N pick a candidate and N+1 is 都不是 (an invoice can have more than two candidates, so not D5's fixed 1–3); S / ← → / Esc work as in D5, and the end state names linked / 都不是 / skipped and links to D11's page.
 
 Each invoice screen shows:
 
 1. **A kind chip with a reason.**
    - 有兩筆都像 (`ambiguous`): 「同一天、同金額的帳有 2 筆」.
    - 差一點 (`near`): 「沒有金額完全相同的帳，這筆最接近」, or 「商家名稱對得上，金額不同」.
-2. **The invoice card:** seller, date and time, number, tax id, items with subtotals, and the total.
-3. **Candidates as answer buttons:** 「連結 <name>」 with account, date and time, category and merchant, plus the amount. The first candidate is solid. A field that differs from the invoice gets a chip: 時間差 6 小時, 金額差 $3.
-4. **都不是** (dismiss), **選其他帳…** (the existing picker of eligible entries), and **記成新的一筆**. The last opens the entry form prefilled with date, time, amount, merchant = seller and the invoice number; saving runs the matcher for that invoice.
+2. **The invoice card:** seller, date, number, tax id, items with subtotals, and the total.
+3. **Candidates as answer buttons:** 「連結 <name>」 with account, date, category and merchant, plus the amount. The first candidate is solid. What differs from the invoice gets a chip: 日期差 1 天, 金額差 $3. The carrier CSV and the API carry the invoice's date only, so no time is shown or compared; the times on the artboards are illustration.
+4. **都不是** (dismiss), **選其他帳…** (the existing picker of eligible entries), and **記成新的一筆**. The last opens the entry form prefilled with date, amount, merchant = seller and the invoice number. The flow moves on after the save; the invoice links at the next matcher run or by 選其他帳… (there is no owner-run match endpoint).
 
 Linking calls `POST /einvoices/{id}/link`. 都不是 calls `dismiss`. A failed write keeps the screen and shows the error inline.
 
@@ -114,13 +114,13 @@ The row opens `/notifications/einvoices?state=unmatched`, a page grouped by sell
 - **Header:** a match chip and a source chip, then ⋯ with 換一張發票 and 解除連結.
   - Match chip: ✓ 金額相符 (success), or 差 $N (warning ink) when the linked total differs from the entry or group net.
   - Source chip: 自動連結 or 手動連結.
-- **Body:** seller, date and time, number; then the items (the first three, then 「… 另外 N 項」) with a total row. For a group invoice the title reads 發票 · 整組, with 看 N 項明細.
-- **Without an invoice,** for an eligible entry only: a dashed 「連結發票…」 row showing how many invoices lie within ±7 days.
+- **Body:** seller, date, number; then the items (the first three, then 「… 另外 N 項」) with a total row. For a group invoice the title reads 發票 · 整組, with 看 N 項明細.
+- **Without an invoice:** unchanged. The row #408 shipped stays as the main spec's `Calendar entry drawer invoice link` defines it (dashed row with the ±7-day hint in the drawer, hidden when not eligible; a plain 連結發票… button on the full page). ±7 days is the picker's window, not `date_window_days`.
 - **解除連結** says what it does: 「之後不會再自動連回」, because unlink dismisses.
 
 **記帳設定 › 發票:**
 
-- A status line: enabled, last import, auto-linked count.
+- A status line: enabled, last import, auto-linked count. `GET /einvoices/preferences` gains read-only `last_import_at` and `auto_linked_count` for it.
 - 提醒沒有帳的發票 (`remind_unmatched`), with the hint that 要你確認 cards still show.
 - Two steppers: 對帳日期範圍 ±0–7 天 (`date_window_days`) and 同一家標幾次後問要不要不提醒 1–10 次 (`mute_prompt_after`).
 - 不提醒的商家, with 移除.

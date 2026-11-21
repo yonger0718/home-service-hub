@@ -43,12 +43,12 @@
 
 ## 6. E-invoices (PR F)
 
-- [ ] 6.1 API: `PATCH /einvoices/preferences` accepts optional `date_window_days` (0–7) and `mute_prompt_after` (1–10), merged with a version bump; tests for partial update and range
+- [ ] 6.1 API: `PATCH /einvoices/preferences` accepts optional `date_window_days` (0–7) and `mute_prompt_after` (1–10), merged with a version bump; `GET` returns both fields plus read-only `last_import_at` and `auto_linked_count`; tests for partial update, range, the GET fields and a PATCH that sends a read-only field
 - [ ] 6.2 Task source: one 要你確認 task for `ambiguous` + `near`; one 追蹤中 row for `unmatched` (hidden when `remind_unmatched` is off)
 - [ ] 6.3 `/notifications/einvoices` flow (D10)
   - kind chip
   - invoice card
-  - candidate answers with difference chips
+  - candidate answers with difference chips (日期差, 金額差; the API has no invoice time); link by `entry_id` or `group_id` from the candidate kind
   - 都不是, 選其他帳…, 記成新的一筆 prefilled
   - keys, end state
 - [ ] 6.4 Unmatched page (D11)
@@ -57,8 +57,8 @@
   - 這 N 張都不用記帳
   - 這家以後都不提醒 via `dismiss {mute_seller: true}`
   - toast 復原
-- [ ] 6.5 Entry invoice card and 記帳設定 › 發票 section (D12)
-- [ ] 6.6 Remove the inbox panel's 發票待對帳 section and the `ask + einvoice_ask` sums at the three call sites
+- [ ] 6.5 Entry invoice card and 記帳設定 › 發票 section (D12); the row for an entry without an invoice stays as `Calendar entry drawer invoice link` specifies (#408)
+- [ ] 6.6 Remove the inbox panel's 發票待對帳 section and the `ask + einvoice_ask` sums at every `inboxBellCount` call site (`nav-badge.service.ts`, `timeline.ts`, `inbox-panel.ts`, `reminders.ts`)
 - [ ] 6.7 Tests
   - one task in the count for three invoices
   - link and dismiss calls

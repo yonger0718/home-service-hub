@@ -23,7 +23,7 @@ The visual system is the one in `frontend/src/styles.scss` (v2 handoff plus the 
 | `NotifPhone.dc.html` | 通知中心 | `/notifications` | 390 | 來源 chips |
 | `ReconPhone.dc.html` | 對帳逐筆處理 | `/notifications/recon/:statementId` | 390 | answers advance; end state after four sample cases |
 | `FeedbackSpec.dc.html` | Entry points and count, toast, banner, empty state | — | 1280 | — |
-| `InvoiceDesktop.dc.html` | 通知 with the 電子發票 flow open: one invoice at a time, candidates as answers | `/notifications/einvoices` | 1440 fluid | 連結, 都不是, 跳過, 上一張; end state |
+| `InvoiceDesktop.dc.html` | 通知 with the 電子發票 flow open: one invoice at a time, candidates as answers | `/notifications/einvoices` | 1440 fluid | 連結, 都不是, 跳過, 上一張; end state. The times on the canvas are illustration: the data has the invoice date only (chips are 日期差 / 金額差) |
 | `InvoiceUnmatchedPhone.dc.html` | 有發票沒有帳, grouped by seller | `/notifications/einvoices?state=unmatched` | 390 | 不用記帳, 這 N 張都不用記帳, 這家以後都不提醒, 復原 |
 | `InvoiceSpec.dc.html` | Entry detail 發票 card (three states) and 記帳設定 › 發票 | `/accounting/entries/:id`, `/accounting/settings` | 1280 | reminder switch, two steppers |
 | `ReportsDesktop.dc.html` | 報表 · 總覽 / 趨勢與比較 / 排行 / 專案與預算 | `/accounting/reports` | 1440 fluid | tabs, 支出/收入, category drill-in, trend category, ranking dimension and row |

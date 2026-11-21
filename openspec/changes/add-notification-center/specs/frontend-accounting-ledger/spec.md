@@ -35,9 +35,7 @@ The entry detail SHALL show its invoice (the entry's own, else its group's) as a
 
 ### Requirement: Entry invoice card body
 
-The body of the entry invoice card SHALL show the seller, date and time, number, and the items: the first three, then 「… 另外 N 項」, and a total row. A group invoice SHALL be titled 發票 · 整組.
-
-An eligible entry without an invoice SHALL show a dashed 「連結發票…」 row with the number of invoices within ±7 days.
+The body of the entry invoice card SHALL show the seller, date, number, and the items: the first three, then 「… 另外 N 項」, and a total row. A group invoice SHALL be titled 發票 · 整組.
 
 #### Scenario: Auto-linked receipt
 - **GIVEN** 全聯 採買 −1,286 auto-linked to AB-12345678 with 7 items totalling 1,286
@@ -48,7 +46,7 @@ An eligible entry without an invoice SHALL show a dashed 「連結發票…」 r
 
 記帳設定 SHALL show a 發票 section containing:
 
-- the link status: enabled, last import, auto-linked count;
+- the link status from `GET /einvoices/preferences`: enabled, the last import time and the auto-linked count;
 - 提醒沒有帳的發票;
 - 對帳日期範圍, a ±0–7 day stepper;
 - 同一家標幾次後問要不要不提醒, a 1–10 stepper;
