@@ -1,14 +1,20 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { computed, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideRouter } from '@angular/router';
+import { Subject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ScheduleCatchUpResult, ScheduleInstance } from '../../models/accounting.model';
+import { AccountingService } from '../../services/accounting.service';
 import { NavigationPreferencesService } from '../../services/navigation-preferences.service';
+import { ToastService } from '../../services/toast.service';
+import { IMPORT_RUNNING_TOAST } from '../accounting/schedule-math';
 import { NotificationCenterService } from '../../services/notification-center.service';
 import { MATCH_MEDIA, PHONE_QUERY } from '../../services/layout-mode.service';
 import { NotifSummary, NotifTask, NotifTier, NotifTrackingRow, summarize } from './notif-task';
-import { NotifRowComponent } from './notif-row/notif-row';
+import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
 import { NotificationsComponent } from './notifications';
 
 function task(id: string, tier: NotifTier, over: Partial<NotifTask> = {}): NotifTask {
@@ -48,9 +54,31 @@ describe('NotificationsComponent', () => {
   const trackingRows = signal<readonly NotifTrackingRow[]>(ROWS);
   const handled = signal<string | null>('3 件');
   const loaded = signal(true);
+  const round = signal(1);
+  const settledRound = signal(1);
   const refresh = vi.fn();
-  const invalidate = vi.fn();
+  /** As the service: starts the next round and returns its id. */
+  const invalidate = vi.fn(() => {
+    round.update(r => r + 1);
+    return round();
+  });
   let width = 1440;
+
+  /** One Subject per write call, in call order. */
+  let posts: Subject<ScheduleInstance>[] = [];
+  let catchUps: Subject<ScheduleCatchUpResult>[] = [];
+  const accounting = {
+    postScheduleInstance: vi.fn((_id: number) => {
+      const s = new Subject<ScheduleInstance>();
+      posts.push(s);
+      return s.asObservable();
+    }),
+    catchUpSchedule: vi.fn((_id: number) => {
+      const s = new Subject<ScheduleCatchUpResult>();
+      catchUps.push(s);
+      return s.asObservable();
+    }),
+  };
 
   const stub = {
     tasks,
@@ -58,8 +86,8 @@ describe('NotificationsComponent', () => {
     handled,
     loaded,
     loading: signal(false),
-    round: signal(1),
-    settledRound: signal(1),
+    round,
+    settledRound,
     truncated: signal(false),
     failedSources: signal([]),
     nextUpcoming: signal(null),
@@ -81,6 +109,7 @@ describe('NotificationsComponent', () => {
       providers: [
         provideRouter([]),
         { provide: NotificationCenterService, useValue: stub },
+        { provide: AccountingService, useValue: accounting },
         {
           provide: MATCH_MEDIA,
           useValue: (q: string) =>
@@ -102,8 +131,14 @@ describe('NotificationsComponent', () => {
     trackingRows.set(ROWS);
     handled.set('3 件');
     loaded.set(true);
+    round.set(1);
+    settledRound.set(1);
     refresh.mockClear();
     invalidate.mockClear();
+    accounting.postScheduleInstance.mockClear();
+    accounting.catchUpSchedule.mockClear();
+    posts = [];
+    catchUps = [];
   });
   afterEach(() => TestBed.resetTestingModule());
 
@@ -350,5 +385,413 @@ describe('NotificationsComponent', () => {
     (row.componentInstance as NotifRowComponent).run.emit(command);
     expect(spy).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1' }), command);
     expect(root.querySelectorAll('app-notif-row').length).toBe(5);
+  });
+
+  describe('入帳 and 全部入帳 in place', () => {
+    const FEE = task('sched:3', 'overdue', {
+      from: 'schedules',
+      title: '測試月費 · 3 期未入帳',
+      primary: { label: '全部入帳', command: { kind: 'catchUp', definitionId: 3, name: '測試月費' } },
+    });
+    const RENT = task('sched:1', 'today', {
+      from: 'schedules',
+      title: '測試房租',
+      primary: { label: '入帳', command: { kind: 'postInstance', instanceId: 7, name: '測試房租' } },
+    });
+    const LOAN = task('sched:4', 'today', {
+      from: 'schedules',
+      title: '測試分期',
+      primary: { label: '入帳', command: { kind: 'postInstance', instanceId: 9, name: '測試分期' } },
+    });
+    /** A 記繳款 row: its primary is a link. */
+    const BILL = task('bill:11:2026-10-24', 'today', { title: '測試銀行卡' });
+    const ALL = [FEE, RENT, LOAN, BILL];
+
+    let toasts: ToastService;
+    const row = (root: HTMLElement, id: string) => root.querySelector<HTMLElement>(`app-notif-row[data-task-id="${id}"]`);
+    const control = (root: HTMLElement, id: string) => row(root, id)?.querySelector<HTMLElement>(NOTIF_PRIMARY_CONTROL) ?? null;
+    const button = (root: HTMLElement, id: string) => control(root, id) as HTMLButtonElement;
+    const press = async (root: HTMLElement, id: string) => {
+      button(root, id).click();
+      await settle();
+    };
+    const answer = async <T>(subject: Subject<T>, value: T) => {
+      subject.next(value);
+      subject.complete();
+      await settle();
+    };
+    const fail = async <T>(subject: Subject<T>, status: number, error: unknown = null) => {
+      subject.error(new HttpErrorResponse({ status, error, url: '/api/accounting/schedules/instances/7/post' }));
+      await settle();
+    };
+    const instance = {} as ScheduleInstance;
+    const catchUp = (posted: number[], failed: ScheduleCatchUpResult['failed']) =>
+      ({ posted, failed, definition: {} }) as unknown as ScheduleCatchUpResult;
+    /** The service's next round has settled. */
+    const settleRound = async (id: number) => {
+      round.set(Math.max(round(), id));
+      settledRound.set(id);
+      await settle();
+    };
+    const currentId = () => toasts.current()!.id;
+
+    function open(): HTMLElement {
+      tasks.set(ALL);
+      const root = mount();
+      toasts = TestBed.inject(ToastService);
+      return root;
+    }
+
+    afterEach(() => fixture?.nativeElement.remove());
+
+    it("入帳 posts the task's instance and shows 「已入帳：測試房租」", async () => {
+      const root = open();
+      await press(root, RENT.id);
+      expect(accounting.postScheduleInstance).toHaveBeenCalledTimes(1);
+      expect(accounting.postScheduleInstance).toHaveBeenCalledWith(7);
+      expect(accounting.catchUpSchedule).not.toHaveBeenCalled();
+      await answer(posts[0], instance);
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已入帳：測試房租', action: null }));
+    });
+
+    it('全部入帳 calls catch-up for the definition and shows 「已入帳 3 期：測試月費」', async () => {
+      const root = open();
+      await press(root, FEE.id);
+      expect(accounting.catchUpSchedule).toHaveBeenCalledTimes(1);
+      expect(accounting.catchUpSchedule).toHaveBeenCalledWith(3);
+      expect(accounting.postScheduleInstance).not.toHaveBeenCalled();
+      await answer(catchUps[0], catchUp([31, 32, 33], null));
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已入帳 3 期：測試月費', action: null }));
+    });
+
+    it('a catch-up that stops midway shows 失敗 with the count and the reason, without 重試', async () => {
+      const root = open();
+      await press(root, FEE.id);
+      await answer(catchUps[0], catchUp([31, 32], { instance_id: 33, error: '帳戶已封存' }));
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'error', text: '測試月費：已入帳 2 期，之後的入帳失敗（帳戶已封存）', action: null }),
+      );
+      // An answer, not a failure: no forced re-read; the row waits for the write's own round.
+      expect(invalidate).not.toHaveBeenCalled();
+      expect(button(root, FEE.id).disabled).toBe(true);
+      await settleRound(2);
+      expect(button(root, FEE.id).disabled).toBe(false);
+    });
+
+    it('the row is busy while the write runs and a second press sends nothing', async () => {
+      const root = open();
+      // Two clicks before any change detection: the second reaches onRun while the button is still enabled.
+      button(root, RENT.id).click();
+      button(root, RENT.id).click();
+      await settle();
+      expect(accounting.postScheduleInstance).toHaveBeenCalledTimes(1);
+      expect(button(root, RENT.id).disabled).toBe(true);
+      expect(button(root, RENT.id).getAttribute('aria-busy')).toBe('true');
+      const page = fixture.componentInstance as unknown as { onRun(t: NotifTask, c: unknown): void };
+      page.onRun(RENT, (RENT.primary as { command: unknown }).command);
+      expect(accounting.postScheduleInstance).toHaveBeenCalledTimes(1);
+      // Other rows stay pressable.
+      expect(button(root, LOAN.id).disabled).toBe(false);
+    });
+
+    it('two rows busy at once are independent', async () => {
+      round.set(4);
+      settledRound.set(4);
+      const root = open();
+      await press(root, RENT.id);
+      await press(root, LOAN.id);
+      expect(accounting.postScheduleInstance.mock.calls).toEqual([[7], [9]]);
+      await answer(posts[0], instance);
+      // RENT waits for round 5; LOAN's write still runs.
+      round.set(5);
+      await settleRound(5);
+      expect(button(root, RENT.id).disabled).toBe(false);
+      expect(button(root, LOAN.id).disabled).toBe(true);
+      await fail(posts[1], 500);
+      expect(invalidate).toHaveBeenCalledTimes(1);
+      expect(button(root, LOAN.id).disabled).toBe(true);
+      expect(button(root, RENT.id).disabled).toBe(false);
+      await settleRound(6);
+      expect(button(root, LOAN.id).disabled).toBe(false);
+    });
+
+    it('after success the row stays busy until a round started after the answer settles', async () => {
+      round.set(4);
+      settledRound.set(4);
+      const root = open();
+      await press(root, RENT.id);
+      await answer(posts[0], instance);
+      // Round 4 is the newest at the answer: it settled before the write landed.
+      expect(button(root, RENT.id).disabled).toBe(true);
+      round.set(5); // the write's own round (the service's entriesChanged effect)
+      await settle();
+      expect(button(root, RENT.id).disabled).toBe(true);
+      settledRound.set(5);
+      await settle();
+      expect(button(root, RENT.id).disabled).toBe(false);
+      // …or gone, once round 5's list leaves it out.
+      tasks.set([FEE, LOAN, BILL]);
+      await settle();
+      expect(row(root, RENT.id)).toBeNull();
+    });
+
+    it('a round that was already in flight when the write answered does not release the row', async () => {
+      round.set(4);
+      settledRound.set(3);
+      const root = open();
+      await press(root, RENT.id);
+      await answer(posts[0], instance);
+      // Round 4 started before the answer and settles late: its reads may predate the write.
+      settledRound.set(4);
+      await settle();
+      expect(button(root, RENT.id).disabled).toBe(true);
+      await settleRound(5);
+      expect(button(root, RENT.id).disabled).toBe(false);
+    });
+
+    it('after a failure the page invalidates and the row stays busy until that round settles', async () => {
+      round.set(4);
+      settledRound.set(3);
+      const root = open();
+      await press(root, RENT.id);
+      await fail(posts[0], 500);
+      expect(invalidate).toHaveBeenCalledTimes(1);
+      expect(round()).toBe(5);
+      expect(button(root, RENT.id).disabled).toBe(true);
+      // The superseded round 4 settling (it cannot in the service, but even if it did) does not count.
+      settledRound.set(4);
+      await settle();
+      expect(button(root, RENT.id).disabled).toBe(true);
+      settledRound.set(5);
+      await settle();
+      expect(button(root, RENT.id).disabled).toBe(false);
+    });
+
+    it('a 500 shows 失敗 with 重試, which posts the same instance again', async () => {
+      const root = open();
+      await press(root, RENT.id);
+      await fail(posts[0], 500);
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗：儲存失敗，請稍後再試', action: expect.objectContaining({ label: '重試' }) }),
+      );
+      await settleRound(2);
+      toasts.runAction(currentId());
+      await settle();
+      expect(accounting.postScheduleInstance.mock.calls).toEqual([[7], [7]]);
+      expect(button(root, RENT.id).disabled).toBe(true);
+    });
+
+    it('a network failure (status 0) also offers 重試', async () => {
+      const root = open();
+      await press(root, FEE.id);
+      await fail(catchUps[0], 0);
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'error', text: '測試月費 入帳失敗：無法連線到伺服器', action: expect.objectContaining({ label: '重試' }) }),
+      );
+      await settleRound(2);
+      toasts.runAction(currentId());
+      expect(accounting.catchUpSchedule.mock.calls).toEqual([[3], [3]]);
+    });
+
+    it('重試 pressed while that task is busy sends nothing and shows the toast again', async () => {
+      const root = open();
+      await press(root, RENT.id);
+      await fail(posts[0], 500);
+      const first = currentId();
+      // The re-read (round 2) has not settled: the row is still busy.
+      toasts.runAction(first);
+      await settle();
+      expect(accounting.postScheduleInstance).toHaveBeenCalledTimes(1);
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗：儲存失敗，請稍後再試', action: expect.objectContaining({ label: '重試' }) }),
+      );
+      expect(currentId()).not.toBe(first);
+      expect(button(root, RENT.id).disabled).toBe(true);
+      // Once it settles the re-raised toast's 重試 sends.
+      await settleRound(2);
+      toasts.runAction(currentId());
+      expect(accounting.postScheduleInstance.mock.calls).toEqual([[7], [7]]);
+    });
+
+    it('重試 still sends after the row left the list', async () => {
+      const root = open();
+      await press(root, RENT.id);
+      await fail(posts[0], 500);
+      tasks.set([]);
+      await settleRound(2);
+      expect(row(root, RENT.id)).toBeNull();
+      toasts.runAction(currentId());
+      expect(accounting.postScheduleInstance.mock.calls).toEqual([[7], [7]]);
+    });
+
+    it('a 409 import_running shows 「匯入進行中，請稍後再試」 without 重試', async () => {
+      const root = open();
+      await press(root, RENT.id);
+      await fail(posts[0], 409, { code: 'CONFLICT', message: 'import_running' });
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: IMPORT_RUNNING_TOAST, action: null }));
+      expect(IMPORT_RUNNING_TOAST).toBe('匯入進行中，請稍後再試');
+      expect(invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it('a 422 shows the server message without 重試', async () => {
+      const root = open();
+      await press(root, RENT.id);
+      await fail(posts[0], 422, { code: 'VALIDATION', message: '帳戶已封存' });
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗：帳戶已封存', action: null }));
+    });
+
+    it('a 409 already_posted says the period is posted, without 重試', async () => {
+      const root = open();
+      await press(root, RENT.id);
+      await fail(posts[0], 409, { code: 'CONFLICT', message: 'already_posted' });
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗：此期已入帳', action: null }));
+    });
+
+    it('a failed write reloads silently: the 失敗 toast with 重試 is still current after the newer round lands', async () => {
+      const root = open();
+      await press(root, RENT.id);
+      await fail(posts[0], 500);
+      const id = currentId();
+      expect(invalidate).toHaveBeenCalledTimes(1);
+      tasks.set([FEE, LOAN, BILL]);
+      await settleRound(invalidate.mock.results[0].value as number);
+      expect(currentId()).toBe(id);
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', action: expect.objectContaining({ label: '重試' }) }));
+      expect(row(root, RENT.id)).toBeNull();
+    });
+
+    it('success calls neither refresh nor invalidate', async () => {
+      const root = open();
+      expect(refresh).toHaveBeenCalledTimes(1); // page open
+      await press(root, RENT.id);
+      await answer(posts[0], instance);
+      await press(root, FEE.id);
+      await answer(catchUps[0], catchUp([31], null));
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(invalidate).not.toHaveBeenCalled();
+    });
+
+    it('a result landing after the page is destroyed still shows, without an action', async () => {
+      const root = open();
+      await press(root, RENT.id);
+      fixture.destroy();
+      expect(() => posts[0].error(new HttpErrorResponse({ status: 500, error: null }))).not.toThrow();
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗：儲存失敗，請稍後再試', action: null }),
+      );
+      // The re-read still starts: the write may have committed.
+      expect(invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it('a success landing after the page is destroyed still shows its done toast', async () => {
+      const root = open();
+      await press(root, FEE.id);
+      fixture.destroy();
+      expect(() => {
+        catchUps[0].next(catchUp([31, 32, 33], null));
+        catchUps[0].complete();
+      }).not.toThrow();
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已入帳 3 期：測試月費', action: null }));
+    });
+
+    it('a 記繳款 row runs no command', async () => {
+      const root = open();
+      expect(row(root, BILL.id)!.querySelector('app-btn')).toBeNull();
+      const link = control(root, BILL.id)!;
+      expect(link.tagName).toBe('A');
+      // A modified click: the router leaves it to the browser, so the test does not navigate.
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+      await settle();
+      expect(accounting.postScheduleInstance).not.toHaveBeenCalled();
+      expect(accounting.catchUpSchedule).not.toHaveBeenCalled();
+    });
+
+    describe('focus', () => {
+      /** Presses the 入帳 row `id` with focus on its control and answers ok; then round 2 lists `after` and settles. */
+      async function postAndLeave(root: HTMLElement, id: string, after: NotifTask[], subject: () => Subject<ScheduleInstance>): Promise<void> {
+        control(root, id)!.focus();
+        expect(document.activeElement).toBe(control(root, id));
+        await press(root, id);
+        await answer(subject(), instance);
+        tasks.set(after);
+        await settleRound(round() + 1);
+        await settle();
+      }
+
+      it("when the posted row leaves and focus fell to <body>, the next row's native control has focus", async () => {
+        const root = open();
+        document.body.appendChild(root);
+        await postAndLeave(root, RENT.id, [FEE, LOAN, BILL], () => posts[0]);
+        expect(row(root, RENT.id)).toBeNull();
+        expect(document.activeElement).toBe(control(root, LOAN.id));
+        expect(document.activeElement?.tagName).toBe('BUTTON');
+
+        await postAndLeave(root, LOAN.id, [FEE, BILL], () => posts[1]);
+        expect(document.activeElement).toBe(control(root, BILL.id));
+        expect(document.activeElement?.tagName).toBe('A');
+      });
+
+      it('a next row that is busy is skipped for the next enabled control', async () => {
+        const root = open();
+        document.body.appendChild(root);
+        await press(root, LOAN.id); // still running
+        await postAndLeave(root, RENT.id, [FEE, LOAN, BILL], () => posts[1]);
+        expect(button(root, LOAN.id).disabled).toBe(true);
+        expect(document.activeElement).toBe(root.querySelector('details.notif-tracking > summary'));
+      });
+
+      it('with no row left it goes to the 追蹤中 summary, else the first chip', async () => {
+        const root = open();
+        document.body.appendChild(root);
+        tasks.set([RENT]);
+        await settle();
+        await postAndLeave(root, RENT.id, [], () => posts[0]);
+        expect(document.activeElement).toBe(root.querySelector('details.notif-tracking > summary'));
+
+        trackingRows.set([]);
+        tasks.set([LOAN]);
+        await settle();
+        await postAndLeave(root, LOAN.id, [], () => posts[1]);
+        expect(document.activeElement).toBe(root.querySelector('.notif-chips button'));
+      });
+
+      it('focus the owner moved elsewhere is left alone', async () => {
+        const root = open();
+        document.body.appendChild(root);
+        control(root, RENT.id)!.focus();
+        await press(root, RENT.id);
+        await answer(posts[0], instance);
+        const elsewhere = root.querySelector<HTMLElement>('a.notif-reminders')!;
+        elsewhere.focus();
+        tasks.set([FEE, LOAN, BILL]);
+        await settleRound(2);
+        await settle();
+        expect(document.activeElement).toBe(elsewhere);
+      });
+
+      it('a failed write that in fact committed: when the row leaves, focus goes to the next row too (P6)', async () => {
+        const root = open();
+        document.body.appendChild(root);
+        control(root, RENT.id)!.focus();
+        await press(root, RENT.id);
+        await fail(posts[0], 500);
+        tasks.set([FEE, LOAN, BILL]);
+        await settleRound(2);
+        await settle();
+        expect(document.activeElement).toBe(control(root, LOAN.id));
+      });
+
+      it('a row that stays (the write did not commit) keeps focus on its own control', async () => {
+        const root = open();
+        document.body.appendChild(root);
+        control(root, RENT.id)!.focus();
+        await press(root, RENT.id);
+        await fail(posts[0], 500);
+        await settleRound(2);
+        await settle();
+        expect(button(root, RENT.id).disabled).toBe(false);
+        expect(document.activeElement).toBe(control(root, RENT.id));
+      });
+    });
   });
 });
