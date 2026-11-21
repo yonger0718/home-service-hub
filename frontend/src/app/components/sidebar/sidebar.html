@@ -23,6 +23,21 @@
   </div>
 
   <nav class="side-nav" aria-label="主要導覽" (mouseover)="placeTip($event)" (focusin)="placeTip($event)">
+    @if (layout.mode() !== 'phone') {
+      <a
+        class="sidebar-new-entry"
+        [attr.href]="entryForm.href()"
+        (click)="entryForm.open($event)"
+        aria-label="記一筆（快捷鍵 N）"
+      >
+        <i class="pi pi-plus" aria-hidden="true"></i>
+        @if (expanded()) {
+          <span class="side-new-entry-label">記一筆</span>
+        } @else {
+          <span class="side-tip" aria-hidden="true">記一筆 <kbd>N</kbd></span>
+        }
+      </a>
+    }
     @for (group of nav.visibleGroups(); track group.id) {
       @let active = nav.activeGroup().id === group.id;
       @let folded = expanded() && nav.isFolded(group.id);

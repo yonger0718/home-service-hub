@@ -203,6 +203,15 @@ describe('ShellComponent', () => {
     }
   });
 
+  it('keeps the sidebar 記一筆 link on the report pages where the floating button is absent', async () => {
+    for (const url of ['/accounting/reports?month=2026-08', '/accounting/reports/custom/7']) {
+      TestBed.resetTestingModule();
+      const { fab, el } = await render(viewportOf(1440), { url });
+      expect(fab(), url).toBeNull();
+      expect(el.querySelectorAll('a.sidebar-new-entry').length, url).toBe(1);
+    }
+  });
+
   it('toggles the floating 記一筆 as navigation enters and leaves the reports', async () => {
     const { fab, settle, router } = await render(viewportOf(1440), { url: '/accounting/reports?month=2026-08' });
     expect(fab()).toBeNull();
