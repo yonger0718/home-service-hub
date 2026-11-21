@@ -5,6 +5,7 @@
   border-top: 1px solid var(--app-border);
   box-sizing: border-box;
   display: flex;
+  flex-wrap: wrap; /* the actions drop under the body before the body gets narrower than its min-width */
   gap: 12px;
   min-height: 68px;
   padding: 12px 14px;
@@ -37,7 +38,7 @@
   flex: 1 1 0;
   flex-direction: column;
   gap: 4px;
-  min-width: 0;
+  min-width: 280px;
 }
 
 .notif-head {
@@ -121,6 +122,7 @@
   flex: none;
   flex-wrap: wrap;
   gap: 8px;
+  margin-left: auto;
 }
 
 /* The link primary looks like app-btn's soft / primary variants. */
@@ -182,11 +184,35 @@
 @media (max-width: 759.98px) {
   :host {
     align-items: flex-start;
+  }
+
+  .notif-body {
+    min-width: 0;
+  }
+
+  /* Title first, then tag, then amount. The title's basis is 140 px: when title + tag + amount do not fit on one
+     line the amount drops under the title instead of squeezing it. At 320 px the head is 240 px wide, so the
+     title is never narrower than 140 px (about 9 CJK characters per line, 2 lines). */
+  .notif-head {
     flex-wrap: wrap;
+  }
+
+  .notif-title {
+    display: -webkit-box;
+    flex: 1 1 140px;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .notif-amount {
+    max-width: 100%;
   }
 
   .notif-actions {
     flex: 0 0 100%;
+    margin-left: 0;
     padding-left: 52px;
   }
 

@@ -7,7 +7,7 @@
 </span>
 <div class="notif-body">
   <div class="notif-head">
-    <span class="notif-title">{{ task().title }}</span>
+    <span class="notif-title" [attr.title]="task().title">{{ task().title }}</span>
     <span class="notif-tag">{{ tag() }}</span>
     @if (task().amount) {
       <span class="notif-amount">{{ task().amount }}</span>

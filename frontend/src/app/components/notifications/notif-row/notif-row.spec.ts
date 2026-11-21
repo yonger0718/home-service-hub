@@ -221,12 +221,80 @@ describe('NotifRowComponent', () => {
     expect(b.q('.notif-icon')!.textContent?.trim()).toBe('');
   });
 
-  it('title and amount sit in the head, the line under it; progress is not conveyed by the bar alone', () => {
+  it('the bar carries no text and is aria-hidden; the visible when / meta text carries the progress wording', () => {
     const { q, host, fixture } = setup();
-    host.task.set({ ...commandTask, progress: { k: 17, n: 28 }, when: '17 / 28 已核對' });
+    host.task.set({
+      ...commandTask,
+      progress: { k: 17, n: 28 },
+      when: '17 / 28 已核對',
+      meta: '10 筆要你決定',
+    });
     fixture.detectChanges();
-    expect(q('.notif-line')?.textContent).toContain('17 / 28 已核對');
-    expect(q('.notif-bar')?.textContent?.trim()).toBe('');
+    const bar = q('.notif-bar')!;
+    expect(bar.textContent?.trim()).toBe('');
+    expect(bar.getAttribute('aria-hidden')).toBe('true');
+    expect(q('.notif-line')?.textContent).toBe('17 / 28 已核對 · 10 筆要你決定');
+    expect(q('.notif-line')?.closest('[aria-hidden="true"]')).toBeNull();
+  });
+
+  it('the title element carries the full title as its title attribute', () => {
+    const { q } = setup();
+    expect(q('.notif-title')?.getAttribute('title')).toBe('測試月費 · 3 期未入帳');
+  });
+
+  it('the source tag reads 投資 for a portfolio task', () => {
+    const { q } = setup({ ...commandTask, source: 'portfolio' });
+    expect(q('.notif-tag')?.textContent?.trim()).toBe('投資');
+  });
+
+  it('a link primary with a secondary link: primary first, both named label：title', () => {
+    const { q, root } = setup({
+      ...linkTask,
+      secondary: [
+        { label: '看帳單', route: '/accounting/reminders', queryParams: { tab: 'bills' } },
+      ],
+    });
+    const links = Array.from(root.querySelectorAll<HTMLAnchorElement>('.notif-actions a'));
+    expect(links.map((a) => a.getAttribute('aria-label'))).toEqual([
+      '記繳款：測試銀行卡帳單',
+      '看帳單：測試銀行卡帳單',
+    ]);
+    expect(links[0]).toBe(q(NOTIF_PRIMARY_CONTROL));
+    expect(links[1].getAttribute('href')).toBe('/accounting/reminders?tab=bills');
+  });
+
+  describe('scss rules (source pins)', () => {
+    const css = readFileSync(
+      join(process.cwd(), 'src/app/components/notifications/notif-row/notif-row.scss'),
+      'utf8',
+    );
+    const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
+    const rule = (src: string, selector: string) => {
+      const m = new RegExp(
+        `${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`,
+      ).exec(src);
+      return m ? m[1] : '';
+    };
+
+    it('below 760 px the title wraps, clamped to 2 lines, and the head lets the amount drop under it', () => {
+      const t = rule(phone, '.notif-title');
+      expect(t).toMatch(/white-space:\s*normal/);
+      expect(t).toMatch(/overflow-wrap:\s*anywhere/);
+      expect(t).toMatch(/-webkit-line-clamp:\s*2/);
+      expect(rule(phone, '.notif-head')).toMatch(/flex-wrap:\s*wrap/);
+    });
+
+    it('at 760 px and up the title is a single-line ellipsis', () => {
+      const t = rule(css.slice(0, css.indexOf('@media')), '.notif-title');
+      expect(t).toMatch(/white-space:\s*nowrap/);
+      expect(t).toMatch(/text-overflow:\s*ellipsis/);
+    });
+
+    it('the actions wrap under the body before the body shrinks below its minimum width', () => {
+      const top = css.slice(0, css.indexOf('@media'));
+      expect(rule(top, ':host')).toMatch(/flex-wrap:\s*wrap/);
+      expect(rule(top, '.notif-body')).toMatch(/min-width:\s*280px/);
+    });
   });
 
   it('scss: no colour literal', () => {
