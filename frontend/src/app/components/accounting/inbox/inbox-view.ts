@@ -168,7 +168,22 @@ export function buildCards(accounts: InboxAccount[]): InboxCards {
   return out;
 }
 
+/** True for a question the owner must answer (the 待處理 bucket): not proposed / balance_gap / settlement / dividend / other. */
+export function isAskQuestion(question: InboxQuestion): boolean {
+  switch (question) {
+    case 'proposed':
+    case 'balance_gap':
+    case 'settlement':
+    case 'dividend':
+    case 'other':
+      return false;
+    default:
+      return true;
+  }
+}
+
 function bucket(cards: InboxCards, question: InboxQuestion): InboxCard[] {
+  if (isAskQuestion(question)) return cards.ask;
   switch (question) {
     case 'proposed':
       return cards.proposed;
@@ -178,10 +193,8 @@ function bucket(cards: InboxCards, question: InboxQuestion): InboxCard[] {
       return cards.settlement;
     case 'dividend':
       return cards.dividend;
-    case 'other':
-      return cards.other;
     default:
-      return cards.ask;
+      return cards.other;
   }
 }
 
