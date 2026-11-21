@@ -381,7 +381,9 @@ export class NotificationCenterService {
     from(settled)
       .pipe(
         timeout(READ_TIMEOUT_MS),
-        map(() => untracked(this.dues).some(event => this.bills.failed(event))),
+        // Only a failed read marks the source: a card whose bill cannot be computed (`failureReason` set, e.g. 幣別不同)
+        // is skipped (it has no task), because a retry could never succeed.
+        map(() => untracked(this.dues).some(event => this.bills.failed(event) && this.bills.failureReason(event) === null)),
         catchError(() => of(true)),
       )
       .subscribe(failed => this.mark('bills', round, failed ? 'failed' : 'ok'));

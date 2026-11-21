@@ -342,6 +342,68 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
     expect(center.failedSources()).toEqual(['bills']);
   });
 
+  describe('a card whose bill cannot be computed (幣別不同) is not a read failure', () => {
+    /** 測試海外卡 (21) with a non-archived combined card 22 (the same due rule); the cards bill in different currencies. */
+    const MASTER = makeAccount({ id: 21, name: '測試海外卡', is_credit: true, closing_day: 5, due_rule: 'fixed_day', due_value: 20 });
+    const CHILD = makeAccount({
+      id: 22, name: '測試海外副卡', is_credit: true, closing_day: 5, due_rule: 'fixed_day', due_value: 20, combined_account_id: 21,
+    });
+
+    const spendOf = (id: number, currency: string, amount: string) => ({ ...spend(amount), account_id: id, currency });
+
+    /** Answers the statement reads of the mismatching pair: master in TWD, combined card in USD. */
+    function answerMismatch(): void {
+      http.expectOne(get(`${API}/accounts/21/summary`)).flush(spendOf(21, 'TWD', '-1000.0000'));
+      http.expectOne(get(`${API}/accounts/22/summary`)).flush(spendOf(22, 'USD', '-30.0000'));
+      http.expectOne(get(`${API}/accounts/21/entries`)).flush(payments());
+      http.expectOne(get(`${API}/accounts/22/entries`)).flush(payments());
+    }
+
+    it('the normal overdue card is listed, 帳單 is not failed and the summary counts it', async () => {
+      center.start();
+      TestBed.tick();
+      flushCalendar();
+      await flushRound(take(), { accounts: [CARD, MASTER, CHILD] });
+      answerMismatch();
+      const normal = cardReads();
+      normal.summary.flush(spend('-1000.0000'));
+      normal.payments.flush(payments());
+      await settle();
+
+      expect(center.settledRound()).toBe(1);
+      expect(center.failedSources()).toEqual([]);
+      expect(center.tasks().map(task => task.id)).toEqual(['bill:11:2026-10-20']);
+      expect(center.summary().total).toBe(1);
+    });
+
+    it('only the mismatching card: loaded with no failure and no task', async () => {
+      center.start();
+      TestBed.tick();
+      flushCalendar();
+      await flushRound(take(), { accounts: [MASTER, CHILD] });
+      answerMismatch();
+      await settle();
+
+      expect(center.loaded()).toBe(true);
+      expect(center.failedSources()).toEqual([]);
+      expect(center.tasks()).toEqual([]);
+    });
+
+    it('a statement read answering 500 still fails 帳單', async () => {
+      center.start();
+      TestBed.tick();
+      flushCalendar();
+      await flushRound(take(), { accounts: [CARD] });
+      const reads = cardReads();
+      reads.summary.flush('', { status: 500, statusText: 'Server Error' });
+      reads.payments.flush(payments());
+      await settle();
+
+      expect(center.settledRound()).toBe(1);
+      expect(center.failedSources()).toEqual(['bills']);
+    });
+  });
+
   it('an inbox write (the real apply) starts a round', async () => {
     await firstRound();
     const inbox = TestBed.inject(InboxService);
