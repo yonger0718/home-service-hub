@@ -960,25 +960,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
       this.toasts.error('圖片太大（上限 5 MB）');
       return;
     }
-    this.uploadingLogo.set(true);
-    this.service.uploadAccountLogo(id, file).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
-      next: detail => {
-        if (id === this.loadedId()) {
-          this.logoHash.set(detail.logo_hash ?? null);
-        }
-      },
-      error: err => {
-        if (id === this.loadedId()) {
-          this.uploadingLogo.set(false);
-          this.toasts.error(logoUploadErrorMessage(err), { retry: retryOnNetwork(err, () => this.uploadLogoFile(file)) });
-        }
-      },
-      complete: () => {
-        if (id === this.loadedId()) {
-          this.uploadingLogo.set(false);
-        }
-      },
-    });
+    this.sendLogo(id, file);
   }
 
   removeLogo(): void {
@@ -986,18 +968,39 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     if (id === null) {
       return;
     }
-    this.uploadingLogo.set(true);
-    this.service.deleteAccountLogo(id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
-      next: () => {
+    this.sendLogoRemoval(id);
+  }
+
+  /** The upload for account `id`; 重試 re-sends the same file to the same account, whichever account is open then. */
+  private sendLogo(id: number, file: File): void {
+    this.runLogoWrite(
+      id,
+      this.service.uploadAccountLogo(id, file),
+      detail => this.logoHash.set(detail.logo_hash ?? null),
+      () => this.sendLogo(id, file),
+    );
+  }
+
+  private sendLogoRemoval(id: number): void {
+    this.runLogoWrite(id, this.service.deleteAccountLogo(id), () => this.logoHash.set(null), () => this.sendLogoRemoval(id));
+  }
+
+  /** Only the account still open feels the busy flag and the new hash; a failure is reported whichever is open. */
+  private runLogoWrite<T>(id: number, request: Observable<T>, apply: (result: T) => void, again: () => void): void {
+    if (id === this.loadedId()) {
+      this.uploadingLogo.set(true);
+    }
+    request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: result => {
         if (id === this.loadedId()) {
-          this.logoHash.set(null);
+          apply(result);
         }
       },
       error: err => {
         if (id === this.loadedId()) {
           this.uploadingLogo.set(false);
-          this.toasts.error(logoUploadErrorMessage(err), { retry: retryOnNetwork(err, () => this.removeLogo()) });
         }
+        this.toasts.error(logoUploadErrorMessage(err), { retry: retryOnNetwork(err, again) });
       },
       complete: () => {
         if (id === this.loadedId()) {

@@ -615,7 +615,19 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
       expect(again.request.method).toBe('PUT');
       expect(again.request.body).toBe(file);
       again.flush({ ...ACCOUNT, logo_hash: 'abc' });
-      http.match(() => true);
+      http.match(r => r.url === `${URL}.png?v=abc`);
+    });
+
+    it('a retry that fails again raises a fresh 失敗 with 重試', () => {
+      const { input, toast } = setup();
+      choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      const first = toast.current()!;
+      first.action!.run();
+      http.expectOne(URL).flush(null, { status: 0, statusText: 'Unknown Error' });
+      const second = toast.current()!;
+      expect(second.id).not.toBe(first.id);
+      expect(second).toMatchObject({ kind: 'error', action: { label: '重試' } });
     });
 
     it('a 422 logo upload offers no 重試', () => {

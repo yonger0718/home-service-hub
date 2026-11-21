@@ -2143,6 +2143,48 @@ describe('AccountSettingsComponent', () => {
       http.match(() => true);
     });
 
+    it('重試 of a failed upload goes to the account it failed on, not the one now open', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const toast = TestBed.inject(ToastService);
+      openSource(fixture, '上傳圖片');
+      const picked = file();
+      choose(fixture, picked);
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      navigateTo('12');
+      http.expectOne('/api/accounting/accounts/12').flush({ ...DETAIL, id: 12, logo_hash: 'hb' });
+      fixture.detectChanges();
+      expect(toast.current()?.action?.label).toBe('重試');
+      toast.current()!.action!.run();
+      const again = http.expectOne(URL);
+      expect(again.request.method).toBe('PUT');
+      expect(again.request.body).toBe(picked);
+      again.flush({ ...DETAIL, logo_hash: 'ha' });
+      http.match(r => r.url.includes('/accounts/12') || r.url.endsWith('/reward-usage'));
+      expect(fixture.componentInstance.logoHash()).toBe('hb');
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
+    it('重試 of a failed remove deletes the logo of the account it failed on, not the one now open', async () => {
+      await setup('11');
+      const fixture = render({ ...DETAIL, logo_hash: 'h1' } as AccountDetail);
+      http.expectOne('/api/accounting/accounts/11/logo.png?v=h1').flush(new Blob([new Uint8Array(1)], { type: 'image/png' }));
+      const toast = TestBed.inject(ToastService);
+      el(fixture).querySelector<HTMLButtonElement>('.logo-remove')!.click();
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      navigateTo('12');
+      http.expectOne('/api/accounting/accounts/12').flush({ ...DETAIL, id: 12, logo_hash: 'hb' });
+      http.match(r => r.url.includes('/accounts/12/logo.png'));
+      fixture.detectChanges();
+      toast.current()!.action!.run();
+      const again = http.expectOne(URL);
+      expect(again.request.method).toBe('DELETE');
+      again.flush(null, { status: 204, statusText: 'No Content' });
+      http.match(r => r.url.includes('/accounts/12') || r.url.endsWith('/reward-usage'));
+      expect(fixture.componentInstance.logoHash()).toBe('hb');
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
     it('toasts the mapped message on a 422 and clears the busy state', async () => {
       await setup('11');
       const fixture = render(DETAIL);
