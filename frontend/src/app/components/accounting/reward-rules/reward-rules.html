@@ -2,7 +2,7 @@
   <header class="rr-header">
     <div class="rr-heading">
       <button type="button" class="rr-back" (click)="back()">‹ 記帳設定</button>
-      <h1>回饋規則</h1>
+      <h1 tabindex="-1">回饋規則</h1>
       @if (overview()) {
         <p class="rr-headline">{{ headline() }}</p>
       }
@@ -22,16 +22,12 @@
     </div>
   </header>
 
-  @if (banner(); as count) {
-    <div class="rr-banner" role="status">
-      <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
-      <span class="rr-banner-text">{{ count }} 條規則已過期但仍啟用，之後的消費不會再估算回饋</span>
-      <button type="button" class="rr-banner-action" (click)="setFilter('expired')">只看已過期</button>
-    </div>
+  @if (error(); as message) {
+    <app-banner class="page-load-error" tone="error" [heading]="message" actionLabel="重試" [actionDisabled]="retrying()" (action)="retry()" />
   }
 
-  @if (error(); as message) {
-    <p class="rr-error" role="alert">{{ message }}</p>
+  @if (banner(); as count) {
+    <app-banner class="rr-banner" tone="warn" [heading]="count + ' 條規則已過期但仍啟用'" detail="之後的消費不會再估算回饋" actionLabel="只看已過期" (action)="setFilter('expired')" />
   }
 
   <div class="rr-grid" [attr.aria-busy]="loading() || null">

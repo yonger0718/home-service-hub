@@ -21,7 +21,8 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { BusinessCalendarService } from '../../../services/business-calendar.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { AccountingToastService, scheduleActionError } from '../accounting-toast';
+import { injectToasts } from '../../../services/toast.service';
+import { scheduleActionError } from '../http-errors';
 import { isHandledKey } from '../accounting-ui';
 import { BillingEvent, billingCards, dueCountdown, reminderDues } from '../billing/billing-math';
 import { AccountIconComponent } from '../account-icon/account-icon';
@@ -40,6 +41,8 @@ import { debtActorLabel } from '../debt-events';
 import { TimelineRow, buildDays } from '../timeline/timeline';
 import { DefinitionRow, QueueRow, definitionRows, queueRows } from './schedule-queue';
 import { ScheduleSheetComponent } from './schedule-sheet/schedule-sheet';
+import { BannerComponent } from '../../ui/banner/banner';
+import { focusPageIfLost, focusRetryIfLost } from '../retry-focus';
 
 /** Open receivables / payables read for the counts and dates, and per expanded counterparty. */
 export const REMINDER_ENTRY_LIMIT = 500;
@@ -254,7 +257,7 @@ export function debtReminders(counterparties: Counterparty[], openEntries: Ledge
 @Component({
   selector: 'app-accounting-reminders',
   standalone: true,
-  imports: [AccountIconComponent, RouterLink, NgTemplateOutlet, ScheduleSheetComponent, AppInboxPanelComponent, AppInboxHandledListComponent],
+  imports: [BannerComponent, AccountIconComponent, RouterLink, NgTemplateOutlet, ScheduleSheetComponent, AppInboxPanelComponent, AppInboxHandledListComponent],
   templateUrl: './reminders.html',
   styleUrls: ['../filters.scss', '../entry-row.scss', './reminders.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -269,7 +272,7 @@ export class AccountingRemindersComponent {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly layoutMode = inject(LayoutModeService);
-  private readonly toast = inject(AccountingToastService);
+  private readonly toasts = injectToasts();
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly injector = inject(Injector);
   private requestId = 0;
@@ -374,12 +377,12 @@ export class AccountingRemindersComponent {
   /** Cards whose statement read failed: shown as 帳單讀取失敗 with 重試, never as "nothing to pay". */
   private readonly failedDues = computed(() => this.dues().filter(event => this.bills.failed(event)));
   readonly billsFailed = computed(() => this.failedDues().length > 0);
-  /** `帳單讀取失敗`, with the distinct reasons appended (`（幣別不同）`). */
-  readonly billErrorText = computed(() => {
+  /** The distinct failure reasons (`幣別不同`), joined with `、`; null when no reason is known. */
+  readonly billErrorDetail = computed<string | null>(() => {
     const reasons = [
       ...new Set(this.failedDues().map(event => this.bills.failureReason(event)).filter((reason): reason is string => !!reason)),
     ];
-    return reasons.length > 0 ? `帳單讀取失敗（${reasons.join('、')}）` : '帳單讀取失敗';
+    return reasons.length > 0 ? reasons.join('、') : null;
   });
   /** Every statement read at least once: the empty state waits for them. */
   private readonly billsSettled = computed(() => this.dues().every((event: BillingEvent) => this.bills.isSettled(event)));
@@ -492,6 +495,30 @@ export class AccountingRemindersComponent {
     });
   }
 
+  /** 重試 on the read-failure banner. */
+  /** A 重試 in flight: the banner stays (same element, nothing re-announced) with its button disabled. */
+  readonly retrying = signal(false);
+
+  private endRetry(ok: boolean): void {
+    if (!this.retrying()) {
+      return;
+    }
+    this.retrying.set(false);
+    if (ok) {
+      focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
+    }
+  }
+
+  retry(): void {
+    if (this.retrying()) {
+      return;
+    }
+    this.retrying.set(true);
+    this.load();
+  }
+
   private load(): void {
     const id = ++this.requestId;
     this.loadReviews();
@@ -527,6 +554,7 @@ export class AccountingRemindersComponent {
         }
         this.loadError.set(false);
         this.loaded.set(true);
+        this.endRetry(true);
       },
       error: () => {
         if (id !== this.requestId) {
@@ -534,6 +562,7 @@ export class AccountingRemindersComponent {
         }
         this.loadError.set(true);
         this.loaded.set(true);
+        this.endRetry(false);
       },
     });
   }
@@ -690,7 +719,7 @@ export class AccountingRemindersComponent {
       },
       error: (error: unknown) => {
         this.setBusy(row.id, false);
-        this.actionError.set(scheduleActionError(error, this.toast));
+        this.actionError.set(scheduleActionError(error, this.toasts));
       },
     });
   }
@@ -795,7 +824,7 @@ export class AccountingRemindersComponent {
       next: () => this.setRetrying(row.id, false),
       error: (error: unknown) => {
         this.setRetrying(row.id, false);
-        this.scheduleError.set(scheduleActionError(error, this.toast));
+        this.scheduleError.set(scheduleActionError(error, this.toasts));
       },
     });
   }

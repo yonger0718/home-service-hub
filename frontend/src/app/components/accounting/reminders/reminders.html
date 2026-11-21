@@ -3,7 +3,7 @@
     @if (isPhone()) {
       <a routerLink="/accounting" class="back-link" aria-label="返回記錄">‹</a>
     }
-    <h1>提醒中心</h1>
+    <h1 tabindex="-1">提醒中心</h1>
   </header>
 
   <div class="tabs" role="radiogroup" aria-label="提醒類型">
@@ -13,7 +13,7 @@
   </div>
 
   @if (loadError()) {
-    <p class="load-error">提醒讀取失敗，請稍後再試。</p>
+    <app-banner class="page-load-error" tone="error" heading="提醒讀取失敗，請稍後再試。" actionLabel="重試" [actionDisabled]="retrying()" (action)="retry()" />
   } @else {
     <!-- The panel bumps entriesChanged after each answer; the load() effect then re-reads the inbox. -->
     @if (showInbox()) {
@@ -63,10 +63,7 @@
     }
 
     @if (showCards() && billsFailed()) {
-      <div class="bill-error" role="alert">
-        <span class="msg">{{ billErrorText() }}</span>
-        <button type="button" class="retry" (click)="retryBills()">重試</button>
-      </div>
+      <app-banner class="bill-error" tone="error" heading="帳單讀取失敗" [detail]="billErrorDetail()" actionLabel="重試" (action)="retryBills()" />
     }
 
     @if (showDebtFilters() && debtCounterparties().length > 0) {
@@ -197,10 +194,7 @@
       @for (row of scheduleRows().active; track row.id) {
         <ng-container *ngTemplateOutlet="scheduleRow; context: { $implicit: row }" />
         @if (row.failing; as failing) {
-          <div class="schedule-failing" role="alert">
-            <span class="msg">{{ failing.text }}</span>
-            <button type="button" class="retry" [disabled]="retryingDefinitions().has(row.id)" (click)="retryDefinition(row)">重試</button>
-          </div>
+          <app-banner class="schedule-failing" tone="error" heading="這一期入帳失敗" [detail]="failing.text" actionLabel="重試" [actionDisabled]="retryingDefinitions().has(row.id)" (action)="retryDefinition(row)" />
         }
       } @empty {
         <p class="muted schedules-empty">沒有週期或分期</p>

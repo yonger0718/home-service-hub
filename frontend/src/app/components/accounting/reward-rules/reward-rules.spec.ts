@@ -147,6 +147,67 @@ describe('RewardRulesOverviewComponent', () => {
   const card = (el: Element, name: string) =>
     Array.from(el.querySelectorAll<HTMLElement>('.rr-card')).find(c => text(c.querySelector('.rr-card-name')) === name)!;
 
+  it('a failed read shows an 錯誤 banner with the message and 重試; 重試 re-reads with the same query (account, state, archived)', async () => {
+    TestBed.inject(LayoutModeService).set('panes');
+    const harness = await RouterTestingHarness.create();
+    await harness.navigateByUrl('/accounting/reward-rules?account_id=11&state=active&archived=1');
+    harness.detectChanges();
+    const failed = overviewRequest();
+    const query = failed.request.urlWithParams;
+    expect(query).toContain('account_id=11');
+    expect(query).toContain('state=active');
+    failed.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    harness.detectChanges();
+    const el = harness.routeNativeElement as HTMLElement;
+    expect(el.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBeTruthy();
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
+
+    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    harness.detectChanges();
+    const again = overviewRequest();
+    expect(again.request.urlWithParams).toBe(query);
+    again.flush(OVERVIEW);
+    harness.detectChanges();
+    expect(el.querySelector('.page-load-error')).toBeNull();
+    expect(el.querySelector('.rr-card')).not.toBeNull();
+  });
+
+  it('重試 keeps the banner through the read (same node, button disabled, a double press reads once); a second failure keeps it; success removes it and focus stays in the page', async () => {
+    TestBed.inject(LayoutModeService).set('panes');
+    const harness = await RouterTestingHarness.create();
+    await harness.navigateByUrl('/accounting/reward-rules');
+    harness.detectChanges();
+    overviewRequest().flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    harness.detectChanges();
+    const el = harness.routeNativeElement as HTMLElement;
+    const banner = el.querySelector('.page-load-error')!;
+    const button = banner.querySelector<HTMLButtonElement>('.banner-action')!;
+    button.focus();
+    button.click();
+    button.click();
+    harness.detectChanges();
+    expect(button.disabled).toBe(true);
+    const again = overviewRequest();
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    again.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    harness.detectChanges();
+    expect(el.querySelectorAll('.page-load-error')).toHaveLength(1);
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    expect(button.disabled).toBe(false);
+
+    button.focus();
+    button.click();
+    harness.detectChanges();
+    overviewRequest().flush(OVERVIEW);
+    harness.detectChanges();
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+    expect(el.querySelector('.page-load-error')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(el.contains(document.activeElement)).toBe(true);
+  });
+
   it('requests GET /reward-rules once with state=all by default and shows the chips with counts', async () => {
     const { el, request } = await open();
     expect(request.request.urlWithParams).toBe(`${URL}?state=all`);
@@ -404,9 +465,12 @@ describe('RewardRulesOverviewComponent', () => {
   it('expired banner: shown with the count, hidden under state=expired, 只看已過期 filters', async () => {
     const { el, harness } = await open();
     const banner = el.querySelector('.rr-banner')!;
-    expect(banner.getAttribute('role')).toBe('status');
-    expect(text(banner.querySelector('.rr-banner-text'))).toBe('1 條規則已過期但仍啟用，之後的消費不會再估算回饋');
-    const button = banner.querySelector<HTMLButtonElement>('button')!;
+    expect(banner.tagName).toBe('APP-BANNER');
+    expect(banner.querySelector('.banner--warn')).not.toBeNull();
+    expect(banner.querySelector('[role="status"]')).not.toBeNull();
+    expect(text(banner.querySelector('.banner-title'))).toBe('1 條規則已過期但仍啟用');
+    expect(text(banner.querySelector('.banner-detail'))).toBe('之後的消費不會再估算回饋');
+    const button = banner.querySelector<HTMLButtonElement>('.banner-action')!;
     expect(text(button)).toBe('只看已過期');
 
     button.click();
@@ -501,7 +565,8 @@ describe('RewardRulesOverviewComponent', () => {
     overviewRequest().flush({ detail: '讀取失敗了' }, { status: 500, statusText: 'Server Error' });
     harness.detectChanges();
     const el = harness.routeNativeElement as HTMLElement;
-    expect(text(el.querySelector('[role="alert"]'))).toBe('讀取失敗了');
+    expect(text(el.querySelector('.page-load-error .banner-title'))).toBe('讀取失敗了');
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
     expect(el.querySelector('.rr-grid')?.getAttribute('aria-busy')).toBeNull();
   });
 

@@ -346,8 +346,71 @@ describe('SplitGroupComponent (多類別 group view)', () => {
     fixture.detectChanges();
     http.expectOne('/api/accounting/entries/42').flush('no', { status: 404, statusText: 'Not Found' });
     fixture.detectChanges();
-    expect(el(fixture).querySelector('.load-error')).not.toBeNull();
+    expect(el(fixture).querySelector('.page-load-error')).not.toBeNull();
     expect(el(fixture).querySelector('.error-head .close')).not.toBeNull();
+  });
+
+
+  it('重試 keeps the banner through the read (same node, button disabled, a double press reads once); a second failure keeps it; success removes it and focus stays in the page', async () => {
+    const fixture = TestBed.createComponent(SplitGroupComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    const root = el(fixture);
+    const banner = root.querySelector('.page-load-error')!;
+    const button = banner.querySelector<HTMLButtonElement>('.banner-action')!;
+    button.focus();
+    button.click();
+    button.click();
+    fixture.detectChanges();
+    expect(button.disabled).toBe(true);
+    const second = http.expectOne('/api/accounting/entries/42');
+    expect(root.querySelector('.page-load-error')).toBe(banner);
+    second.flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(root.querySelectorAll('.page-load-error')).toHaveLength(1);
+    expect(root.querySelector('.page-load-error')).toBe(banner);
+    expect(button.disabled).toBe(false);
+    button.focus();
+    button.click();
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/42').flush(splitDetail());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(root.querySelector('.page-load-error')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(root.contains(document.activeElement)).toBe(true);
+  });
+
+  it('重試 reads the entry the route asked for last: id A failed, the route moved to id B which failed too', () => {
+    const fixture = TestBed.createComponent(SplitGroupComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    params.next(convertToParamMap({ id: '43' }));
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/43').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    el(fixture).querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    http.expectOne('/api/accounting/entries/43').flush(splitDetail({ id: 43 }));
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.page-load-error')).toBeNull();
+  });
+
+  it('a failed read shows an 錯誤 banner; 重試 reads the same entry again and the banner leaves on success', () => {
+    const fixture = TestBed.createComponent(SplitGroupComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    const root = el(fixture);
+    expect(root.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('記錄讀取失敗，請稍後再試。');
+    expect(root.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(root.querySelector('.page-load-error .banner-close')).toBeNull();
+    root.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    http.expectOne('/api/accounting/entries/42').flush(splitDetail());
+    fixture.detectChanges();
+    expect(root.querySelector('.page-load-error')).toBeNull();
   });
 
   it('draws the folder tile of its members, +N past four and the badge of the count', () => {

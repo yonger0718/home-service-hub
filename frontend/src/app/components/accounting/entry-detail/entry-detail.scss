@@ -447,3 +447,7 @@
   .actions .action-edit { background: var(--app-primary-soft); color: var(--app-primary); }
   .actions .danger { color: var(--c-red-ink, var(--app-danger)); }
 }
+
+/* 記錄讀取失敗. In the calendar drawer the compact host has no padding (the bar and body bring their own); this is live when a reload of the SAME entry fails and the record stays shown (compact stays on), so the banner carries the drawer's margins itself. */
+.page-load-error { margin: 8px 0 12px; }
+:host(.entry-detail--drawer) .page-load-error { margin: 12px 14px 0; }

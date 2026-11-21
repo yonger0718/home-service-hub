@@ -1,9 +1,12 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterLink } from '@angular/router';
-import { Subscription, catchError, map, of } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
+import { Subscription, catchError, finalize, map, of } from 'rxjs';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { injectToasts } from '../../../services/toast.service';
+import { guardedRetry } from '../../../services/toast-retry';
 import { BROKER_LABELS, Broker, MarketCode, Transaction, TransactionType, TransactionQuery, brokerLabel } from '../../../models/portfolio.model';
 
 const BROKER_LABELS_MAP = BROKER_LABELS;
@@ -16,9 +19,8 @@ import { SelectModule } from 'primeng/select';
 import { DatePickerModule } from 'primeng/datepicker';
 import { CheckboxModule } from 'primeng/checkbox';
 import { PaginatorModule, PaginatorState } from 'primeng/paginator';
-import { ConfirmationService, MessageService, MenuItem } from 'primeng/api';
+import { ConfirmationService, MenuItem } from 'primeng/api';
 import { ConfirmDialogModule } from 'primeng/confirmdialog';
-import { ToastModule } from 'primeng/toast';
 import { MenuModule } from 'primeng/menu';
 import { Menu } from 'primeng/menu';
 import { BtnComponent } from '../../ui/btn/btn';
@@ -58,10 +60,10 @@ const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
     CommonModule, DialogModule, FormsModule,
     InputTextModule, InputNumberModule, SelectButtonModule, SelectModule,
     DatePickerModule, PaginatorModule, CheckboxModule,
-    ConfirmDialogModule, ToastModule, MenuModule,
+    ConfirmDialogModule, MenuModule,
     BtnComponent, SegToggleComponent, TimelineComponent, FilterBarComponent,
   ],
-  providers: [ConfirmationService, MessageService],
+  providers: [ConfirmationService],
   templateUrl: './transaction-list.html',
   styleUrls: ['./transaction-list.scss', '../kpi-cards.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -69,7 +71,7 @@ const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
 export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private confirmationService = inject(ConfirmationService);
-  private messageService = inject(MessageService);
+  private readonly toasts = injectToasts();
   private layoutMode = inject(LayoutModeService);
 
   @ViewChild('menu') menu!: Menu;
@@ -78,6 +80,10 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   transactions = signal<Transaction[]>([]);
   total = signal<number>(0);
   loading = signal<boolean>(false);
+  /** Bumped each time the edit dialog opens; a late answer (or 重試) closes it only if it is still the one it was sent from. */
+  private dialogSession = 0;
+  private deleting = false;
+  private saving = false;
   showDialog = signal<boolean>(false);
   isEdit = signal<boolean>(false);
 
@@ -201,7 +207,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       error: () => {
         if (seq !== this.fetchSeq) return;
         this.loading.set(false);
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '查詢失敗，請檢查篩選條件' });
+        this.toasts.error('查詢失敗，請檢查篩選條件');
       },
     });
   }
@@ -382,6 +388,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       tax: 0,
       broker: 'TW_CATHAY',
     };
+    this.dialogSession++;
     this.showDialog.set(true);
   }
 
@@ -393,6 +400,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       market: transaction.market ?? 'TW',
       trade_date: transaction.trade_date ? new Date(transaction.trade_date) : undefined,
     };
+    this.dialogSession++;
     this.showDialog.set(true);
   }
 
@@ -401,27 +409,40 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       message: `確定要刪除 ${transaction.symbol} 的這筆交易紀錄嗎？`,
       header: '確認刪除',
       icon: 'pi pi-exclamation-triangle',
-      accept: () => {
-        this.portfolioService.deleteTransaction(transaction.id).subscribe({
-          next: () => {
-            const nextTotal = Math.max(this.total() - 1, 0);
-            const limit = this.query().limit ?? 25;
-            const maxOffset = nextTotal > 0
-              ? Math.floor((nextTotal - 1) / limit) * limit
-              : 0;
-            this.query.set({
-              ...this.query(),
-              offset: Math.min(this.query().offset ?? 0, maxOffset),
-            });
-            this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已刪除' });
-            this.reload();
-          },
-          error: () => {
-            this.messageService.add({ severity: 'error', summary: '錯誤', detail: '刪除失敗，請稍後再試' });
-          },
+      accept: () => this.sendDelete(transaction),
+    });
+  }
+
+  private sendDelete(transaction: Transaction): void {
+    this.deleting = true;
+    this.portfolioService.deleteTransaction(transaction.id).pipe(finalize(() => (this.deleting = false))).subscribe({
+      next: () => this.deleted(),
+      error: err => {
+        // The interceptor already retried once: a 404 here means the first attempt did commit, so the record is gone.
+        if (err instanceof HttpErrorResponse && err.status === 404) {
+          this.deleted();
+          return;
+        }
+        const text = '刪除失敗，請稍後再試';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.deleting, () => this.sendDelete(transaction)),
         });
       },
     });
+  }
+
+  private deleted(): void {
+    const nextTotal = Math.max(this.total() - 1, 0);
+    const limit = this.query().limit ?? 25;
+    const maxOffset = nextTotal > 0
+      ? Math.floor((nextTotal - 1) / limit) * limit
+      : 0;
+    this.query.set({
+      ...this.query(),
+      offset: Math.min(this.query().offset ?? 0, maxOffset),
+    });
+    this.toasts.done('紀錄已刪除');
+    this.reload();
   }
 
   /** Card figures: whole TWD, `—` while unknown. */
@@ -561,28 +582,24 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     if (this.isFxRateInvalid()) return;
 
     const payload = this.transactionPayload();
-    if (this.isEdit() && this.newTransaction.id) {
-      this.portfolioService.updateTransaction(this.newTransaction.id, payload).subscribe({
-        next: () => {
-          this.showDialog.set(false);
-          this.reload();
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已更新' });
-        },
-        error: () => {
-          this.messageService.add({ severity: 'error', summary: '錯誤', detail: '更新失敗，請檢查欄位' });
-        },
-      });
-    } else {
-      this.portfolioService.createTransaction(payload).subscribe({
-        next: () => {
-          this.showDialog.set(false);
-          this.reload();
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已新增' });
-        },
-        error: () => {
-          this.messageService.add({ severity: 'error', summary: '錯誤', detail: '新增失敗，請檢查欄位' });
-        },
-      });
-    }
+    this.sendSave(payload, this.isEdit() && this.newTransaction.id ? this.newTransaction.id : null, this.dialogSession);
+  }
+
+  private sendSave(payload: Partial<Transaction>, id: number | null, session: number): void {
+    this.saving = true;
+    const request = id !== null ? this.portfolioService.updateTransaction(id, payload) : this.portfolioService.createTransaction(payload);
+    request.pipe(finalize(() => (this.saving = false))).subscribe({
+      next: () => {
+        if (session === this.dialogSession) this.showDialog.set(false);
+        this.reload();
+        this.toasts.done(id !== null ? '紀錄已更新' : '紀錄已新增');
+      },
+      error: err => {
+        const text = id !== null ? '更新失敗，請檢查欄位' : '新增失敗，請檢查欄位';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.saving, () => this.sendSave(payload, id, session)),
+        });
+      },
+    });
   }
 }

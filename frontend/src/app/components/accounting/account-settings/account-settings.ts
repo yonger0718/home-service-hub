@@ -36,7 +36,8 @@ import { shortDate, todayIso } from '../dates';
 import { balanceNegative, balanceText, valuationHint } from '../account-balance';
 import { decimalText, formatMoney } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
-import { AccountingToastService } from '../accounting-toast';
+import { guardedRetry } from '../../../services/toast-retry';
+import { injectToasts } from '../../../services/toast.service';
 import { logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
 import { AccountLookSectionComponent, lookSummary } from './look-section/look-section';
@@ -275,7 +276,7 @@ interface LoadedAccount {
 })
 export class AccountSettingsComponent implements OnInit, DirtyAware {
   private service = inject(AccountingService);
-  private readonly toast = inject(AccountingToastService);
+  private readonly toasts = injectToasts();
   private route = inject(ActivatedRoute);
   private router = inject(Router);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
@@ -957,28 +958,10 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
       return;
     }
     if (logoFileTooLarge(file)) {
-      this.toast.show('圖片太大（上限 5 MB）');
+      this.toasts.error('圖片太大（上限 5 MB）');
       return;
     }
-    this.uploadingLogo.set(true);
-    this.service.uploadAccountLogo(id, file).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
-      next: detail => {
-        if (id === this.loadedId()) {
-          this.logoHash.set(detail.logo_hash ?? null);
-        }
-      },
-      error: err => {
-        if (id === this.loadedId()) {
-          this.uploadingLogo.set(false);
-          this.toast.show(logoUploadErrorMessage(err));
-        }
-      },
-      complete: () => {
-        if (id === this.loadedId()) {
-          this.uploadingLogo.set(false);
-        }
-      },
-    });
+    this.sendLogo(id, file);
   }
 
   removeLogo(): void {
@@ -986,24 +969,65 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     if (id === null) {
       return;
     }
-    this.uploadingLogo.set(true);
-    this.service.deleteAccountLogo(id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
-      next: () => {
+    this.sendLogoRemoval(id);
+  }
+
+  /** The upload for account `id`; 重試 re-sends the same file to the same account, whichever account is open then. */
+  private sendLogo(id: number, file: File): void {
+    this.runLogoWrite(
+      id,
+      this.service.uploadAccountLogo(id, file),
+      detail => this.logoHash.set(detail.logo_hash ?? null),
+      () => this.sendLogo(id, file),
+    );
+  }
+
+  private sendLogoRemoval(id: number): void {
+    this.runLogoWrite(id, this.service.deleteAccountLogo(id), () => this.logoHash.set(null), () => this.sendLogoRemoval(id));
+  }
+
+  /** Accounts with a logo write in flight: upload, remove and retry share one slot per account. */
+  private readonly logoInFlight = new Set<number>();
+  /** The 失敗 toast of an account's last failed logo write (re-raised ids included). */
+  private readonly logoFailToast = new Map<number, number>();
+
+  /**
+   * One logo write at a time per account. Starting one dismisses that account's older 失敗 toast, so a stale 重試
+   * (it would overwrite the newer logo) is gone. Only the account still open feels the busy flag and the new hash,
+   * and only the write that set the flag clears it; a failure is reported whichever account is open.
+   */
+  private runLogoWrite<T>(id: number, request: Observable<T>, apply: (result: T) => void, again: () => void): void {
+    if (this.logoInFlight.has(id)) {
+      return;
+    }
+    const older = this.logoFailToast.get(id);
+    if (older !== undefined) {
+      this.toasts.dismiss(older);
+      this.logoFailToast.delete(id);
+    }
+    this.logoInFlight.add(id);
+    if (id === this.loadedId()) {
+      this.uploadingLogo.set(true);
+    }
+    const settle = (): void => {
+      this.logoInFlight.delete(id);
+      if (id === this.loadedId()) {
+        this.uploadingLogo.set(false);
+      }
+    };
+    request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: result => {
         if (id === this.loadedId()) {
-          this.logoHash.set(null);
+          apply(result);
         }
       },
       error: err => {
-        if (id === this.loadedId()) {
-          this.uploadingLogo.set(false);
-          this.toast.show(logoUploadErrorMessage(err));
-        }
+        settle();
+        const text = logoUploadErrorMessage(err);
+        const remember = (toastId: number): void => void this.logoFailToast.set(id, toastId);
+        remember(this.toasts.error(text, { retry: guardedRetry(err, this.toasts, text, () => this.logoInFlight.has(id), again, remember) }));
       },
-      complete: () => {
-        if (id === this.loadedId()) {
-          this.uploadingLogo.set(false);
-        }
-      },
+      complete: settle,
     });
   }
 

@@ -18,9 +18,9 @@ import { Subscription, catchError, combineLatest, finalize, forkJoin, interval, 
 import { ChartModule, UIChart } from 'primeng/chart';
 import { SkeletonModule } from 'primeng/skeleton';
 import { TooltipModule } from 'primeng/tooltip';
-import { MessageService } from 'primeng/api';
 
 import { PortfolioService } from '../../../services/portfolio.service';
+import { injectToasts } from '../../../services/toast.service';
 import { AppearanceService } from '../../../services/appearance.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import {
@@ -93,7 +93,7 @@ interface ChartSeriesValues {
 export class PortfolioDashboardComponent implements OnInit {
   private readonly portfolioService = inject(PortfolioService);
   private readonly appearance = inject(AppearanceService);
-  private readonly messageService = inject(MessageService, { optional: true });
+  private readonly toasts = injectToasts();
   private readonly destroyRef = inject(DestroyRef);
   private readonly cdr = inject(ChangeDetectorRef);
   private readonly clock = inject(DASHBOARD_CLOCK);
@@ -346,7 +346,7 @@ export class PortfolioDashboardComponent implements OnInit {
       },
       error: (err) => {
         if (err.status === 409) {
-          this.notify('另一筆重算進行中, 稍候再試');
+          console.warn('另一筆重算進行中，稍候再試');
         } else if (err.status !== 204) {
           console.error('refreshQuotes failed', err);
         }
@@ -469,7 +469,7 @@ export class PortfolioDashboardComponent implements OnInit {
       },
       error: (err) => {
         if (err.status === 409) {
-          this.notify('另一筆重算進行中, 稍候再試');
+          this.toasts.error('另一筆重算進行中，稍候再試');
         } else if (err.status !== 204) {
           console.error('refreshQuotes failed', err);
         }
@@ -816,14 +816,5 @@ export class PortfolioDashboardComponent implements OnInit {
     const mm = (parsed.getMonth() + 1).toString().padStart(2, '0');
     if (this.range() === '5Y') return `${parsed.getFullYear()}/${mm}`;
     return `${parsed.getMonth() + 1}/${parsed.getDate().toString().padStart(2, '0')}`;
-  }
-
-  private notify(msg: string): void {
-    if (this.messageService) {
-      this.messageService.add({ severity: 'warn', summary: '提醒', detail: msg });
-      return;
-    }
-
-    console.warn(msg);
   }
 }

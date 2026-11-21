@@ -233,3 +233,8 @@
     grid-template-columns: 1fr;
   }
 }
+
+.page-load-error { margin: 8px 0 12px; }
+
+/* Focus lands here after a 重試 succeeded (programmatic only). */
+h1:focus { outline: none; }

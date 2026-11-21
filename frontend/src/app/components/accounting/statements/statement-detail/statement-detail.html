@@ -8,14 +8,11 @@
         >‹</a
       >
     }
-    <h1>對帳明細</h1>
+    <h1 tabindex="-1">對帳明細</h1>
   </header>
 
   @if (loadError()) {
-    <div class="load-error-block">
-      <p class="load-error">帳單讀取失敗</p>
-      <button type="button" class="retry" (click)="retry()">重試</button>
-    </div>
+    <app-banner class="page-load-error" tone="error" heading="帳單讀取失敗" actionLabel="重試" [actionDisabled]="retrying()" (action)="retry()" />
   } @else if (loading() || !detail()) {
     <app-skeleton rows="4" />
   } @else {

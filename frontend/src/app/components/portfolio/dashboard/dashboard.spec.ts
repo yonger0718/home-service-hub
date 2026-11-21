@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Dividend, PortfolioSummary, StockHolding } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
+import { ToastService } from '../../../services/toast.service';
 import { DASHBOARD_CLOCK, PortfolioDashboardComponent } from './dashboard';
 import { hoverGuidePlugin } from './chart-guide.plugin';
 import { LayoutModeService } from '../../../services/layout-mode.service';
@@ -224,14 +225,18 @@ describe('PortfolioDashboardComponent', () => {
     expect(portfolioService.getSummary).toHaveBeenCalledTimes(1);
   });
 
-  it('warns and still reloads summary when refresh quotes is already running', () => {
+  it('刷新行情 answered 409 shows 失敗 另一筆重算進行中，稍候再試; the load on open does not', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     portfolioService.refreshQuotes.mockReturnValue(throwError(() => ({ status: 409 })));
     const fixture = createFixture();
+    const toasts = TestBed.inject(ToastService);
+
+    expect(warnSpy).toHaveBeenCalledWith('另一筆重算進行中，稍候再試');
+    expect(toasts.current()).toBeNull();
 
     fixture.nativeElement.querySelector('button').click();
 
-    expect(warnSpy).toHaveBeenCalledWith('另一筆重算進行中, 稍候再試');
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '另一筆重算進行中，稍候再試', action: null }));
     expect(portfolioService.getSummary).toHaveBeenCalled();
   });
 

@@ -1,6 +1,8 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Location } from '@angular/common';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { provideLocationMocks } from '@angular/common/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, RouterLink, convertToParamMap, provideRouter } from '@angular/router';
@@ -581,7 +583,7 @@ describe('EntryDetailComponent', () => {
     http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
 
-    expect(el(fixture).querySelector('.load-error')).not.toBeNull();
+    expect(el(fixture).querySelector('.page-load-error')).not.toBeNull();
     expect(el(fixture).querySelector('.detail-name')?.textContent?.trim()).toBe('代付 晚餐');
   });
 
@@ -604,6 +606,73 @@ describe('EntryDetailComponent', () => {
     expect(back).toHaveBeenCalledTimes(1);
   });
 
+  it('a failed read shows an 錯誤 banner with 記錄讀取失敗，請稍後再試。; 重試 reads the same entry again and the banner leaves on success', () => {
+    const fixture = TestBed.createComponent(EntryDetailComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
+    fixture.detectChanges();
+    const root = el(fixture);
+    expect(root.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('記錄讀取失敗，請稍後再試。');
+    expect(root.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(root.querySelector('.page-load-error .banner-close')).toBeNull();
+    root.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    http.expectOne('/api/accounting/entries/42').flush(RECEIVABLE);
+    fixture.detectChanges();
+    expect(root.querySelector('.page-load-error')).toBeNull();
+    expect(root.querySelector('.detail-name')?.textContent?.trim()).toBe('代付 晚餐');
+  });
+
+
+  it('重試 keeps the banner through the read (same node, button disabled, a double press reads once); a second failure keeps it; success removes it and focus stays in the page', async () => {
+    const fixture = TestBed.createComponent(EntryDetailComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
+    fixture.detectChanges();
+    const root = el(fixture);
+    const banner = root.querySelector('.page-load-error')!;
+    const button = banner.querySelector<HTMLButtonElement>('.banner-action')!;
+    button.focus();
+    button.click();
+    button.click();
+    fixture.detectChanges();
+    expect(button.disabled).toBe(true);
+    const second = http.expectOne('/api/accounting/entries/42');
+    expect(root.querySelector('.page-load-error')).toBe(banner);
+    second.flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(root.querySelectorAll('.page-load-error')).toHaveLength(1);
+    expect(root.querySelector('.page-load-error')).toBe(banner);
+    expect(button.disabled).toBe(false);
+    button.focus();
+    button.click();
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/42').flush(RECEIVABLE);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(root.querySelector('.page-load-error')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(root.contains(document.activeElement)).toBe(true);
+  });
+
+  it('重試 reads the entry the route asked for last: id A failed, the route moved to id B which failed too', () => {
+    const fixture = TestBed.createComponent(EntryDetailComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
+    fixture.detectChanges();
+    params.next(convertToParamMap({ id: '43' }));
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/43').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    el(fixture).querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    http.expectOne('/api/accounting/entries/43').flush({ ...RECEIVABLE, id: 43 });
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.page-load-error')).toBeNull();
+  });
+
   it('shows ✕ on the load-error page and leaves it for the parent list', () => {
     const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
     const fixture = TestBed.createComponent(EntryDetailComponent);
@@ -612,7 +681,7 @@ describe('EntryDetailComponent', () => {
     http.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
     fixture.detectChanges();
 
-    expect(el(fixture).querySelector('.load-error')).not.toBeNull();
+    expect(el(fixture).querySelector('.page-load-error')).not.toBeNull();
     el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
     expect(navigate).toHaveBeenCalledWith('/accounting');
   });
@@ -751,7 +820,7 @@ describe('EntryDetailComponent', () => {
     http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
 
-    expect(el(fixture).querySelector('.load-error')).not.toBeNull();
+    expect(el(fixture).querySelector('.page-load-error')).not.toBeNull();
     expect(el(fixture).querySelector('.detail-name')).toBeNull();
   });
 
@@ -1578,6 +1647,20 @@ describe('EntryDetailComponent', () => {
       expect(close).toHaveBeenCalled();
     });
 
+    it('a failed reload of the SAME entry keeps the record and the compact drawer, shows the banner, and the stylesheet gives it the drawer margins', () => {
+      drawerOn();
+      const fixture = renderDrawer(MEAL());
+      const root = el(fixture);
+      params.next(convertToParamMap({ id: '42' }));
+      http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(root.classList.contains('entry-detail--drawer')).toBe(true);
+      expect(root.querySelector('.drawer-bar')).not.toBeNull();
+      expect(root.querySelector('.page-load-error')).not.toBeNull();
+      const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/entry-detail/entry-detail.scss'), 'utf8');
+      expect(css).toMatch(/:host\(\.entry-detail--drawer\) \.page-load-error \{ margin: 12px 14px 0; \}/);
+    });
+
     it('marks its host compact (entry-detail--drawer) only once the entry has loaded: not while loading, not after a failed read', () => {
       drawerOn();
       const fixture = TestBed.createComponent(EntryDetailComponent);
@@ -1588,7 +1671,7 @@ describe('EntryDetailComponent', () => {
       http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
       http.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
       fixture.detectChanges();
-      expect(root.querySelector('.load-error')).not.toBeNull();
+      expect(root.querySelector('.page-load-error')).not.toBeNull();
       expect(root.classList.contains('entry-detail--drawer')).toBe(false);
       expect(root.querySelector('.drawer-bar')).toBeNull();
     });
@@ -1626,7 +1709,7 @@ describe('EntryDetailComponent', () => {
       http.expectOne('/api/accounting/entries/45').flush('boom', { status: 500, statusText: 'Server Error' });
       fixture.detectChanges();
       expect(root.querySelector('.drawer-bar')).toBeNull();
-      expect(root.querySelector('.load-error')).not.toBeNull();
+      expect(root.querySelector('.page-load-error')).not.toBeNull();
       expect(root.classList.contains('entry-detail--drawer')).toBe(false);
     });
 

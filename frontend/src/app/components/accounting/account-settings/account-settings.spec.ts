@@ -6,7 +6,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, RouterLink, UrlTree, convertToParamMap, provideRouter } from '@angular/router';
 import { By } from '@angular/platform-browser';
 import { BehaviorSubject } from 'rxjs';
-import { AccountingToastService } from '../accounting-toast';
+import { ToastService } from '../../../services/toast.service';
 import { MockInstance, afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { AccountDetail, LedgerAccount, RewardRule, RewardUsage } from '../../../models/accounting.model';
@@ -2119,12 +2119,12 @@ describe('AccountSettingsComponent', () => {
     it('refuses an oversize file without a request and toasts', async () => {
       await setup('11');
       const fixture = render(DETAIL);
-      const show = vi.spyOn(TestBed.inject(AccountingToastService), 'show');
+      const toast = TestBed.inject(ToastService);
       openSource(fixture, '上傳圖片');
       choose(fixture, { size: 6 * 1024 * 1024, type: 'image/png' } as unknown as File);
       expect(el(fixture).querySelector<HTMLInputElement>('input[type=file]')!.value).toBe('');
       http.expectNone(URL);
-      expect(show).toHaveBeenCalledWith('圖片太大（上限 5 MB）');
+      expect(toast.current()).toMatchObject({ kind: 'error', text: '圖片太大（上限 5 MB）', action: null });
     });
 
     it('navigating away clears logoHash and the busy flag before the next account loads', async () => {
@@ -2143,16 +2143,135 @@ describe('AccountSettingsComponent', () => {
       http.match(() => true);
     });
 
+    it('重試 of a failed upload goes to the account it failed on, not the one now open', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const toast = TestBed.inject(ToastService);
+      openSource(fixture, '上傳圖片');
+      const picked = file();
+      choose(fixture, picked);
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      navigateTo('12');
+      http.expectOne('/api/accounting/accounts/12').flush({ ...DETAIL, id: 12, logo_hash: 'hb' });
+      fixture.detectChanges();
+      expect(toast.current()?.action?.label).toBe('重試');
+      toast.current()!.action!.run();
+      const again = http.expectOne(URL);
+      expect(again.request.method).toBe('PUT');
+      expect(again.request.body).toBe(picked);
+      again.flush({ ...DETAIL, logo_hash: 'ha' });
+      http.match(r => r.url.includes('/accounts/12') || r.url.endsWith('/reward-usage'));
+      expect(fixture.componentInstance.logoHash()).toBe('hb');
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
+    it('重試 of a failed remove deletes the logo of the account it failed on, not the one now open', async () => {
+      await setup('11');
+      const fixture = render({ ...DETAIL, logo_hash: 'h1' } as AccountDetail);
+      http.expectOne('/api/accounting/accounts/11/logo.png?v=h1').flush(new Blob([new Uint8Array(1)], { type: 'image/png' }));
+      const toast = TestBed.inject(ToastService);
+      el(fixture).querySelector<HTMLButtonElement>('.logo-remove')!.click();
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      navigateTo('12');
+      http.expectOne('/api/accounting/accounts/12').flush({ ...DETAIL, id: 12, logo_hash: 'hb' });
+      http.match(r => r.url.includes('/accounts/12/logo.png'));
+      fixture.detectChanges();
+      toast.current()!.action!.run();
+      const again = http.expectOne(URL);
+      expect(again.request.method).toBe('DELETE');
+      again.flush(null, { status: 204, statusText: 'No Content' });
+      http.match(r => r.url.includes('/accounts/12') || r.url.endsWith('/reward-usage'));
+      expect(fixture.componentInstance.logoHash()).toBe('hb');
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
+    it('a new upload dismisses the older failure toast; its stale 重試 sends nothing and B alone decides the logo', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const toast = TestBed.inject(ToastService);
+      openSource(fixture, '上傳圖片');
+      const a = file();
+      choose(fixture, a);
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      const staleRetry = toast.current()!.action!;
+      const b = file();
+      choose(fixture, b);
+      expect(toast.current()).toBeNull();
+      const pending = http.expectOne(URL);
+      expect(pending.request.body).toBe(b);
+      staleRetry.run();
+      http.expectNone(URL);
+      expect(fixture.componentInstance.uploadingLogo()).toBe(true);
+      pending.flush({ ...DETAIL, logo_hash: 'hb' });
+      http.match(r => r.url.includes('/logo.png'));
+      expect(fixture.componentInstance.logoHash()).toBe('hb');
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
+    it('a second logo write for the same account while one is in flight sends nothing and leaves busy alone', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      openSource(fixture, '上傳圖片');
+      choose(fixture, file());
+      const first = http.expectOne(URL);
+      fixture.componentInstance.uploadLogoFile(file());
+      fixture.componentInstance.removeLogo();
+      http.expectNone(URL);
+      expect(fixture.componentInstance.uploadingLogo()).toBe(true);
+      first.flush({ ...DETAIL, logo_hash: 'ha' });
+      http.match(r => r.url.includes('/logo.png'));
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
+    it('重試 pressed while no logo write is in flight still re-sends and applies the result', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const toast = TestBed.inject(ToastService);
+      openSource(fixture, '上傳圖片');
+      choose(fixture, file());
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      toast.current()!.action!.run();
+      http.expectOne(URL).flush({ ...DETAIL, logo_hash: 'hc' });
+      http.match(r => r.url.includes('/logo.png'));
+      expect(fixture.componentInstance.logoHash()).toBe('hc');
+    });
+
     it('toasts the mapped message on a 422 and clears the busy state', async () => {
       await setup('11');
       const fixture = render(DETAIL);
-      const show = vi.spyOn(TestBed.inject(AccountingToastService), 'show');
+      const toast = TestBed.inject(ToastService);
       openSource(fixture, '上傳圖片');
       choose(fixture, file());
       fixture.detectChanges();
       expect(fixture.componentInstance.uploadingLogo()).toBe(true);
       http.expectOne(URL).flush({ message: 'logo_format' }, { status: 422, statusText: 'Unprocessable Entity' });
-      expect(show).toHaveBeenCalledWith('只接受 PNG、JPEG、WebP');
+      expect(toast.current()).toMatchObject({ kind: 'error', text: '只接受 PNG、JPEG、WebP', action: null });
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
+    it('a 500 logo upload offers 重試, which uploads the same file again', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const toast = TestBed.inject(ToastService);
+      openSource(fixture, '上傳圖片');
+      const picked = file();
+      choose(fixture, picked);
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      expect(toast.current()).toMatchObject({ kind: 'error', action: { label: '重試' } });
+      toast.current()!.action!.run();
+      const again = http.expectOne(URL);
+      expect(again.request.method).toBe('PUT');
+      expect(again.request.body).toBe(picked);
+      again.flush({ ...DETAIL, logo_hash: 'h2' });
+    });
+
+    it('a 422 logo upload offers no 重試', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      openSource(fixture, '上傳圖片');
+      choose(fixture, file());
+      http.expectOne(URL).flush({ message: 'logo_format' }, { status: 422, statusText: 'Unprocessable Entity' });
+      expect(TestBed.inject(ToastService).current()?.action).toBeNull();
       expect(fixture.componentInstance.uploadingLogo()).toBe(false);
     });
   });

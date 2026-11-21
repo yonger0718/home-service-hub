@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountDetail, AccountPeriodSummary, EntryPage, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
-import { AccountingToastService } from '../accounting-toast';
+import { ToastService } from '../../../services/toast.service';
 import { MAX_LOGO_FILE_BYTES } from '../logo-upload-errors';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { AccountingAccountEntriesComponent, PAGE_SIZE } from './account-entries';
@@ -524,11 +524,11 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
   describe('avatar logo upload', () => {
     const URL = '/api/accounting/accounts/7/logo';
 
-    function setup(): { fixture: ComponentFixture<AccountingAccountEntriesComponent>; el: HTMLElement; input: HTMLInputElement; show: ReturnType<typeof vi.spyOn> } {
+    function setup(): { fixture: ComponentFixture<AccountingAccountEntriesComponent>; el: HTMLElement; input: HTMLInputElement; toast: ToastService } {
       const fixture = render(page([]));
       const el = fixture.nativeElement as HTMLElement;
-      const show = vi.spyOn(TestBed.inject(AccountingToastService), 'show');
-      return { fixture, el, input: el.querySelector('input[type=file]') as HTMLInputElement, show };
+      const toast = TestBed.inject(ToastService);
+      return { fixture, el, input: el.querySelector('input[type=file]') as HTMLInputElement, toast };
     }
 
     function choose(input: HTMLInputElement, file: File): void {
@@ -587,21 +587,85 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     });
 
     it('toasts the mapped message on a 422 logo_format and clears the busy state', () => {
-      const { fixture, el, input, show } = setup();
+      const { fixture, el, input, toast } = setup();
       choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
       http.expectOne(URL).flush({ message: 'logo_format' }, { status: 422, statusText: 'Unprocessable Entity' });
       fixture.detectChanges();
-      expect(show).toHaveBeenCalledWith('只接受 PNG、JPEG、WebP');
+      expect(toast.current()).toMatchObject({ kind: 'error', text: '只接受 PNG、JPEG、WebP', action: null });
       expect((el.querySelector('button.avatar') as HTMLElement).hasAttribute('aria-busy')).toBe(false);
       expect(input.value).toBe('');
     });
 
     it('rejects an oversized file without a request', () => {
-      const { input, show } = setup();
+      const { input, toast } = setup();
       choose(input, new File([new Uint8Array(MAX_LOGO_FILE_BYTES + 1)], 'big.png', { type: 'image/png' }));
       http.expectNone(URL);
-      expect(show).toHaveBeenCalledWith('圖片太大（上限 5 MB）');
+      expect(toast.current()).toMatchObject({ kind: 'error', text: '圖片太大（上限 5 MB）', action: null });
       expect(input.value).toBe('');
+    });
+
+    it('a 500 logo upload offers 重試, which uploads the same file again', () => {
+      const { input, toast } = setup();
+      const file = new File([new Uint8Array(1)], 'a.png', { type: 'image/png' });
+      choose(input, file);
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      expect(toast.current()).toMatchObject({ kind: 'error', action: { label: '重試' } });
+      toast.current()!.action!.run();
+      const again = http.expectOne(URL);
+      expect(again.request.method).toBe('PUT');
+      expect(again.request.body).toBe(file);
+      again.flush({ ...ACCOUNT, logo_hash: 'abc' });
+      http.match(r => r.url === `${URL}.png?v=abc`);
+    });
+
+    it('a retry that fails again raises a fresh 失敗 with 重試', () => {
+      const { input, toast } = setup();
+      choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      const first = toast.current()!;
+      first.action!.run();
+      http.expectOne(URL).flush(null, { status: 0, statusText: 'Unknown Error' });
+      const second = toast.current()!;
+      expect(second.id).not.toBe(first.id);
+      expect(second).toMatchObject({ kind: 'error', action: { label: '重試' } });
+    });
+
+    it('a new upload dismisses the older failure toast; its stale 重試 sends nothing and B alone decides', () => {
+      const { fixture, input, toast } = setup();
+      choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
+      http.expectOne(URL).flush(null, { status: 500, statusText: 'Server Error' });
+      const staleRetry = toast.current()!.action!;
+      const b = new File([new Uint8Array(2)], 'b.png', { type: 'image/png' });
+      choose(input, b);
+      expect(toast.current()).toBeNull();
+      const pending = http.expectOne(URL);
+      expect(pending.request.body).toBe(b);
+      staleRetry.run();
+      http.expectNone(URL);
+      expect(fixture.componentInstance.uploadingLogo()).toBe(true);
+      pending.flush({ ...ACCOUNT, logo_hash: 'hb' });
+      http.match(r => r.url.includes('/logo.png'));
+      expect(fixture.componentInstance.account()?.logo_hash).toBe('hb');
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
+    it('a second upload for the same account while one is in flight sends nothing', () => {
+      const { fixture, input } = setup();
+      choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
+      const first = http.expectOne(URL);
+      choose(input, new File([new Uint8Array(1)], 'b.png', { type: 'image/png' }));
+      http.expectNone(URL);
+      expect(fixture.componentInstance.uploadingLogo()).toBe(true);
+      first.flush({ ...ACCOUNT, logo_hash: 'abc' });
+      http.match(r => r.url.includes('/logo.png'));
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+
+    it('a 422 logo upload offers no 重試', () => {
+      const { input, toast } = setup();
+      choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
+      http.expectOne(URL).flush({ message: 'logo_format' }, { status: 422, statusText: 'Unprocessable Entity' });
+      expect(toast.current()?.action).toBeNull();
     });
   });
 

@@ -14,6 +14,7 @@ import { EntryFormLauncher } from './entry-form-launcher';
 import { resolveGlobalShortcut } from './global-shortcuts';
 import { HideOnScrollDirective } from './hide-on-scroll';
 import { NavigationStateService } from './navigation-state.service';
+import { ToastOutletComponent } from './toast-outlet/toast-outlet';
 
 const EXPANDED_WIDTH = '248px';
 const RAIL_WIDTH = '72px';
@@ -35,7 +36,7 @@ const NO_FAB_URL = /^\/accounting\/reports(?:[/?#]|$)/;
 
 @Component({
   selector: 'app-shell',
-  imports: [RouterOutlet, SidebarComponent, MobileNavComponent, HideOnScrollDirective],
+  imports: [RouterOutlet, SidebarComponent, MobileNavComponent, HideOnScrollDirective, ToastOutletComponent],
   templateUrl: './shell.html',
   styleUrl: './shell.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -63,6 +64,11 @@ export class ShellComponent {
       !this.paneState.formOpen() &&
       !this.paneState.sheetOpen() &&
       !NO_FAB_URL.test(this.url()),
+  );
+
+  /** Space the toast leaves to its right: the floating 記一筆 (right offset + 56 px button + 12 px gap), else a margin. */
+  protected readonly toastFabClear = computed(() =>
+    this.showFab() ? `calc(${this.paneState.fabRight() ?? '30px'} + 68px)` : '24px',
   );
 
   protected readonly entryForm = inject(EntryFormLauncher);

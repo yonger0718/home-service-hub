@@ -1,10 +1,12 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
+import { Subject, of, throwError } from 'rxjs';
 import { provideRouter } from '@angular/router';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 
 import { ItemListComponent } from './item-list';
 import { ItemService } from '../../services/item.service';
+import { ToastService } from '../../services/toast.service';
 import { ItemResponse } from '../../models/item.model';
 
 describe('ItemListComponent', () => {
@@ -110,5 +112,149 @@ describe('ItemListComponent', () => {
     component.lowStockOnly = true;
 
     expect(component.displayedItems().map(item => item.name)).toEqual(['洗碗精']);
+  });
+
+  describe('feedback', () => {
+    const serverError = () => throwError(() => new HttpErrorResponse({ status: 500 }));
+    const toasts = () => TestBed.inject(ToastService);
+
+    it('a failed list load shows 無法載入物品清單 with 重試, which loads again', () => {
+      itemServiceMock.getAllFiltered.mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 500 })));
+      component.loadItems();
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '無法載入物品清單' }));
+      expect(toasts().current()?.action?.label).toBe('重試');
+
+      const calls = itemServiceMock.getAllFiltered.mock.calls.length;
+      toasts().current()!.action!.run();
+      expect(itemServiceMock.getAllFiltered).toHaveBeenCalledTimes(calls + 1);
+      expect(component.items()).toEqual(items);
+    });
+
+    it('saveItem answered 500 shows 重試 that re-sends the captured payload once, also for an update; a 400 shows none', () => {
+      itemServiceMock.create.mockReturnValueOnce(serverError());
+      component.showDialog();
+      component.newItem.name = '測試牙膏';
+      component.saveItem();
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '建立失敗' }));
+      const payload = itemServiceMock.create.mock.calls[0][0];
+      component.displayDialog = false;
+      component.newItem.name = '改過了';
+
+      toasts().current()!.action!.run();
+      expect(itemServiceMock.create).toHaveBeenCalledTimes(2);
+      expect(itemServiceMock.create.mock.calls[1][0]).toEqual(payload);
+      expect(toasts().current()?.text).toBe('物品已建立');
+
+      itemServiceMock.update.mockReturnValueOnce(serverError()).mockReturnValueOnce(
+        throwError(() => new HttpErrorResponse({ status: 400, error: { message: '名稱重複' } })));
+      component.editItem(items[0]);
+      component.saveItem();
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '更新失敗' }));
+      toasts().current()!.action!.run();
+      expect(itemServiceMock.update.mock.calls[1]).toEqual(itemServiceMock.update.mock.calls[0]);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '名稱重複', action: null }));
+    });
+
+    it('deleteItem answered 500 shows 重試 that deletes the same item once', () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      itemServiceMock.delete.mockReturnValueOnce(serverError());
+      component.deleteItem(2);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '刪除失敗' }));
+
+      toasts().current()!.action!.run();
+      expect(itemServiceMock.delete.mock.calls).toEqual([[2], [2]]);
+      expect(toasts().current()?.text).toBe('物品已刪除');
+    });
+
+    it('deleteItem answered 404 counts as done (the interceptor\'s own retry already committed it): 完成 and a reload', () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      itemServiceMock.delete.mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 404 })));
+      const loads = itemServiceMock.getAllFiltered.mock.calls.length;
+      component.deleteItem(2);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'done', text: '物品已刪除' }));
+      expect(itemServiceMock.getAllFiltered).toHaveBeenCalledTimes(loads + 1);
+    });
+
+    it('adjustQuantity answered 500 shows 重試 that sends the same adjustment once', () => {
+      itemServiceMock.createTransaction.mockReturnValueOnce(serverError());
+      const row = items[1];
+      component.adjustQuantity(row, -1);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '操作失敗' }));
+      expect(toasts().current()?.action?.label).toBe('重試');
+
+      toasts().current()!.action!.run();
+      expect(itemServiceMock.createTransaction.mock.calls.map(call => [call[0], call[1].type])).toEqual([[2, 'CONSUME'], [2, 'CONSUME']]);
+    });
+
+    it('with the server down the reload that follows a failed quantity change is silent: the visible toast stays the save\'s 失敗 with 重試', () => {
+      const reload = new Subject<ItemResponse[]>();
+      itemServiceMock.createTransaction.mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 0 })));
+      itemServiceMock.getAllFiltered.mockReturnValueOnce(reload);
+      component.adjustQuantity(items[1], -1);
+      const failure = toasts().current();
+      expect(failure).toEqual(expect.objectContaining({ kind: 'error', text: '操作失敗' }));
+      expect(failure?.action?.label).toBe('重試');
+
+      reload.error(new HttpErrorResponse({ status: 0 }));
+      expect(toasts().current()).toBe(failure);
+    });
+
+    it('a 重試 of an image upload that succeeds after another item was opened does not write into that form', () => {
+      itemServiceMock.uploadImage.mockReturnValueOnce(serverError());
+      component.editItem(items[0]);
+      component.onUpload({ files: [new File(['x'], '範例.png')] });
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '圖片上傳失敗' }));
+
+      component.editItem(items[1]);
+      const loads = itemServiceMock.getAllFiltered.mock.calls.length;
+      itemServiceMock.uploadImage.mockReturnValueOnce(of({ ...items[0], imageUrl: '/img/dish.png' }));
+      toasts().current()!.action!.run();
+
+      expect(itemServiceMock.uploadImage.mock.calls.map(call => call[0])).toEqual([1, 1]);
+      expect(component.newItem.id).toBe(2);
+      expect(component.newItem.imageUrl).toBeUndefined();
+      expect(itemServiceMock.getAllFiltered).toHaveBeenCalledTimes(loads + 1);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'done', text: '圖片上傳成功' }));
+    });
+
+    it('a 重試 of a save that succeeds after the form was reopened leaves the open form alone', () => {
+      itemServiceMock.update.mockReturnValueOnce(serverError());
+      component.editItem(items[0]);
+      component.saveItem();
+      component.editItem(items[1]);
+      itemServiceMock.update.mockReturnValueOnce(of({}));
+      toasts().current()!.action!.run();
+      expect(component.displayDialog).toBe(true);
+      expect(component.newItem.id).toBe(2);
+      expect(toasts().current()?.text).toBe('物品已更新');
+    });
+
+    it('adjustQuantity 重試 re-sends the same id and delta once, moving the row as listed now (looked up by id)', () => {
+      itemServiceMock.createTransaction.mockReturnValueOnce(serverError());
+      component.items.set([{ ...items[1], quantity: 5 }]);
+      component.adjustQuantity(component.items()[0], -1);
+      // The failure reloads the list, which puts the server's quantity back (a different row object).
+      const quantityOf = () => component.items().find(row => row.id === 2)?.quantity;
+      expect(quantityOf()).toBe(5);
+      itemServiceMock.createTransaction.mockClear();
+
+      toasts().current()!.action!.run();
+      expect(itemServiceMock.createTransaction).toHaveBeenCalledTimes(1);
+      expect(itemServiceMock.createTransaction.mock.calls[0][0]).toBe(2);
+      expect(itemServiceMock.createTransaction.mock.calls[0][1]).toEqual(expect.objectContaining({ type: 'CONSUME', deltaQuantity: 1 }));
+      expect(quantityOf()).toBe(4);
+    });
+
+    it('adjustQuantity 重試 for a row that is gone sends the request and touches no row', () => {
+      itemServiceMock.createTransaction.mockReturnValueOnce(serverError());
+      component.adjustQuantity(items[1], -1);
+      itemServiceMock.getAllFiltered.mockReturnValue(of([items[0]]));
+      component.loadItems();
+      itemServiceMock.createTransaction.mockClear();
+
+      expect(() => toasts().current()!.action!.run()).not.toThrow();
+      expect(itemServiceMock.createTransaction).toHaveBeenCalledTimes(1);
+      expect(component.items().map(row => row.id)).toEqual([1]);
+    });
   });
 });

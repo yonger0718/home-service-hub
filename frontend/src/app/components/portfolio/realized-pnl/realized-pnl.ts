@@ -5,14 +5,13 @@ import { PaginatorModule, PaginatorState } from 'primeng/paginator';
 import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { SelectButtonModule } from 'primeng/selectbutton';
 import { SelectModule } from 'primeng/select';
-import { ToastModule } from 'primeng/toast';
 import { TooltipModule } from 'primeng/tooltip';
-import { MessageService } from 'primeng/api';
 import { Subscription, catchError, of } from 'rxjs';
 
 import { Broker, RealizedPnlEvent, RealizedPnlQuery, RealizedPnlSummary, brokerLabel } from '../../../models/portfolio.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { injectToasts } from '../../../services/toast.service';
 import { BentoComponent } from '../../ui/bento/bento';
 import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
@@ -57,7 +56,6 @@ const SORT_OPTIONS = [
     ProgressSpinnerModule,
     SelectButtonModule,
     SelectModule,
-    ToastModule,
     TooltipModule,
     BentoComponent,
     FilterBarComponent,
@@ -65,14 +63,13 @@ const SORT_OPTIONS = [
     SwitchComponent,
     TagComponent,
   ],
-  providers: [MessageService],
   templateUrl: './realized-pnl.html',
   styleUrls: ['./realized-pnl.scss', '../kpi-cards.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
-  private messageService = inject(MessageService);
+  private readonly toasts = injectToasts();
   private layoutMode = inject(LayoutModeService);
   private readonly today = new Date();
   private currentYear = this.today.getFullYear();
@@ -234,7 +231,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
       error: () => {
         if (seq !== this.fetchSeq) return;
         this.loading.set(false);
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '查詢失敗，請檢查篩選條件' });
+        this.toasts.error('查詢失敗，請檢查篩選條件');
       },
     });
   }

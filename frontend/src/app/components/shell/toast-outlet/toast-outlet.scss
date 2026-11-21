@@ -1,0 +1,104 @@
+/* One toast, bottom-left of the content area (above the tab bar below 760 px). The shell sets `--toast-fab-clear` so
+   the width never reaches the floating 記一筆.
+
+   z-index 10000: always above PrimeNG overlays. PrimeNG hands out overlay z-indexes dynamically (ZIndexUtils): base
+   modal / tooltip 1100, overlay / menu 1000 (no `zIndex` override in app.config), +2 per open overlay of the same
+   kind and +base+2 whenever the kind changes (a dialog's mask measured 2103). A fixed value is enough because the
+   counter only climbs with nested overlays and is reverted on close: eight alternating layers reach 9916, far past
+   any real session. The app's own sheets / pickers top out at 1200. The outlet is a direct child of .hub-layout,
+   which has no transform / filter / z-index, so it sits in the root stacking context beside the body-appended
+   overlays; keep it there. No popover / top layer: it would change the focus handling in toast-focus.ts. */
+:host {
+  position: fixed;
+  z-index: 10000;
+  left: calc(var(--sidebar-w, 0px) + 24px);
+  bottom: 30px;
+  width: max(240px, min(440px, calc(100vw - var(--sidebar-w, 0px) - 24px - var(--toast-fab-clear, 98px))));
+  pointer-events: none;
+}
+
+@media (max-width: 759.98px) {
+  :host {
+    left: 12px;
+    right: 12px;
+    width: auto;
+    /* The tab bar plus its raised + button (tokens shared with mobile-nav.scss), then 12px of air. */
+    bottom: calc(var(--m-nav-h) + var(--m-plus-lift) + env(safe-area-inset-bottom, 0px) + 12px);
+  }
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 8px 0 14px;
+  border-radius: 14px;
+  background: var(--app-accent);
+  color: var(--app-surface);
+  box-shadow: var(--app-raised-shadow);
+}
+
+.toast-icon {
+  flex: none;
+  font-size: 16px;
+}
+.toast--done .toast-icon {
+  color: var(--app-toast-ok);
+}
+.toast--progress .toast-icon {
+  color: var(--app-toast-action);
+}
+.toast--error .toast-icon {
+  color: var(--app-toast-error);
+}
+
+.toast-text {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.toast-action,
+.toast-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.toast-action {
+  height: 36px;
+  padding: 0 10px;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--app-toast-action);
+}
+
+.toast-close {
+  width: 36px;
+  height: 36px;
+  color: var(--app-surface);
+}
+
+.toast-action:focus-visible,
+.toast-close:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--app-toast-action);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast-icon.pi-spin {
+    animation: none;
+  }
+}

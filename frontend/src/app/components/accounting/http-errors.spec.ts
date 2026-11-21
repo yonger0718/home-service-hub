@@ -1,7 +1,9 @@
 import { HttpErrorResponse } from '@angular/common/http';
+import { TestBed } from '@angular/core/testing';
 import { describe, expect, it } from 'vitest';
 
-import { fieldErrors, writeErrorMessage } from './http-errors';
+import { ToastService, injectToasts } from '../../services/toast.service';
+import { fieldErrors, isNetworkFailure, retryOnNetwork, scheduleActionError, writeErrorMessage } from './http-errors';
 
 function httpError(status: number, error: unknown): HttpErrorResponse {
   return new HttpErrorResponse({ status, error, url: '/api/accounting/x' });
@@ -86,5 +88,35 @@ describe('http error helpers', () => {
       .toBe('retrying is unavailable');
     // A business code on another status is not a conflict translation.
     expect(writeErrorMessage(httpError(422, { code: 'X', message: 'retry: no' }))).toBe('retry: no');
+  });
+
+  it('isNetworkFailure: status 0 and 5xx yes, 4xx and non-HTTP errors no', () => {
+    expect(isNetworkFailure(httpError(0, null))).toBe(true);
+    expect(isNetworkFailure(httpError(500, null))).toBe(true);
+    expect(isNetworkFailure(httpError(503, null))).toBe(true);
+    expect(isNetworkFailure(httpError(409, null))).toBe(false);
+    expect(isNetworkFailure(httpError(422, null))).toBe(false);
+    expect(isNetworkFailure(new Error('x'))).toBe(false);
+    expect(isNetworkFailure(undefined)).toBe(false);
+  });
+
+  it('retryOnNetwork returns run only for a network failure', () => {
+    const run = () => undefined;
+    expect(retryOnNetwork(httpError(500, null), run)).toBe(run);
+    expect(retryOnNetwork(httpError(422, null), run)).toBeUndefined();
+  });
+
+  it('scheduleActionError turns import_running into a 失敗 toast and anything else into an error line', () => {
+    TestBed.runInInjectionContext(() => {
+      const toasts = injectToasts();
+      const toast = TestBed.inject(ToastService);
+      const running = httpError(409, { detail: 'import_running' });
+      expect(scheduleActionError(running, toasts)).toBeNull();
+      expect(toast.current()).toMatchObject({ kind: 'error', text: '匯入進行中，請稍後再試' });
+      toast.dismiss(toast.current()!.id);
+      const other = httpError(409, { detail: 'definition_ended' });
+      expect(scheduleActionError(other, toasts)).toBe('排程已結束，無法編輯');
+      expect(toast.current()).toBeNull();
+    });
   });
 });

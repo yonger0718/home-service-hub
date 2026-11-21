@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked, ElementRef, Injector } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Observable, catchError, forkJoin, map, of } from 'rxjs';
@@ -41,6 +41,8 @@ import {
   windowEmpty,
 } from './report-math';
 import { ReportTrendComponent } from './trend-tab';
+import { BannerComponent } from '../../ui/banner/banner';
+import { focusPageIfLost, focusRetryIfLost } from '../retry-focus';
 
 export type ReportTab = 'overview' | 'trend' | 'rank' | 'plan';
 
@@ -68,12 +70,14 @@ const CURRENCY_NAMES: Record<string, string> = { TWD: '台幣', JPY: '日圓', U
  */
 @Component({
   selector: 'app-accounting-reports',
-  imports: [NgTemplateOutlet, RouterLink, PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
+  imports: [BannerComponent, NgTemplateOutlet, RouterLink, PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
   templateUrl: './reports.html',
   styleUrl: './reports.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class AccountingReportsComponent {
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly reports = inject(ReportsService);
@@ -360,6 +364,30 @@ export class AccountingReportsComponent {
     return this.rank()?.rows.find(row => row.key === key) ?? null;
   });
 
+  /** A 重試 in flight: the banner stays (same element, nothing re-announced) with its button disabled. */
+  readonly retrying = signal(false);
+
+  private endRetry(ok: boolean): void {
+    if (!this.retrying()) {
+      return;
+    }
+    this.retrying.set(false);
+    if (ok) {
+      focusPageIfLost(this.host.nativeElement, this.injector, 'section.rp');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
+    }
+  }
+
+  /** The banner's 重試: one at a time. */
+  retry(): void {
+    if (this.retrying()) {
+      return;
+    }
+    this.retrying.set(true);
+    this.reload();
+  }
+
   reload(): void {
     this.load(this.period());
     this.loadTrend(this.period(), this.trendSeries(), this.wholeView());
@@ -418,7 +446,10 @@ export class AccountingReportsComponent {
 
   private load(period: ReportPeriod): void {
     const id = ++this.requestId;
-    this.state.set('loading');
+    // A failed read stays 'error' until a read succeeds, so the banner keeps its element through a 重試.
+    if (this.state() !== 'error') {
+      this.state.set('loading');
+    }
     const running = isRunning(period, this.today());
     // While running, the header's three reads cover the to-date range; two whole-period reads (no `compare`) follow.
     const range = { date_from: period.from, date_to: running ? this.today() : period.to };
@@ -441,6 +472,7 @@ export class AccountingReportsComponent {
         this.expenseWhole.set(expenseWhole);
         this.incomeWhole.set(incomeWhole);
         this.state.set('ready');
+        this.endRetry(true);
       },
       error: () => {
         if (id !== this.requestId) return;
@@ -450,6 +482,7 @@ export class AccountingReportsComponent {
         this.expenseWhole.set(null);
         this.incomeWhole.set(null);
         this.state.set('error');
+        this.endRetry(false);
       },
     });
   }

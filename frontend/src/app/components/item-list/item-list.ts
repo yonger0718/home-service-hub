@@ -1,7 +1,11 @@
+import { HttpErrorResponse } from '@angular/common/http';
+import { finalize } from 'rxjs';
 import { Component, OnInit, inject, signal, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ItemService } from '../../services/item.service';
+import { injectToasts } from '../../services/toast.service';
+import { guardedRetry } from '../../services/toast-retry';
 import {
   InventoryTransactionRequest,
   InventoryTransactionResponse,
@@ -15,13 +19,11 @@ import { InputTextModule } from 'primeng/inputtext';
 import { InputNumberModule } from 'primeng/inputnumber';
 import { ProgressBarModule } from 'primeng/progressbar';
 import { TextareaModule } from 'primeng/textarea';
-import { ToastModule } from 'primeng/toast';
 import { TagModule } from 'primeng/tag';
 import { AutoCompleteModule } from 'primeng/autocomplete';
 import { FileUploadModule } from 'primeng/fileupload';
 import { ImageModule } from 'primeng/image';
 import { TooltipModule } from 'primeng/tooltip';
-import { MessageService } from 'primeng/api';
 import { BtnComponent } from '../ui/btn/btn';
 import { TagComponent } from '../ui/tag/tag';
 import { PageHeaderComponent } from '../shell/page-header/page-header';
@@ -39,7 +41,6 @@ import { PageHeaderComponent } from '../shell/page-header/page-header';
     InputNumberModule,
     ProgressBarModule,
     TextareaModule,
-    ToastModule,
     TagModule,
     AutoCompleteModule,
     FileUploadModule,
@@ -48,17 +49,23 @@ import { PageHeaderComponent } from '../shell/page-header/page-header';
     BtnComponent,
     TagComponent
   ],
-  providers: [MessageService],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './item-list.html',
   styleUrl: './item-list.scss'
 })
 export class ItemListComponent implements OnInit {
   private itemService = inject(ItemService);
-  private messageService = inject(MessageService);
+  private readonly toasts = injectToasts();
 
   items = signal<ItemResponse[]>([]);
   history = signal<InventoryTransactionResponse[]>([]);
+  /** Bumped each time the item form or the quick-action dialog opens: a late answer (or 重試) touches a dialog only if it is still the one it was sent from. */
+  private dialogSession = 0;
+  private savingItem = false;
+  private uploading = false;
+  private deleting = false;
+  private actionBusy = false;
+  private readonly adjusting = new Set<number>();
   displayDialog = false;
   displayActionDialog = false;
   displayHistoryDialog = false;
@@ -102,10 +109,13 @@ export class ItemListComponent implements OnInit {
     this.itemService.getLocations().subscribe(locs => this.allLocations = locs);
   }
 
-  loadItems(): void {
+  /** `silent`: a failure raises no toast (a reload started from a save's error path must not replace that toast). */
+  loadItems(options: { readonly silent?: boolean } = {}): void {
     this.itemService.getAllFiltered(this.searchKeyword, this.lowStockOnly).subscribe({
       next: data => this.items.set(data),
-      error: () => this.messageService.add({ severity: 'error', summary: '錯誤', detail: '無法載入物品清單' })
+      error: () => {
+        if (!options.silent) this.toasts.error('無法載入物品清單', { retry: () => this.loadItems() });
+      }
     });
   }
 
@@ -136,18 +146,20 @@ export class ItemListComponent implements OnInit {
   showDialog() {
     this.newItem = this.resetNewItem();
     this.isEdit = false;
+    this.dialogSession++;
     this.displayDialog = true;
   }
 
   editItem(item: ItemResponse) {
     this.newItem = { ...item };
     this.isEdit = true;
+    this.dialogSession++;
     this.displayDialog = true;
   }
 
   saveItem() {
     if (!this.canSaveItem()) {
-      this.messageService.add({ severity: 'warn', summary: '提醒', detail: '請檢查名稱、數量與門檻欄位' });
+      this.toasts.error('請檢查名稱、數量與門檻欄位');
       return;
     }
 
@@ -164,40 +176,50 @@ export class ItemListComponent implements OnInit {
       imageUrl: this.newItem.imageUrl || undefined
     };
 
-    if (this.isEdit && this.newItem.id) {
-      this.itemService.update(this.newItem.id, payload).subscribe({
-        next: () => {
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '物品已更新' });
-          this.displayDialog = false;
-          this.loadItems();
-        },
-        error: err => this.messageService.add({ severity: 'error', summary: '錯誤', detail: err?.error?.message || '更新失敗' })
-      });
-      return;
-    }
+    this.sendItem(payload, this.isEdit && this.newItem.id ? this.newItem.id : null, this.dialogSession);
+  }
 
-    this.itemService.create(payload).subscribe({
+  private sendItem(payload: ItemRequest, id: number | null, session: number): void {
+    this.savingItem = true;
+    const request = id !== null ? this.itemService.update(id, payload) : this.itemService.create(payload);
+    request.pipe(finalize(() => (this.savingItem = false))).subscribe({
       next: () => {
-        this.messageService.add({ severity: 'success', summary: '成功', detail: '物品已建立' });
-        this.displayDialog = false;
+        this.toasts.done(id !== null ? '物品已更新' : '物品已建立');
+        if (session === this.dialogSession) this.displayDialog = false;
         this.loadItems();
       },
-      error: err => this.messageService.add({ severity: 'error', summary: '錯誤', detail: err?.error?.message || '建立失敗' })
+      error: err => {
+        const text = err?.error?.message || (id !== null ? '更新失敗' : '建立失敗');
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.savingItem, () => this.sendItem(payload, id, session)),
+        });
+      }
     });
   }
 
   onUpload(event: { files: File[] }) {
     const file = event.files[0];
     if (this.isEdit && this.newItem.id) {
-      this.itemService.uploadImage(this.newItem.id, file).subscribe({
-        next: updatedItem => {
-          this.newItem.imageUrl = updatedItem.imageUrl;
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '圖片上傳成功' });
-          this.loadItems();
-        },
-        error: () => this.messageService.add({ severity: 'error', summary: '錯誤', detail: '圖片上傳失敗' })
-      });
+      this.sendUpload(this.newItem.id, file, this.dialogSession);
     }
+  }
+
+  private sendUpload(id: number, file: File, session: number): void {
+    this.uploading = true;
+    this.itemService.uploadImage(id, file).pipe(finalize(() => (this.uploading = false))).subscribe({
+      next: updatedItem => {
+        // Only the form the file was chosen in gets the new image; one opened since (another item) is left alone.
+        if (session === this.dialogSession && this.newItem.id === id) this.newItem.imageUrl = updatedItem.imageUrl;
+        this.toasts.done('圖片上傳成功');
+        this.loadItems();
+      },
+      error: err => {
+        const text = '圖片上傳失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.uploading, () => this.sendUpload(id, file, session)),
+        });
+      }
+    });
   }
 
   consumeOne(item: ItemResponse) {
@@ -208,25 +230,36 @@ export class ItemListComponent implements OnInit {
     if (delta < 0 && item.quantity <= 0) {
       return;
     }
+    this.sendAdjust(item.id, delta);
+  }
 
-    const nextQuantity = Math.max(0, item.quantity + delta);
+  /**
+   * The row moves at once (looked up by id; nothing happens to the list if it is gone). On failure the list is
+   * loaded again, which puts the server's quantity back; 重試 sends the same id and delta again and moves the
+   * row (as it is listed now) by the delta once more.
+   */
+  private sendAdjust(itemId: number, delta: 1 | -1): void {
     this.items.update(rows => rows.map(row =>
-      row.id === item.id ? this.withQuantity(row, nextQuantity) : row,
+      row.id === itemId ? this.withQuantity(row, Math.max(0, row.quantity + delta)) : row,
     ));
 
     const payload: InventoryTransactionRequest = delta > 0
       ? { type: 'RESTOCK', deltaQuantity: 1, operatorName: 'web-ui', reason: '快速補貨 +1' }
       : { type: 'CONSUME', deltaQuantity: 1, operatorName: 'web-ui', reason: '快速使用 -1' };
 
-    this.itemService.createTransaction(item.id, payload).subscribe({
+    this.adjusting.add(itemId);
+    this.itemService.createTransaction(itemId, payload).pipe(finalize(() => this.adjusting.delete(itemId))).subscribe({
       next: result => {
         if (result?.item) {
-          this.items.update(rows => rows.map(row => row.id === item.id ? result.item : row));
+          this.items.update(rows => rows.map(row => row.id === itemId ? result.item : row));
         }
       },
       error: err => {
-        this.loadItems();
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: err?.error?.message || '操作失敗' });
+        this.loadItems({ silent: true });
+        const text = err?.error?.message || '操作失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.adjusting.has(itemId), () => this.sendAdjust(itemId, delta)),
+        });
       },
     });
   }
@@ -238,6 +271,7 @@ export class ItemListComponent implements OnInit {
     this.actionAmount = 1;
     this.actualAmount = item.quantity;
     this.actionReason = '';
+    this.dialogSession++;
     this.displayActionDialog = true;
   }
 
@@ -259,8 +293,9 @@ export class ItemListComponent implements OnInit {
     }
 
     const successMessage = this.actionType === 'RESTOCK' ? '補貨成功' : '盤點修正成功';
+    const session = this.dialogSession;
     this.submitTransaction(this.selectedItem.id, payload, successMessage, () => {
-      this.displayActionDialog = false;
+      if (session === this.dialogSession) this.displayActionDialog = false;
     });
   }
 
@@ -270,20 +305,37 @@ export class ItemListComponent implements OnInit {
         this.history.set(rows);
         this.displayHistoryDialog = true;
       },
-      error: () => this.messageService.add({ severity: 'error', summary: '錯誤', detail: '無法載入異動歷史' })
+      error: () => this.toasts.error('無法載入異動歷史')
     });
   }
 
   deleteItem(id: number): void {
     if (confirm('確定要刪除此物品嗎？')) {
-      this.itemService.delete(id).subscribe({
-        next: () => {
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '物品已刪除' });
-          this.loadItems();
-        },
-        error: () => this.messageService.add({ severity: 'error', summary: '錯誤', detail: '刪除失敗' })
-      });
+      this.sendDelete(id);
     }
+  }
+
+  private sendDelete(id: number): void {
+    this.deleting = true;
+    this.itemService.delete(id).pipe(finalize(() => (this.deleting = false))).subscribe({
+      next: () => this.deleted(),
+      error: err => {
+        // The interceptor already retried once: a 404 here means the first attempt did commit, so the item is gone.
+        if (err instanceof HttpErrorResponse && err.status === 404) {
+          this.deleted();
+          return;
+        }
+        const text = '刪除失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.deleting, () => this.sendDelete(id)),
+        });
+      }
+    });
+  }
+
+  private deleted(): void {
+    this.toasts.done('物品已刪除');
+    this.loadItems();
   }
 
   getStockStatusLabel(item: ItemResponse): string {
@@ -326,13 +378,19 @@ export class ItemListComponent implements OnInit {
     successMessage: string,
     callback?: () => void
   ) {
-    this.itemService.createTransaction(itemId, payload).subscribe({
+    this.actionBusy = true;
+    this.itemService.createTransaction(itemId, payload).pipe(finalize(() => (this.actionBusy = false))).subscribe({
       next: () => {
-        this.messageService.add({ severity: 'success', summary: '成功', detail: successMessage });
+        this.toasts.done(successMessage);
         this.loadItems();
         callback?.();
       },
-      error: err => this.messageService.add({ severity: 'error', summary: '錯誤', detail: err?.error?.message || '操作失敗' })
+      error: err => {
+        const text = err?.error?.message || '操作失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.actionBusy, () => this.submitTransaction(itemId, payload, successMessage, callback)),
+        });
+      }
     });
   }
 

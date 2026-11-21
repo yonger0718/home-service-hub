@@ -4,13 +4,11 @@ import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 
-import { MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { DatePickerModule } from 'primeng/datepicker';
 import { DialogModule } from 'primeng/dialog';
 import { InputTextModule } from 'primeng/inputtext';
 import { SelectModule } from 'primeng/select';
-import { ToastModule } from 'primeng/toast';
 
 import {
   AccountsList,
@@ -19,6 +17,8 @@ import {
   CreateBrokerAccount,
 } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { injectToasts } from '../../../services/toast.service';
+import { guardedRetry } from '../../../services/toast-retry';
 import { CashFlowFormComponent } from '../cash-flow-form/cash-flow-form';
 import { TagComponent } from '../../ui/tag/tag';
 import { abbrInk } from '../dashboard/dashboard-math';
@@ -83,17 +83,15 @@ const BROKER_LABELS: Record<BrokerEnum, string> = {
     DialogModule,
     InputTextModule,
     SelectModule,
-    ToastModule,
     CashFlowFormComponent,
   ],
-  providers: [MessageService],
   templateUrl: './accounts-list.html',
   styleUrl: './accounts-list.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
-  private messageService = inject(MessageService);
+  private readonly toasts = injectToasts();
   private router = inject(Router);
   private fb = inject(FormBuilder);
   /** The in-flight accounts fetch: a restart cancels it (so two quick ledger changes land in order) and so does destroy. */
@@ -104,6 +102,8 @@ export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
   readonly accountsList = signal<AccountsList>(EMPTY_ACCOUNTS_LIST);
   readonly accounts = signal<BrokerAccount[]>([]);
   readonly loading = signal<boolean>(false);
+  /** Bumped each time the create dialog opens or closes; a late answer closes it only if it is still the one it was sent from. */
+  private dialogSession = 0;
   readonly createDialogVisible = signal<boolean>(false);
   readonly creating = signal<boolean>(false);
   readonly cashFormVisible = signal<boolean>(false);
@@ -167,7 +167,7 @@ export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
       },
       error: () => {
         this.loading.set(false);
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '帳戶讀取失敗' });
+        this.toasts.error('帳戶讀取失敗', { retry: () => this.fetchAccounts() });
       },
     });
   }
@@ -180,10 +180,12 @@ export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
       opening_balance: '0',
       opening_date: this.todayIso(),
     });
+    this.dialogSession++;
     this.createDialogVisible.set(true);
   }
 
   closeCreateDialog(): void {
+    this.dialogSession++;
     this.createDialogVisible.set(false);
   }
 
@@ -203,17 +205,24 @@ export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
       is_active: true,
     };
 
+    this.sendCreate(body, this.dialogSession);
+  }
+
+  private sendCreate(body: CreateBrokerAccount, session: number): void {
     this.creating.set(true);
     this.portfolioService.createAccount(body).subscribe({
       next: () => {
         this.creating.set(false);
-        this.createDialogVisible.set(false);
-        this.messageService.add({ severity: 'success', summary: '已新增', detail: '帳戶已建立' });
+        if (session === this.dialogSession) this.createDialogVisible.set(false);
+        this.toasts.done('帳戶已建立');
         this.fetchAccounts();
       },
-      error: () => {
+      error: err => {
         this.creating.set(false);
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '新增帳戶失敗' });
+        const text = '新增帳戶失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.creating(), () => this.sendCreate(body, session)),
+        });
       },
     });
   }

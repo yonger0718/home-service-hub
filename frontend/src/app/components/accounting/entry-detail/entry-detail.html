@@ -1,12 +1,12 @@
 <section class="entry-detail">
-  <h1 class="visually-hidden">記錄明細</h1>
+  <h1 class="visually-hidden" tabindex="-1">記錄明細</h1>
   @if (loadError()) {
     @if (!detail() && !inSheet()) {
       <div class="error-head">
         <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>
       </div>
     }
-    <p class="load-error">記錄讀取失敗，請稍後再試。</p>
+    <app-banner class="page-load-error" tone="error" heading="記錄讀取失敗，請稍後再試。" actionLabel="重試" [actionDisabled]="retrying()" (action)="retry()" />
   }
 
   @if (compact()) {

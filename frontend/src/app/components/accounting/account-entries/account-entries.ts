@@ -7,7 +7,8 @@ import { NgTemplateOutlet } from '@angular/common';
 import { AccountDetail, AccountPeriodSummary, ENTRY_KIND_LABELS, EntryKind, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { AccountIconComponent } from '../account-icon/account-icon';
-import { AccountingToastService } from '../accounting-toast';
+import { injectToasts } from '../../../services/toast.service';
+import { guardedRetry } from '../../../services/toast-retry';
 import { LOGO_ACCEPT, logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf } from '../accounting-ui';
@@ -33,7 +34,7 @@ export class AccountingAccountEntriesComponent implements OnInit {
   private accountingService = inject(AccountingService);
   private route = inject(ActivatedRoute);
   private destroyRef = inject(DestroyRef);
-  private readonly toast = inject(AccountingToastService);
+  private readonly toasts = injectToasts();
   private readonly layout = inject(AccountingLayoutComponent, { optional: true });
   private readonly router = inject(Router);
   private requestId = 0;
@@ -129,11 +130,34 @@ export class AccountingAccountEntriesComponent implements OnInit {
       return;
     }
     if (logoFileTooLarge(file)) {
-      this.toast.show('圖片太大（上限 5 MB）');
+      this.toasts.error('圖片太大（上限 5 MB）');
       return;
     }
-    const id = this.accountId();
+    this.sendLogo(this.accountId(), file);
+  }
+
+  private readonly logoInFlight = new Set<number>();
+  private readonly logoFailToast = new Map<number, number>();
+
+  /**
+   * The upload and its error handling, one at a time per account. Starting one dismisses that account's older 失敗
+   * toast (its stale 重試 would overwrite the newer logo); 重試 re-sends the same file to the same account.
+   */
+  private sendLogo(id: number, file: File): void {
+    if (this.logoInFlight.has(id)) {
+      return;
+    }
+    const older = this.logoFailToast.get(id);
+    if (older !== undefined) {
+      this.toasts.dismiss(older);
+      this.logoFailToast.delete(id);
+    }
+    this.logoInFlight.add(id);
     this.uploadingLogo.set(true);
+    const settle = (): void => {
+      this.logoInFlight.delete(id);
+      this.uploadingLogo.set(this.logoInFlight.size > 0);
+    };
     this.accountingService.uploadAccountLogo(id, file).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: detail => {
         if (detail.id === id && id === this.accountId()) {
@@ -141,12 +165,16 @@ export class AccountingAccountEntriesComponent implements OnInit {
         }
       },
       error: err => {
-        this.uploadingLogo.set(false);
+        settle();
         if (id === this.accountId()) {
-          this.toast.show(logoUploadErrorMessage(err));
+          const text = logoUploadErrorMessage(err);
+          const remember = (toastId: number): void => void this.logoFailToast.set(id, toastId);
+          remember(this.toasts.error(text, {
+            retry: guardedRetry(err, this.toasts, text, () => this.logoInFlight.has(id), () => this.sendLogo(id, file), remember),
+          }));
         }
       },
-      complete: () => this.uploadingLogo.set(false),
+      complete: settle,
     });
   }
 

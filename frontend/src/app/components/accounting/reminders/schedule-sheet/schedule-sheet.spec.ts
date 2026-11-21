@@ -5,7 +5,7 @@ import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ScheduleDefinitionDetail } from '../../../../models/accounting.model';
-import { AccountingToastService } from '../../accounting-toast';
+import { ToastService } from '../../../../services/toast.service';
 import { makeDefinition, makeInstance } from '../../testing/fixtures';
 import { pullGrab } from '../../sheet-pull.testing';
 import { ScheduleSheetComponent } from './schedule-sheet';
@@ -219,7 +219,7 @@ describe('ScheduleSheetComponent', () => {
       .expectOne('/api/accounting/schedules/definitions/5/pause')
       .flush({ detail: 'import_running' }, { status: 409, statusText: 'Conflict' });
     fixture.detectChanges();
-    expect(TestBed.inject(AccountingToastService).message()).toBe('匯入進行中，請稍後再試');
+    expect(TestBed.inject(ToastService).current()).toMatchObject({ kind: 'error', text: '匯入進行中，請稍後再試' });
     expect(el.querySelector('.form-error')).toBeNull();
     expect(el.querySelector('.sheet-pause')).not.toBeNull();
   });
@@ -279,6 +279,15 @@ describe('ScheduleSheetComponent', () => {
     expect(() => req.flush(null)).not.toThrow();
     expect(closed).toHaveBeenCalledTimes(1);
     // No reload of a destroyed sheet (http.verify in afterEach).
+  });
+
+  it('an import_running answer that lands after the sheet closed still shows its 失敗 toast', () => {
+    const el = render(detail());
+    click(el, '.sheet-pause');
+    const req = http.expectOne('/api/accounting/schedules/definitions/5/pause');
+    fixture.destroy();
+    req.flush({ detail: 'import_running' }, { status: 409, statusText: 'Conflict' });
+    expect(TestBed.inject(ToastService).current()).toMatchObject({ kind: 'error', text: '匯入進行中，請稍後再試', action: null });
   });
 
   it('a pull on the grab bar closes the sheet', () => {
@@ -628,9 +637,20 @@ describe('ScheduleSheetComponent', () => {
         .expectOne('/api/accounting/schedules/definitions/5/loan')
         .flush({ detail: 'import_running' }, { status: 409, statusText: 'Conflict' });
       fixture.detectChanges();
-      expect(TestBed.inject(AccountingToastService).message()).toBe('匯入進行中，請稍後再試');
+      expect(TestBed.inject(ToastService).current()).toMatchObject({ kind: 'error', text: '匯入進行中，請稍後再試' });
       expect(el.querySelector('.form-error')).toBeNull();
       expect(el.querySelector('.loan-form')).not.toBeNull();
+    });
+
+    it('an import_running answer to 掛上貸款 that lands after the sheet closed still shows its 失敗 toast', () => {
+      const el = render(loanDetail());
+      openForm(el);
+      pick(el, '3');
+      click(el, '.loan-confirm');
+      const req = http.expectOne('/api/accounting/schedules/definitions/5/loan');
+      fixture.destroy();
+      req.flush({ detail: 'import_running' }, { status: 409, statusText: 'Conflict' });
+      expect(TestBed.inject(ToastService).current()).toMatchObject({ kind: 'error', text: '匯入進行中，請稍後再試', action: null });
     });
 
     it('取消 and Esc close the form before the sheet', () => {

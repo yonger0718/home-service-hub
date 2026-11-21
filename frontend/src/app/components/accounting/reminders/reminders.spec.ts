@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Counterparty, DebtReviewItem, LedgerAccount, LedgerEntry, ScheduleDefinition, ScheduleInstance } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { AccountingToastService } from '../accounting-toast';
+import { ToastService } from '../../../services/toast.service';
 import { makeAccount, makeDefinition, makeEntry, makeInstance } from '../testing/fixtures';
 import { BillState } from '../billing/billing.service';
 import { StatementSummary } from '../statements/statement.model';
@@ -360,7 +360,8 @@ describe('AccountingRemindersComponent', () => {
 
     expect(el.querySelector('.empty')).toBeNull();
     expect(el.querySelector('.card-row')).toBeNull();
-    expect(text(el.querySelector('.bill-error .msg'))).toBe('帳單讀取失敗');
+    expect(text(el.querySelector('.bill-error .banner-title'))).toBe('帳單讀取失敗');
+    expect(el.querySelector('.bill-error .banner-detail')).toBeNull();
     tab(el, '信用卡帳單').click();
     fixture.detectChanges();
     expect(el.querySelector('.bill-error')).not.toBeNull();
@@ -371,7 +372,7 @@ describe('AccountingRemindersComponent', () => {
 
     tab(el, '全部').click();
     fixture.detectChanges();
-    el.querySelector<HTMLButtonElement>('.bill-error .retry')!.click();
+    el.querySelector<HTMLButtonElement>('.bill-error .banner-action')!.click();
     fixture.detectChanges();
     flushBill(9, '-100.0000');
     fixture.detectChanges();
@@ -394,7 +395,8 @@ describe('AccountingRemindersComponent', () => {
 
     expect(el.querySelector('.card-row')).toBeNull();
     expect(el.querySelector('.empty')).toBeNull();
-    expect(text(el.querySelector('.bill-error .msg'))).toBe('帳單讀取失敗（幣別不同）');
+    expect(text(el.querySelector('.bill-error .banner-title'))).toBe('帳單讀取失敗');
+    expect(text(el.querySelector('.bill-error .banner-detail'))).toBe('幣別不同');
   });
 
   it('counts a Saturday due date to the Monday debit, not 今天 (#197)', () => {
@@ -721,7 +723,52 @@ describe('AccountingRemindersComponent', () => {
     http.expectOne(r => r.url === INBOX_URL).flush(inboxOut());
     http.expectOne(r => r.url === '/api/accounting/accounts').flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
-    expect(text((fixture.nativeElement as HTMLElement).querySelector('.load-error'))).toBe('提醒讀取失敗，請稍後再試。');
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('提醒讀取失敗，請稍後再試。');
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
+  });
+
+  it('重試 keeps the banner through the read (same node, button disabled, a double press reads once); a second failure keeps it; success removes it and focus stays in the page', async () => {
+    const fixture = TestBed.createComponent(AccountingRemindersComponent);
+    fixture.detectChanges();
+    const readAll = () => {
+      http.expectOne('/api/accounting/counterparties').flush([]);
+      http.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
+      http.expectOne(r => r.url === '/api/accounting/schedules/instances').flush([]);
+      http.expectOne(r => r.url === '/api/accounting/schedules/definitions').flush([]);
+      http.expectOne(r => r.url === INBOX_URL).flush(inboxOut());
+    };
+    const el = fixture.nativeElement as HTMLElement;
+    readAll();
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    const banner = el.querySelector('.page-load-error')!;
+    const button = banner.querySelector<HTMLButtonElement>('.banner-action')!;
+    button.focus();
+    button.click();
+    button.click();
+    fixture.detectChanges();
+    expect(button.disabled).toBe(true);
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    readAll();
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.page-load-error')).toHaveLength(1);
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    expect(button.disabled).toBe(false);
+
+    button.focus();
+    button.click();
+    fixture.detectChanges();
+    readAll();
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush([]);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(el.querySelector('.page-load-error')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(el.contains(document.activeElement)).toBe(true);
   });
 
   describe('待完成交易', () => {
@@ -934,7 +981,7 @@ describe('AccountingRemindersComponent', () => {
         { detail: 'import_running' }, { status: 409, statusText: 'Conflict' },
       );
       fixture.detectChanges();
-      expect(TestBed.inject(AccountingToastService).message()).toBe('匯入進行中，請稍後再試');
+      expect(TestBed.inject(ToastService).current()).toMatchObject({ kind: 'error', text: '匯入進行中，請稍後再試' });
       expect(item(el, 31)).not.toBeNull();
       expect(el.querySelector('.action-error')).toBeNull();
     });
@@ -991,8 +1038,9 @@ describe('AccountingRemindersComponent', () => {
       const { fixture, el } = render([], [], [], [], [failing]);
       tab(el, '借還款追蹤').click();
       fixture.detectChanges();
-      expect(text(el.querySelector('.schedule-failing .msg'))).toBe('lines[0].account_id: 帳戶已封存');
-      (el.querySelector('.schedule-failing .retry') as HTMLButtonElement).click();
+      expect(text(el.querySelector('.schedule-failing .banner-title'))).toBe('這一期入帳失敗');
+      expect(text(el.querySelector('.schedule-failing .banner-detail'))).toBe('lines[0].account_id: 帳戶已封存');
+      (el.querySelector('.schedule-failing .banner-action') as HTMLButtonElement).click();
       http.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions/14/catch-up')
         .flush({ posted: [5], failed: null, definition: failing });
       fixture.detectChanges();
@@ -1004,7 +1052,7 @@ describe('AccountingRemindersComponent', () => {
       const { fixture, el } = render([], [], [], [], [failing]);
       tab(el, '借還款追蹤').click();
       fixture.detectChanges();
-      const retry = el.querySelector('.schedule-failing .retry') as HTMLButtonElement;
+      const retry = el.querySelector('.schedule-failing .banner-action') as HTMLButtonElement;
       retry.click();
       fixture.detectChanges();
       expect(retry.disabled).toBe(true);
@@ -1014,6 +1062,18 @@ describe('AccountingRemindersComponent', () => {
       reqs[0].flush({ posted: [5], failed: null, definition: failing });
       fixture.detectChanges();
       flushLoad([], [], [], [], []);
+    });
+
+    it('a 重試 that fails with import_running after the page is gone still shows its 失敗 toast', () => {
+      const failing = makeDefinition({ id: 14, failing: { instance_id: 5, due_date: '2026-10-01', last_error: 'lines[0].account_id: 帳戶已封存' } });
+      const { fixture, el } = render([], [], [], [], [failing]);
+      tab(el, '借還款追蹤').click();
+      fixture.detectChanges();
+      (el.querySelector('.schedule-failing .banner-action') as HTMLButtonElement).click();
+      const req = http.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions/14/catch-up');
+      fixture.destroy();
+      req.flush({ detail: 'import_running' }, { status: 409, statusText: 'Conflict' });
+      expect(TestBed.inject(ToastService).current()).toMatchObject({ kind: 'error', text: '匯入進行中，請稍後再試', action: null });
     });
 
     it('opens the manage sheet from a row and shows 已暫停 after a pause', () => {

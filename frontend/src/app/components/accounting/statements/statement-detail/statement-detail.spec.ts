@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountPeriodSummary, LedgerEntry } from '../../../../models/accounting.model';
 import { LayoutModeService } from '../../../../services/layout-mode.service';
-import { AccountingToastService } from '../../accounting-toast';
+import { ToastService } from '../../../../services/toast.service';
 import { formatMoney } from '../../format';
 import { makeEntry } from '../../testing/fixtures';
 import { ReconciliationCase, StatementDetail, StatementLine } from '../statement.model';
@@ -217,7 +217,60 @@ describe('StatementDetailComponent', () => {
     const el = fixture.nativeElement as HTMLElement;
     expect(text(el.querySelector('.period'))).toContain('2026/09/20');
     expect(text(el.querySelector('.compare .load-error'))).toBe('帳本讀取失敗');
-    expect(el.querySelector('.load-error-block')).toBeNull();
+  });
+
+  it('a section read failure (帳本) shows no page banner', () => {
+    const fixture = loaded(statement(), 'error');
+    expect(fixture.nativeElement.querySelector('.page-load-error')).toBeNull();
+  });
+
+  it('重試 keeps the banner through the read (same node, button disabled, a double press reads once); a second failure keeps it; success removes it and focus stays in the page', async () => {
+    const fixture = render();
+    http.expectOne('/api/accounting/accounts/6/statements/1').flush('nope', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    fixture.detectChanges();
+    const banner = el.querySelector('.page-load-error')!;
+    const button = banner.querySelector<HTMLButtonElement>('.banner-action')!;
+    button.focus();
+    button.click();
+    button.click();
+    fixture.detectChanges();
+    expect(button.disabled).toBe(true);
+    const again = http.expectOne('/api/accounting/accounts/6/statements/1');
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    again.flush('nope', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.page-load-error')).toHaveLength(1);
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    expect(button.disabled).toBe(false);
+    button.focus();
+    button.click();
+    fixture.detectChanges();
+    flushDetail(statement());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(el.querySelector('.page-load-error')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(el.contains(document.activeElement)).toBe(true);
+  });
+
+  it('a failed statement read shows an 錯誤 banner with 帳單讀取失敗 and 重試; 重試 reads again and the banner leaves on success', () => {
+    const fixture = render();
+    http.expectOne('/api/accounting/accounts/6/statements/1').flush('nope', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('帳單讀取失敗');
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
+    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    fixture.detectChanges();
+    expect(el.querySelector('.page-load-error')).not.toBeNull();
+    flushDetail(statement());
+    fixture.detectChanges();
+    expect(el.querySelector('.page-load-error')).toBeNull();
+    expect(text(el.querySelector('.period'))).toContain('2026/09/20');
   });
 
   it('shows 帳本讀取失敗 instead of an empty segment when entries fail, then renders rows after retry', () => {
@@ -495,7 +548,7 @@ describe('StatementDetailComponent', () => {
   });
 
   it('toasts when confirm or reconcile is a replay, and when reconcile is skipped', () => {
-    const toast = vi.spyOn(TestBed.inject(AccountingToastService), 'show');
+    const toast = TestBed.inject(ToastService);
     const fixture = loaded(statement({ open_case_count: 0 }));
     const el = fixture.nativeElement as HTMLElement;
 
@@ -512,7 +565,7 @@ describe('StatementDetailComponent', () => {
         policy: { applied: 0, proposed: 0 },
       });
     fixture.detectChanges();
-    expect(toast).toHaveBeenCalledWith('有待確認的變更，這次沒有重跑對帳');
+    expect(toast.current()).toMatchObject({ kind: 'error', text: '有待確認的變更，這次沒有重跑對帳' });
     flushDetail(statement({ open_case_count: 0 }));
     fixture.detectChanges();
 
@@ -533,7 +586,7 @@ describe('StatementDetailComponent', () => {
         replayed: true,
       });
     fixture.detectChanges();
-    expect(toast).toHaveBeenCalledWith('這次與上次相同，沒有重複執行');
+    expect(toast.current()).toMatchObject({ kind: 'done', text: '這次與上次相同，沒有重複執行' });
     flushDetail(statement({ open_case_count: 0, status: 'reconciled' }));
     fixture.detectChanges();
   });

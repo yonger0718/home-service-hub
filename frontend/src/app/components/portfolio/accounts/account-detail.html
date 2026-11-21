@@ -1,4 +1,3 @@
-<p-toast></p-toast>
 <p-confirmDialog styleClass="hub-dialog-md"></p-confirmDialog>
 
 <div class="account-detail-page">
@@ -63,19 +62,14 @@
   </p-card>
 
   @if (isOverdraft()) {
-    <div class="overdraft-banner" role="alert">
-      <i class="pi pi-exclamation-triangle"></i>
-      <span class="overdraft-text">
-        帳戶餘額為負（{{ formatCurrency(account()?.native_balance, account()?.currency || 'TWD') }}），可能漏記入金。
-      </span>
-      <p-button
-        icon="pi pi-plus"
-        label="新增入金歸零"
-        severity="warn"
-        [disabled]="!accountReady()"
-        (onClick)="openTopupQuickFix()">
-      </p-button>
-    </div>
+    <app-banner
+      class="overdraft-banner"
+      tone="warn"
+      [heading]="'帳戶餘額為負（' + formatCurrency(account()?.native_balance, account()?.currency || 'TWD') + '）'"
+      detail="可能漏記入金。"
+      actionLabel="新增入金歸零"
+      [actionDisabled]="!accountReady()"
+      (action)="openTopupQuickFix()" />
   }
 
   <div class="section-header transactions-header">

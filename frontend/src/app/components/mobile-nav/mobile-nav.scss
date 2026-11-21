@@ -16,7 +16,7 @@
 .m-tabbar {
   align-items: center;
   display: flex;
-  height: 64px;
+  height: var(--m-nav-h);
   justify-content: space-around;
 }
 
@@ -82,7 +82,7 @@
   height: 56px;
   justify-content: center;
   line-height: 1;
-  margin: -14px 6px 0;
+  margin: calc(-1 * var(--m-plus-lift)) 6px 0;
   text-decoration: none;
   transition: transform var(--dur-fast) var(--ease-standard);
   width: 56px;

@@ -12,21 +12,39 @@ import { ChartModule } from 'primeng/chart';
 import { DatePicker } from 'primeng/datepicker';
 import { MultiSelect } from 'primeng/multiselect';
 import { Select } from 'primeng/select';
-import { Component, Input } from '@angular/core';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ConfirmationService, MessageService } from 'primeng/api';
+import { Component, DestroyRef, Input } from '@angular/core';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { ConfirmationService } from 'primeng/api';
 
 import { PortfolioAccountDetailComponent, TYPE_OPTIONS } from './account-detail';
 import { CashTransaction } from '../../../models/portfolio.model';
 import { AppearanceService } from '../../../services/appearance.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { ToastScope, ToastService } from '../../../services/toast.service';
 
 @Component({ selector: 'p-chart', template: '' })
 class ChartStubComponent {
   @Input() type = '';
   @Input() data: unknown;
   @Input() options: unknown;
+}
+
+/** Every text a page raises through the shell toast, in order; install it before the component is created. */
+function recordToasts(): string[] {
+  const texts: string[] = [];
+  const original = ToastService.prototype.scope;
+  const spy = vi.spyOn(ToastService.prototype, 'scope').mockImplementation(function (this: ToastService, owner: DestroyRef): ToastScope {
+    const real = original.call(this, owner);
+    return {
+      done: (text, options) => { texts.push(text); return real.done(text, options); },
+      progress: text => { texts.push(text); return real.progress(text); },
+      error: (text, options) => { texts.push(text); return real.error(text, options); },
+      dismiss: id => real.dismiss(id),
+    };
+  });
+  onTestFinished(() => spy.mockRestore());
+  return texts;
 }
 
 function mergeSwitch(root: HTMLElement): HTMLButtonElement {
@@ -391,8 +409,6 @@ describe('PortfolioAccountDetailComponent', () => {
     flushInitial();
     const confirmationService = fixture.debugElement.injector.get(ConfirmationService);
     vi.spyOn(confirmationService, 'confirm').mockImplementation(options => options.accept?.());
-    const messageService = fixture.debugElement.injector.get(MessageService);
-    const toastSpy = vi.spyOn(messageService, 'add');
 
     fixture.componentInstance.query.set({ offset: 50, limit: 50, sort: 'amount:asc' });
     fixture.componentInstance.transactions.set([
@@ -437,7 +453,7 @@ describe('PortfolioAccountDetailComponent', () => {
       skipped_currencies: [],
     });
 
-    expect(toastSpy).toHaveBeenCalledWith(expect.objectContaining({ severity: 'success', detail: '已刪除' }));
+    expect(TestBed.inject(ToastService).current()).toEqual(expect.objectContaining({ kind: 'done', text: '已刪除' }));
   });
 
   it('surfaces delete errors and keeps the row visible', () => {
@@ -445,8 +461,6 @@ describe('PortfolioAccountDetailComponent', () => {
     flushInitial();
     const confirmationService = fixture.debugElement.injector.get(ConfirmationService);
     vi.spyOn(confirmationService, 'confirm').mockImplementation(options => options.accept?.());
-    const messageService = fixture.debugElement.injector.get(MessageService);
-    const toastSpy = vi.spyOn(messageService, 'add');
     const manualTxn = cashTxn({ id: 42, amount: '10000', source: 'manual' });
 
     fixture.componentInstance.transactions.set([manualTxn]);
@@ -460,9 +474,10 @@ describe('PortfolioAccountDetailComponent', () => {
     httpMock.expectNone('/api/portfolio/accounts/1/cash-transactions?sort=txn_date:desc&offset=0&limit=25');
     expect(fixture.componentInstance.transactions()).toEqual([manualTxn]);
     expect(fixture.debugElement.queryAll(By.css('.delete-transaction'))).toHaveLength(1);
-    expect(toastSpy).toHaveBeenCalledWith(expect.objectContaining({
-      severity: 'error',
-      detail: '刪除失敗: only manual cash transactions can be deleted',
+    expect(TestBed.inject(ToastService).current()).toEqual(expect.objectContaining({
+      kind: 'error',
+      text: '刪除失敗：only manual cash transactions can be deleted',
+      action: null,
     }));
   });
 });
@@ -758,8 +773,6 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
     const historyReq = (id: number) => httpMock.expectOne(req => req.url === `/api/portfolio/accounts/${id}/balance-history`);
     const txnsReq = (id: number) => httpMock.expectOne(req => req.url === `/api/portfolio/accounts/${id}/cash-transactions`);
     const noWrites = () => httpMock.expectNone(req => req.method !== 'GET');
-    const toasts = (fixture: { debugElement: { injector: { get: (token: typeof MessageService) => MessageService } } }) =>
-      vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
     const button = (fixture: { nativeElement: HTMLElement }, label: string) =>
       fixture.nativeElement.querySelector<HTMLButtonElement>(`p-button[label="${label}"] button`);
 
@@ -772,6 +785,110 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
       fixture.detectChanges();
       return fixture;
     }
+
+    describe('read failures (one toast per reload)', () => {
+      const down = { status: 0, statusText: 'Unknown Error' };
+      const current = () => TestBed.inject(ToastService).current();
+
+      it('all three reads failing raise one 帳戶讀取失敗 whose 重試 re-sends all three; a successful retry leaves no toast', () => {
+        const texts = recordToasts();
+        const fixture = render({ accountId: 7, embedded: true });
+        summaryReq().flush({}, down);
+        historyReq(7).flush({}, down);
+        txnsReq(7).flush({}, down);
+        fixture.detectChanges();
+        expect(texts).toEqual(['帳戶讀取失敗']);
+        expect(current()).toEqual(expect.objectContaining({ kind: 'error', text: '帳戶讀取失敗' }));
+        expect(current()?.action?.label).toBe('重試');
+
+        current()!.action!.run();
+        summaryReq().flush(summaryFor(7));
+        historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+        txnsReq(7).flush({ items: [rowFor(71, 7)], total: 1, offset: 0, limit: 25 });
+        fixture.detectChanges();
+        expect(current()).toBeNull();
+        expect(texts).toEqual(['帳戶讀取失敗']);
+        expect(fixture.componentInstance.transactions().map(txn => txn.id)).toEqual([71]);
+      });
+
+      it('one read failing raises the same toast and the parts that arrived still render', () => {
+        const texts = recordToasts();
+        const fixture = render({ accountId: 7, embedded: true });
+        summaryReq().flush(summaryFor(7));
+        historyReq(7).flush({}, down);
+        txnsReq(7).flush({ items: [rowFor(71, 7)], total: 1, offset: 0, limit: 25 });
+        fixture.detectChanges();
+        expect(texts).toEqual(['帳戶讀取失敗']);
+        expect(current()?.action?.label).toBe('重試');
+        expect(fixture.nativeElement.querySelector('h2')?.textContent).toContain('帳戶 7');
+        expect(fixture.componentInstance.transactions().map(txn => txn.id)).toEqual([71]);
+
+        current()!.action!.run();
+        expect(summaryReq()).toBeTruthy();
+        expect(historyReq(7)).toBeTruthy();
+        expect(txnsReq(7)).toBeTruthy();
+      });
+
+      it('reads of a superseded account that fail late raise nothing; the new account\'s reads decide', () => {
+        const fixture = render({ accountId: 7, embedded: true });
+        const summaries = () => httpMock.match(req => req.url === '/api/portfolio/accounts/' && req.params.get('include_inactive') === 'true');
+        const oldSummary = summaries();
+        expect(oldSummary).toHaveLength(1);
+        const oldHistory = historyReq(7);
+        const oldTxns = txnsReq(7);
+        fixture.componentRef.setInput('accountId', 9);
+        fixture.detectChanges();
+        expect(oldTxns.cancelled).toBe(true);
+        fixture.detectChanges();
+        const newSummary = summaries();
+        expect(newSummary).toHaveLength(1);
+
+        oldSummary[0].flush({}, down);
+        oldHistory.flush({}, down);
+        expect(current()).toBeNull();
+
+        newSummary[0].flush(summaryFor(9));
+        historyReq(9).flush({ account_id: 9, currency: 'TWD', points: [] });
+        txnsReq(9).flush({ items: [rowFor(91, 9)], total: 1, offset: 0, limit: 25 });
+        fixture.detectChanges();
+        expect(current()).toBeNull();
+        expect(fixture.nativeElement.querySelector('h2')?.textContent).toContain('帳戶 9');
+      });
+
+      it('a reload whose transactions read is cancelled by a filter change still settles and dismisses the stale toast', () => {
+        const fixture = render({ accountId: 7, embedded: true });
+        summaryReq().flush({}, down);
+        historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+        txnsReq(7).flush({ items: [], total: 0, offset: 0, limit: 25 });
+        expect(current()?.text).toBe('帳戶讀取失敗');
+
+        TestBed.inject(PortfolioService).notifyCashLedgerChanged();
+        const second = httpMock.expectOne(req => req.url === '/api/portfolio/accounts/7/cash-transactions');
+        // A page change sends its own read at once; it replaces (cancels) the reload's page.
+        fixture.componentInstance.onPageChange({ first: 25, rows: 25 });
+        summaryReq().flush(summaryFor(7));
+        historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+        expect(second.cancelled).toBe(true);
+        expect(current()).toBeNull();
+        txnsReq(7).flush({ items: [], total: 0, offset: 0, limit: 25 });
+      });
+
+      it('a later reload that succeeds dismisses the stale failure toast', () => {
+        const fixture = render({ accountId: 7, embedded: true });
+        summaryReq().flush({}, down);
+        historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+        txnsReq(7).flush({ items: [], total: 0, offset: 0, limit: 25 });
+        expect(current()?.text).toBe('帳戶讀取失敗');
+
+        TestBed.inject(PortfolioService).notifyCashLedgerChanged();
+        summaryReq().flush(summaryFor(7));
+        historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+        expect(current()?.text).toBe('帳戶讀取失敗');
+        txnsReq(7).flush({ items: [], total: 0, offset: 0, limit: 25 });
+        expect(current()).toBeNull();
+        expect(fixture.componentInstance.account()?.id).toBe(7);
+      });
+    });
 
     it('Regression A: 7 → 9 with 9\'s summary pending clears 7 at once — placeholder header, no 編輯, no write — until 9 lands', () => {
       const fixture = loaded(7);
@@ -815,6 +932,7 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
     });
 
     it('Regression B: 編輯 opened on 7, then 9 selected — the dialog closes, its form resets, and a save sends nothing', () => {
+      const texts = recordToasts();
       const fixture = loaded(7);
       const component = fixture.componentInstance;
       component.openEditDialog();
@@ -827,11 +945,10 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
       expect(component.editForm.getRawValue().nickname).toBe('');
 
       // A save that still fires (a submit already queued), before and after 9 lands: no PATCH, the switch toast.
-      const toast = toasts(fixture);
       component.editForm.patchValue({ nickname: '帳戶 7', opening_balance: '70' });
       component.submitEdit();
       noWrites();
-      expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: '帳戶已切換，請重新操作' }));
+      expect(texts).toEqual(['已取消：帳戶已切換，請重新操作']);
 
       summaryReq().flush(summaryFor(9));
       historyReq(9).flush({ account_id: 9, currency: 'TWD', points: [] });
@@ -839,7 +956,7 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
       component.editForm.patchValue({ nickname: '帳戶 7', opening_balance: '70' });
       component.submitEdit();
       noWrites();
-      expect(toast).toHaveBeenCalledTimes(2);
+      expect(texts).toEqual(['已取消：帳戶已切換，請重新操作', '已取消：帳戶已切換，請重新操作']);
       expect(component.editDialogVisible()).toBe(false);
 
       // Reopened on 9, it edits 9 with 9's values.
@@ -855,6 +972,7 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
 
     for (const opener of ['openTransactionDialog', 'openTopupQuickFix'] as const) {
       it(`Regression C: ${opener} on 7, then 9 selected — the dialog closes and a submit posts nothing`, () => {
+        const texts = recordToasts();
         const fixture = loaded(7, '-500');
         const component = fixture.componentInstance;
         component[opener]();
@@ -866,7 +984,6 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
         expect(component.transactionDialogVisible()).toBe(false);
         expect(component.transactionForm.getRawValue().amount).toBe('');
 
-        const toast = toasts(fixture);
         component.transactionForm.patchValue({ amount: '500' });
         component.submitTransaction();
         noWrites();
@@ -877,13 +994,13 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
         component.transactionForm.patchValue({ amount: '500' });
         component.submitTransaction();
         noWrites();
-        expect(toast).toHaveBeenCalledTimes(2);
-        expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: '帳戶已切換，請重新操作' }));
+        expect(texts).toEqual(['已取消：帳戶已切換，請重新操作', '已取消：帳戶已切換，請重新操作']);
         expect(component.transactionDialogVisible()).toBe(false);
       });
     }
 
     it('a delete confirmed after the account switched sends nothing', () => {
+      const texts = recordToasts();
       const fixture = loaded(7);
       const component = fixture.componentInstance;
       let accept: (() => void) | undefined;
@@ -893,11 +1010,78 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
 
       fixture.componentRef.setInput('accountId', 9);
       fixture.detectChanges();
-      const toast = toasts(fixture);
       accept?.();
       noWrites();
-      expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: '帳戶已切換，請重新操作' }));
+      expect(texts).toEqual(['已取消：帳戶已切換，請重新操作']);
       flushLoads(9);
+    });
+
+    const accountBody = () => ({
+      id: 7, broker: 'cathay', nickname: '帳戶 7', currency: 'TWD', opening_balance: '0', opening_date: '2026-01-01',
+      is_active: true, created_at: '2026-01-01T00:00:00Z', native_balance: '100', target_balance: '100', target_currency: 'TWD',
+    });
+    const patches = () => httpMock.match(req => req.method === 'PATCH' && req.url === '/api/portfolio/accounts/7');
+
+    it('submitEdit answered 500 shows 重試, which re-sends the captured patch once, also after the dialog was closed', () => {
+      const fixture = loaded(7);
+      const component = fixture.componentInstance;
+      component.openEditDialog();
+      component.editForm.patchValue({ nickname: '測試帳戶', opening_balance: '70' });
+      component.submitEdit();
+      const first = httpMock.expectOne(req => req.method === 'PATCH');
+      const body = first.request.body;
+      first.flush({}, { status: 500, statusText: 'Server Error' });
+
+      const toast = TestBed.inject(ToastService).current();
+      expect(toast).toEqual(expect.objectContaining({ kind: 'error', text: '帳戶更新失敗' }));
+      expect(toast?.action?.label).toBe('重試');
+      component.closeEditDialog();
+      component.editForm.patchValue({ nickname: '改過了', opening_balance: '1' });
+
+      toast!.action!.run();
+      const again = patches();
+      expect(again).toHaveLength(1);
+      expect(again[0].request.body).toEqual(body);
+      again[0].flush(accountBody());
+      expect(TestBed.inject(ToastService).current()?.kind).toBe('done');
+      flushLoads(7);
+    });
+
+    it('submitEdit answered 422 shows 失敗 without 重試', () => {
+      const fixture = loaded(7);
+      fixture.componentInstance.openEditDialog();
+      fixture.componentInstance.submitEdit();
+      httpMock.expectOne(req => req.method === 'PATCH').flush({ detail: [] }, { status: 422, statusText: 'Unprocessable' });
+      expect(TestBed.inject(ToastService).current()).toEqual(expect.objectContaining({ kind: 'error', text: '帳戶更新失敗', action: null }));
+    });
+
+    it('executeDelete answered 404 on the first attempt counts as done (the interceptor\'s own retry already committed it): 完成 and a reload', () => {
+      const fixture = loaded(7);
+      const component = fixture.componentInstance;
+      component.executeDelete(component.transactions()[0], 7);
+      httpMock.expectOne(req => req.method === 'DELETE').flush({}, { status: 404, statusText: 'Not Found' });
+      expect(TestBed.inject(ToastService).current()).toEqual(expect.objectContaining({ kind: 'done', text: '已刪除' }));
+      summaryReq().flush(summaryFor(7));
+      historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+      txnsReq(7).flush({ items: [], total: 0, offset: 0, limit: 25 });
+      expect(component.transactions()).toEqual([]);
+    });
+
+    it('executeDelete answered 500 shows 重試, which sends the same DELETE once; a 403 shows none', () => {
+      const fixture = loaded(7);
+      const component = fixture.componentInstance;
+      const txn = component.transactions()[0];
+      component.executeDelete(txn, 7);
+      httpMock.expectOne(req => req.method === 'DELETE').flush({}, { status: 500, statusText: 'Server Error' });
+      const toast = TestBed.inject(ToastService).current();
+      expect(toast?.text).toMatch(/^刪除失敗：/);
+      expect(toast?.action?.label).toBe('重試');
+
+      toast!.action!.run();
+      const again = httpMock.match(req => req.method === 'DELETE' && req.url === `/api/portfolio/accounts/7/cash-transactions/${txn.id}`);
+      expect(again).toHaveLength(1);
+      again[0].flush({}, { status: 403, statusText: 'Forbidden' });
+      expect(TestBed.inject(ToastService).current()?.action).toBeNull();
     });
 
     it('Regression D: a transactions response for an account no longer shown is never applied', () => {
@@ -1236,8 +1420,43 @@ describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
     expect(text(root.querySelector('.balance-value'))).toBe('−$12,345');
     expect(root.querySelector('.account-meta')?.textContent).toContain('期初 −$5,000');
     expect(text(root.querySelector('.account-meta p-tag'))).toBe('已停用');
-    expect(text(root.querySelector('.overdraft-text'))).toBe('帳戶餘額為負（−$12,345），可能漏記入金。');
+    const banner = root.querySelector('app-banner.overdraft-banner')!;
+    expect(text(banner.querySelector('.banner-title'))).toBe('帳戶餘額為負（−$12,345）');
+    expect(text(banner.querySelector('.banner-detail'))).toBe('可能漏記入金。');
+    expect(banner.querySelector('.banner--warn')).not.toBeNull();
     expect(root.querySelector('.account-header-card')?.textContent).not.toContain('-NT$');
+  });
+
+  it('新增入金歸零 opens the top-up form, and the banner is not offered while the account is not ready', () => {
+    const fixture = render();
+    httpMock.expectOne(req => req.url === '/api/portfolio/accounts/' && req.params.get('include_inactive') === 'true').flush({
+      items: [{
+        id: 7, broker: 'cathay', nickname: '元大交割戶', currency: 'TWD', opening_balance: '-5000', opening_date: '2026-01-01',
+        is_active: true, created_at: '2026-01-01T00:00:00Z', native_balance: '-12345', target_balance: '-12345', target_currency: 'TWD',
+      }],
+      target_currency: null, total_target_balance: null, skipped_currencies: [],
+    });
+    httpMock.expectOne(req => req.url === '/api/portfolio/accounts/7/balance-history').flush({ account_id: 7, currency: 'TWD', points: [] });
+    flushTxns([]);
+    fixture.detectChanges();
+    const action = () => el(fixture).querySelector<HTMLButtonElement>('app-banner.overdraft-banner .banner-action')!;
+    expect(text(action())).toBe('新增入金歸零');
+    expect(action().disabled).toBe(false);
+    action().click();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.transactionDialogVisible()).toBe(true);
+    expect(fixture.componentInstance.transactionForm.value.amount).toBe(fixture.componentInstance.overdraftAmount());
+
+    fixture.componentInstance.transactionDialogVisible.set(false);
+    fixture.componentRef.setInput('accountId', 9);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.accountReady()).toBe(false);
+    // The detail clears the stale account while another one loads, so the banner (and its action) is gone, never clickable.
+    expect(el(fixture).querySelector('app-banner.overdraft-banner')).toBeNull();
+    // The switch to 9 sent its own three reads; nothing else is outstanding.
+    expect(httpMock.expectOne(req => req.url === '/api/portfolio/accounts/' && req.params.get('include_inactive') === 'true').cancelled).toBe(false);
+    expect(httpMock.expectOne(req => req.url === '/api/portfolio/accounts/9/balance-history').cancelled).toBe(false);
+    expect(httpMock.expectOne(req => req.url === '/api/portfolio/accounts/9/cash-transactions').cancelled).toBe(false);
   });
 
   it('formatCurrency: U+2212 before negatives in every currency, none for zero or positives', () => {

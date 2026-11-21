@@ -691,6 +691,47 @@ describe('AccountingReportsComponent', () => {
     expect(el.querySelector('app-report-overview')).not.toBeNull();
   });
 
+  it('重試 keeps the banner through the read (same node, button disabled, a double press reads once); a second failure keeps it; success removes it and focus stays in the page', async () => {
+    const { harness, el } = await open('/accounting/reports?month=2026-10');
+    const failure = { status: 500, statusText: 'Server Error' };
+    const first = pending();
+    first.breakdowns[0].flush({ detail: 'boom' }, failure);
+    first.trends[0].flush({ detail: 'boom' }, failure);
+    harness.detectChanges();
+    const fixture = harness;
+    let reads = pending();
+    fixture.detectChanges();
+    const banner = el.querySelector('.page-load-error')!;
+    const button = banner.querySelector<HTMLButtonElement>('.banner-action')!;
+    button.focus();
+    button.click();
+    button.click();
+    fixture.detectChanges();
+    expect(button.disabled).toBe(true);
+    reads = pending();
+    expect(reads.breakdowns).toHaveLength(3);
+    expect(reads.trends).toHaveLength(1);
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    reads.breakdowns[0].flush({ detail: 'boom' }, failure);
+    reads.trends[0].flush({ detail: 'boom' }, failure);
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.page-load-error')).toHaveLength(1);
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    expect(button.disabled).toBe(false);
+    button.focus();
+    button.click();
+    fixture.detectChanges();
+    reads = pending();
+    expect(reads.breakdowns).toHaveLength(3);
+    answer(reads);
+    fixture.detectChanges();
+    await harness.fixture.whenStable();
+    fixture.detectChanges();
+    expect(el.querySelector('.page-load-error')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(el.contains(document.activeElement)).toBe(true);
+  });
+
   it('shows the error state with 重試 when a read fails for another reason', async () => {
     const { harness, el } = await open('/accounting/reports?month=2026-10');
     const failure = { status: 500, statusText: 'Server Error' };
@@ -699,15 +740,17 @@ describe('AccountingReportsComponent', () => {
     first.trends[0].flush({ detail: 'boom' }, failure);
     harness.detectChanges();
 
-    expect(el.querySelector('.rp-error')?.textContent).toContain('報表讀取失敗');
+    expect(el.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('報表讀取失敗');
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
     expect(el.querySelector('.rp-figure')).toBeNull();
-    el.querySelector<HTMLButtonElement>('.rp-retry')!.click();
+    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
     const retried = pending();
     expect(retried.breakdowns).toHaveLength(3);
     expect(retried.trends).toHaveLength(1);
     answer(retried);
     harness.detectChanges();
-    expect(el.querySelector('.rp-error')).toBeNull();
+    expect(el.querySelector('.page-load-error')).toBeNull();
     expect(texts(el, '.rp-figure-value')[0]).toBe('$41,890');
   });
   describe('running periods (polish D1, D8)', () => {
@@ -952,7 +995,7 @@ describe('AccountingReportsComponent', () => {
       });
       harness.detectChanges();
       for (const request of http.match(r => r.url === BREAKDOWN && r.params.get('group_by') === 'merchant')) request.flush(sampleBreakdown(breakdownQuery(request)));
-      expect(el.querySelector('.rp-error')).toBeNull();
+      expect(el.querySelector('.page-load-error')).toBeNull();
       expect(texts(el, '.rp-figure-value')[0]).toBe('$4,233');
       expect(texts(el, '.rp-figure-foot')[0]).toBe('比 10 月同期 ▼ 2,677 · 比去年同期 ▼ 887 · 截至 11/7');
       expect(el.querySelector('.ov-after')).toBeNull();

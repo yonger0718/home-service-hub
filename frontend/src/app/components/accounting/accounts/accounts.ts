@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal, untracked, ElementRef, Injector } from '@angular/core';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterLink } from '@angular/router';
@@ -21,6 +21,8 @@ import { formatMoney } from '../format';
 import { importReviewCount } from '../import-review-count';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BtnComponent } from '../../ui/btn/btn';
+import { BannerComponent } from '../../ui/banner/banner';
+import { focusPageIfLost, focusRetryIfLost } from '../retry-focus';
 
 /** A credit card row's third line: what is left on its current statement and when it is due. */
 export interface CardDue {
@@ -124,7 +126,7 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
 @Component({
   selector: 'app-accounting-accounts',
   standalone: true,
-  imports: [AccountIconComponent, PageHeaderComponent, BtnComponent, DatePipe, NgTemplateOutlet, RouterLink, SkeletonComponent],
+  imports: [BannerComponent, AccountIconComponent, PageHeaderComponent, BtnComponent, DatePipe, NgTemplateOutlet, RouterLink, SkeletonComponent],
   templateUrl: './accounts.html',
   styleUrl: './accounts.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -132,6 +134,8 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
 export class AccountingAccountsComponent {
   /** True when the layout renders the page header above the list card. */
   readonly embedded = input(false);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
   private accountingService = inject(AccountingService);
   private readonly bills = inject(BillingService);
   private readonly calendar = inject(BusinessCalendarService);
@@ -252,6 +256,7 @@ export class AccountingAccountsComponent {
         this.mainCurrency.set(preference?.main_currency ?? 'TWD');
         this.loadError.set(false);
         this.loaded.set(true);
+        this.endRetry(true);
         if (this.archived() !== null) {
           this.archived.set(null);
           if (this.archivedOpen()) {
@@ -265,6 +270,7 @@ export class AccountingAccountsComponent {
         }
         this.loadError.set(true);
         this.loaded.set(true);
+        this.endRetry(false);
       },
     });
   }
@@ -298,9 +304,26 @@ export class AccountingAccountsComponent {
   }
 
   /** The whole-page 重試 after `帳戶讀取失敗`. */
+  /** A 重試 in flight: the banner stays (same element, nothing re-announced) with its button disabled. */
+  readonly retrying = signal(false);
+
+  private endRetry(ok: boolean): void {
+    if (!this.retrying()) {
+      return;
+    }
+    this.retrying.set(false);
+    if (ok) {
+      focusPageIfLost(this.host.nativeElement, this.injector, 'section.ledger-accounts');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
+    }
+  }
+
   retry(): void {
-    this.loadError.set(false);
-    this.loaded.set(false);
+    if (this.retrying()) {
+      return;
+    }
+    this.retrying.set(true);
     this.load();
   }
 

@@ -26,7 +26,6 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PaneStateService } from '../../../services/pane-state.service';
 import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
-import { AccountingToastComponent } from '../accounting-toast';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { MonthOverviewComponent } from '../month-overview/month-overview';
 import { CalendarDayPanelComponent } from '../calendar-day-panel/calendar-day-panel';
@@ -97,7 +96,6 @@ const PAGE_CLOSE = '.close[aria-label="關閉"], [data-pane-close]';
   imports: [
     RouterOutlet,
     NgComponentOutlet,
-    AccountingToastComponent,
     MonthOverviewComponent,
     CalendarDayPanelComponent,
     PageHeaderComponent,

@@ -1,9 +1,11 @@
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } from '@angular/router';
-import { Confirmation, ConfirmationService, MessageService } from 'primeng/api';
+import { HttpErrorResponse } from '@angular/common/http';
+import { Confirmation, ConfirmationService } from 'primeng/api';
 import { BehaviorSubject, Observable, of, Subject, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ImportHistoryService } from '../../../services/import-history.service';
+import { ToastService } from '../../../services/toast.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { BrokerCsvImportResult, ImportResult, ImportRow } from '../../../models/portfolio.model';
@@ -264,22 +266,51 @@ describe('Portfolio import controls', () => {
       expect(TestBed.inject(ImportHistoryService).attempts()[0]?.file).toBe('late.csv');
     });
 
-    it('a partial recalc toast lists the failed steps by label', () => {
+    const toast = () => TestBed.inject(ToastService).current();
+    function partialAfterRunning(steps: unknown[]) {
       vi.useFakeTimers();
       service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
       const fixture = setup();
-      const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
-      service.getRecalcStatus.mockReturnValue(of({
-        kind: 'import', state: 'partial', steps: [
-          { name: 'symbol_map_backfill', status: 'failed' },
-          { name: 'dividend_auto_record', status: 'ok' },
-          { name: 'networth_backfill', status: 'partial' },
-        ],
-      }));
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'partial', steps }));
       vi.advanceTimersByTime(5000);
-      expect(add).toHaveBeenCalledWith(expect.objectContaining({
-        severity: 'warn', summary: '資料重算尚未完成', detail: '失敗步驟：代號對照補齊, 淨值回補。可點擊「重試」',
-      }));
+      return fixture;
+    }
+    const deferredEvent = { symbol: '2330', ex_date: '2026-09-18', cash_dividend_per_share: '5.0', payment_date: '2026-10-09', reason: 'deferred' };
+
+    it('a partial recalc toast lists the failed steps by label', () => {
+      const fixture = partialAfterRunning([
+        { name: 'symbol_map_backfill', status: 'ok' },
+        { name: 'networth_backfill', status: 'failed' },
+      ]);
+      expect(toast()).toMatchObject({ kind: 'error', text: '資料重算尚未完成（失敗步驟：淨值回補）', action: { label: '重試' } });
+      service.triggerRecalc.mockReturnValue(new Subject());
+      toast()!.action!.run();
+      expect(service.triggerRecalc).toHaveBeenCalledTimes(1);
+      fixture.destroy();
+    });
+
+    it('partial with a failed step and deferred events keeps the step list and 重試', () => {
+      const fixture = partialAfterRunning([
+        { name: 'networth_backfill', status: 'failed' },
+        { name: 'dividend_auto_record', status: 'partial', detail: { deferred_events: [deferredEvent] } },
+      ]);
+      expect(toast()).toMatchObject({
+        kind: 'error',
+        text: '資料重算尚未完成（失敗步驟：淨值回補）；歷史股利權益已記錄，請至股利頁確認實際收款',
+        action: { label: '重試' },
+      });
+      fixture.destroy();
+    });
+
+    it('partial with only deferred events: 失敗 without 重試', () => {
+      const fixture = partialAfterRunning([
+        { name: 'dividend_auto_record', status: 'partial', detail: { deferred_events: [deferredEvent] } },
+      ]);
+      expect(toast()).toMatchObject({
+        kind: 'error',
+        text: '資料重算尚未完成：歷史股利權益已記錄。請至股利頁確認實際收款；重算不會自動入帳。',
+        action: null,
+      });
       fixture.destroy();
     });
 
@@ -287,9 +318,370 @@ describe('Portfolio import controls', () => {
       service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', steps: [{ name: 'dividend_auto_record', status: 'failed', error: 'x' }] }));
       service.triggerRecalc.mockReturnValue(throwError(() => ({ status: 409, message: 'Http failure', error: { code: 409, message: 'recalc in progress', trace_id: null } })));
       const fixture = setup();
-      const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
       fixture.componentInstance.retryRecalc();
-      expect(add).toHaveBeenCalledWith(expect.objectContaining({ summary: '重算觸發失敗', detail: 'recalc in progress' }));
+      expect(toast()).toMatchObject({ kind: 'error', text: '重算觸發失敗：recalc in progress', action: null });
+    });
+
+    it('a 503 recalc trigger offers 重試', () => {
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', steps: [{ name: 'dividend_auto_record', status: 'failed', error: 'x' }] }));
+      service.triggerRecalc.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 503 })));
+      const fixture = setup();
+      fixture.componentInstance.retryRecalc();
+      expect(toast()?.kind).toBe('error');
+      expect(toast()?.action?.label).toBe('重試');
+    });
+
+    describe('toast lifetime', () => {
+      function committed(result: Partial<ImportResult>) {
+        service.uploadCsv.mockReturnValue(of({ ...preview, dry_run: false, ...result }));
+        const fixture = setup();
+        fixture.componentInstance.onSelect({ files: [new File(['x'], '範例券商_202610.csv')] });
+        fixture.componentInstance.commit();
+        return fixture;
+      }
+
+      it('a clean commit with a recalc shows one 進行中 toast with the counts', () => {
+        vi.useFakeTimers();
+        service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+        const fixture = committed({ recalc_scheduled: true, parsed: 3, created: 3 });
+        expect(toast()).toMatchObject({ kind: 'progress', action: null });
+        expect(toast()!.text).toBe('匯入完成：已解析 3 筆；已新增 3 筆；重複略過 0 筆；錯誤 0 筆；資料重算執行中…');
+        fixture.destroy();
+      });
+
+      it('a commit with row errors shows 失敗 with the counts and no 進行中', () => {
+        vi.useFakeTimers();
+        service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+        const fixture = committed({ recalc_scheduled: true, errors: [{ row_index: 2, message: '價格欄位為空' }] });
+        expect(toast()?.kind).toBe('error');
+        expect(toast()?.text).toContain('匯入完成：');
+        expect(toast()?.text).toContain('錯誤 1 筆');
+        expect(toast()?.text).not.toContain('資料重算執行中');
+        fixture.destroy();
+      });
+
+      it('running → completed replaces the 進行中 toast with 資料重算完成', () => {
+        vi.useFakeTimers();
+        service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+        const fixture = committed({ recalc_scheduled: true });
+        service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'completed' }));
+        vi.advanceTimersByTime(5000);
+        expect(toast()).toMatchObject({ kind: 'done', text: '資料重算完成' });
+        fixture.destroy();
+      });
+
+      it('a first poll that is already settled dismisses the page\'s 進行中 toast', () => {
+        vi.useFakeTimers();
+        const status$ = new Subject<unknown>();
+        service.getRecalcStatus.mockReturnValue(status$);
+        const fixture = committed({ recalc_scheduled: true });
+        expect(toast()?.kind).toBe('progress');
+        status$.next({ kind: 'import', state: 'idle' });
+        expect(toast()).toBeNull();
+        fixture.destroy();
+      });
+
+      it('a 500 commit offers 重試, which uploads the same file again', () => {
+        service.uploadCsv.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 500 })));
+        const fixture = setup();
+        fixture.componentInstance.onSelect({ files: [new File(['x'], '範例券商_202610.csv')] });
+        fixture.componentInstance.commit();
+        expect(toast()).toMatchObject({ kind: 'error', action: { label: '重試' } });
+        expect(toast()!.text).toMatch(/^匯入失敗：/);
+        service.uploadCsv.mockClear();
+        toast()!.action!.run();
+        expect(service.uploadCsv).toHaveBeenCalledTimes(1);
+        expect(service.uploadCsv.mock.calls[0][1].name).toBe('範例券商_202610.csv');
+        expect(service.uploadCsv.mock.calls[0][2]).toBe(false);
+      });
+
+      it('a 400 commit offers no 重試', () => {
+        service.uploadCsv.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 400, error: { message: 'bad csv' } })));
+        const fixture = setup();
+        fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+        fixture.componentInstance.commit();
+        expect(toast()).toMatchObject({ kind: 'error', action: null });
+      });
+
+      it('a status read failure shows 無法取得重算狀態 with 重試, which reads the status again', () => {
+        service.getRecalcStatus.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 500 })));
+        const fixture = setup();
+        expect(toast()).toMatchObject({ kind: 'error', text: '無法取得重算狀態', action: { label: '重試' } });
+        service.getRecalcStatus.mockClear();
+        service.getRecalcStatus.mockReturnValue(of({ state: 'idle' }));
+        toast()!.action!.run();
+        expect(service.getRecalcStatus).toHaveBeenCalledTimes(1);
+        fixture.destroy();
+      });
+
+      it('leaving the page after 無法取得重算狀態 keeps the toast without 重試', () => {
+        service.getRecalcStatus.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 500 })));
+        const fixture = setup();
+        fixture.destroy();
+        expect(toast()).toMatchObject({ kind: 'error', text: '無法取得重算狀態', action: null });
+      });
+
+      it('leaving while 進行中 removes it', () => {
+        vi.useFakeTimers();
+        service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+        const fixture = committed({ recalc_scheduled: true });
+        expect(toast()?.kind).toBe('progress');
+        fixture.destroy();
+        expect(toast()).toBeNull();
+      });
+
+      it('a status response arriving after destroy shows nothing', () => {
+        const status$ = new Subject<unknown>();
+        service.getRecalcStatus.mockReturnValue(status$);
+        const fixture = setup();
+        fixture.destroy();
+        service.getRecalcStatus.mockClear();
+        status$.next({ kind: 'import', state: 'failed', steps: [{ name: 'networth_backfill', status: 'failed', error: 'x' }] });
+        expect(toast()).toBeNull();
+        expect(service.getRecalcStatus).not.toHaveBeenCalled();
+      });
+
+      it('a recalc POST answering after destroy raises no 進行中 and starts no poll', () => {
+        vi.useFakeTimers();
+        service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', steps: [{ name: 'networth_backfill', status: 'failed', error: 'x' }] }));
+        const post$ = new Subject<unknown>();
+        service.triggerRecalc.mockReturnValue(post$);
+        const fixture = setup();
+        fixture.componentInstance.retryRecalc();
+        fixture.destroy();
+        service.getRecalcStatus.mockClear();
+        post$.next({ recalc_scheduled: true }); post$.complete();
+        vi.advanceTimersByTime(60_000);
+        expect(toast()).toBeNull();
+        expect(service.getRecalcStatus).not.toHaveBeenCalled();
+      });
+
+      it('a commit answering after destroy shows 完成 without action and starts no poll (controller ruling)', () => {
+        vi.useFakeTimers();
+        const commit$ = new Subject<ImportResult>();
+        const fixture = setup();
+        fixture.componentInstance.onSelect({ files: [new File(['x'], '範例券商_202610.csv')] });
+        service.uploadCsv.mockReturnValue(commit$);
+        fixture.componentInstance.commit();
+        fixture.destroy();
+        service.getRecalcStatus.mockClear();
+        commit$.next({ ...preview, dry_run: false, recalc_scheduled: true }); commit$.complete();
+        expect(toast()).toMatchObject({ kind: 'done', action: null });
+        expect(toast()!.text).toContain('匯入完成：');
+        vi.advanceTimersByTime(60_000);
+        expect(service.getRecalcStatus).not.toHaveBeenCalled();
+      });
+
+      describe('fix round 1', () => {
+        const err500 = () => throwError(() => new HttpErrorResponse({ status: 500 }));
+
+        function failedCommit(name = '範例券商_202610.csv') {
+          service.uploadCsv.mockReturnValue(err500());
+          const fixture = setup();
+          const original = new File(['x'], name);
+          fixture.componentInstance.onSelect({ files: [original] });
+          fixture.componentInstance.commit();
+          return { fixture, original };
+        }
+
+        it('重試 re-sends the captured file and type after another file was picked', () => {
+          const { fixture, original } = failedCommit();
+          const retry = toast()!.action!;
+          // The page's file changes without a new toast (a toast would replace the 失敗 one).
+          fixture.componentInstance.file.set(new File(['y'], '另一份.csv'));
+          service.uploadCsv.mockClear();
+          service.uploadCsv.mockReturnValue(new Subject());
+          retry.run();
+          expect(service.uploadCsv).toHaveBeenCalledTimes(1);
+          const args = service.uploadCsv.mock.calls[0];
+          expect(args[0]).toBe('transactions');
+          expect(args[1]).toBe(original);
+          expect(args[2]).toBe(false);
+        });
+
+        it('a retry result does not overwrite the preview of the newly picked file', () => {
+          const { fixture } = failedCommit();
+          const retry = toast()!.action!;
+          fixture.componentInstance.file.set(new File(['y'], '另一份.csv'));
+          fixture.componentInstance.result.set({ ...preview, parsed: 77 });
+          const retried$ = new Subject<ImportResult>();
+          service.uploadCsv.mockReturnValue(retried$);
+          retry.run();
+          retried$.next({ ...preview, dry_run: false, parsed: 5, created: 5 }); retried$.complete();
+          expect(fixture.componentInstance.result()?.parsed).toBe(77);
+          expect(fixture.componentInstance.committed()).toBe(false);
+          expect(fixture.componentInstance.file()?.name).toBe('另一份.csv');
+          expect(toast()).toMatchObject({ kind: 'done' });
+        });
+
+        it('重試 still sends the captured request after the file was cleared', () => {
+          const { fixture, original } = failedCommit();
+          const retry = toast()!.action!;
+          fixture.componentInstance.onClear();
+          service.uploadCsv.mockClear();
+          service.uploadCsv.mockReturnValue(new Subject());
+          retry.run();
+          expect(service.uploadCsv).toHaveBeenCalledTimes(1);
+          expect(service.uploadCsv.mock.calls[0][1]).toBe(original);
+          expect(toast()?.text).not.toBe('請先選擇 CSV');
+        });
+
+        it('a retried dry run stays a dry run', () => {
+          service.uploadCsv.mockReturnValue(err500());
+          const fixture = setup();
+          fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+          expect(toast()?.action?.label).toBe('重試');
+          service.uploadCsv.mockClear();
+          service.uploadCsv.mockReturnValue(new Subject());
+          toast()!.action!.run();
+          expect(service.uploadCsv.mock.calls[0][2]).toBe(true);
+        });
+
+        it('重試 does not start a second upload while one is running', () => {
+          const { fixture } = failedCommit();
+          const retry = toast()!.action!;
+          service.uploadCsv.mockClear();
+          service.uploadCsv.mockReturnValue(new Subject());
+          fixture.componentInstance.commit();
+          expect(service.uploadCsv).toHaveBeenCalledTimes(1);
+          retry.run();
+          expect(service.uploadCsv).toHaveBeenCalledTimes(1);
+        });
+
+        it('重試 on a stale recalc failure does not POST once the status is completed, and a later status dismisses the toast', () => {
+          vi.useFakeTimers();
+          const fixture = partialAfterRunning([{ name: 'networth_backfill', status: 'failed' }]);
+          expect(toast()?.action?.label).toBe('重試');
+          const retry = toast()!.action!;
+          service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'completed' }));
+          (fixture.componentInstance as unknown as { startPolling(): void }).startPolling();
+          expect(toast()).toBeNull();
+          retry.run();
+          expect(service.triggerRecalc).not.toHaveBeenCalled();
+          fixture.destroy();
+        });
+
+        describe('an unresolved recalc failure across status polls', () => {
+          const failedX = [{ name: 'networth_backfill', status: 'failed' }];
+          const poll = (fixture: { componentInstance: unknown }) => (fixture.componentInstance as { startPolling(): void }).startPolling();
+
+          it('a quote-refresh poll that reads the same partial keeps the same toast, and 重試 still works', () => {
+            vi.useFakeTimers();
+            service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+            const fixture = setup();
+            const partial = { kind: 'import', state: 'partial', steps: failedX, quote_refresh: { state: 'running' } };
+            service.getRecalcStatus.mockReturnValue(of(partial));
+            vi.advanceTimersByTime(5000);
+            const first = toast();
+            expect(first?.action?.label).toBe('重試');
+            vi.advanceTimersByTime(5000);
+            expect(service.getRecalcStatus.mock.calls.length).toBeGreaterThanOrEqual(3);
+            expect(toast()).toBe(first);
+            service.triggerRecalc.mockReturnValue(new Subject());
+            toast()!.action!.run();
+            expect(service.triggerRecalc).toHaveBeenCalledTimes(1);
+            fixture.destroy();
+          });
+
+          it('a later completed status dismisses it', () => {
+            vi.useFakeTimers();
+            const fixture = partialAfterRunning(failedX);
+            expect(toast()?.kind).toBe('error');
+            service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'completed' }));
+            poll(fixture);
+            expect(toast()).toBeNull();
+            fixture.destroy();
+          });
+
+          it('a toast the user closed does not come back on an identical poll', () => {
+            vi.useFakeTimers();
+            const fixture = partialAfterRunning(failedX);
+            TestBed.inject(ToastService).dismiss(toast()!.id);
+            expect(toast()).toBeNull();
+            poll(fixture);
+            expect(toast()).toBeNull();
+            fixture.destroy();
+          });
+
+          it('a different failure replaces the toast with the new one', () => {
+            vi.useFakeTimers();
+            const fixture = partialAfterRunning(failedX);
+            const first = toast();
+            service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'partial', steps: [{ name: 'symbol_map_backfill', status: 'failed' }] }));
+            poll(fixture);
+            expect(toast()).not.toBe(first);
+            expect(toast()?.text).toContain('失敗步驟：');
+            expect(toast()?.text).not.toBe(first?.text);
+            expect(toast()?.action?.label).toBe('重試');
+            fixture.destroy();
+          });
+        });
+
+        it('重試 while the recalc is running shows 進行中 again', () => {
+          vi.useFakeTimers();
+          service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+          const fixture = setup();
+          fixture.componentInstance.retryRecalc();
+          expect(toast()).toMatchObject({ kind: 'progress', text: '資料重算執行中…' });
+          expect(service.triggerRecalc).not.toHaveBeenCalled();
+          fixture.destroy();
+        });
+
+        it('a restart during an in-flight status read keeps polling afterwards', () => {
+          vi.useFakeTimers();
+          const first$ = new Subject<unknown>();
+          service.getRecalcStatus.mockReturnValue(first$);
+          const fixture = setup();
+          expect(service.getRecalcStatus).toHaveBeenCalledTimes(1);
+          (fixture.componentInstance as unknown as { startPolling(): void }).startPolling();
+          expect(service.getRecalcStatus).toHaveBeenCalledTimes(1);
+          service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+          first$.next({ state: 'idle' }); first$.complete();
+          expect(service.getRecalcStatus).toHaveBeenCalledTimes(2);
+          vi.advanceTimersByTime(5000);
+          expect(service.getRecalcStatus).toHaveBeenCalledTimes(3);
+          fixture.destroy();
+        });
+
+        it('partial with no retryable step and no deferred events keeps a neutral 失敗 text', () => {
+          for (const steps of [[], [{ name: 'a', status: 'ok' }, { name: 'b', status: 'skipped' }]]) {
+            TestBed.resetTestingModule();
+            const fixture = partialAfterRunning(steps);
+            expect(toast()?.text).toBe('資料重算尚未完成（失敗步驟：未知）');
+            expect(toast()?.text).not.toContain('歷史股利權益已記錄');
+            fixture.destroy();
+          }
+        });
+
+        it('verifyOverrideSymbol is cancelled on destroy', () => {
+          const verify$ = new Subject<unknown>();
+          service.verifyOverrideSymbol.mockReturnValue(verify$);
+          const fixture = setup();
+          fixture.componentInstance.setOverride('台灣50正2', '0050');
+          fixture.componentInstance.verifyName('台灣50正2', ['10/21']);
+          expect(verify$.observed).toBe(true);
+          fixture.destroy();
+          expect(verify$.observed).toBe(false);
+        });
+
+        it('a late upload error after destroy shows 失敗 without 重試', () => {
+          const commit$ = new Subject<ImportResult>();
+          const fixture = setup();
+          fixture.componentInstance.onSelect({ files: [new File(['x'], 'late.csv')] });
+          service.uploadCsv.mockReturnValue(commit$);
+          fixture.componentInstance.commit();
+          fixture.destroy();
+          commit$.error(new HttpErrorResponse({ status: 500 }));
+          expect(toast()).toMatchObject({ kind: 'error', action: null });
+          expect(toast()!.text).toMatch(/^匯入失敗：/);
+        });
+      });
+
+      it('renders no p-toast', () => {
+        const fixture = setup();
+        expect(el(fixture).querySelector('p-toast')).toBeNull();
+        fixture.destroy();
+      });
     });
 
     it('重算資料 is enabled once the recalc settles and triggers one recalc', () => {
@@ -634,22 +1026,22 @@ describe('Portfolio import controls', () => {
 
     function dryRunToast(query: Record<string, string>): string {
       const fixture = setup(query);
-      const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
       fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
       fixture.detectChanges();
-      return String(add.mock.calls.find(([m]) => m.summary === '預覽完成')?.[0].detail);
+      return String(TestBed.inject(ToastService).current()?.text);
     }
 
     it('a Cathay dry-run toast reads the preview counts, not created / skipped_duplicates', () => {
       service.uploadCsv.mockReturnValue(of({ ...genericPreview, csv_format: 'cathay', created: 0, skipped_duplicates: 0, would_insert: 38, would_skip_duplicate: 3 }));
       const detail = dryRunToast({});
+      expect(detail).toContain('預覽完成：');
       expect(detail).toContain('可新增 38；重複 3；錯誤 1');
       expect(detail).not.toContain('可新增 0');
     });
 
     it('a broker dry-run toast counts the row statuses, not the wire counts', () => {
       service.uploadBrokerCsv.mockReturnValue(of({ ...brokerNested, counts: { created: 0, skipped: 0, rejected: 0 } }));
-      expect(dryRunToast({ type: 'broker' })).toBe('可新增 2；重複 1；錯誤 0');
+      expect(dryRunToast({ type: 'broker' })).toBe('預覽完成：可新增 2；重複 1；錯誤 0');
     });
 
     it('rows with status: duplicates are dimmed and counted, N is the number of new rows', () => {
@@ -803,20 +1195,18 @@ describe('Portfolio import controls', () => {
 
     it('the commit toast says 更新 {rehashed} 筆', () => {
       const fixture = withFile(genericPreview);
-      const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
       service.uploadCsv.mockReturnValue(of({ ...genericPreview, dry_run: false, created: 1, errors: [], rehashed: 2 }));
       commitButton(fixture).click();
-      const detail = String(add.mock.calls.find(([m]) => m.summary === '匯入完成')?.[0].detail);
+      const detail = String(TestBed.inject(ToastService).current()?.text);
       expect(detail).toContain('更新 2 筆');
       expect(detail).not.toContain('重算指紋');
     });
 
     it('the commit toast lists 對帳單已涵蓋 {covered} 筆 when > 0', () => {
       const fixture = withFile(genericPreview);
-      const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
       service.uploadCsv.mockReturnValue(of({ ...genericPreview, dry_run: false, created: 1, errors: [], covered: 4 }));
       commitButton(fixture).click();
-      const detail = String(add.mock.calls.find(([m]) => m.summary === '匯入完成')?.[0].detail);
+      const detail = String(TestBed.inject(ToastService).current()?.text);
       expect(detail).toContain('對帳單已涵蓋 4 筆');
     });
 
@@ -1014,7 +1404,9 @@ describe('Portfolio import controls', () => {
   });
   describe('banner, recent imports, side column', () => {
     const norm = (t: string | null | undefined) => (t ?? '').replace(/\s+/g, ' ').trim();
-    const banner = (fixture: { nativeElement: HTMLElement }) => norm(el(fixture).querySelector('.import-banner')?.textContent);
+    const bannerText = (b: Element | null | undefined) =>
+      b ? `${norm(b.querySelector('.banner-title')?.textContent)} / ${norm(b.querySelector('.banner-detail')?.textContent)}` : '';
+    const banner = (fixture: { nativeElement: HTMLElement }) => bannerText(el(fixture).querySelector('app-banner.import-banner'));
     const history = () => TestBed.inject(ImportHistoryService);
     const NOW = new Date(2026, 9, 21, 22, 10);
 
@@ -1033,13 +1425,13 @@ describe('Portfolio import controls', () => {
     it('a commit HTTP 500 records a failed attempt with the reason and shows banner (a)', () => {
       const fixture = commitWith(throwError(() => ({ status: 500, error: { detail: '伺服器錯誤' } })));
       expect(history().attempts()[0]).toMatchObject({ ok: false, file: 'a.csv', type: 'transactions', reason: '伺服器錯誤' });
-      expect(banner(fixture)).toBe('最近一次匯入失敗（10/21 22:10）：a.csv，伺服器錯誤，整批未寫入。修正後重新上傳即可。');
+      expect(banner(fixture)).toBe('最近一次匯入失敗 / 10/21 22:10 · a.csv · 伺服器錯誤，沒有寫入任何資料。');
     });
 
     it('a 200 commit with created 0 and one row error shows banner (a) with 有 1 列錯誤', () => {
       const fixture = commitWith(of({ ...preview, dry_run: false, created: 0, errors: [{ row_index: 4, message: '價格欄位為空' }] }));
       expect(history().attempts()[0]).toMatchObject({ ok: false, created: 0, errors: 1 });
-      expect(banner(fixture)).toBe('最近一次匯入失敗（10/21 22:10）：a.csv 有 1 列錯誤，整批未寫入。修正後重新上傳即可。');
+      expect(banner(fixture)).toBe('最近一次匯入失敗 / 10/21 22:10 · a.csv · 有 1 列錯誤，沒有寫入任何資料。');
     });
 
     it('a partial commit (created 18 with 2 row errors) is a success: no banner, head ok', () => {
@@ -1098,8 +1490,8 @@ describe('Portfolio import controls', () => {
       localStorage.setItem('hh-import-history', JSON.stringify([FAILED_HEAD]));
       const fixture = setup();
       expect(history().attempts()[0]).toMatchObject({ ok: false, file: 'a.csv' });
-      expect(el(fixture).querySelectorAll('.import-banner').length).toBe(1);
-      expect(banner(fixture)).toBe('最近一次匯入失敗（10/21 22:10）：a.csv 有 1 列錯誤，整批未寫入。修正後重新上傳即可。');
+      expect(el(fixture).querySelectorAll('app-banner.import-banner').length).toBe(1);
+      expect(banner(fixture)).toBe('最近一次匯入失敗 / 10/21 22:10 · a.csv · 有 1 列錯誤，沒有寫入任何資料。');
     });
 
     it('a failed head attempt and a failed recalc show two banners, (a) first', () => {
@@ -1107,10 +1499,10 @@ describe('Portfolio import controls', () => {
       service.getRecalcStatus.mockReturnValue(of({
         kind: 'import', state: 'failed', steps: [{ name: 'dividend_auto_record', status: 'failed', error: 'TWSE timeout' }],
       }));
-      const banners = Array.from(el(setup()).querySelectorAll('.import-banner')).map(b => norm(b.textContent));
+      const banners = Array.from(el(setup()).querySelectorAll('app-banner.import-banner')).map(b => bannerText(b));
       expect(banners).toEqual([
-        '最近一次匯入失敗（10/21 22:10）：a.csv 有 1 列錯誤，整批未寫入。修正後重新上傳即可。',
-        '最近一次匯入的重算失敗：TWSE timeout',
+        '最近一次匯入失敗 / 10/21 22:10 · a.csv · 有 1 列錯誤，沒有寫入任何資料。',
+        '最近一次匯入的重算失敗 / TWSE timeout',
       ]);
     });
 
@@ -1120,9 +1512,9 @@ describe('Portfolio import controls', () => {
         steps: [{ name: 'dividend_auto_record', status: 'failed', error: 'TWSE timeout' }],
       }));
       const fixture = setup();
-      const banners = el(fixture).querySelectorAll('.import-banner');
+      const banners = el(fixture).querySelectorAll('app-banner.import-banner');
       expect(banners.length).toBe(1);
-      expect(norm(banners[0].textContent)).toBe('最近一次匯入的重算失敗：TWSE timeout');
+      expect(bannerText(banners[0])).toBe('最近一次匯入的重算失敗 / TWSE timeout');
       expect(text(fixture)).not.toContain('整批未寫入');
       expect(text(fixture)).not.toContain('沒有寫入任何資料');
       expect(text(fixture)).toContain('匯入重算：失敗');
@@ -1130,8 +1522,23 @@ describe('Portfolio import controls', () => {
 
     it('a failed recalc without a step error names the current step label', () => {
       service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', current_step: 'networth_backfill', steps: [] }));
-      const banners = Array.from(el(setup()).querySelectorAll('.import-banner')).map(b => norm(b.textContent));
-      expect(banners).toEqual(['最近一次匯入的重算失敗：淨值回補']);
+      const banners = Array.from(el(setup()).querySelectorAll('app-banner.import-banner')).map(b => bannerText(b));
+      expect(banners).toEqual(['最近一次匯入的重算失敗 / 淨值回補']);
+    });
+
+    it('both import banners are 錯誤: role alert, no close, no action', () => {
+      localStorage.setItem('hh-import-history', JSON.stringify([FAILED_HEAD]));
+      service.getRecalcStatus.mockReturnValue(of({
+        kind: 'import', state: 'failed', steps: [{ name: 'dividend_auto_record', status: 'failed', error: 'TWSE timeout' }],
+      }));
+      const banners = Array.from(el(setup()).querySelectorAll('app-banner.import-banner'));
+      expect(banners.length).toBe(2);
+      for (const b of banners) {
+        expect(b.querySelector('.banner--error')).not.toBeNull();
+        expect(b.querySelector('[role="alert"]')).not.toBeNull();
+        expect(b.querySelector('.banner-close')).toBeNull();
+        expect(b.querySelector('.banner-action')).toBeNull();
+      }
     });
 
     it('a failed quote-only refresh shows no banner', () => {

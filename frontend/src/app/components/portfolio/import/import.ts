@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, ElementRef, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -10,16 +10,17 @@ import { CardModule } from 'primeng/card';
 import { ConfirmDialogModule } from 'primeng/confirmdialog';
 import { FileUploadModule } from 'primeng/fileupload';
 import { InputTextModule } from 'primeng/inputtext';
-import { ConfirmationService, MessageService } from 'primeng/api';
+import { ConfirmationService } from 'primeng/api';
 import { SelectButtonModule } from 'primeng/selectbutton';
 import { TableModule } from 'primeng/table';
-import { ToastModule } from 'primeng/toast';
 import { TooltipModule } from 'primeng/tooltip';
 
 import { BrokerCsvImportResult, ImportResult, OverrideStatus, RecalcStatus, UnresolvedName } from '../../../models/portfolio.model';
 import { ImportHistoryService } from '../../../services/import-history.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { injectToasts, toastText } from '../../../services/toast.service';
+import { retryOnNetwork } from '../../accounting/http-errors';
 import { BentoComponent } from '../../ui/bento/bento';
 import { BtnComponent } from '../../ui/btn/btn';
 import { FileChipComponent } from '../../ui/file-chip/file-chip';
@@ -28,6 +29,7 @@ import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-tog
 import { SideTagComponent } from '../../ui/side-tag/side-tag';
 import { TagComponent } from '../../ui/tag/tag';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { BannerComponent } from '../../ui/banner/banner';
 import {
   ImportRowError,
   ImportType,
@@ -52,17 +54,29 @@ import {
   labelOf,
   recalcBanner,
   recalcPanelVisible,
+  retryableSteps,
   stepFor,
   typeFromQuery,
 } from './import-math';
 
 const POLL_INTERVAL_MS = 5_000;
 
+/** What one upload request carried; 重試 re-sends exactly this, whatever the page shows by then. */
+interface UploadRequest {
+  file: File;
+  type: ImportType;
+  dryRun: boolean;
+  hasHeader: boolean;
+  overrides: Record<string, string>;
+  confirmed: string[];
+}
+
 @Component({
   selector: 'app-portfolio-import',
   standalone: true,
   imports: [
     PageHeaderComponent,
+    BannerComponent,
     CommonModule,
     FormsModule,
     ButtonModule,
@@ -73,7 +87,6 @@ const POLL_INTERVAL_MS = 5_000;
     InputTextModule,
     SelectButtonModule,
     TableModule,
-    ToastModule,
     TooltipModule,
     BentoComponent,
     BtnComponent,
@@ -82,14 +95,22 @@ const POLL_INTERVAL_MS = 5_000;
     SideTagComponent,
     TagComponent,
   ],
-  providers: [ConfirmationService, MessageService],
+  providers: [ConfirmationService],
   templateUrl: './import.html',
   styleUrl: './import.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PortfolioImportComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
-  private messageService = inject(MessageService);
+  private readonly toasts = injectToasts();
+  private readonly destroyRef = inject(DestroyRef);
+  private recalcToastId: number | null = null;
+  /** The 失敗 toast that offers a recalc / status 重試; a newer status supersedes it. */
+  private recalcFailToastId: number | null = null;
+  /** Content of the failure `recalcFailToastId` announced (state + retryable steps); a poll reading the same one leaves the toast alone. */
+  private recalcFailKey: string | null = null;
+  /** A startPolling() arrived while a status read was in flight: poll again once it settles. */
+  private restartPollAfterInFlight = false;
   private confirmationService = inject(ConfirmationService);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
@@ -351,18 +372,18 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   verifyName(name: string, sampleDates: string[]): void {
     const code = this.nameOverrides()[name]?.trim();
     if (!code) {
-      this.messageService.add({ severity: 'warn', summary: '請先填入代號', life: 3000 });
+      this.toasts.error('請先填入代號');
       return;
     }
     const tradeDate = sampleDates?.[sampleDates.length - 1] || sampleDates?.[0];
     if (!tradeDate) {
-      this.messageService.add({ severity: 'warn', summary: '無樣本日期可驗證', life: 3000 });
+      this.toasts.error('無樣本日期可驗證');
       return;
     }
     const pending = new Set(this.verifyingNames());
     pending.add(name);
     this.verifyingNames.set(pending);
-    this.portfolioService.verifyOverrideSymbol(name, code, tradeDate).subscribe({
+    this.portfolioService.verifyOverrideSymbol(name, code, tradeDate).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: result => {
         const local = new Map(this.localValidations());
         local.set(name, {
@@ -379,8 +400,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
         const next = new Set(this.verifyingNames());
         next.delete(name);
         this.verifyingNames.set(next);
-        const detail = importErrorDetail(err);
-        this.messageService.add({ severity: 'error', summary: '驗證失敗', detail, life: 5000 });
+        this.toasts.error(toastText('驗證失敗', importErrorDetail(err)));
       },
     });
   }
@@ -474,19 +494,23 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   }
 
   retryRecalc(): void {
-    if (this.recalcSubmitting() || this.recalcStatus().state === 'running') return;
+    if (this.recalcSubmitting()) return;
+    const state = this.recalcStatus().state;
+    if (state === 'completed') return;
+    if (state === 'running') {
+      // Already running: the consumed 失敗 toast is answered with the 進行中 toast, not silence.
+      this.recalcToastId = this.toasts.progress('資料重算執行中…');
+      return;
+    }
     this.recalcSubmitting.set(true);
     this.portfolioService.triggerRecalc().pipe(finalize(() => this.recalcSubmitting.set(false))).subscribe({
       next: () => {
-        this.messageService.add({
-          severity: 'info', summary: '重新觸發重算', life: 3000,
-        });
+        this.recalcToastId = this.toasts.progress('資料重算執行中…');
         this.startPolling();
       },
       error: err => {
-        const detail = importErrorDetail(err);
-        this.messageService.add({
-          severity: 'error', summary: '重算觸發失敗', detail, life: 6000,
+        this.recalcFailToastId = this.toasts.error(toastText('重算觸發失敗', importErrorDetail(err)), {
+          retry: retryOnNetwork(err, () => this.retryRecalc()),
         });
       },
     });
@@ -495,23 +519,42 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private upload(dryRun: boolean): void {
     const file = this.file();
     if (!file) {
-      this.messageService.add({ severity: 'warn', summary: '請先選擇 CSV', life: 3000 });
+      this.toasts.error('請先選擇 CSV');
       return;
     }
-    const type = this.type();
+    this.sendUpload({
+      file,
+      type: this.type(),
+      dryRun,
+      hasHeader: this.hasHeader(),
+      overrides: { ...this.nameOverrides() },
+      confirmed: Array.from(this.confirmedOverrides()),
+    });
+  }
+
+  /**
+   * Sends `req` as captured. Its result lands on the page only while the page still shows the same file and type;
+   * otherwise only the toast (and the history record of a commit) shows it, so a newly picked file keeps its preview.
+   */
+  private sendUpload(req: UploadRequest): void {
+    if (this.busy()) return;
+    const { file, type, dryRun } = req;
+    const apply = this.file() === file && this.type() === type;
     this.busy.set(true);
-    this.uploadErrors.set([]);
-    this.uploadDetail.set(null);
-    // 重新預覽 after a commit returns to step 2 and re-arms 確認匯入 with the new count.
-    if (dryRun) this.committed.set(false);
-    else this.committing.set(true);
+    if (apply) {
+      this.uploadErrors.set([]);
+      this.uploadDetail.set(null);
+      // 重新預覽 after a commit returns to step 2 and re-arms 確認匯入 with the new count.
+      if (dryRun) this.committed.set(false);
+    }
+    if (!dryRun) this.committing.set(true);
     // Every commit outcome lands in the device-local history (Decision 8); dry-runs do not.
     const record = (res: ImportResult | BrokerCsvImportResult | null, err: unknown) => {
       if (!dryRun) this.history.record(classifyCommit(res, err, file.name, type, new Date()));
     };
     const error = (err: unknown) => {
       record(null, err);
-      this.onUploadError(err);
+      this.onUploadError(err, req, apply);
       this.settle(dryRun);
     };
     // 券商對帳單 detects its own header and never takes name overrides.
@@ -519,22 +562,15 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
       ? this.portfolioService.uploadBrokerCsv(file, dryRun).subscribe({
         next: r => {
           record(r, null);
-          this.onBrokerResult(r, dryRun);
+          this.onBrokerResult(r, dryRun, apply);
           this.settle(dryRun);
         },
         error,
       })
-      : this.portfolioService.uploadCsv(
-        type,
-        file,
-        dryRun,
-        this.hasHeader(),
-        this.nameOverrides(),
-        Array.from(this.confirmedOverrides()),
-      ).subscribe({
+      : this.portfolioService.uploadCsv(type, file, dryRun, req.hasHeader, req.overrides, req.confirmed).subscribe({
         next: r => {
           record(r, null);
-          this.onCsvResult(r, dryRun);
+          this.onCsvResult(r, type, dryRun, apply);
           this.settle(dryRun);
         },
         error,
@@ -555,29 +591,39 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     }
   }
 
-  private onBrokerResult(result: BrokerCsvImportResult, dryRun: boolean): void {
-    this.brokerResult.set(result);
+  private onBrokerResult(result: BrokerCsvImportResult, dryRun: boolean, apply: boolean): void {
     this.busy.set(false);
-    if (!dryRun) this.committed.set(true);
-    const severity = result.errors.length > 0 || result.counts.rejected > 0 ? 'warn' : 'success';
-    this.messageService.add({ severity, summary: dryRun ? '預覽完成' : '匯入完成', detail: brokerCountSummary(result), life: 5000 });
-    if (!dryRun && severity === 'success') this.clearFile();
+    if (apply) {
+      this.brokerResult.set(result);
+      if (!dryRun) this.committed.set(true);
+    }
+    const clean = result.errors.length === 0 && result.counts.rejected === 0;
+    const text = toastText(dryRun ? '預覽完成' : '匯入完成', brokerCountSummary(result));
+    if (clean) this.toasts.done(text);
+    else this.toasts.error(text);
+    if (apply && !dryRun && clean) this.clearFile();
   }
 
-  private onUploadError(err: unknown): void {
+  private onUploadError(err: unknown, req: UploadRequest, apply: boolean): void {
     this.busy.set(false);
-    this.uploadErrors.set(extractImportErrors(err));
-    this.uploadDetail.set(importErrorText(err));
-    this.messageService.add({ severity: 'error', summary: '匯入失敗', detail: importErrorDetail(err), life: 6000 });
+    if (apply) {
+      this.uploadErrors.set(extractImportErrors(err));
+      this.uploadDetail.set(importErrorText(err));
+    }
+    this.toasts.error(toastText('匯入失敗', importErrorDetail(err)), {
+      retry: retryOnNetwork(err, () => this.sendUpload(req)),
+    });
   }
 
-  private onCsvResult(result: ImportResult, dryRun: boolean): void {
-    this.result.set(result);
+  private onCsvResult(result: ImportResult, type: ImportType, dryRun: boolean, apply: boolean): void {
     this.busy.set(false);
-    if (!dryRun) this.committed.set(true);
+    if (apply) {
+      this.result.set(result);
+      if (!dryRun) this.committed.set(true);
+    }
     // Accumulate unresolved-name metadata so the override panel persists even after
     // the user types an override (which removes the name from result.unresolved_names).
-    if (result.unresolved_names && result.unresolved_names.length > 0) {
+    if (apply && result.unresolved_names && result.unresolved_names.length > 0) {
       const merged = new Map(this.unresolvedNameMeta());
       for (const u of result.unresolved_names) {
         const prior = merged.get(u.name);
@@ -594,12 +640,12 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     const summary = dryRun ? '預覽完成' : '匯入完成';
     // A dry run reads the preview counts (Cathay dry runs leave created / skipped_duplicates at 0); a commit the wire counters.
     const parts = dryRun
-      ? [`已解析 ${result.parsed} 筆`, previewCountSummary(this.type(), result, result.csv_format ?? null)]
+      ? [`已解析 ${result.parsed} 筆`, previewCountSummary(type, result, result.csv_format ?? null)]
       : [`已解析 ${result.parsed} 筆`, `已新增 ${result.created} 筆`, `重複略過 ${result.skipped_duplicates} 筆`, `錯誤 ${result.errors.length} 筆`];
     if (!dryRun && result.rehashed && result.rehashed > 0) {
       parts.push(`更新 ${result.rehashed} 筆`);
     }
-    const covered = importCounts(this.type(), result, result.csv_format ?? null).covered;
+    const covered = importCounts(type, result, result.csv_format ?? null).covered;
     if (!dryRun && covered > 0) {
       parts.push(`對帳單已涵蓋 ${covered} 筆`);
     }
@@ -610,21 +656,19 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
       parts.push(`代號未驗證 ${result.skipped_unverified} 筆（請於下方確認）`);
     }
     const detail = parts.join('；');
-    const severity =
-      result.errors.length > 0 ||
-      (result.skipped_unresolved ?? 0) > 0 ||
-      (result.skipped_unverified ?? 0) > 0
-        ? 'warn'
-        : 'success';
-    this.messageService.add({ severity, summary, detail, life: 5000 });
-    if (!dryRun && severity === 'success') this.clearFile();
-    if (!dryRun && result.recalc_scheduled) {
-      this.messageService.add({
-        severity: 'info', summary: '資料重算執行中…',
-        detail: '稍後將自動更新淨值圖與股利紀錄', life: 4000,
-      });
-      this.startPolling();
+    const clean =
+      result.errors.length === 0 && (result.skipped_unresolved ?? 0) === 0 && (result.skipped_unverified ?? 0) === 0;
+    const text = toastText(summary, detail);
+    const recalc = !dryRun && result.recalc_scheduled;
+    if (recalc && clean && !this.destroyed) {
+      this.recalcToastId = this.toasts.progress(`${text}；資料重算執行中…`);
+    } else if (clean) {
+      this.toasts.done(text);
+    } else {
+      this.toasts.error(text);
     }
+    if (apply && !dryRun && clean) this.clearFile();
+    if (recalc) this.startPolling();
   }
 
   private startPolling(): void {
@@ -651,16 +695,34 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     // The chained setTimeout below only schedules the next poll after the current
     // request settles, so this guard is mainly belt-and-suspenders for the
     // ngOnInit + post-commit double-call edges.
-    if (this.statusRequestInFlight) return;
+    if (this.statusRequestInFlight) {
+      // A restart must not die with the guard: poll again once the pending read settles.
+      if (startPollingIfRunning) this.restartPollAfterInFlight = true;
+      return;
+    }
     this.statusRequestInFlight = true;
     this.portfolioService.getRecalcStatus().pipe(
+      takeUntilDestroyed(this.destroyRef),
       finalize(() => {
         this.statusRequestInFlight = false;
+        if (this.restartPollAfterInFlight) {
+          this.restartPollAfterInFlight = false;
+          this.startPolling();
+        }
       }),
     ).subscribe({
       next: status => {
         const prevState = this.recalcStatus().state;
         this.recalcStatus.set(status);
+        // A newer status supersedes a 失敗 toast that still offers 重試; the same unresolved failure does not.
+        const prevFailKey = this.recalcFailKey;
+        const sameFailure = status.state === 'partial' && prevFailKey !== null
+          && prevFailKey === `partial|${retryableSteps(status).map(s => s.name).sort().join(',')}`;
+        if (!sameFailure) {
+          if (this.recalcFailToastId !== null) this.toasts.dismiss(this.recalcFailToastId);
+          this.recalcFailToastId = null;
+          this.recalcFailKey = null;
+        }
         if (status.state === 'running') {
           // Keep polling as long as we were polling already (prevState=running),
           // or the caller explicitly asked us to start (ngOnInit / startPolling).
@@ -669,34 +731,33 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
           }
           return;
         }
-        // Settled: emit completion toast only on transitions out of 'running'.
+        // Settled: the page's 進行中 toast ends here; a result toast only on a transition out of 'running'.
         // (status.state is narrowed away from 'running' by the early return above.)
         const justFinished = prevState === 'running';
+        if (this.recalcToastId !== null) this.toasts.dismiss(this.recalcToastId);
+        this.recalcToastId = null;
         if (status.state === 'completed' && justFinished) {
-          this.messageService.add({
-            severity: 'success', summary: '資料重算完成', life: 4000,
-          });
-        } else if (status.state === 'partial' && justFinished) {
-          const failed = (status.steps ?? [])
-            .filter(s => s.status === 'failed' || s.status === 'partial')
-            .map(s => labelOf(RECALC_STEP_LABEL, s.name))
-            .join(', ');
-          this.messageService.add({
-            severity: 'warn',
-            summary: '資料重算尚未完成',
-            detail: (status.steps ?? []).some(s => (s.detail?.deferred_events?.length ?? 0) > 0)
-              ? '歷史股利權益已記錄。請至股利頁確認實際收款；重算不會自動入帳。'
-              : `失敗步驟：${failed || '未知'}。可點擊「重試」`,
-            life: 8000,
-          });
+          this.toasts.done('資料重算完成');
+        } else if (status.state === 'partial' && !sameFailure && (justFinished || prevFailKey !== null)) {
+          const retryable = retryableSteps(status);
+          const deferred = (status.steps ?? []).some(s => (s.detail?.deferred_events?.length ?? 0) > 0);
+          const deferredNote = '；歷史股利權益已記錄，請至股利頁確認實際收款';
+          this.recalcFailKey = `partial|${retryable.map(s => s.name).sort().join(',')}`;
+          if (retryable.length > 0) {
+            const labels = retryable.map(s => labelOf(RECALC_STEP_LABEL, s.name)).join(', ');
+            this.recalcFailToastId = this.toasts.error(
+              `資料重算尚未完成（失敗步驟：${labels}）` + (deferred ? deferredNote : ''),
+              { retry: () => this.retryRecalc() },
+            );
+          } else if (deferred) {
+            this.toasts.error('資料重算尚未完成：歷史股利權益已記錄。請至股利頁確認實際收款；重算不會自動入帳。');
+          } else {
+            // Nothing says which step stopped: neutral text, a re-run may still help.
+            this.recalcFailToastId = this.toasts.error('資料重算尚未完成（失敗步驟：未知）', { retry: () => this.retryRecalc() });
+          }
         } else if (status.state === 'failed' && justFinished) {
           const firstError = (status.steps ?? []).find(s => s.error)?.error ?? '未知錯誤';
-          this.messageService.add({
-            severity: 'error',
-            summary: '資料重算失敗',
-            detail: firstError,
-            life: 8000,
-          });
+          this.toasts.error(toastText('資料重算失敗', firstError));
         }
         if (status.quote_refresh?.state === 'running') {
           this.scheduleNextPoll();
@@ -711,12 +772,10 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
         this.recalcStatus.update(prev =>
           prev.state === 'running' ? { ...prev, state: 'failed' } : prev,
         );
-        this.messageService.add({
-          severity: 'warn',
-          summary: '無法取得重算狀態',
-          detail: '請稍後重試，或手動點擊「重試」',
-          life: 5000,
-        });
+        if (this.recalcToastId !== null) this.toasts.dismiss(this.recalcToastId);
+        this.recalcToastId = null;
+        this.recalcFailKey = null;
+        this.recalcFailToastId = this.toasts.error('無法取得重算狀態', { retry: () => this.startPolling() });
         this.stopPolling();
       },
     });

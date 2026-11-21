@@ -159,6 +159,38 @@ describe('StatementListComponent', () => {
     expect(text(el.querySelector('.empty-history'))).toBe('沒有歷史期間');
   });
 
+  it('重試 keeps the banner through the read (same node, button disabled, a double press reads once); a second failure keeps it; success removes it and focus stays in the page', async () => {
+    const fixture = render();
+    http.expectOne('/api/accounting/accounts/6/statements').flush('nope', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    fixture.detectChanges();
+    const banner = el.querySelector('.page-load-error')!;
+    const button = banner.querySelector<HTMLButtonElement>('.banner-action')!;
+    button.focus();
+    button.click();
+    button.click();
+    fixture.detectChanges();
+    expect(button.disabled).toBe(true);
+    const again = http.expectOne('/api/accounting/accounts/6/statements');
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    again.flush('nope', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.page-load-error')).toHaveLength(1);
+    expect(el.querySelector('.page-load-error')).toBe(banner);
+    expect(button.disabled).toBe(false);
+    button.focus();
+    button.click();
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/accounts/6/statements').flush([statement()]);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(el.querySelector('.page-load-error')).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(el.contains(document.activeElement)).toBe(true);
+  });
+
   it('shows the read error and retries', () => {
     const fixture = render();
     http
@@ -166,16 +198,20 @@ describe('StatementListComponent', () => {
       .flush('nope', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
     const el = fixture.nativeElement as HTMLElement;
-    expect(text(el.querySelector('.load-error'))).toBe('帳單讀取失敗');
+    expect(el.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('帳單讀取失敗');
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
+    expect(el.querySelectorAll('.page-load-error')).toHaveLength(1);
     expect(el.querySelector('app-skeleton')).toBeNull();
 
-    el.querySelector<HTMLButtonElement>('.retry')!.click();
+    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
     fixture.detectChanges();
     http
       .expectOne('/api/accounting/accounts/6/statements')
       .flush([statement({ matched_count: 1, open_case_count: 0 })]);
     fixture.detectChanges();
     expect(text(el.querySelector('.statement-row .sub'))).toBe('對帳 1/1');
+    expect(el.querySelector('.page-load-error')).toBeNull();
   });
 
   it('drops a superseded list when the account changes', () => {

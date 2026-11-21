@@ -18,7 +18,8 @@ import { map } from 'rxjs';
 import { ENTRY_KIND_LABELS, EntryDetail } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { AccountingToastService, scheduleActionError } from '../accounting-toast';
+import { injectToasts } from '../../../services/toast.service';
+import { scheduleActionError } from '../http-errors';
 import { colorOf, iconOf, isHandledKey } from '../accounting-ui';
 import { slashDate } from '../dates';
 import { storedGroupNet } from '../entry-detail/split-card';
@@ -35,6 +36,8 @@ import {
   groupParentUrl,
   readGroupNavState,
 } from './group-nav';
+import { BannerComponent } from '../../ui/banner/banner';
+import { focusPageIfLost, focusRetryIfLost } from '../retry-focus';
 
 /**
  * The 多類別 group view (PR-9): the split as one record, MOZE style. Routed by one of its members
@@ -45,7 +48,7 @@ import {
 @Component({
   selector: 'app-split-group',
   standalone: true,
-  imports: [RouterLink, LockBannerComponent, SplitFolderComponent],
+  imports: [BannerComponent, RouterLink, LockBannerComponent, SplitFolderComponent],
   templateUrl: './split-group.html',
   styleUrls: ['../entry-detail/entry-detail.scss', './split-group.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -67,7 +70,7 @@ export class SplitGroupComponent implements OnInit {
   private layoutMode = inject(LayoutModeService);
   private host = inject<ElementRef<HTMLElement>>(ElementRef);
   private injector = inject(Injector);
-  private readonly toast = inject(AccountingToastService);
+  private readonly toasts = injectToasts();
 
   /** The member the route names (`:eid` under a passbook, else `:id`). */
   readonly routeEntryId = signal<number | null>(null);
@@ -126,9 +129,37 @@ export class SplitGroupComponent implements OnInit {
     });
   }
 
+  private lastLoadId: number | null = null;
+
+  /** A 重試 in flight: the banner stays (same element, nothing re-announced) with its button disabled. */
+  readonly retrying = signal(false);
+
+  private endRetry(ok: boolean): void {
+    if (!this.retrying()) {
+      return;
+    }
+    this.retrying.set(false);
+    if (ok) {
+      focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
+    }
+  }
+
+  /** 重試 on the read-failure banner: the entry the route last asked for. */
+  retry(): void {
+    if (this.retrying()) {
+      return;
+    }
+    if (this.lastLoadId !== null) {
+      this.retrying.set(true);
+      this.load(this.lastLoadId);
+    }
+  }
+
   private load(id: number): void {
+    this.lastLoadId = id;
     const seq = ++this.loadSeq;
-    this.loadError.set(false);
     this.service
       .getEntry(id)
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -147,11 +178,14 @@ export class SplitGroupComponent implements OnInit {
             return;
           }
           this.detail.set(detail);
+          this.loadError.set(false);
+          this.endRetry(true);
         },
         error: () => {
           if (seq === this.loadSeq) {
             this.detail.set(null);
             this.loadError.set(true);
+            this.endRetry(false);
           }
         },
       });
@@ -243,7 +277,7 @@ export class SplitGroupComponent implements OnInit {
             return;
           }
           this.busy.set(false);
-          this.formError.set(scheduleActionError(error, this.toast));
+          this.formError.set(scheduleActionError(error, this.toasts));
         },
       });
   }

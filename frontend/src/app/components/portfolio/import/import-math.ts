@@ -1,4 +1,4 @@
-import { BrokerCsvImportResult, ImportResult, ImportRow, RecalcStatus, UnresolvedName } from '../../../models/portfolio.model';
+import { BrokerCsvImportResult, ImportResult, ImportRow, RecalcStatus, RecalcStepStatus, UnresolvedName } from '../../../models/portfolio.model';
 import type { TagVariant } from '../../ui/tag/tag';
 
 export type ImportType = 'transactions' | 'dividends' | 'broker';
@@ -179,12 +179,12 @@ export function attemptLine(a: ImportAttempt): string {
 
 /**
  * Banner (a) (Decision 9): only for a failed attempt that wrote nothing (`created 0`), so the
- * 整批未寫入 sentence is always true. Row errors → `{file} 有 {n} 列錯誤`; else `{file}，{reason}`.
+ * 沒有寫入任何資料 sentence is always true. Row errors → `{file} 有 {n} 列錯誤`; else `{file}，{reason}`.
  */
-export function failureBanner(a: ImportAttempt | undefined): { lead: string; body: string } | null {
+export function failureBanner(a: ImportAttempt | undefined): { heading: string; detail: string } | null {
   if (!a || a.ok || (a.created ?? 0) > 0) return null;
-  const what = (a.errors ?? 0) > 0 ? `${a.file} 有 ${a.errors} 列錯誤` : `${a.file}，${a.reason || '未知錯誤'}`;
-  return { lead: '最近一次匯入失敗', body: `（${stamp(a.at)}）：${what}，整批未寫入。修正後重新上傳即可。` };
+  const reason = (a.errors ?? 0) > 0 ? `有 ${a.errors} 列錯誤` : a.reason || '未知錯誤';
+  return { heading: '最近一次匯入失敗', detail: `${stamp(a.at)} · ${a.file} · ${reason}，沒有寫入任何資料。` };
 }
 
 /** Recalc state labels (#111); keys are `RecalcStatus.state`. */
@@ -208,11 +208,20 @@ export function labelOf(map: Record<string, string>, raw: string | null | undefi
   return Object.prototype.hasOwnProperty.call(map, raw) ? map[raw] : raw;
 }
 
+export type RecalcStep = RecalcStepStatus;
+
+/** Steps a re-run can fix: `failed`, or `partial` that is not only deferred dividend events. */
+export function retryableSteps(status: RecalcStatus): RecalcStep[] {
+  return (status.steps ?? []).filter(
+    s => s.status === 'failed' || (s.status === 'partial' && !(s.detail?.deferred_events?.length ?? 0)),
+  );
+}
+
 /** Banner (b): a failed import recalc (rows may have been written, so no nothing-written sentence). */
-export function recalcBanner(status: RecalcStatus): string | null {
+export function recalcBanner(status: RecalcStatus): { heading: string; detail: string } | null {
   if (status.kind === 'quotes' || status.state !== 'failed') return null;
   const reason = (status.steps ?? []).find(s => s.error)?.error || labelOf(RECALC_STEP_LABEL, status.current_step) || '未知錯誤';
-  return `最近一次匯入的重算失敗：${reason}`;
+  return { heading: '最近一次匯入的重算失敗', detail: reason };
 }
 
 /** The recalc panel (Decision 12): step 3, a running / failed / partial status, or a quote run. */

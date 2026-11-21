@@ -24,7 +24,8 @@ import {
   SchedulePostingMode,
 } from '../../../../models/accounting.model';
 import { AccountingService } from '../../../../services/accounting.service';
-import { AccountingToastService, scheduleActionError } from '../../accounting-toast';
+import { injectToasts } from '../../../../services/toast.service';
+import { scheduleActionError } from '../../http-errors';
 import { focusSheetField, sheetKeyAction } from '../../accounting-ui';
 import { evaluateAmount } from '../../amount-math';
 import { parseAmountFields } from '../../amount-text';
@@ -75,7 +76,7 @@ function loanConflictMessage(error: unknown): string | null {
 export class ScheduleSheetComponent {
   private readonly accounting = inject(AccountingService);
   private readonly router = inject(Router);
-  private readonly toast = inject(AccountingToastService);
+  private readonly toasts = injectToasts();
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly injector = inject(Injector);
   private readonly destroyed = signal(false);
@@ -208,7 +209,7 @@ export class ScheduleSheetComponent {
   /**
    * One action; on success the sheet reloads (or `after` runs), and the service bump reloads the reminder centre.
    * The request is not cancelled when the sheet closes (the write and its bump still land), but a destroyed sheet
-   * ignores the answer: no emit, no reload, no focus work.
+   * ignores the answer: no emit, no reload, no focus work (a failure still reaches the toast).
    */
   private act(request: Observable<unknown>, after?: () => void): void {
     this.busy.set(true);
@@ -228,12 +229,12 @@ export class ScheduleSheetComponent {
       },
       error: (error: unknown) => {
         if (this.destroyed()) {
-          // import_running still shows the page toast; nothing else of a closed sheet is touched.
-          scheduleActionError(error, this.toast);
+          // A closed sheet touches nothing of its own; the 失敗 toast still reports the answer (no 重試: the sheet is gone).
+          scheduleActionError(error, this.toasts);
           return;
         }
         this.busy.set(false);
-        this.error.set(scheduleActionError(error, this.toast));
+        this.error.set(scheduleActionError(error, this.toasts));
         this.keepFocusInside();
       },
     });
@@ -450,11 +451,11 @@ export class ScheduleSheetComponent {
         },
         error: (error: unknown) => {
           if (this.destroyed()) {
-            scheduleActionError(error, this.toast);
+            scheduleActionError(error, this.toasts);
             return;
           }
           this.busy.set(false);
-          this.error.set(loanConflictMessage(error) ?? scheduleActionError(error, this.toast));
+          this.error.set(loanConflictMessage(error) ?? scheduleActionError(error, this.toasts));
           this.keepFocusInside();
         },
       });

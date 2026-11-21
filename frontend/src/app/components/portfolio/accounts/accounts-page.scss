@@ -26,7 +26,7 @@
   gap: 18px;
 }
 
-// The list's `.acct-master` column is its host's only in-flow child (toast, dialogs and the cash form overlay), so
+// The list's `.acct-master` column is its host's only in-flow child (dialogs and the cash form overlay), so
 // the cap goes on the host: the page's emulated styles cannot reach the list's own elements without ::ng-deep.
 .accounts-compact > app-portfolio-accounts-list {
   display: block;

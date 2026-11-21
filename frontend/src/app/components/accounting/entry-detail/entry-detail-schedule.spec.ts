@@ -6,7 +6,7 @@ import { of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail, EntryScheduleLink } from '../../../models/accounting.model';
-import { AccountingToastService } from '../accounting-toast';
+import { ToastService } from '../../../services/toast.service';
 import { makeAccount, makeDefinition, makeEntry, makeEntryDetail, makeGroupMember, makeInstance } from '../testing/fixtures';
 import { EntryDetailComponent } from './entry-detail';
 
@@ -314,7 +314,7 @@ describe('EntryDetailComponent schedules', () => {
       { code: 409, message: 'import_running', trace_id: 't' }, { status: 409, statusText: 'Conflict' },
     );
     fixture.detectChanges();
-    expect(TestBed.inject(AccountingToastService).message()).toBe('匯入進行中，請稍後再試');
+    expect(TestBed.inject(ToastService).current()).toMatchObject({ kind: 'error', text: '匯入進行中，請稍後再試' });
     expect(el.querySelector('.form-error')).toBeNull();
     expect(el.querySelector('.detail-name')).not.toBeNull();
   });

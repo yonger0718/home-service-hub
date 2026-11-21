@@ -256,26 +256,11 @@
   }
 }
 
-.rp-error,
 .rp-loading,
 .rp-soon {
   color: var(--app-text-muted);
   font-size: var(--fs-sm);
   margin: 0;
-}
-
-.rp-retry {
-  background: var(--app-primary-soft);
-  border: 0;
-  border-radius: 10px;
-  color: var(--app-primary);
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--fs-sm);
-  font-weight: 700;
-  margin-left: 8px;
-  min-height: 32px;
-  padding: 0 12px;
 }
 
 /* Phones: the pinned saved reports as a chip row under the tabs. */
@@ -308,3 +293,8 @@
   padding: 0 12px;
   text-decoration: none;
 }
+
+.page-load-error { margin: 8px 0 12px; }
+
+/* Focus lands here after a 重試 succeeded (programmatic only). */
+section:focus { outline: none; }

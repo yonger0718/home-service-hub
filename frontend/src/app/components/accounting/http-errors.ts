@@ -1,5 +1,6 @@
 import { HttpErrorResponse } from '@angular/common/http';
 
+import type { ToastScope } from '../../services/toast.service';
 import { IMPORT_RUNNING_TOAST, isImportRunning } from './schedule-math';
 
 interface ValidationItem {
@@ -89,4 +90,23 @@ export function writeErrorMessage(err: unknown): string {
     }
   }
   return '儲存失敗，請稍後再試';
+}
+
+/** A save that may not have reached the server (offline, 5xx): safe to offer 重試. */
+export function isNetworkFailure(err: unknown): boolean {
+  return err instanceof HttpErrorResponse && (err.status === 0 || err.status >= 500);
+}
+
+/** `run` as the toast's retry for a network failure, else `undefined` (a 4xx says what to fix). */
+export function retryOnNetwork(err: unknown, run: () => void): (() => void) | undefined {
+  return isNetworkFailure(err) ? run : undefined;
+}
+
+/** A failed schedule action: `import_running` raises the 失敗 toast (page state unchanged) → null; else the error line. */
+export function scheduleActionError(err: unknown, toasts: ToastScope): string | null {
+  if (isImportRunning(err)) {
+    toasts.error(IMPORT_RUNNING_TOAST);
+    return null;
+  }
+  return writeErrorMessage(err);
 }

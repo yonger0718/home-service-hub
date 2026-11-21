@@ -27,7 +27,8 @@ import {
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { AccountingToastService, scheduleActionError } from '../accounting-toast';
+import { injectToasts } from '../../../services/toast.service';
+import { scheduleActionError } from '../http-errors';
 import { NO_ENTER_SAVE_TAGS, textOn, colorOf, fxConversionLine, iconOf, isHandledKey } from '../accounting-ui';
 import {
   amountString,
@@ -51,6 +52,8 @@ import { AppEntryRewardRepriceCardComponent } from './reward-reprice-card';
 import { RewardAmountText } from './reward-cards';
 import { AppEntryRewardSectionComponent } from './reward-section';
 import { storedGroupNet } from './split-card';
+import { BannerComponent } from '../../ui/banner/banner';
+import { focusPageIfLost, focusRetryIfLost } from '../retry-focus';
 
 /**
  * What a settlement is worth in the debt's currency (design D3): its `amount` in the same currency, else its
@@ -103,7 +106,7 @@ interface Chip {
 @Component({
   selector: 'app-entry-detail',
   standalone: true,
-  imports: [NgTemplateOutlet, RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent, AppEntryRewardSectionComponent],
+  imports: [BannerComponent, NgTemplateOutlet, RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent, AppEntryRewardSectionComponent],
   templateUrl: './entry-detail.html',
   styleUrl: './entry-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -166,7 +169,7 @@ export class EntryDetailComponent implements OnInit {
   readonly formNote = signal('');
   readonly formError = signal<string | null>(null);
   readonly busy = signal(false);
-  private readonly toast = inject(AccountingToastService);
+  private readonly toasts = injectToasts();
   /** The definition of the shown entry's period (scope choice, repost amounts); request-id guarded. */
   readonly scheduleDefinition = signal<ScheduleDefinitionDetail | null>(null);
   readonly repostAmounts = signal<string[]>([]);
@@ -640,15 +643,43 @@ export class EntryDetailComponent implements OnInit {
           return;
         }
         this.busy.set(false);
-        this.formError.set(scheduleActionError(err, this.toast));
+        this.formError.set(scheduleActionError(err, this.toasts));
       },
     });
   }
 
+  private lastLoadId: number | null = null;
+
+  /** A 重試 in flight: the banner stays (same element, nothing re-announced) with its button disabled. */
+  readonly retrying = signal(false);
+
+  private endRetry(ok: boolean): void {
+    if (!this.retrying()) {
+      return;
+    }
+    this.retrying.set(false);
+    if (ok) {
+      focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
+    }
+  }
+
+  /** 重試 on the read-failure banner: the entry the route last asked for. */
+  retry(): void {
+    if (this.retrying()) {
+      return;
+    }
+    if (this.lastLoadId !== null) {
+      this.retrying.set(true);
+      this.load(this.lastLoadId);
+    }
+  }
+
   /** `afterWrite`: a reload after a successful write; when it fails the stale record is cleared, not shown. */
   load(id: number, afterWrite = false): void {
+    this.lastLoadId = id;
     const seq = ++this.loadSeq;
-    this.loadError.set(false);
     this.service
       .getEntry(id)
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -657,6 +688,8 @@ export class EntryDetailComponent implements OnInit {
           if (seq === this.loadSeq) {
             this.stepping.set(false);
             this.detail.set(detail);
+            this.loadError.set(false);
+            this.endRetry(true);
           }
         },
         error: () => {
@@ -666,6 +699,7 @@ export class EntryDetailComponent implements OnInit {
               this.detail.set(null);
             }
             this.loadError.set(true);
+            this.endRetry(false);
           }
         },
       });
@@ -829,7 +863,7 @@ export class EntryDetailComponent implements OnInit {
             return;
           }
           this.busy.set(false);
-          this.formError.set(scheduleActionError(error, this.toast));
+          this.formError.set(scheduleActionError(error, this.toasts));
         },
       });
   }

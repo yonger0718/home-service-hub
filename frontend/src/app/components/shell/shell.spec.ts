@@ -19,7 +19,7 @@ import {
 } from '../../services/layout-mode.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
 import { PaneStateService } from '../../services/pane-state.service';
-import { FAB_RIGHT_BESIDE_PANE } from '../accounting/accounting-layout/accounting-layout';
+import { FAB_RIGHT_BESIDE_CALENDAR_PANE, FAB_RIGHT_BESIDE_PANE } from '../accounting/accounting-layout/accounting-layout';
 import { DirtyAware, DirtyFormRegistry } from '../accounting/dirty-form.service';
 import { AccountingShortcutsService, EntryCommand } from '../accounting/keyboard-shortcuts';
 import { ShellComponent } from './shell';
@@ -777,5 +777,50 @@ describe('記一筆 hides while scrolling (D5)', () => {
     expect(css).toMatch(/transition:[^;]*visibility 0s linear 0s/);
     expect(css).toMatch(/&\.is-hidden\s*{[^}]*transition-delay:\s*0s,\s*0s,\s*160ms/);
     expect(css).toMatch(/prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.hub-fab\s*{\s*transition:\s*none/);
+  });
+
+  describe('toast outlet', () => {
+    const outletOf = (el: HTMLElement) => el.querySelector<HTMLElement>('.hub-layout > app-toast-outlet')!;
+    const clear = (el: HTMLElement) => outletOf(el).style.getPropertyValue('--toast-fab-clear');
+
+    it.each([1440, 820, 390])('renders one toast outlet inside .hub-layout at %i px', async (width) => {
+      const { el } = await render(viewportOf(width));
+
+      expect(el.querySelectorAll('app-toast-outlet')).toHaveLength(1);
+      expect(outletOf(el)).not.toBeNull();
+    });
+
+    it('--toast-fab-clear follows the floating 記一筆', async () => {
+      const { fixture, el } = await render(viewportOf(1440));
+      const pane = TestBed.inject(PaneStateService);
+
+      expect(clear(el)).toBe('calc(30px + 68px)');
+      pane.fabRight.set(FAB_RIGHT_BESIDE_PANE);
+      fixture.detectChanges();
+      expect(clear(el)).toBe(`calc(${FAB_RIGHT_BESIDE_PANE} + 68px)`);
+      pane.fabRight.set(FAB_RIGHT_BESIDE_CALENDAR_PANE);
+      fixture.detectChanges();
+      expect(clear(el)).toBe(`calc(${FAB_RIGHT_BESIDE_CALENDAR_PANE} + 68px)`);
+    });
+
+    it('--toast-fab-clear is 24px while the 記一筆 is hidden (phone, sheet, form, reports)', async () => {
+      const phone = await render(viewportOf(390));
+      expect(clear(phone.el)).toBe('24px');
+      TestBed.resetTestingModule();
+
+      const wide = await render(viewportOf(820));
+      const pane = TestBed.inject(PaneStateService);
+      pane.sheetOpen.set(true);
+      wide.fixture.detectChanges();
+      expect(clear(wide.el)).toBe('24px');
+      pane.sheetOpen.set(false);
+      pane.formOpen.set(true);
+      wide.fixture.detectChanges();
+      expect(clear(wide.el)).toBe('24px');
+      TestBed.resetTestingModule();
+
+      const reports = await render(viewportOf(1440), { url: '/accounting/reports' });
+      expect(clear(reports.el)).toBe('24px');
+    });
   });
 });

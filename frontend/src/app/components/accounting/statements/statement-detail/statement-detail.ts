@@ -14,7 +14,7 @@ import { ActivatedRoute, RouterLink } from '@angular/router';
 import { AccountPeriodSummary, LedgerEntry } from '../../../../models/accounting.model';
 import { AccountingService } from '../../../../services/accounting.service';
 import { LayoutModeService } from '../../../../services/layout-mode.service';
-import { AccountingToastService } from '../../accounting-toast';
+import { injectToasts } from '../../../../services/toast.service';
 import { focusSheetField, isHandledKey, sheetKeyAction, trapFocus } from '../../accounting-ui';
 import { DirtyAware, DirtyFormRegistry } from '../../dirty-form.service';
 import { fieldErrors } from '../../http-errors';
@@ -39,6 +39,8 @@ import {
   statementChips,
 } from '../statement-view';
 import { StatementsService } from '../statements.service';
+import { BannerComponent } from '../../../ui/banner/banner';
+import { focusPageIfLost, focusRetryIfLost } from '../../retry-focus';
 
 type SegmentKey = 'matched' | 'statement' | 'ledger';
 
@@ -48,7 +50,7 @@ const ENTRY_LIMIT = 500;
 @Component({
   selector: 'app-statement-detail',
   standalone: true,
-  imports: [RouterLink, SkeletonComponent],
+  imports: [RouterLink, SkeletonComponent, BannerComponent],
   templateUrl: './statement-detail.html',
   styleUrls: ['../../entry-row.scss', '../../sheet.scss', './statement-detail.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -59,7 +61,7 @@ export class StatementDetailComponent implements DirtyAware {
   private readonly accounting = inject(AccountingService);
   private readonly statementsApi = inject(StatementsService);
   private readonly layoutMode = inject(LayoutModeService);
-  private readonly toast = inject(AccountingToastService);
+  private readonly toasts = injectToasts();
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly injector = inject(Injector);
   readonly dirty = inject(DirtyFormRegistry);
@@ -161,7 +163,27 @@ export class StatementDetailComponent implements DirtyAware {
     this.host.nativeElement.querySelector<HTMLElement>('.force-note')?.focus();
   }
 
+
+  /** A 重試 in flight: the banner stays (same element, nothing re-announced) with its button disabled. */
+  readonly retrying = signal(false);
+
+  private endRetry(ok: boolean): void {
+    if (!this.retrying()) {
+      return;
+    }
+    this.retrying.set(false);
+    if (ok) {
+      focusPageIfLost(this.host.nativeElement, this.injector, 'h1');
+    } else {
+      focusRetryIfLost(this.host.nativeElement, this.injector, '.page-load-error .banner-action');
+    }
+  }
+
   retry(): void {
+    if (this.retrying()) {
+      return;
+    }
+    this.retrying.set(true);
     this.load();
   }
 
@@ -197,15 +219,15 @@ export class StatementDetailComponent implements DirtyAware {
       next: (result) => {
         this.busy.set(false);
         if (result.replayed) {
-          this.toast.show('這次與上次相同，沒有重複執行');
+          this.toasts.done('這次與上次相同，沒有重複執行');
         } else if (result.skipped) {
-          this.toast.show(
+          this.toasts.error(
             result.skipped === 'parse_review'
               ? '有待確認的變更，這次沒有重跑對帳'
               : `這次略過（${result.skipped}）`,
           );
         } else {
-          this.toast.show('已重新對帳');
+          this.toasts.done('已重新對帳');
         }
         this.load();
       },
@@ -291,9 +313,9 @@ export class StatementDetailComponent implements DirtyAware {
         this.busy.set(false);
         this.closeForce();
         if (result.replayed) {
-          this.toast.show('這次與上次相同，沒有重複執行');
+          this.toasts.done('這次與上次相同，沒有重複執行');
         } else {
-          this.toast.show(result.forced ? '已強制確認' : '已確認');
+          this.toasts.done(result.forced ? '已強制確認' : '已確認');
         }
         this.load();
       },
@@ -330,7 +352,6 @@ export class StatementDetailComponent implements DirtyAware {
     const statementId = this.statementId();
     const id = ++this.requestId;
     this.loading.set(true);
-    this.loadError.set(false);
     this.summaryError.set(false);
     this.entriesError.set(false);
     this.detail.set(null);
@@ -347,6 +368,8 @@ export class StatementDetailComponent implements DirtyAware {
         }
         this.detail.set(detail);
         this.loading.set(false);
+        this.loadError.set(false);
+        this.endRetry(true);
         this.loadLedger(id, detail);
       },
       error: () => {
@@ -355,6 +378,7 @@ export class StatementDetailComponent implements DirtyAware {
         }
         this.loading.set(false);
         this.loadError.set(true);
+        this.endRetry(false);
       },
     });
   }

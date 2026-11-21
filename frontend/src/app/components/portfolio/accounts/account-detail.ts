@@ -10,12 +10,13 @@ import {
   signal,
   untracked,
 } from '@angular/core';
+import { HttpErrorResponse } from '@angular/common/http';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
-import { BehaviorSubject, Observable, catchError, debounceTime, distinctUntilChanged, filter, map, merge, of, switchMap } from 'rxjs';
+import { BehaviorSubject, Observable, catchError, debounceTime, distinctUntilChanged, filter, finalize, map, merge, of, switchMap, tap } from 'rxjs';
 
-import { ConfirmationService, MessageService } from 'primeng/api';
+import { ConfirmationService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { CardModule } from 'primeng/card';
 import { ChartModule } from 'primeng/chart';
@@ -30,7 +31,6 @@ import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { SelectButtonModule } from 'primeng/selectbutton';
 import { SelectModule } from 'primeng/select';
 import { TagModule } from 'primeng/tag';
-import { ToastModule } from 'primeng/toast';
 
 import {
   BalanceHistory,
@@ -45,9 +45,12 @@ import {
   PatchBrokerAccount,
 } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { injectToasts, toastText } from '../../../services/toast.service';
+import { guardedRetry } from '../../../services/toast-retry';
 import { AppearanceService } from '../../../services/appearance.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { formatMoney } from '../../ui/format';
+import { BannerComponent } from '../../ui/banner/banner';
 import { SwitchComponent } from '../../ui/switch/switch';
 import { TagComponent } from '../../ui/tag/tag';
 import { BROKER_OPTIONS } from './accounts-list';
@@ -103,7 +106,22 @@ const BROKER_LABELS: Record<BrokerEnum, string> = Object.fromEntries(
 interface CashQueryEvent {
   query: CashTransactionQuery;
   immediate: boolean;
+  /** The batch of reads this page belongs to (a reload); absent for a filter or page change on its own. */
+  batch?: ReadBatch;
 }
+
+/** The parallel reads started together: one 失敗 toast however many of them fail. */
+interface ReadBatch {
+  pending: number;
+  failed: boolean;
+  /** Only a reload of everything may take down a stale failure toast. */
+  full: boolean;
+  /** The account the reads were started for, and (full batches) the `readGeneration` they belong to. */
+  accountId: number;
+  generation: number;
+}
+
+type ReadOutcome = 'ok' | 'failed' | 'cancelled';
 
 function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent {
   return event !== null;
@@ -114,6 +132,7 @@ function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent
   standalone: true,
   imports: [
     PageHeaderComponent,
+    BannerComponent,
     FilterBarComponent,
     FormsModule,
     ReactiveFormsModule,
@@ -131,11 +150,10 @@ function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent
     SelectButtonModule,
     SelectModule,
     TagModule,
-    ToastModule,
     SwitchComponent,
     TagComponent,
   ],
-  providers: [ConfirmationService, MessageService],
+  providers: [ConfirmationService],
   templateUrl: './account-detail.html',
   styleUrl: './account-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -143,7 +161,7 @@ function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent
 export class PortfolioAccountDetailComponent implements OnInit {
   private portfolioService = inject(PortfolioService);
   private confirmationService = inject(ConfirmationService);
-  private messageService = inject(MessageService);
+  private readonly toasts = injectToasts();
   private route = inject(ActivatedRoute);
   private fb = inject(FormBuilder);
   private destroyRef = inject(DestroyRef);
@@ -174,6 +192,9 @@ export class PortfolioAccountDetailComponent implements OnInit {
   readonly selectedTypes = signal<CashTransactionType[]>([]);
   readonly mergeRelated = signal<boolean>(false);
   readonly expandedTransactionIds = signal<Set<number>>(new Set<number>());
+  /** Bumped each time a dialog opens or closes: a late answer (or 重試) touches a dialog only if it is still the one it was sent from. */
+  private dialogSession = 0;
+  private deleting = false;
   readonly editDialogVisible = signal<boolean>(false);
   readonly transactionDialogVisible = signal<boolean>(false);
   readonly savingAccount = signal<boolean>(false);
@@ -294,6 +315,11 @@ export class PortfolioAccountDetailComponent implements OnInit {
     },
   };
 
+  /** The 帳戶讀取失敗 toast of the last failed batch, for the reload that clears it. */
+  private readFailureToastId: number | null = null;
+  /** Bumped by every reload and account switch: a full batch of an older generation is ignored entirely. */
+  private readGeneration = 0;
+
   private cssVar(name: string): string {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   }
@@ -316,7 +342,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
       .pipe(
         switchMap(event => {
           const accountId = this.effectiveId();
-          return this.requestTransactions(accountId, event.query).pipe(map(paged => ({ paged, query: event.query, accountId })));
+          return this.requestTransactions(accountId, event.query, event.batch).pipe(map(paged => ({ paged, query: event.query, accountId })));
         }),
         takeUntilDestroyed(this.destroyRef),
       )
@@ -341,14 +367,13 @@ export class PortfolioAccountDetailComponent implements OnInit {
   });
 
   private selectAccount(id: number): void {
+    this.readGeneration++;
     this.clearAccountState();
     if (!id) return;
     const mergeRelated = this.readMergeRelated(id);
     this.mergeRelated.set(mergeRelated);
     this.query.set(this.withMergeRelated({ ...this.query(), offset: 0 }, mergeRelated));
-    this.loadAccount();
-    this.loadBalanceHistory();
-    this.fetchTransactions();
+    this.readAll();
   }
 
   /**
@@ -429,10 +454,12 @@ export class PortfolioAccountDetailComponent implements OnInit {
       is_active: account.is_active,
     });
     this.editAccountId = account.id;
+    this.dialogSession++;
     this.editDialogVisible.set(true);
   }
 
   closeEditDialog(): void {
+    this.dialogSession++;
     this.editDialogVisible.set(false);
     this.editAccountId = null;
   }
@@ -456,6 +483,10 @@ export class PortfolioAccountDetailComponent implements OnInit {
       is_active: raw.is_active,
     };
 
+    this.sendEdit(accountId, patch, this.dialogSession);
+  }
+
+  private sendEdit(accountId: number, patch: PatchBrokerAccount, session: number): void {
     this.savingAccount.set(true);
     this.portfolioService.patchAccount(accountId, patch).subscribe({
       next: account => {
@@ -463,15 +494,18 @@ export class PortfolioAccountDetailComponent implements OnInit {
         // Switched away while saving: the write landed on its own account; leave the one now shown alone.
         if (account.id === this.effectiveId()) {
           this.account.set(account);
-          this.closeEditDialog();
+          if (session === this.dialogSession) this.closeEditDialog();
         }
-        this.messageService.add({ severity: 'success', summary: '已更新', detail: '帳戶資料已更新' });
+        this.toasts.done('帳戶資料已更新');
         if (!this.embedded()) this.loadBalanceHistory();
         this.portfolioService.notifyCashLedgerChanged();
       },
-      error: () => {
+      error: err => {
         this.savingAccount.set(false);
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '帳戶更新失敗' });
+        const text = '帳戶更新失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.savingAccount(), () => this.sendEdit(accountId, patch, session)),
+        });
       },
     });
   }
@@ -480,6 +514,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
     if (!this.accountReady()) return;
     this.resetTransactionForm();
     this.transactionAccountId = this.effectiveId();
+    this.dialogSession++;
     this.transactionDialogVisible.set(true);
   }
 
@@ -504,10 +539,12 @@ export class PortfolioAccountDetailComponent implements OnInit {
       note: '補登未記錄入金',
     });
     this.transactionAccountId = this.effectiveId();
+    this.dialogSession++;
     this.transactionDialogVisible.set(true);
   }
 
   closeTransactionDialog(): void {
+    this.dialogSession++;
     this.transactionDialogVisible.set(false);
     this.transactionAccountId = null;
   }
@@ -534,17 +571,24 @@ export class PortfolioAccountDetailComponent implements OnInit {
       note: note || null,
     };
 
+    this.sendTransaction(accountId, body, this.dialogSession);
+  }
+
+  private sendTransaction(accountId: number, body: CreateCashTransaction, session: number): void {
     this.savingTransaction.set(true);
     this.portfolioService.createCashTransaction(accountId, body).subscribe({
       next: () => {
         this.savingTransaction.set(false);
-        if (accountId === this.effectiveId()) this.closeTransactionDialog();
-        this.messageService.add({ severity: 'success', summary: '已新增', detail: '交易已建立' });
+        if (accountId === this.effectiveId() && session === this.dialogSession) this.closeTransactionDialog();
+        this.toasts.done('交易已建立');
         this.ledgerWritten();
       },
-      error: () => {
+      error: err => {
         this.savingTransaction.set(false);
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '新增交易失敗' });
+        const text = '新增交易失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.savingTransaction(), () => this.sendTransaction(accountId, body, session)),
+        });
       },
     });
   }
@@ -577,19 +621,30 @@ export class PortfolioAccountDetailComponent implements OnInit {
       return;
     }
 
-    this.portfolioService.deleteCashTransaction(accountId, txn.id).subscribe({
-      next: () => {
-        this.ledgerWritten();
-        this.messageService.add({ severity: 'success', summary: '成功', detail: '已刪除' });
-      },
+    this.sendDelete(txn, accountId);
+  }
+
+  private sendDelete(txn: CashTransaction, accountId: number): void {
+    this.deleting = true;
+    this.portfolioService.deleteCashTransaction(accountId, txn.id).pipe(finalize(() => (this.deleting = false))).subscribe({
+      next: () => this.deleted(),
       error: error => {
-        this.messageService.add({
-          severity: 'error',
-          summary: '錯誤',
-          detail: `刪除失敗: ${this.deleteErrorMessage(error)}`,
+        // The interceptor already retried once: a 404 here means the first attempt did commit, so the row is gone.
+        if (error instanceof HttpErrorResponse && error.status === 404) {
+          this.deleted();
+          return;
+        }
+        const text = toastText('刪除失敗', this.deleteErrorMessage(error));
+        this.toasts.error(text, {
+          retry: guardedRetry(error, this.toasts, text, () => this.deleting, () => this.sendDelete(txn, accountId)),
         });
       },
     });
+  }
+
+  private deleted(): void {
+    this.ledgerWritten();
+    this.toasts.done('已刪除');
   }
 
   clearFilters(): void {
@@ -656,7 +711,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
 
   private abortSwitchedWrite(close: () => void): void {
     close();
-    this.messageService.add({ severity: 'warn', summary: '已取消', detail: ACCOUNT_SWITCHED_DETAIL });
+    this.toasts.error(toastText('已取消', ACCOUNT_SWITCHED_DETAIL));
   }
 
   private resetEditForm(): void {
@@ -675,30 +730,65 @@ export class PortfolioAccountDetailComponent implements OnInit {
 
   private reload(): void {
     if (!this.effectiveId()) return;
-    this.loadAccount();
-    this.loadBalanceHistory();
-    this.fetchTransactions();
+    this.readAll();
   }
 
-  private loadAccount(): void {
+  /** Account, balance history and the transactions page, as one batch of reads. */
+  private readAll(): void {
+    this.readGeneration++;
+    const batch = this.startReads(3, true);
+    this.loadAccount(batch);
+    this.loadBalanceHistory(batch);
+    this.fetchTransactions(batch);
+  }
+
+  private startReads(pending: number, full: boolean, accountId = this.effectiveId()): ReadBatch {
+    return { pending, failed: false, full, accountId, generation: this.readGeneration };
+  }
+
+  /** A read of a superseded batch (a newer reload, or another account shown since) is ignored: no toast, no dismissal. */
+  private isLive(batch: ReadBatch): boolean {
+    return batch.accountId === this.effectiveId() && (!batch.full || batch.generation === this.readGeneration);
+  }
+
+  /**
+   * One read of `batch` ended. The first failure raises 帳戶讀取失敗 (重試 = the whole reload); the rest of the batch
+   * raises nothing more. When a full reload ends without a failure, a 失敗 toast from an earlier one is dismissed.
+   */
+  private readSettled(batch: ReadBatch, outcome: ReadOutcome): void {
+    if (!this.isLive(batch)) return;
+    if (outcome === 'failed' && !batch.failed) {
+      batch.failed = true;
+      this.readFailureToastId = this.toasts.error('帳戶讀取失敗', { retry: () => this.reload() });
+    }
+    // A cancelled read (a newer page request replaced it) neither fails nor holds the batch open.
+    batch.pending--;
+    if (batch.pending === 0 && batch.full && !batch.failed && this.readFailureToastId !== null) {
+      this.toasts.dismiss(this.readFailureToastId);
+      this.readFailureToastId = null;
+    }
+  }
+
+  private loadAccount(batch: ReadBatch): void {
     this.portfolioService.getAccounts({ include_inactive: true }).subscribe({
       next: list => {
         const account = list.items.find(item => item.id === this.effectiveId()) ?? null;
         this.account.set(account);
+        this.readSettled(batch, 'ok');
       },
-      error: () => {
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '帳戶讀取失敗' });
-      },
+      error: () => this.readSettled(batch, 'failed'),
     });
   }
 
-  private loadBalanceHistory(): void {
+  /** On its own (a new window, a saved edit) it is a batch of one. */
+  private loadBalanceHistory(batch: ReadBatch = this.startReads(1, false)): void {
     const id = this.effectiveId();
     if (!id) return;
     const range = this.balanceRange(this.selectedWindow());
     this.loadingHistory.set(true);
     this.portfolioService.getBalanceHistory(id, range).subscribe({
       next: history => {
+        this.readSettled(batch, 'ok');
         // A late answer for an account no longer shown (a quick switch) must not replace the current chart.
         if (history.account_id !== this.effectiveId()) return;
         this.balanceHistory.set(history);
@@ -706,22 +796,31 @@ export class PortfolioAccountDetailComponent implements OnInit {
       },
       error: () => {
         this.loadingHistory.set(false);
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '餘額走勢讀取失敗' });
+        this.readSettled(batch, 'failed');
       },
     });
   }
 
-  private fetchTransactions(): void {
-    this.filterQuery$.next({ query: this.query(), immediate: true });
+  private fetchTransactions(batch?: ReadBatch): void {
+    this.filterQuery$.next({ query: this.query(), immediate: true, batch });
   }
 
-  private requestTransactions(accountId: number, query: CashTransactionQuery): Observable<CashTransactionPaged> {
+  private requestTransactions(accountId: number, query: CashTransactionQuery, batch: ReadBatch = this.startReads(1, false, accountId)): Observable<CashTransactionPaged> {
     this.loadingTransactions.set(true);
     const requestQuery = this.withMergeRelated(query);
+    let answered = false;
     return this.portfolioService.getCashTransactions(accountId, requestQuery).pipe(
+      tap(() => {
+        answered = true;
+        this.readSettled(batch, 'ok');
+      }),
       catchError(() => {
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '現金交易讀取失敗' });
+        answered = true;
+        this.readSettled(batch, 'failed');
         return of({ items: [], total: 0, offset: requestQuery.offset ?? 0, limit: requestQuery.limit ?? DEFAULT_PAGE_SIZE });
+      }),
+      finalize(() => {
+        if (!answered) this.readSettled(batch, 'cancelled');
       }),
     );
   }
