@@ -107,6 +107,8 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private recalcToastId: number | null = null;
   /** The 失敗 toast that offers a recalc / status 重試; a newer status supersedes it. */
   private recalcFailToastId: number | null = null;
+  /** Content of the failure `recalcFailToastId` announced (state + retryable steps); a poll reading the same one leaves the toast alone. */
+  private recalcFailKey: string | null = null;
   /** A startPolling() arrived while a status read was in flight: poll again once it settles. */
   private restartPollAfterInFlight = false;
   private confirmationService = inject(ConfirmationService);
@@ -712,9 +714,15 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
       next: status => {
         const prevState = this.recalcStatus().state;
         this.recalcStatus.set(status);
-        // A newer status supersedes a 失敗 toast that still offers 重試.
-        if (this.recalcFailToastId !== null) this.toasts.dismiss(this.recalcFailToastId);
-        this.recalcFailToastId = null;
+        // A newer status supersedes a 失敗 toast that still offers 重試; the same unresolved failure does not.
+        const prevFailKey = this.recalcFailKey;
+        const sameFailure = status.state === 'partial' && prevFailKey !== null
+          && prevFailKey === `partial|${retryableSteps(status).map(s => s.name).sort().join(',')}`;
+        if (!sameFailure) {
+          if (this.recalcFailToastId !== null) this.toasts.dismiss(this.recalcFailToastId);
+          this.recalcFailToastId = null;
+          this.recalcFailKey = null;
+        }
         if (status.state === 'running') {
           // Keep polling as long as we were polling already (prevState=running),
           // or the caller explicitly asked us to start (ngOnInit / startPolling).
@@ -730,10 +738,11 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
         this.recalcToastId = null;
         if (status.state === 'completed' && justFinished) {
           this.toasts.done('資料重算完成');
-        } else if (status.state === 'partial' && justFinished) {
+        } else if (status.state === 'partial' && !sameFailure && (justFinished || prevFailKey !== null)) {
           const retryable = retryableSteps(status);
           const deferred = (status.steps ?? []).some(s => (s.detail?.deferred_events?.length ?? 0) > 0);
           const deferredNote = '；歷史股利權益已記錄，請至股利頁確認實際收款';
+          this.recalcFailKey = `partial|${retryable.map(s => s.name).sort().join(',')}`;
           if (retryable.length > 0) {
             const labels = retryable.map(s => labelOf(RECALC_STEP_LABEL, s.name)).join(', ');
             this.recalcFailToastId = this.toasts.error(
@@ -765,6 +774,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
         );
         if (this.recalcToastId !== null) this.toasts.dismiss(this.recalcToastId);
         this.recalcToastId = null;
+        this.recalcFailKey = null;
         this.recalcFailToastId = this.toasts.error('無法取得重算狀態', { retry: () => this.startPolling() });
         this.stopPolling();
       },

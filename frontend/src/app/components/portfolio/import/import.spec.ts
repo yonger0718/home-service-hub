@@ -561,6 +561,62 @@ describe('Portfolio import controls', () => {
           fixture.destroy();
         });
 
+        describe('an unresolved recalc failure across status polls', () => {
+          const failedX = [{ name: 'networth_backfill', status: 'failed' }];
+          const poll = (fixture: { componentInstance: unknown }) => (fixture.componentInstance as { startPolling(): void }).startPolling();
+
+          it('a quote-refresh poll that reads the same partial keeps the same toast, and 重試 still works', () => {
+            vi.useFakeTimers();
+            service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+            const fixture = setup();
+            const partial = { kind: 'import', state: 'partial', steps: failedX, quote_refresh: { state: 'running' } };
+            service.getRecalcStatus.mockReturnValue(of(partial));
+            vi.advanceTimersByTime(5000);
+            const first = toast();
+            expect(first?.action?.label).toBe('重試');
+            vi.advanceTimersByTime(5000);
+            expect(service.getRecalcStatus.mock.calls.length).toBeGreaterThanOrEqual(3);
+            expect(toast()).toBe(first);
+            service.triggerRecalc.mockReturnValue(new Subject());
+            toast()!.action!.run();
+            expect(service.triggerRecalc).toHaveBeenCalledTimes(1);
+            fixture.destroy();
+          });
+
+          it('a later completed status dismisses it', () => {
+            vi.useFakeTimers();
+            const fixture = partialAfterRunning(failedX);
+            expect(toast()?.kind).toBe('error');
+            service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'completed' }));
+            poll(fixture);
+            expect(toast()).toBeNull();
+            fixture.destroy();
+          });
+
+          it('a toast the user closed does not come back on an identical poll', () => {
+            vi.useFakeTimers();
+            const fixture = partialAfterRunning(failedX);
+            TestBed.inject(ToastService).dismiss(toast()!.id);
+            expect(toast()).toBeNull();
+            poll(fixture);
+            expect(toast()).toBeNull();
+            fixture.destroy();
+          });
+
+          it('a different failure replaces the toast with the new one', () => {
+            vi.useFakeTimers();
+            const fixture = partialAfterRunning(failedX);
+            const first = toast();
+            service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'partial', steps: [{ name: 'symbol_map_backfill', status: 'failed' }] }));
+            poll(fixture);
+            expect(toast()).not.toBe(first);
+            expect(toast()?.text).toContain('失敗步驟：');
+            expect(toast()?.text).not.toBe(first?.text);
+            expect(toast()?.action?.label).toBe('重試');
+            fixture.destroy();
+          });
+        });
+
         it('重試 while the recalc is running shows 進行中 again', () => {
           vi.useFakeTimers();
           service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
