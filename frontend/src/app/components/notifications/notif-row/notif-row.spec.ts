@@ -284,8 +284,10 @@ describe('NotifRowComponent', () => {
       expect(rule(phone, '.notif-head')).toMatch(/flex-wrap:\s*wrap/);
     });
 
-    it('below 760 px the title needs 200 px before the amount stays beside it (else the amount drops under)', () => {
-      expect(rule(phone, '.notif-title')).toMatch(/flex:\s*1 1 200px/);
+    it("below 760 px the title's basis is its own text (auto, not a px value): a short title keeps its amount beside it", () => {
+      const t = rule(phone, '.notif-title');
+      expect(t).toMatch(/flex:\s*1 1 auto/);
+      expect(t).not.toMatch(/flex:[^;]*\d+px/);
     });
 
     it('at 760 px and up the actions have one fixed width, content right-aligned, so every amount ends at the same x', () => {

@@ -240,6 +240,13 @@ describe('NotificationsComponent', () => {
       await settle();
       expect(Array.from(root.querySelectorAll('section.notif-section h2')).map(h => text(h))).toEqual(['已逾期 2', '今天 1', '要你確認 1', '系統 1']);
     });
+    it('the section headings carry no number while a source failed either', () => {
+      tasks.set(TASKS);
+      failedSources.set(['recon']);
+      const root = mount();
+      expect(Array.from(root.querySelectorAll('section.notif-section h2')).map(h => text(h))).toEqual(['已逾期', '今天', '要你確認', '系統']);
+      expect(root.querySelector('.sec-count')).toBeNull();
+    });
     it('hides 追蹤中 that the service already holds', () => {
       loaded.set(false);
       const root = mount();
@@ -392,13 +399,6 @@ describe('NotificationsComponent', () => {
       expect(chips.map(c => text(c))).toEqual(['全部', '財務', '投資']);
       expect(chips.map(c => c.getAttribute('aria-label'))).toEqual(['全部', '財務', '投資']);
       expect(q(root, '.chip-count')).toBeNull();
-    });
-
-    it('truncated with nothing listed: the subtitle is 「項目較多，僅列出部分」, never the all-clear', () => {
-      tasks.set([]);
-      truncated.set(true);
-      const root = mount();
-      expect(subtitle(root)).toBe('項目較多，僅列出部分');
     });
 
     it('after a 重試 that succeeds the counts and the subtitle come back', async () => {

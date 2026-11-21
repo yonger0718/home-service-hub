@@ -194,17 +194,17 @@
     min-width: 0;
   }
 
-  /* Title first, then tag, then amount. The title's basis is 200 px: unless the title keeps at least 200 px beside
-     the tag and amount, the amount drops under the title instead of squeezing it (at 390 px it was ~155 px). At
-     320 px the head is 240 px wide, so the title is never narrower than 200 px (about 13 CJK characters per line,
-     2 lines). */
+  /* Title first, then tag, then amount. The title's basis is its own text width (auto, with min-width 0): a short
+     title fits and keeps tag and amount beside it; a long one has a basis wider than the line, so tag and amount
+     wrap together to the second line (tag left, amount right via its auto margin) and the title takes the full
+     line, clamped to 2 lines. */
   .notif-head {
     flex-wrap: wrap;
   }
 
   .notif-title {
     display: -webkit-box;
-    flex: 1 1 200px;
+    flex: 1 1 auto;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     overflow-wrap: anywhere;

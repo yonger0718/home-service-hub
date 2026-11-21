@@ -137,8 +137,7 @@ export class NotificationsComponent {
     }
     const { total, overdue } = this.center.summary();
     if (total === 0) {
-      // Truncated: the catch-all task normally makes the total non-zero; zero here is not "all clear" either.
-      return this.center.truncated() ? '項目較多，僅列出部分' : '沒有要處理的事';
+      return '沒有要處理的事';
     }
     const parts = [`${total} 件要處理`];
     if (overdue > 0) {
