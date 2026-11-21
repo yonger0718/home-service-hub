@@ -361,3 +361,22 @@ describe('banner-warn pair (帳單 tag / bill dot / cap bar near)', () => {
     });
   });
 });
+
+describe('toast inks on the inverse surface', () => {
+  describe.each([
+    ['light', light],
+    ['dark', dark],
+  ])('%s theme', (_name, theme) => {
+    const surface = (t: Record<string, string>) => hex(t, '--app-accent');
+
+    it('text (--app-surface) and the action ink ≥ 4.5:1 on --app-accent', () => {
+      expect(ratio(hex(theme, '--app-surface'), surface(theme))).toBeGreaterThanOrEqual(4.5);
+      expect(ratio(hex(theme, '--app-toast-action'), surface(theme))).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it('icon inks (ok / error) ≥ 3:1 on --app-accent', () => {
+      expect(ratio(hex(theme, '--app-toast-ok'), surface(theme))).toBeGreaterThanOrEqual(3);
+      expect(ratio(hex(theme, '--app-toast-error'), surface(theme))).toBeGreaterThanOrEqual(3);
+    });
+  });
+});

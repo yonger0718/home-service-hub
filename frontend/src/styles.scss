@@ -42,6 +42,10 @@
   --app-warning: #7b87a8;       /* muted blue-gray */
   --app-banner-warn: #7d5920;   /* amber ink for 帳單 / near-cap marks (owner pick; ≥ 4.5:1 on its own 10 % tint over surface, past-day and selected-day fills) */
   --app-banner-warn-soft: rgba(125, 89, 32, 0.10);
+  /* ink on the inverse toast surface (`--app-accent`) */
+  --app-toast-action: #b3a8ff;
+  --app-toast-ok: #5ad19c;
+  --app-toast-error: #ff8a8e;
   --app-danger:  #7b6c9c;       /* muted lavender */
   --app-dividend:#7e78a8;       /* muted violet — dividends */
 
@@ -193,6 +197,10 @@
   --app-warning: #96a5c5;
   --app-banner-warn: #d0a06a;
   --app-banner-warn-soft: rgba(208, 160, 106, 0.14);
+  /* ink on the inverse toast surface (`--app-accent`) */
+  --app-toast-action: #533afd;
+  --app-toast-ok: #177a55;
+  --app-toast-error: #c9373c;
   --app-danger: #a494c6;
   --app-dividend: #aba6d0;
   --app-state-success-bg: rgba(141, 174, 199, 0.15);
