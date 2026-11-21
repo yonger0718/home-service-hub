@@ -1,6 +1,6 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { Provider } from '@angular/core';
+import { ApplicationRef, DestroyRef, EnvironmentInjector, Provider, createComponent, createEnvironmentInjector } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Location } from '@angular/common';
 import { SpyLocation, provideLocationMocks } from '@angular/common/testing';
@@ -20,6 +20,8 @@ import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingOverviewService } from '../month-overview/overview.service';
 import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
 import { focusables } from '../accounting-ui';
+import { ToastService } from '../../../services/toast.service';
+import { ToastOutletComponent } from '../../shell/toast-outlet/toast-outlet';
 import { formatSigned } from '../format';
 import { buildDays } from '../timeline/timeline';
 import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_CALENDAR_PANE, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
@@ -1372,6 +1374,92 @@ describe('AccountingLayoutComponent', () => {
       expect(root.querySelectorAll('.list-pane button.cell').length).toBe(7);
       expect(root.querySelector('app-calendar-day-panel .dp-row[data-entry-id="8"]')!.getAttribute('aria-current')).toBe('true');
       expect(root.querySelectorAll('app-calendar-day-panel .dp-row[aria-current="true"]').length).toBe(1);
+    });
+  });
+
+  describe('toast controls inside the 820px sheet', () => {
+    // The real jsdom location is left on /accounting/entries/5 otherwise, which later specs inherit.
+    afterEach(() => history.replaceState(null, '', '/'));
+
+    const tab = (target: Element, shiftKey = false) => {
+      const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      return event;
+    };
+
+    /** The sheet open on an entry, with the shell's outlet (outside every inerted region) showing a 失敗 toast. */
+    async function openSheetWithToast() {
+      const harness = await start('sheet', '/accounting', 820);
+      await find(harness, LIST);
+      await TestBed.inject(Router).navigateByUrl('/accounting/entries/5');
+      await find(harness, '.detail-pane.open');
+      const closeButton = await find(harness, '.sheet-close');
+      await vi.waitFor(() => expect(document.activeElement).toBe(closeButton));
+      // Not TestBed.createComponent: a second fixture would remove the harness's root from the document.
+      const outlet = createComponent(ToastOutletComponent, {
+        environmentInjector: TestBed.inject(EnvironmentInjector),
+        hostElement: document.body.appendChild(document.createElement('div')),
+      });
+      TestBed.inject(ApplicationRef).attachView(outlet.hostView);
+      const scope = TestBed.inject(ToastService).scope(
+        createEnvironmentInjector([], TestBed.inject(EnvironmentInjector)).get(DestroyRef),
+      );
+      scope.error('測試儲存失敗', { retry: vi.fn() });
+      outlet.changeDetectorRef.detectChanges();
+      harness.detectChanges();
+      const sheet = () => harness.routeNativeElement!.querySelector<HTMLElement>('.detail-pane.open')!;
+      return { harness, sheet, outlet, host: outlet.location.nativeElement as HTMLElement };
+    }
+
+    it("Tab from the pane's last control reaches the toast and wraps back into the pane", async () => {
+      const { sheet, outlet, host } = await openSheetWithToast();
+      const items = focusables(sheet());
+      const first = items[0];
+      const last = items[items.length - 1];
+      last.focus();
+      expect(tab(last).defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(host.querySelector('.toast-action'));
+      const close = host.querySelector<HTMLElement>('.toast-close')!;
+      close.focus();
+      expect(tab(close).defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(first);
+      outlet.destroy();
+      host.remove();
+    });
+
+    it('Esc in the toast closes the toast and the sheet stays open', async () => {
+      const { harness, sheet, outlet, host } = await openSheetWithToast();
+      const router = TestBed.inject(Router);
+      focusables(sheet())[0].focus();
+      host.querySelector<HTMLElement>('.toast-action')!.focus();
+      const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      host.querySelector('.toast-action')!.dispatchEvent(event);
+      outlet.changeDetectorRef.detectChanges();
+      harness.detectChanges();
+      expect(event.defaultPrevented).toBe(true);
+      expect(host.querySelector('.toast')).toBeNull();
+      expect(router.url).toBe('/accounting/entries/5');
+      expect(harness.routeNativeElement!.querySelector('.detail-pane.open')).not.toBeNull();
+      outlet.destroy();
+      host.remove();
+    });
+
+    it('Esc in the pane closes the sheet', async () => {
+      const { sheet, outlet, host } = await openSheetWithToast();
+      focusables(sheet())[0].focus();
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await vi.waitFor(() => expect(TestBed.inject(Router).url).toBe('/accounting'));
+      outlet.destroy();
+      host.remove();
+    });
+
+    it('the outlet is not inert while the sheet inerts the list, header and sidebar', async () => {
+      const { harness, outlet, host } = await openSheetWithToast();
+      expect(document.querySelector('[inert]')).not.toBeNull();
+      expect(host.closest('[inert]')).toBeNull();
+      expect(focusables(host).length).toBeGreaterThan(0);
+      outlet.destroy();
+      host.remove();
     });
   });
 

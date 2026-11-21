@@ -1,4 +1,4 @@
-import { ChangeDetectorRef } from '@angular/core';
+import { ApplicationRef, ChangeDetectorRef, DestroyRef, EnvironmentInjector, createComponent, createEnvironmentInjector } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { DatePicker } from 'primeng/datepicker';
@@ -18,6 +18,8 @@ import {
 } from '../../../models/portfolio.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { ToastService } from '../../../services/toast.service';
+import { ToastOutletComponent } from '../../shell/toast-outlet/toast-outlet';
 import { ALLOCATION_SERIES, abbrInk, holdingAbbr } from '../dashboard/dashboard-math';
 import { PortfolioTransactionListComponent } from './transaction-list';
 import { monthHeading } from './transaction-math';
@@ -773,5 +775,38 @@ describe('PortfolioTransactionListComponent', () => {
       component.saveTransaction();
       expect(portfolioService['createTransaction'].mock.calls[1][0].paid_with_points).toBe(false);
     });
+  });
+
+  // The save wiring (a 500 raising 重試) lands with the toast migration; this covers the dialog / outlet keyboard cycle.
+  it('with the edit dialog open, Tab from the dialog reaches the failure toast 重試', () => {
+    const fixture = create();
+    fixture.componentInstance.showDialog.set(true);
+    fixture.detectChanges();
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+
+    const outlet = createComponent(ToastOutletComponent, {
+      environmentInjector: TestBed.inject(EnvironmentInjector),
+      hostElement: document.body.appendChild(document.createElement('div')),
+    });
+    TestBed.inject(ApplicationRef).attachView(outlet.hostView);
+    const scope = TestBed.inject(ToastService).scope(
+      createEnvironmentInjector([], TestBed.inject(EnvironmentInjector)).get(DestroyRef),
+    );
+    scope.error('儲存失敗', { retry: vi.fn() });
+    outlet.changeDetectorRef.detectChanges();
+
+    const real = Array.from(dialog!.querySelectorAll<HTMLElement>('button, input, select, textarea, [tabindex]'))
+      .filter(node => node.tabIndex >= 0 && node.dataset['pHiddenFocusable'] !== 'true' && !node.hasAttribute('disabled'));
+    const last = real[real.length - 1];
+    last.focus();
+    const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    last.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(outlet.location.nativeElement.querySelector('.toast-action'));
+    outlet.destroy();
+    outlet.location.nativeElement.remove();
+    fixture.componentInstance.showDialog.set(false);
+    fixture.detectChanges();
   });
 });

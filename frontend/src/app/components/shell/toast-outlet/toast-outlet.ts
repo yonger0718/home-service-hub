@@ -1,7 +1,9 @@
 import { DOCUMENT } from '@angular/common';
-import { ChangeDetectionStrategy, Component, ElementRef, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, inject } from '@angular/core';
 
 import { Toast, ToastService } from '../../../services/toast.service';
+import { isHandledKey } from '../../accounting/accounting-ui';
+import { MODAL_SELECTOR, toastCycleTarget } from './toast-focus';
 
 /**
  * The one toast of the app (shell-level). Two live regions stay in the DOM so a screen reader hears a toast that is
@@ -55,6 +57,13 @@ export class ToastOutletComponent {
   private readonly document = inject(DOCUMENT);
   private lastOutside: HTMLElement | null = null;
 
+  constructor() {
+    // Capture phase: runs before the modal's own trap (trapFocus / PrimeNG pFocusTrap) and marks the event handled.
+    const handler = (event: KeyboardEvent) => this.onTab(event);
+    this.document.addEventListener('keydown', handler, true);
+    inject(DestroyRef).onDestroy(() => this.document.removeEventListener('keydown', handler, true));
+  }
+
   protected readonly icons: Record<Toast['kind'], string> = {
     done: 'pi pi-check',
     progress: 'pi pi-spinner pi-spin',
@@ -93,6 +102,30 @@ export class ToastOutletComponent {
     event.preventDefault();
     event.stopPropagation();
     this.close(toast.id);
+  }
+
+  /** Tab / Shift+Tab at a group edge moves between the open modal's controls and the toast's buttons as one cycle. */
+  private onTab(event: KeyboardEvent): void {
+    if (event.key !== 'Tab' || isHandledKey(event)) {
+      return;
+    }
+    const toast = this.host.querySelector<HTMLElement>('.toast');
+    const active = this.document.activeElement;
+    if (!toast?.querySelector('button') || !(active instanceof HTMLElement)) {
+      return;
+    }
+    const inToast = toast.contains(active);
+    const modal = inToast
+      ? (this.lastOutside?.isConnected ? this.lastOutside.closest<HTMLElement>(MODAL_SELECTOR) : null)
+      : active.closest<HTMLElement>(MODAL_SELECTOR);
+    const target = toastCycleTarget({ active, modal, toast, backwards: event.shiftKey });
+    if (target) {
+      event.preventDefault();
+      if (!inToast) {
+        this.lastOutside = active;
+      }
+      target.focus();
+    }
   }
 
   /** The toast closes with focus inside it: focus goes back to where it was before, if that still exists. */
