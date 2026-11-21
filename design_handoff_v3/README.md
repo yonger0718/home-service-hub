@@ -63,6 +63,10 @@ Not clickable on the canvas (drawn only): the period controls, the field pickers
 | `#2f6f9f` / `#7fb5e0` 少花 | new `--app-spend-less` |
 | `#8a6327` / `#d0a06a` warning banner (light shipped as `#7d5920`: the artboard value is 4.20:1 on a past day and 4.00:1 on a selected day) | new `--app-banner-warn` (+ `-soft`); `--app-warning` is a blue-grey and reads as info |
 | dark solid primary button with dark text | follow the existing rule: `--app-primary-ink-bg` with white text |
+| toast surface (dark slab in light, light slab in dark) | background `--app-accent`, text `--app-surface` |
+| toast inks: action / 完成 / 失敗 | new `--app-toast-action`, `--app-toast-ok`, `--app-toast-error` (light `#b3a8ff` / `#5ad19c` / `#ff8a8e`; dark `#533afd` / `#177a55` / `#c9373c` — dark 完成 is darker than the artboard to reach 4.5:1 on the light slab) |
+| error banner | background `--c-red-soft`, title and icon `--c-red-pill-ink` (`--c-red-ink` is below 4.5:1 on the tint) |
+| info banner | background `--app-primary-soft`, icon `--app-primary`, text `--app-text` |
 | category / series palette | the dashboard's five-colour stock series, then the owner's category colours where a category is shown |
 
 ## Sample data

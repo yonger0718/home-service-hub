@@ -7,9 +7,9 @@
 
 ## 1. Feedback primitives (PR A)
 
-- [ ] 1.1 `ToastService` + shell outlet (positions, variants, roles); replace every `<p-toast>` and `AccountingToastService`
-- [ ] 1.2 `<app-banner>` (error / warn / info); move import failure, bill error, schedule failing and quote delay onto it
-- [ ] 1.3 Tests: one toast at a time; 失敗 stays until closed; banner dismissal remembered for info only
+- [x] 1.1 `ToastService` + shell outlet (positions, variants, roles); replace every `<p-toast>` and `AccountingToastService` (復原 API only; the reconciliation 復原 scenario is wired and verified in PR D. 重試 is offered where a failure is shown as a toast; forms that report a failed save inline keep the inline error)
+- [x] 1.2 `<app-banner>` (error / warn / info); move import failure, bill error, schedule failing and quote delay onto it (quote delay: no such alert exists; needs a rule — deferred. Also moved: expired reward rules, portfolio account overdraft, and eight whole-page read failures)
+- [x] 1.3 Tests: one toast at a time; 失敗 stays until closed; banner dismissal remembered for info only
 
 ## 2. Notification page, ledger sources (PR B)
 
