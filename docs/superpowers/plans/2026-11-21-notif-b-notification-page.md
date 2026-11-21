@@ -1,10 +1,12 @@
 # Notification center PR B: 通知 page, count, entry points, ledger sources — Implementation Plan
 
+_Rev 2 (2026-11-21): plan review AGENT-553 (CHANGES REQUIRED, four findings accepted) folded with the coordinator's rulings R25–R29 — a truncated inbox is detected and shown as a catch-all task, never as an empty state; page-open de-duplication (`refresh`) is separated from post-write `invalidate()`, which always starts a round after the call; a round is a value with an id and a settled signal that includes the card statements (`BillingService.ensure / refresh` return a promise); focus restoration targets the inner native control; the handled link says it covers reconciliation; tasks.md ticks carry what B does not prove._
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give pending ledger work one place and one number: a `/notifications` page listing tasks (card bills, schedules by definition, statements to reconcile, the import to review, an interim e-invoice task) in 已逾期 / 今天 / 要你確認 / 系統 with a folded 追蹤中, a task count shown only on the 通知 entry points (sidebar item, phone header bell), and dots instead of counts everywhere else.
 
-**Architecture:** SPA only (`frontend/`), no API change. Pure builder functions turn each endpoint's response into `NotifTask`s (stable id, tier, fingerprint); `NotificationCenterService` (root) reads every source once per refresh, each with its own generation guard and failure state, and exposes `tasks`, `summary` (count, colour, label), `failedSources` and the nav `badges` (dots). `NavBadgeService` stays as a facade over it. The page is one column that renders the service's signals; 入帳 / 全部入帳 run in place through the existing schedule calls and report through `injectToasts()`; every other action is a link to a page that exists today.
+**Architecture:** SPA only (`frontend/`), no API change. Pure builder functions turn each endpoint's response into `NotifTask`s (stable id, tier, fingerprint); `NotificationCenterService` (root) reads every source once per round — a round has an id, answers of a superseded round are dropped, and a round is settled only when every task source including the card statements has answered — and exposes `tasks`, `summary` (count, colour, label), `failedSources`, `settledRound` and the nav `badges` (dots). `refresh()` (open / focus) never overlaps a round in flight; `invalidate()` (after a write) always starts a newer one. `NavBadgeService` stays as a facade over it. The page is one column that renders the service's signals; 入帳 / 全部入帳 run in place through the existing schedule calls and report through `injectToasts()`; every other action is a link to a page that exists today.
 
 **Tech Stack:** Angular 21.2 standalone / signals / OnPush, vitest (`cd frontend && npx ng test --watch=false --include='<glob>'`, quote the glob), SCSS with the tokens of `frontend/src/styles.scss`.
 
@@ -16,7 +18,7 @@
 - Colours only through tokens of `frontend/src/styles.scss`; artboard hexes are mapped, never copied (`design_handoff_v3/README.md` § Colour mapping). No hex, `rgb()` or `rgba()` literal in a component stylesheet or inline style. A new token is added in both theme blocks (`:root` and `.app-dark-mode`).
 - Chinese UI copy exactly as this plan's copy tables give it. "(copy: planner)" marks copy the artboard does not give.
 - Count rule (D3): tasks in 已逾期 + 今天 + 要你確認 + 系統; 追蹤中 never counts. Label `通知，N 件要處理` plus `，M 件已逾期` when M > 0. Red (`--c-red-ink`) when any counted task is 已逾期 or 系統, else `--app-primary`. The count renders on the 通知 sidebar item and the phone header bell only.
-- Each source is read once per refresh; refreshes from start / window focus / page visible are throttled to one per 30 s (`BADGE_REFRESH_MIN_MS`); a source that fails drops its tasks and its dot and never blocks another source.
+- Each source is read once per round; rounds from window focus / page visible are throttled to one per 30 s (`BADGE_REFRESH_MIN_MS`); a source that fails drops its tasks and its dot and never blocks another source.
 - No snooze, no ⋯ menu, no 稍後提醒, no right pane, no `/notifications/recon/…` route (R3, R20, R1). No dividend, import-failure, 國泰 or auto-pay task (PR C / E).
 - The reminders page (`/accounting/reminders`), the inbox panel and `inboxBellCount`'s two remaining call sites (`inbox-panel.ts`, `reminders.ts`) are not changed.
 - Tests use fictional data only: 測試銀行卡, 測試月費, 測試分期, 測試房租, 測試帳戶, people 甲 / 乙 / 丙, invented amounts; fixed today `2026-10-24`.
@@ -25,7 +27,7 @@
 
 ## Rulings made while planning
 
-R1–R24 are the controller's (2026-11-21); P1–P12 are the planner's, made where the rulings and the spec were silent. Each names its reason and what it costs if wrong.
+R1–R29 are the controller's (2026-11-21; R25–R29 after the plan review); P1–P12 are the planner's, made where the rulings and the spec were silent. Each names its reason and what it costs if wrong.
 
 | # | Ruling | Reason | If wrong |
 |---|---|---|---|
@@ -40,25 +42,30 @@ R1–R24 are the controller's (2026-11-21); P1–P12 are the planner's, made whe
 | R9 | Dots: import review → 記帳記錄 (`accounting-timeline`), label `有待確認的匯入紀錄`; an overdue card bill → red dot on 帳戶 (`accounting`), label `有逾期的卡費`; 匯入 dot unchanged | D8 | Two keys |
 | R10 | `NotifTask.fingerprint` exists now (bill: remaining + tier date; schedule: open count + oldest due; recon: ask count; import: review count); unused in B | PR E's wake-up needs it | A model change in E |
 | R11 | Oldest first inside a section: bill by tier date, schedule by oldest open due date, statement by `period_end`, import by `started_at`; ties by id | Spec gives no key | `sortKey` values |
-| R12 | 「已處理（近 7 天）N 件 ›」 links to the reconciliation handled list, N from `InboxService.actions()`; hidden when that read fails | No cross-source history exists | Row removed |
+| R12 | 「已處理的對帳（近 7 天）N 件 ›」 (R29b) links to the reconciliation handled list, N from `InboxService.actions()`; hidden when that read fails | No cross-source history exists | Row removed |
 | R13 | Every source is read and counted whatever groups are hidden | 通知 is outside the groups | A filter in the service |
 | R14 | The phone bell lives in `PageHeaderComponent` only, below 760 px, on every route but `/notifications`. The timeline's month-bar bell becomes a plain link and is not rendered below 760 px | Never two bells on a phone | See the gap list under Task 6 |
 | R15 | `/notifications` resolves to a synthetic nav item outside `NAV_GROUPS` (title 通知): no group active, no sub-nav, no tab highlighted. Phone header ‹ goes back in history, fallback `/accounting` | Unknown paths fall back to 庫存 today (`navigation.ts:92`) | `navItemForUrl` branch |
 | R16 | 股利 dot, dividend and system tasks are PR C. The 投資 chip exists and shows 0 | Migration plan | — |
-| R17 | Opening the page refreshes past the throttle unless a refresh is in flight | The owner came to see current work | One call in the page |
+| R17 | Opening the page refreshes past the throttle unless a round is in flight (`refresh({ reason: 'open' })`, R26) | The owner came to see current work | One call in the page |
 | R18 | A card whose statement read failed contributes no task and 帳單 is named. Source names: 帳單, 週期, 對帳, 匯入檢查, 借還款, joined with 、. A failed source hides its dot | Spec names only 對帳 | Strings |
 | R19 | Chip counts are counted tasks only | Artboard 7 / 5 / 2 | One filter |
 | R20 | No right-pane host; one column at every width | Nothing to show in the pane before D | D builds the host |
 | R21 | `NavBadgeService` stays as a facade delegating to `NotificationCenterService`; its logic and its spec's count cases move | About 9 spec files stub it | See Conflicts (one new member) |
 | R22 | The page ends with 「提醒中心（借還款、週期與分期管理）」 → `/accounting/reminders` | The timeline bell was the only way in | — |
-| R23 | The new service drives `BillingService.ensure / refresh` exactly as `nav-badge.service.ts:105–119` does | Timeline and reminders bill figures depend on it | Regression there |
+| R23 | The new service keeps driving `BillingService` (`ensure` per change round and when the dues change, as `nav-badge.service.ts:105–119`); the re-read of a round is called per round and awaited (R27) | Timeline and reminders bill figures depend on it | Regression there |
 | R24 | Request load accepted: no aggregate endpoint; one read per source per refresh, one inbox read shared by the statement tasks and the e-invoice task. Noted in the PR body | Frontend-only PR | An endpoint later |
+| R25 | The inbox is read with `limit: 1000` (the API's maximum; default 500, no offset: `routers/reconciliation.py:69–70`, cut after the counts at `inbox_service.py:475–481`). Truncation is exact: `counts.ask_items` is the number of unfolded items in the whole set (`inbox_service.py:439–442`) and an item is unfolded exactly when its question is in the ask bucket (`FOLDED`, `:37`, `:420`), so `missing = counts.ask_items − (unfolded items received)`. When `missing > 0`: statement tasks are built from the received items as usual, plus one counted catch-all task 「還有對帳項目未列出」 with 「還有 N 筆要你決定」 → reminders 待處理; a statement cut in two shows its received count with no marker and its remainder is inside the catch-all's N; the bottom line adds 「對帳項目較多，僅列出部分」; 都處理好了 never shows | A statement beyond the cut would vanish and an inbox whose first 1000 items are all folded would read "all done" | Exact per-statement counts beyond the cap need an API change (per-statement counts or an offset) — follow-up, not B |
+| R26 | Two calls. `refresh({ reason })` is for page open / focus / a timer: it never starts a round while one is in flight, and focus / timer are throttled. `invalidate()` is for after an in-app write (success or failure) and for `entriesChanged` / `accountsChanged`: it **supersedes** — it starts a new round at once and the older round's answers are dropped by the round-id guard. The row stays busy until a round started after the write's answer has settled | A forced refresh that is skipped while a read is in flight leaves pre-write data on screen with nothing to replace it | Supersede costs one duplicated set of reads when a write lands mid-round; the alternative (one trailing round) saves them and delays the fresh data by the old round's slowest read |
+| R27 | A round is a value: `round()` is the id of the newest started round, `settledRound()` the id of the newest round whose every task source (card statements included) has answered ok or failed; `loading = round() > settledRound()`, `loaded = settledRound() > 0`. `BillingService.ensure` and `refresh` return `Promise<void>` that resolves when no statement of the given dues has a read in flight; nothing else in that service changes and its other callers ignore the value | `refresh` returned void and kept old figures during a re-read, so "accounts answered" was mistaken for "bills answered" | One return type; if wrong the callers still compile |
+| R28 | Focus restoration targets the native control: `app-btn.notif-primary button` or `a.notif-primary`; the accessible name of a command goes through `app-btn`'s `ariaLabel` input | `app-btn`'s host has no tabindex (`btn.ts:6–20`) | Selector |
+| R29 | (a) A positive `open_amounts` amount is 應收: confirmed by `tests/integration/test_settings_crud_api.py:425–443`. (b) The handled link reads 「已處理的對帳（近 7 天）N 件 ›」. (c) tasks.md ticks 2.1–2.5 with notes naming what B does not prove, mirrored in "Not verified in PR B" | The ticks must not read as full spec acceptance | Text |
 | P1 | A partial-only schedule task's primary is the link 逐期處理 (reminders 待完成交易); every schedule task has 逐期處理 as its secondary link | Accepting or re-posting a partial needs the reminders row's controls | One action |
 | P2 | Statement task title 「對帳 · <帳戶>（至 MM/DD）」 from `statement.period_end` | The artboard's 「9 月帳單」 needs the period start, which the inbox item does not carry | String |
 | P3 | With badges off the page keeps its subtitle and chip counts | They are the page's content, not badges; the spec scenario names the entry points | Two `@if`s |
 | P4 | The 「無法讀取：…」 line carries a 重試 button and stays in place through the retry; 都處理好了 is never shown while a source failed | "All done" would be false; PR A's rule for read failures | Markup |
 | P5 | Count pill text uses a new token `--app-count-ink` (`#fff` light; the dark `--app-bg` value `#0f1218` dark) | White on dark `--c-red-ink` `#ff6369` is 2.9:1, on dark `--app-primary` 3.2:1 | Token value |
-| P6 | A row whose command succeeded stays busy until the refreshed list lands; if the row then leaves while focus is on `<body>`, focus goes to the row now at its place, else to the 追蹤中 summary | A second press in the gap would post twice; focus must not fall out of the page | Two effects |
+| P6 | A row whose command answered (ok or failed) stays busy until a round started after that answer has settled (R26); if the row then leaves while focus is on `<body>`, focus goes to the native control of the row now at its place (R28), else to the 追蹤中 summary | A second press in the gap would post twice; focus must not fall out of the page | Two effects |
 | P7 | The facade gains one member, `summary`, read by `NavigationStateService` | The entry points need the count, and injecting the real service into nav components would pull `HttpClient` into specs that stub the facade | See Conflicts |
 | P8 | Handled count = actions with `reverted_by_action_id === null` created in the last 7 × 24 h, from `actions(50)`; 50 of 50 inside the window reads 「50+ 件」; 0 hides the row | The feed's default page is 50 | Limit / text |
 | P9 | The chip choice is a local signal (not in the URL). A chip with no task shows 「這個來源目前沒有要處理的事」 (copy: planner) | Nothing links to a chip yet | Query param later |
@@ -74,7 +81,8 @@ R1–R24 are the controller's (2026-11-21); P1–P12 are the planner's, made whe
 | NC "Notification count … that are not snoozed"; tasks.md 2.5 "count excludes tracking and snoozed" | Snooze is 5.3 | R3: no snooze; 2.5 ticked with the note 「(snoozed: PR E, 5.3)」 |
 | NC "E-invoice task": 「電子發票 · N 張要確認」 opening `/notifications/einvoices`; AL removal: "the `ask + einvoice_ask` sums on the timeline and the reminders page go with it" | The flow is PR F; the reminders page's sum is 6.6 | R5: interim task 「N 張發票要確認」 → reminders 待處理; the timeline's sum goes now, the reminders page's in F |
 | D2 "已逾期 after the due date" | The shipped bill rule uses the debit day | R6: `payDate` |
-| NC "a link to items handled in the last 7 days" (artboard: 12 件 across sources) | Only reconciliation has a handled feed | R12: reconciliation actions only |
+| NC "a link to items handled in the last 7 days" (artboard: 「已處理（近 7 天）12 件」 across sources) | Only reconciliation has a handled feed | R12 + R29b: reconciliation actions only, labelled 已處理的對帳 |
+| NC "Statement to reconcile … 「10 筆要你決定」" for every statement | The inbox returns at most 1000 items and no per-statement totals | R25: exact up to the cap; beyond it one catch-all task with the exact number not listed |
 | NC "Below 760 px every page header SHALL show a bell" | Ten pages draw their own header | R14: `PageHeaderComponent` only; gap list in Task 6 |
 | NC "It SHALL open in the right pane of `/notifications` at ≥ 1024 px" | No pane content in B | R20: one column |
 | Proposal Impact: "`NavBadgeService` folds into the notification service" | About 9 specs stub it | R21 + P7: facade kept, one new member `summary`; each stub gains one line |
@@ -85,10 +93,13 @@ R1–R24 are the controller's (2026-11-21); P1–P12 are the planner's, made whe
 
 ## Review Focus
 
+- Truncated inbox: more than 1000 open items — the statement at the cut shows a count that is low by the part beyond the cut, the catch-all carries the exact remainder, the count includes it once, and neither 都處理好了 nor a zero count can appear.
+- Write / read interleaving: a queue GET in flight, then 入帳 commits on the server but answers 500 — the old GET's pre-write rows must not be shown after the newer round answers, the row is busy until that round settles, and the 失敗 toast with 重試 is still the visible toast.
+- A slow card statement: accounts answered, one card's payments read still pending — the page shows 讀取中…, not 都處理好了, and the count does not flash a lower number that then grows.
 - A late answer: 入帳 answers after the owner left the page — the toast still shows (no 重試), nothing throws, and the count updates because the write bumps `entriesChanged`.
 - A failed write then the silent reload: the 失敗 toast is still the one shown after the service re-reads (the reload raises no toast and no 完成).
 - 重試 after the list moved: the retry re-sends the captured instance / definition id even if the row is gone; while the same task is busy it re-raises the toast instead of sending.
-- Parallel refreshes: a focus refresh and a write reload overlap — only the newest answer of each source is applied; an older inbox answer never brings back a statement task that the newer one dropped.
+- Superseded rounds: a focus refresh and `invalidate()` overlap — only the newest round's answers are applied; an older inbox answer never brings back a statement task; `settledRound()` never reports a superseded round.
 - A source that fails after it once succeeded: its tasks and its dot leave, the count drops, the line names it, and 都處理好了 does not appear.
 - Double bell: at 390 on `/accounting` exactly one bell is in the DOM; at 1440 the phone bell is absent and the month-bar link is present.
 - `/notifications` at 390: no tab highlighted, no sub-nav, h1 通知; on a direct load ‹ goes to `/accounting`.
@@ -103,7 +114,8 @@ R1–R24 are the controller's (2026-11-21); P1–P12 are the planner's, made whe
 | `frontend/src/app/components/notifications/notif-task.ts` | Model, sort, summary, label, chip counts, failure line | 1 |
 | `…/notifications/sources/bills.ts`, `schedules.ts` | Card bill and schedule builders | 2 |
 | `…/notifications/sources/recon.ts`, `ledger-misc.ts` | Statement, e-invoice, import review builders; debts and upcoming rows | 3 |
-| `frontend/src/app/services/notification-center.service.ts` | Reads, generations, throttle, failure, signals, badges | 4 |
+| `frontend/src/app/services/notification-center.service.ts` | Rounds, reads, throttle, failure, signals, badges | 4 |
+| `components/accounting/billing/billing.service.ts` | `ensure` / `refresh` return a settle promise (R27) | 4 |
 | `frontend/src/app/services/nav-badge.service.ts` | Facade | 4 |
 | `components/shell/navigation.ts`, `navigation-state.service.ts`, sidebar / sub-nav / mobile-nav | `/notifications` resolution; dots with a tone | 5 |
 | sidebar, `shell/page-header`, `accounting/timeline` | 通知 item, phone bell, timeline link | 6 |
@@ -273,7 +285,7 @@ Schedule (`from: 'schedules'`, `source: 'ledger'`). "Open" = `status === 'pendin
 
 ### Task 3: Statement, e-invoice, import review builders; 追蹤中 rows (parallel with 2 and 5)
 
-tasks.md 2.2 (inbox by statement, MOZE import review, debts). R1, R2, R5, R8, R12, P2, P8.
+tasks.md 2.2 (inbox by statement, MOZE import review, debts). R1, R2, R5, R8, R12, R25, R29, P2, P8.
 
 **Files:**
 - Create: `frontend/src/app/components/notifications/sources/recon.ts`, `recon.spec.ts`, `ledger-misc.ts`, `ledger-misc.spec.ts`
@@ -294,6 +306,12 @@ tasks.md 2.2 (inbox by statement, MOZE import review, debts). R1, R2, R5, R8, R1
   /** One task per statement with unfolded ask items; `progress` by statement id (absent → no bar, no meta). */
   export function reconTasks(inbox: InboxOut, progress: ReadonlyMap<number, ReconProgress>): NotifTask[];
   export function einvoiceTask(counts: Pick<InboxCounts, 'einvoice_ask'>): NotifTask | null;
+  /** The API's maximum page (`routers/reconciliation.py:70`); the service reads the inbox with it. */
+  export const INBOX_READ_LIMIT = 1000;
+  /** R25: `counts.ask_items` minus the unfolded items received; 0 when everything is listed (never negative). */
+  export function inboxMissing(inbox: InboxOut): number;
+  /** R25: the catch-all task for `missing > 0`, else null. */
+  export function reconOverflowTask(missing: number): NotifTask | null;
   // sources/ledger-misc.ts
   export function importReviewTask(run: ImportRun | null): NotifTask | null;
   export function debtsRow(counterparties: readonly Counterparty[]): NotifTrackingRow | null;
@@ -307,6 +325,7 @@ Copy and fields (all `source: 'ledger'`, `amount: null`, `secondary: []`):
 | Task | `id` | tier | `title` | `when` | `meta` | `primary` | `sortKey` / `fingerprint` |
 |---|---|---|---|---|---|---|---|
 | Statement (`from: 'recon'`, icon `pi-check-square`) | `recon:${statement.id}` | confirm | `對帳 · ${account.name}（至 ${shortDate(period_end)}）` (copy: planner, P2) | `${n} 筆要你決定` (spec) | `已對上 ${k} / ${n} 行` (artboard) when progress is known, else null | `{ label: '對帳', route: reconTaskRoute(account.id, statement.id) }` | `period_end` / `${n}` |
+| Not listed (R25; `from: 'recon'`, icon `pi-list`) | `recon:more` | confirm | `還有對帳項目未列出` (R25) | `還有 ${missing} 筆要你決定` (copy: planner) | `到提醒中心的待處理查看` (copy: planner) | `{ label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } }` | `9999-12-30` (after every statement, before the e-invoice task) / `${missing}` |
 | E-invoice (`from: 'recon'`, icon `pi-receipt`) | `einvoice` | confirm | `${n} 張發票要確認` (R5) | `電子發票` (copy: planner) | `到提醒中心的待處理回答` (copy: planner) | `{ label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } }` | `9999-12-31` (last in its section) / `${n}` |
 | Import review (`from: 'importReview'`, icon `pi-upload`) | `import:${run.id ?? run.started_at}` | confirm | `匯入紀錄 · ${n} 筆待確認` (copy: planner) | `started_at` as local `MM/DD HH:mm` | `run.file_name` | `{ label: '查看', route: '/accounting/accounts' }` | `started_at` / `${n}` |
 
@@ -317,7 +336,9 @@ Copy and fields (all `source: 'ledger'`, `amount: null`, `secondary: []`):
 | `debts` | `借還款 · ${people} 位` (artboard) | `應收 ${amounts}（${names}）· 應付 ${amounts}（${names}）` — a side with nothing is left out; amounts per currency `formatMoney(|Σ|)` joined with `、`; names: the first two, then `等 ${k} 位` (artboard 「應收 $1,550（陳小明、阿傑）· 應付 $5,000（媽媽）」) | people | `{ label: '查看', route: '/accounting/reminders', queryParams: { tab: 'debts' } }` |
 | `upcoming` | `即將到來 · ${n} 件` (artboard) | the first three as `${title} ${shortDate(sortKey)}` joined with ` · `, then ` · 等 ${k} 件` | n | `{ label: '查看', route: '/accounting/reminders', queryParams: { tab: 'cards' } }` |
 
-A person is a counterparty with `open_count > 0`. Each `open_amounts` item with a positive amount is 應收 (owed to the owner), a negative one 應付 (the API sends `−Σ amount`, `settings_service.py:1122`); the figure is the person's net per currency, as the API gives it.
+A person is a counterparty with `open_count > 0`. Each `open_amounts` item with a positive amount is 應收 (owed to the owner), a negative one 應付 (the API sends `−Σ amount`, `settings_service.py:1122`; pinned by `tests/integration/test_settings_crud_api.py:425–443`: a −420 receivable with a 200 repayment reads `220`, a 1000 payable reads `-1000`); the figure is the person's net per currency, as the API gives it.
+
+Truncation (R25). The API counts over the whole set and then returns the first `limit` items in the order account name, account id, newest statement first, day, case id (`inbox_service.py:469–477`), folded items included. `isAskQuestion(item.question)` and `!item.folded` are the same predicate (`FOLDED`, `inbox_service.py:37`), so the comparison `counts.ask_items` vs received unfolded items is exact. A statement cut in two keeps its row with the received count; its remainder and every statement wholly beyond the cut are inside the catch-all's number. No 「+」 marker: the cut can fall exactly between two statements, so a marker on the last received statement would sometimes be false.
 
 - [ ] **Step 1: Failing tests.** `inbox-view.spec.ts`: `isAskQuestion: bank_only, transfer, ledger_only, amount_differs, date_differs, ambiguous yes; proposed, balance_gap, settlement, dividend, other no`.
   `recon.spec.ts` (`makeInbox`, `makeInboxAccount`, `makeItem` from `inbox/testing.ts`):
@@ -333,6 +354,16 @@ A person is a counterparty with `open_count > 0`. Each `open_amounts` item with 
   it('without progress the task has no bar and no meta', …);
   it('askAccountIds lists each account once, only those with an unfolded ask item', …);
   it('einvoiceTask: 3 → 「3 張發票要確認」 linking to the reminders 待處理 tab; 0 or absent → null', …);
+  it('inboxMissing: every unfolded item received → 0', …);                       // counts.ask_items 10, 10 unfolded + 4 folded received
+  it('inboxMissing: a statement cut in two → its row counts what was received, the rest is missing', () => {
+    const inbox = inboxWith(6 unfolded items of statement 31, counts { ask_items: 10 });
+    expect(reconTasks(inbox, new Map())[0].when).toBe('6 筆要你決定');
+    expect(inboxMissing(inbox)).toBe(4);
+  });
+  it('inboxMissing: a statement wholly beyond the cut, only folded items received → no statement task, missing 7', …);   // 1000 folded items, counts.ask_items 7 → reconTasks [] and inboxMissing 7
+  it('inboxMissing never goes below 0 (an older API without ask_items → 0)', …);
+  it('reconOverflowTask(4) → { id: \'recon:more\', tier: \'confirm\', title: \'還有對帳項目未列出\', when: \'還有 4 筆要你決定\' } → /accounting/reminders?tab=todo; (0) → null', …);
+  it('sortTasks puts recon:more after the statements and before einvoice', …);
   ```
   `ledger-misc.spec.ts`:
   ```ts
@@ -353,11 +384,13 @@ A person is a counterparty with `open_count > 0`. Each `open_amounts` item with 
 
 ### Task 4: `NotificationCenterService`; `NavBadgeService` becomes a facade
 
-tasks.md 2.1 (per-source failure, refresh triggers, 30 s throttle, fold), 2.4 (dots). R9, R13, R17, R18, R21, R23, R24, P7. After Tasks 2, 3 and 5.
+tasks.md 2.1 (per-source failure, refresh triggers, 30 s throttle, fold), 2.4 (dots). R9, R13, R17, R18, R21, R23–R27, P7. After Tasks 2, 3 and 5.
 
 **Files:**
 - Create: `frontend/src/app/services/notification-center.service.ts`, `notification-center.service.spec.ts`
 - Modify: `frontend/src/app/services/nav-badge.service.ts` (facade), `nav-badge.service.spec.ts` (cases move; three facade cases stay)
+- Modify: `frontend/src/app/components/accounting/billing/billing.service.ts` (`ensure`, `:101`, and `refresh`, `:121`, return `Promise<void>`; `Pending`, `:39`; `start` / `commit`, `:128–150`), `billing.service.spec.ts`
+- Create: `frontend/src/app/services/notification-center.rounds.spec.ts` (the real-HTTP cases of R26 / R27)
 - Modify (one line per stub, `summary: signal(NO_TASKS)` beside `badges`): `app.routes.spec.ts`, `components/accounting/reports/reports.spec.ts`, `components/accounting/reward-rules/reward-rules.spec.ts`, `components/mobile-nav/mobile-nav.spec.ts`, `components/shell/navigation-state.service.spec.ts`, `components/shell/page-header/page-header.spec.ts`, `components/shell/shell.spec.ts`, `components/shell/sub-nav/sub-nav.spec.ts`, `components/sidebar/sidebar.spec.ts`
 - Modify: `components/shell/navigation-state.service.ts` (`notifications` signal), `navigation-state.service.spec.ts`
 
@@ -374,43 +407,65 @@ tasks.md 2.1 (per-source failure, refresh triggers, 30 s throttle, fold), 2.4 (d
     readonly summary: Signal<NotifSummary>;                         // not gated by the badges setting
     readonly failedSources: Signal<readonly NotifSourceKey[]>;      // SOURCE_NAMES key order
     readonly handled: Signal<string | null>;                        // handledText(); null hides the row
-    readonly loading: Signal<boolean>;                              // any source read in flight
-    readonly loaded: Signal<boolean>;                               // every task source has answered once (ok or failed)
+    readonly truncated: Signal<boolean>;                            // R25: inboxMissing() > 0 in the applied inbox answer
+    /** Id of the newest started round; 0 before start(). Ids only grow. */
+    readonly round: Signal<number>;
+    /** Id of the newest round whose every task source has settled (ok or failed); a superseded round never becomes it. */
+    readonly settledRound: Signal<number>;
+    readonly loading: Signal<boolean>;                              // round() > settledRound()
+    readonly loaded: Signal<boolean>;                               // settledRound() > 0
     readonly badges: Signal<Readonly<Record<string, NavBadge>>>;
-    start(): void;                                                  // idempotent; first load + focus / visibilitychange listeners
-    /** Throttled to one per BADGE_REFRESH_MIN_MS. `force`: skip the throttle unless a read is in flight. */
-    refresh(options?: { readonly force?: boolean }): void;
+    start(): void;                                                  // idempotent; listeners + refresh({ reason: 'open' })
+    /**
+     * A round unless one is in flight (round() > settledRound()): then nothing. 'focus' and 'timer' are also skipped
+     * inside BADGE_REFRESH_MIN_MS of the last started round; 'open' is not.
+     */
+    refresh(options: { readonly reason: 'open' | 'focus' | 'timer' }): void;
+    /** Starts a round now, superseding any round in flight (its answers are dropped). Returns the new round's id. */
+    invalidate(): number;
   }
+  export type NotifRefreshReason = 'open' | 'focus' | 'timer';
+  // billing.service.ts — the only change to that service
+  /** …as today, and: resolves when no statement of `dues` has a read in flight (each has committed its latest round). */
+  ensure(dues: readonly BillingEvent[], today: string): Promise<void>;
+  refresh(dues: readonly BillingEvent[], today: string): Promise<void>;
   // nav-badge.service.ts
   @Injectable({ providedIn: 'root' })
-  export class NavBadgeService { readonly badges; readonly summary; start(): void; refresh(): void; }   // each delegates
+  export class NavBadgeService { readonly badges; readonly summary; start(): void; refresh(): void; }   // each delegates; refresh() = centre.refresh({ reason: 'focus' })
   // navigation-state.service.ts
   readonly notifications: Signal<NotifSummary>;   // prefs.showBadges() ? navBadges.summary() : NO_TASKS
   ```
 
-Sources (each its own generation counter and state `idle | ok | failed`; a later-started read of a source wins, as `nav-badge.service.ts:208–215`):
+**Rounds (R26, R27).** One counter. A round with id `r` reads every task source of the table; an answer is applied only while `r === round()` (the guard of `nav-badge.service.ts:208–215`, with the round id as the generation), so a superseded round changes nothing and never settles. Each task source records `settled: r` with `ok | failed` when its answer for `r` is applied; `settledRound` becomes `r` when all five task sources (`bills`, `schedules`, `recon`, `importReview`, `debts`) have `settled === r`. The silent reads (statement progress, handled actions, recalc status) are guarded by the same id but are not waited for.
+
+- `refresh({ reason })`: `open` — a round unless one is in flight; `focus` (window focus, `visibilitychange` to visible) and `timer` — the same, and also skipped within 30 s of the last started round. `timer` has no caller in B (there is no periodic refresh); it exists so a later caller does not need a new rule. `start()` registers the listeners and calls `refresh({ reason: 'open' })`.
+- `invalidate()`: always starts round `round() + 1` and returns its id. Callers: the `entriesChanged` / `accountsChanged` effect (after `start()`, skipping its first run, as `nav-badge.service.ts:121–134`), the page after a failed write, and the page's 重試 on the failure line. It does not read the recalc status (as today's write reload).
+- `bills` in round `r`: when the accounts answer of `r` is applied, the service calls `BillingService.refresh(dues, today)` — or `ensure(dues, today)` when `bills.generation()` moved since the previous round's call (the change-round effect below has then already started those reads, so nothing is read twice) — and, when the returned promise resolves and `r === round()`, records `bills` settled for `r` (`failed` when the accounts read failed or `bills.failed(event)` for any due). No dues → settled at once. The effect of `nav-badge.service.ts:105–119` stays for its two other jobs (a new change round, and the dues changing when the business-day calendar lands) with `ensure` only; the `rereadBills` flag goes away.
+- `BillingService`: `Pending` gains a private `committed: boolean` (set in `commit()`); the service keeps a private list of `{ keys, resolve }` waiters, checked at the end of `commit()` (`:135–150`): a waiter resolves when, for every one of its keys, `rounds.get(key)?.committed` is true (the latest started round of that key has landed, whoever started it). The promise never rejects: a failed read commits too (`failures`). `ensure` and `refresh` create one waiter for the keys of their `dues` and return its promise (already resolved for empty `dues` or when nothing is in flight). `bill()`, `failed()`, `failureReason()`, `isSettled()`, `retry()` and `generation` are unchanged, so what `timeline.ts:860`, `reminders.ts:467` / `:664` and `accounts.ts:230` see does not change; they ignore the returned promise.
+
+Sources (state `idle | ok | failed`, each stamped with the round that set it):
 
 | Read | Trigger | Feeds | Failure |
 |---|---|---|---|
-| `getAccounts()` | refresh, write | dues → `BillingService` → `billTasks`; 帳戶 dot | `bills` failed |
-| each due's statement (`BillingService`) | as `nav-badge.service.ts:105–119` (ensure per change round; `refresh` once after an accepted refresh) | bill tasks | `bills.failed(event)` for any due → `bills` failed; that card has no task, the others keep theirs |
-| `getScheduleInstances({ queue: true })` | refresh, write | `scheduleTasks` | `schedules` failed |
-| `inbox.get()` (no `limit`) | refresh, write | `reconTasks`, `einvoiceTask` | `recon` failed (both tasks leave) |
-| `statements.list(id)` per `askAccountIds` | when the inbox answer is applied; dropped if a newer inbox read started | progress map (`reconProgress`) | silent: that statement has no bar |
-| `getLatestImport()` | refresh, write | `importReviewTask`; 記帳記錄 dot | `importReview` failed (a 404 is already `null` = ok) |
-| `getCounterparties()` | refresh, write | `debtsRow` | `debts` failed |
-| `inbox.actions(50)` | refresh, write | `handled` | silent: `handled` null |
-| `getRecalcStatus()` | refresh only | 匯入 dot | silent: dot only from `lastFailed()` |
+| `getAccounts()` | every round | dues → `BillingService` → `billTasks`; 帳戶 dot | `bills` failed |
+| each due's statement (`BillingService`) | per round after the accounts answer (see Rounds); `ensure` on a change round or new dues | bill tasks | `bills.failed(event)` for any due → `bills` failed; that card has no task, the others keep theirs |
+| `getScheduleInstances({ queue: true })` | every round | `scheduleTasks` | `schedules` failed |
+| `inbox.get({ limit: INBOX_READ_LIMIT })` | every round | `reconTasks`, `reconOverflowTask(inboxMissing())`, `einvoiceTask`; `truncated` | `recon` failed (all three leave; `truncated` false) |
+| `statements.list(id)` per `askAccountIds` | when the inbox answer is applied; dropped if a newer round started | progress map (`reconProgress`) | silent: that statement has no bar |
+| `getLatestImport()` | every round | `importReviewTask`; 記帳記錄 dot | `importReview` failed (a 404 is already `null` = ok) |
+| `getCounterparties()` | every round | `debtsRow` | `debts` failed |
+| `inbox.actions(50)` | every round | `handled` | silent: `handled` null |
+| `getRecalcStatus()` | `refresh` rounds only (own generation counter) | 匯入 dot | silent: dot only from `lastFailed()` |
 
-"write" = `entriesChanged` / `accountsChanged` after `start()`, not throttled, skipping the effect's first run (`nav-badge.service.ts:121–134`). The business-day calendar is asked for lazily on the first load (`:171–175`). No read raises a toast.
+The business-day calendar is asked for lazily on the first round (`nav-badge.service.ts:171–175`). No read raises a toast.
 
 Badges: `accounting` `{ dot: true, tone: 'red', label: '有逾期的卡費' }` when a bill task is 已逾期; `accounting-timeline` `{ dot: true, tone: 'primary', label: '有待確認的匯入紀錄' }` when `importReviewTask` is non-null; `import` `{ dot: true, tone: 'red', label: '最近一次匯入失敗' }` under today's rule (`:93–98`). No `count` on any badge.
 
-- [ ] **Step 1: Failing tests.** `notification-center.service.spec.ts`, modelled on `nav-badge.service.spec.ts` (a `Subject` per call through `calls<T>()`, stubbed `AccountingService` / `PortfolioService` / `InboxService` / `StatementsService` / `BillingService`-through-real-service as that spec does, fake timers, today `2026-10-24`). Carried over with the same bodies, re-pointed at the new service (old line in brackets): import dot cases (144–190), `refresh within 30 s is skipped, after 30 s refires` (233), `start() twice registers one focus listener` (248), `an entry or account write reloads … not the recalc status` (261), `writes before start() load nothing` (287), the visibilitychange block (295–336), `removes the focus listener` (337), `older response landing after a newer one is dropped` (345), `an older success landing after a newer failure is dropped` (355), `slow first load across the 30 s window` (365), `stale accounts snapshot never reaches the statements` (382), `re-asks the statements with the debit day once the business-day calendar lands` (400), the card-statement refresh block (469–520, asserting the bill task instead of a count). New:
+- [ ] **Step 1: Failing tests.** `notification-center.service.spec.ts`, modelled on `nav-badge.service.spec.ts` (a `Subject` per call through `calls<T>()`, stubbed `AccountingService` / `PortfolioService` / `InboxService` / `StatementsService` / `BillingService`-through-real-service as that spec does, fake timers, today `2026-10-24`; `await Promise.resolve()` / `flushMicrotasks` where a bill promise must resolve). Carried over with the same bodies, re-pointed at the new service and its `refresh({ reason: 'focus' })` / `invalidate()` (old line in brackets): import dot cases (144–190), `refresh within 30 s is skipped, after 30 s refires` (233), `start() twice registers one focus listener` (248), `an entry or account write reloads … not the recalc status` (261), `writes before start() load nothing` (287), the visibilitychange block (295–336), `removes the focus listener` (337), `older response landing after a newer one is dropped` (345), `an older success landing after a newer failure is dropped` (355), `slow first load across the 30 s window` (365), `stale accounts snapshot never reaches the statements` (382), `re-asks the statements with the debit day once the business-day calendar lands` (400), the card-statement refresh block (469–520, asserting the bill task instead of a count). New:
   ```ts
   it('three overdue instances of one definition count once', …);                    // summary().total 1; tasks()[0].title '測試月費 · 3 期未入帳'
   it('count on review data: 7, red, 「通知，7 件要處理，3 件已逾期」; three people owing do not count', …);
-  it('reads every source once per refresh', …);                                     // each stub called exactly once; inbox.get called with no limit
+  it('reads every source once per round', …);                                       // each stub called exactly once; inbox.get called with { limit: 1000 }
   it('a failed inbox read: no statement task, no e-invoice task, failedSources [recon], the other tasks stay', …);
   it('a failed queue read names 週期 and keeps the bills', …);
   it('a failed accounts read names 帳單 and hides the 帳戶 dot', …);
@@ -421,19 +476,51 @@ Badges: `accounting` `{ dot: true, tone: 'red', label: '有逾期的卡費' }` w
   it('an older inbox answer landing after a newer one does not bring its statement back', …);
   it('statement progress: one statements read per account with ask items; a failed one leaves the task without progress', …);
   it('a statements answer for a superseded inbox read is dropped', …);
-  it('refresh({ force: true }) inside the 30 s window reads again; while a read is in flight it does nothing', …);
-  it('loading is true from the first read until the last answer; loaded turns true once every task source answered', …);
+  it('refresh open inside the 30 s window starts a round; focus and timer do not', …);
+  it('refresh (any reason) while a round is in flight starts nothing', …);          // round() unchanged, no second call on any stub
+  it('invalidate() while a round is in flight starts a new round and returns its id', …);   // returns round() === 2; every task source stub called a second time
+  it('a superseded round never settles: its answers change nothing and settledRound stays', …);  // answer round 1 fully after invalidate → tasks [], settledRound() 0; answer round 2 → settledRound() 2
+  it('settledRound waits for every task source, a failed one included', …);         // four answered → 0; the fifth errors → 1, loaded() true
+  it('settledRound waits for the card statements, not just the accounts read', …);  // accounts answered, bill promise pending → 0; resolved → 1
+  it('an entry write after start() invalidates (a new round id); before start() it does nothing', …);
+  it('invalidate() does not read the recalc status', …);
+  it('truncated inbox: counts.ask_items 10 with 6 unfolded received → the statement task plus recon:more 「還有 4 筆要你決定」, total counts both, truncated() true', …);
+  it('truncated inbox with no statement received: recon:more alone, summary().total 1', …);
+  it('a complete inbox: no recon:more, truncated() false', …);
+  it('a failed inbox read clears truncated', …);
   it('badges: overdue bill → accounting red dot 有逾期的卡費; a bill due today → no dot', …);
   it('badges: review count 2 → accounting-timeline primary dot 有待確認的匯入紀錄; no badge carries a count', …);
   it('handled: 「3 件」 from the actions read; null when it fails', …);
   it('nextUpcoming is the tracking bill with the earliest date; trackingRows = [debts, upcoming]', …);
   it('hidden groups change nothing', …);                                            // prefs hiddenGroups ['accounting'] → same summary
   ```
+  `billing.service.spec.ts` (its existing harness): `refresh resolves only after every card's summary and payments reads have landed` (two cards; resolved flag false after three of four flushes, true after the fourth); `ensure resolves at once when nothing is in flight and nothing new is asked`; `ensure during a re-read resolves when that re-read commits`; `a read superseded by a newer round resolves with the newer round, not earlier`; `a failed read settles the promise (it never rejects)`; `empty dues resolve at once`; the existing cases pass unchanged.
+  `notification-center.rounds.spec.ts` — the REAL `AccountingService`, `BillingService`, `InboxService`, `StatementsService` with `provideHttpClient()` + `provideHttpClientTesting()` (no stubbed loading anywhere), one card 測試銀行卡 with a due event, one queue instance 測試房租 due today:
+  ```ts
+  it('first load: with the card\'s payments read still pending the round is not settled', async () => {
+    // flush accounts, counterparties, queue, inbox, latest import, actions, the card's summary — not its payments
+    expect(center.settledRound()).toBe(0); expect(center.loaded()).toBe(false);
+    // flush the payments read; await the microtask
+    expect(center.settledRound()).toBe(1); expect(center.tasks().map(t => t.id)).toContain('bill:11:2026-10-20');
+  });
+  it('re-read after a write: the old bill figure stays and the round is unsettled until both card reads land again', …);
+  it('a real schedule post interleaved with the queue read', async () => {
+    // round 1 fully flushed. center.refresh({ reason: 'open' }) → round 2; leave its queue GET (A) pending.
+    // accounting.postScheduleInstance(7).subscribe(); flush the POST 200 → entriesChanged → the effect → round 3, queue GET (B).
+    expect(center.round()).toBe(3);
+    // flush A with the pre-write queue [測試房租]: dropped — settledRound() stays 1. Flush B with [] and the rest of round 3:
+    expect(center.tasks().some(t => t.id === 'sched:1')).toBe(false); expect(center.settledRound()).toBe(3);
+  });
+  it('a write that commits but answers 500: invalidate() supersedes the in-flight round', async () => {
+    // round 2's queue GET (A) pending; POST flushed with status 500 (no entriesChanged bump); const id = center.invalidate();
+    // flush A with [測試房租] → ignored; flush round 3 with [] → the task is gone; center.settledRound() === id.
+  });
+  ```
   `nav-badge.service.spec.ts` shrinks to: `badges and summary are the centre's signals`, `start() and refresh() delegate` (a stubbed `NotificationCenterService`). The old cases `counts the reminders…` (213), `a failing source hides only its own badge` (220), `counts 待處理 inbox cards` (426), `counts e-invoice questions` (435), `a failed inbox read counts 0` (443), `timeline and badge agree` (451), `latest import with 1 needs_review → accounting count` (192–210) are deleted; their replacements are the new cases above.
   `navigation-state.service.spec.ts`: `notifications follows the facade's summary`; `badges off → NO_TASKS and no badges`.
-- [ ] **Step 2: Run** `--include='src/app/services/{notification-center,nav-badge}.service.spec.ts'` and `--include='src/app/components/shell/navigation-state.service.spec.ts'` — Expected: FAIL.
+- [ ] **Step 2: Run** `--include='src/app/services/{notification-center.service,notification-center.rounds,nav-badge.service}.spec.ts'`, `--include='src/app/components/accounting/billing/billing.service.spec.ts'` and `--include='src/app/components/shell/navigation-state.service.spec.ts'` — Expected: the new cases FAIL.
 - [ ] **Step 3: Implement.** Move the body of `NavBadgeService` into the new service and split its `forkJoin` (`nav-badge.service.ts:178–187`) into the per-source reads of the table; `countReminders` is no longer imported by either service (it stays for the reminders page). Add the stub line in the nine spec files.
-- [ ] **Step 4: Run** the three commands, then `--include='src/app/components/{shell,sidebar,mobile-nav}/**/*.spec.ts'` and `--include='src/app/app.routes.spec.ts'` — Expected: PASS.
+- [ ] **Step 4: Run** the three commands, then `--include='src/app/components/{shell,sidebar,mobile-nav}/**/*.spec.ts'`, `--include='src/app/app.routes.spec.ts'` and — because `BillingService` changed — `--include='src/app/components/accounting/{timeline,reminders,accounts}/**/*.spec.ts'` — Expected: PASS with no edit to those three pages or their specs.
 - [ ] **Step 5: Commit** `feat(notifications): NotificationCenterService reads each ledger source on its own; NavBadgeService delegates`.
 
 ### Task 5: `/notifications` in the nav model; dots with a tone (parallel with 2 and 3)
@@ -519,18 +606,19 @@ tasks.md 2.3 (rows). P12.
 - Create: `frontend/src/app/components/notifications/notif-row/notif-row.ts`, `notif-row.html`, `notif-row.scss`, `notif-row.spec.ts`
 
 **Interfaces:**
-- Consumes: `NotifTask`, `isCommand`, `SOURCE_TAGS` (Task 1); `app-btn` (`components/ui/btn/btn.ts`: `variant`, `loading`, `disabled`).
+- Consumes: `NotifTask`, `isCommand`, `SOURCE_TAGS` (Task 1); `app-btn` (`components/ui/btn/btn.ts`: `variant`, `loading`, `disabled`, `ariaLabel` `:39`; the focusable element is its inner `<button class="btn">`, `:8–21`, the host has no tabindex).
 - Produces: `NotifRowComponent`, selector `app-notif-row`, host `class="notif-row"`, `[attr.data-task-id]`, `[class.notif-row--alert]` (tier overdue or system). Inputs `task = input.required<NotifTask>()`, `busy = input(false)`, `solid = input(false)` (phone 已逾期: solid primary). Output `run = output<NotifCommand>()`.
 
 DOM (tab order = DOM order: primary, then secondary links):
 `span.notif-icon` (40 × 40 tile, `aria-hidden`; a `pi` class renders `<i>`, anything else as text) · `div.notif-body` > `div.notif-head` (`span.notif-title`, `span.notif-tag` = 財務 / 投資, `span.notif-amount` when set) + `div.notif-line` (`b.notif-when`, `span.notif-meta` prefixed by ` · ` when both exist) + `div.notif-bar[aria-hidden="true"]` > `span` with `width: k / n` (only with `progress`, `n > 0`; 6 px high, max 260 px) · `div.notif-actions` > primary + `a.notif-secondary` per secondary link.
-Primary: a command → `<app-btn class="notif-primary" [variant]="solid() ? 'primary' : 'soft'" [loading]="busy()" [disabled]="busy()" (click)="run.emit(command)">`; a link → `<a class="notif-primary notif-primary--link" [class.solid]="solid()" [routerLink] [queryParams]>` styled as the button. Each action's accessible name is `${label}：${title}` (`aria-label`), so 入帳 buttons differ by task.
+Primary: a command → `<app-btn class="notif-primary" [variant]="solid() ? 'primary' : 'soft'" [loading]="busy()" [disabled]="busy()" [ariaLabel]="label + '：' + title" (click)="run.emit(command)">` (the name lands on the inner `<button>`; no `aria-label` on the host); a link → `<a class="notif-primary notif-primary--link" [class.solid]="solid()" [routerLink] [queryParams] [attr.aria-label]>` styled as the button. Each action's accessible name is `${label}：${title}`, so 入帳 buttons differ by task. Exported for the page: `export const NOTIF_PRIMARY_CONTROL = 'app-btn.notif-primary button, a.notif-primary'` — the native control of a row's primary action (R28).
 Layout: ≥ 760 px one line (icon, body, amount, actions at the right; `min-height: 68px`); below 760 px the amount stays on the title line and the actions wrap under the text (artboard NotifPhone). Tokens: tile `--app-primary-soft`, alert tile `--c-red-soft` with `--c-red-ink` icon; `when` in an alert row `--c-red-ink`; meta `--app-text-muted`; tag `--app-surface-soft` / `--app-text-muted`; bar track `--app-surface-soft`, fill `--app-primary`; title 15 px / 700 with ellipsis, line 2 12 px.
 
 - [ ] **Step 1: Failing tests** (`notif-row.spec.ts`, a host component with `provideRouter([])`):
   - `renders title, source tag, when, meta and amount` (schedule task: `測試月費 · 3 期未入帳`, `財務`, `最早 08/20`, ` · 測試銀行卡`, the amount);
   - `an overdue row marks itself and shows when in the alert tone` (`.notif-row--alert`);
-  - `a command primary is a button named 「全部入帳：測試月費 · 3 期未入帳」 and emits its command once`;
+  - `a command primary is a native button named 「全部入帳：測試月費 · 3 期未入帳」 and emits its command once` (query `NOTIF_PRIMARY_CONTROL`: `tagName === 'BUTTON'`, its `aria-label`; the `app-btn` host has no `aria-label`);
+  - `NOTIF_PRIMARY_CONTROL matches exactly one focusable element per row, for a command and for a link` (`el.focus(); expect(document.activeElement).toBe(el)`);
   - `busy: the button is disabled and emits nothing`;
   - `a link primary is an anchor to /accounting/accounts/11 named 「記繳款：測試銀行卡帳單」`;
   - `secondary links follow the primary in the DOM with their query params` (`a.notif-secondary[href="/accounting/reminders?tab=pending"]`);
@@ -565,19 +653,19 @@ Structure and copy (top to bottom; one column, `max-width: 720px`, `padding-bott
 | Sections | `section.notif-section[aria-labelledby]` > `h2` (`span.sec-dot` + label + `span.sec-count`) + `ul.notif-card` > `li` > `<app-notif-row [task] [busy]="isBusy(task.id)" [solid]="phone() && section.tier === 'overdue'" (run)="onRun(task, $event)">` | `已逾期`, `今天`, `要你確認`, `系統`; `sec-dot` red (`--c-red-ink`) for 已逾期 and 系統, `--app-text-muted` otherwise |
 | Empty chip | `p.notif-none` when the chosen chip has no counted task but 全部 has | `這個來源目前沒有要處理的事` (copy: planner) |
 | 追蹤中 | `details.notif-tracking` > `summary` (`追蹤中 · 不計入數字` + `span.tracking-sum`) + one `div.tracking-row` per row: title, meta, `a.tracking-link`. Hidden under 投資 and when there is no row | summary right side `借還款 3 位 · 即將到來 3 件` (artboard; a part is left out when its row is absent); link `查看` named `查看：借還款 · 3 位` |
-| Handled | `a.notif-handled[routerLink="/accounting/reminders"][queryParams]="{ tab: 'todo' }"` when `center.handled()` is non-null | `已處理（近 7 天）12 件 ›` (artboard) |
+| Handled | `a.notif-handled[routerLink="/accounting/reminders"][queryParams]="{ tab: 'todo' }"` when `center.handled()` is non-null | `已處理的對帳（近 7 天）12 件 ›` (R29b; the artboard's 「已處理（近 7 天）12 件 ›」 narrowed to what the count covers) |
 | 提醒中心 | `a.notif-reminders[routerLink="/accounting/reminders"]` (muted) | `提醒中心（借還款、週期與分期管理）` (R22) |
 
-On init: `center.refresh({ force: true })` (R17). The chip is not kept in the URL (P9). Loading, empty and failure states are Task 10.
+On init: `center.refresh({ reason: 'open' })` (R17, R26). The chip is not kept in the URL (P9). Loading, empty and failure states are Task 10.
 
-- [ ] **Step 1: Failing tests** (`notifications.spec.ts`; `NotificationCenterService` stubbed with writable signals and a `refresh` spy; `provideRouter`; the `matchMedia` viewport stub of `app.routes.spec.ts:43–52`):
-  - `opening the page forces a refresh` (`refresh` called once with `{ force: true }`);
+- [ ] **Step 1: Failing tests** (`notifications.spec.ts`; `NotificationCenterService` stubbed with writable signals (`round`, `settledRound`, `truncated` included) and `refresh` / `invalidate` spies; `provideRouter`; the `matchMedia` viewport stub of `app.routes.spec.ts:43–52`):
+  - `opening the page asks for a refresh` (`refresh` called once with `{ reason: 'open' }`; `invalidate` not called);
   - `sections render in the order 已逾期, 今天, 要你確認, 系統 with their counts; a tier without tasks has no section`;
   - `rows keep the service's order inside a section`;
   - `subtitle: 「7 件要處理 · 3 件已逾期 · 數字只算要你動手的事」 at 1440; without the last part at 390; no 已逾期 part when none is overdue; 「沒有要處理的事」 at 0`;
   - `chips: 全部 5 / 財務 5 / 投資 0, 全部 checked`; `picking 投資 leaves no row, shows 這個來源目前沒有要處理的事 and hides 追蹤中`; `picking 財務 keeps the ledger rows`; `chip counts never include tracking rows`;
   - `追蹤中 is folded by default and lists 借還款 · 3 位 and 即將到來 · 2 件 with 查看 links to ?tab=debts and ?tab=cards`; `summary reads 追蹤中 · 不計入數字 and 借還款 3 位 · 即將到來 2 件`; `no 追蹤中 block without rows`;
-  - `handled link: 已處理（近 7 天）3 件 › → /accounting/reminders?tab=todo; absent when handled is null`;
+  - `handled link: 已處理的對帳（近 7 天）3 件 › → /accounting/reminders?tab=todo; absent when handled is null`;
   - `the 提醒中心 link is always there`;
   - `phone: rows of 已逾期 are solid, others soft; ≥ 760 px none is solid`;
   - `badges off: the page still lists every task, the subtitle and the chip counts stay` (P3);
@@ -590,21 +678,23 @@ On init: `center.refresh({ force: true })` (R17). The chip is not kept in the UR
 
 ### Task 9: 入帳 and 全部入帳 in place
 
-tasks.md 2.3. R4, P6. PR A lessons: one toast, captured request, late results.
+tasks.md 2.3. R4, R26, R28, P6. PR A lessons: one toast, captured request, late results.
 
 **Files:**
 - Modify: `frontend/src/app/components/notifications/notifications.ts`, `notifications.html`, `notifications.spec.ts`
+- Create: `frontend/src/app/components/notifications/notifications.integration.spec.ts` (the page over the real services and `HttpTestingController`)
 
 **Interfaces:**
-- Consumes: `AccountingService.postScheduleInstance(id)` (`accounting.service.ts:493`), `catchUpSchedule(id): Observable<ScheduleCatchUpResult>` (`:481`; `{ posted: number[]; failed: { instance_id; error } | null }`); `injectToasts()` (`services/toast.service.ts:33`), `toastText`; `guardedRetry` (`services/toast-retry.ts:9`); `writeErrorMessage` (`accounting/http-errors.ts:60`); `isImportRunning`, `IMPORT_RUNNING_TOAST` (`accounting/schedule-math.ts`).
-- Produces: `protected onRun(task: NotifTask, command: NotifCommand): void` (ignored while `isBusy(task.id)`); `private send(taskId: string, command: NotifCommand): void`; `protected isBusy(id: string): boolean`; `private readonly busy = signal<ReadonlySet<string>>(new Set())`.
+- Consumes: `center.round()`, `center.settledRound()`, `center.invalidate()` (Task 4); `NOTIF_PRIMARY_CONTROL` (Task 7); `AccountingService.postScheduleInstance(id)` (`accounting.service.ts:493`), `catchUpSchedule(id): Observable<ScheduleCatchUpResult>` (`:481`; `{ posted: number[]; failed: { instance_id; error } | null }`); `injectToasts()` (`services/toast.service.ts:33`), `toastText`; `guardedRetry` (`services/toast-retry.ts:9`); `writeErrorMessage` (`accounting/http-errors.ts:60`); `isImportRunning`, `IMPORT_RUNNING_TOAST` (`accounting/schedule-math.ts`).
+- Produces: `protected onRun(task: NotifTask, command: NotifCommand): void` (ignored while `isBusy(task.id)`); `private send(taskId: string, command: NotifCommand): void`; `protected isBusy(id: string): boolean`; `private readonly busy = signal<ReadonlyMap<string, number | null>>(new Map())` — task id → `null` while the write runs, then the round id the row waits to see passed.
 
 Rules:
-1. `send` adds `taskId` to `busy` and subscribes without `takeUntilDestroyed` (the write must finish; the toast scope handles a destroyed page).
-2. Success: the toast below; the id stays busy until `center.loading()` next turns false after the write (both calls bump `entriesChanged`, which makes the service re-read at once — the page calls no refresh on success).
-3. Failure: the id leaves `busy` at once; the toast below; then `center.refresh({ force: true })` (silent: it raises nothing, so the 失敗 toast stays).
-4. 重試 calls `send(taskId, command)` with the captured values; while that id is busy `guardedRetry` re-raises the toast instead.
-5. When a succeeded task's row has left and `document.activeElement` is `<body>`, focus goes to the `.notif-primary` of the row now at that position in the DOM, else to `details.notif-tracking > summary`, else to the first chip (`afterNextRender`; focus the owner moved elsewhere is left alone — the pattern of `accounting/retry-focus.ts`).
+1. `send` sets `busy[taskId] = null` and subscribes without `takeUntilDestroyed` (the write must finish; the toast scope handles a destroyed page).
+2. Success: the toast below; `busy[taskId] = center.round()` read in the `next` handler. The write has bumped `entriesChanged` (`accounting.service.ts:107–108`) but the service's effect has not run yet, so the round it starts has a greater id. The page calls neither `refresh` nor `invalidate` on success.
+3. Failure: the toast below; `const after = center.round(); center.invalidate(); busy[taskId] = after` (an error does not bump `entriesChanged`, and the write may still have committed). The reads raise nothing, so the 失敗 toast stays the visible toast.
+4. One effect clears a task from `busy` when its stored round id `n` is non-null and `center.settledRound() > n`: a round started after the write's answer has settled. A superseded round never counts (it never settles). The row is disabled for that whole time, on success and on failure.
+5. 重試 calls `send(taskId, command)` with the captured values; while that id is busy `guardedRetry` re-raises the toast instead (so 重試 pressed during the reload after a failure shows the toast again and sends nothing).
+6. When a task that answered ok leaves the list and `document.activeElement` is `<body>`, focus goes to the element matching `NOTIF_PRIMARY_CONTROL` in the row now at that position in the DOM (the inner `<button>` of `app-btn`, or the `<a>`), else to `details.notif-tracking > summary`, else to the first chip (`afterNextRender`; focus the owner moved elsewhere is left alone — the pattern of `accounting/retry-focus.ts`). The target row may itself be busy (its button disabled): then the next enabled control in that order is used.
 
 Toasts (all through `this.toasts`; `name` = the command's `name`):
 
@@ -622,41 +712,59 @@ Toasts (all through `this.toasts`; `name` = the command's `name`):
   it('全部入帳 calls catch-up for the definition and shows 「已入帳 3 期：測試月費」', …);
   it('a catch-up that stops midway shows 失敗 with the count and the reason, without 重試', …);   // { posted: [1, 2], failed: { instance_id: 3, error: '帳戶已封存' } } → '測試月費：已入帳 2 期，之後的入帳失敗（帳戶已封存）'
   it('the row is busy while the write runs and a second press sends nothing', …);
-  it('after success the row stays busy until the refreshed list lands', …);                 // loading true → still disabled; loading false → enabled / gone
+  it('after success the row stays busy until a round started after the answer settles', …); // round 4 at the answer; settledRound 4 → still disabled; round 5 started, settledRound 5 → enabled / gone
+  it('after a failure the page invalidates and the row stays busy until that round settles', …);   // invalidate called once; settledRound reaches the returned id → enabled
+  it('a round that was already in flight when the write answered does not release the row', …);     // settledRound moves to the old id only → still disabled
   it('a 500 shows 失敗 with 重試, which posts the same instance again', …);                 // runAction → second call with 7
   it('重試 pressed while that task is busy sends nothing and shows the toast again', …);
   it('重試 still sends after the row left the list', …);                                    // tasks.set([]) then runAction → call with the captured id
   it('a 409 import_running shows 「匯入進行中，請稍後再試」 without 重試', …);               // the exact text is IMPORT_RUNNING_TOAST
   it('a 422 shows the server message without 重試', …);
-  it('a failed write refreshes the list silently: the 失敗 toast is still current after the reload', …);   // refresh called with { force: true }; current() unchanged after tasks.set(...)
-  it('success does not call refresh', …);
+  it('a failed write reloads silently: the 失敗 toast with 重試 is still current after the newer round lands', …);   // invalidate called; after tasks.set(...) and settledRound.set(id): current() is the same toast, action.label 重試
+  it('success calls neither refresh nor invalidate', …);
   it('a result landing after the page is destroyed still shows, without an action', …);     // fixture.destroy(); subject.error(500) → current().action null
-  it('focus: when the posted row leaves and focus fell to <body>, the next row\'s primary gets focus', …);
+  it('focus: when the posted row leaves and focus fell to <body>, the next row\'s native control has focus', …);   // expect(document.activeElement).toBe(nextRow.querySelector(NOTIF_PRIMARY_CONTROL)); tagName BUTTON for an 入帳 row, A for a 記繳款 row; no spy on focus()
+  it('focus: a next row that is busy is skipped for the next enabled control', …);
   it('focus: with no row left it goes to the 追蹤中 summary; focus moved elsewhere is left alone', …);
   it('a 記繳款 row runs no command', …);
   ```
-- [ ] **Step 2: Run** `--include='src/app/components/notifications/notifications.spec.ts'` — Expected: the new cases FAIL.
+  `notifications.integration.spec.ts` — the page with the REAL `NotificationCenterService`, `BillingService`, `AccountingService`, `ToastService` and `HttpTestingController` (fixtures: 測試房租 due today, instance 7; one card):
+  ```ts
+  it('the reviewer\'s interleaving: old queue GET in flight, POST commits but answers 500', async () => {
+    // page open, round 1 flushed (row 測試房租 shown). window focus after 30 s → round 2; hold its queue GET (A).
+    // click 入帳 → POST /schedules/instances/7/post; flush it with status 500.
+    //   → toast { kind: 'error', action: { label: '重試' } }; a new queue GET (B) was issued (round 3); the row's button is disabled.
+    // flush A with [測試房租 pending] → row still shown AND still disabled (A is dropped; nothing settles).
+    // flush B with [] and the rest of round 3 → the row is gone;
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', action: expect.objectContaining({ label: '重試' }) }));
+  });
+  it('the same with a 200: the effect\'s round replaces the old GET\'s answer and the toast is 「已入帳：測試房租」', …);
+  it('a 500 that did not commit: after round 3 the row is back, enabled, and 重試 posts instance 7 again', …);
+  ```
+- [ ] **Step 2: Run** `--include='src/app/components/notifications/notifications*.spec.ts'` — Expected: the new cases FAIL.
 - [ ] **Step 3: Implement** per the rules.
 - [ ] **Step 4: Run** — Expected: PASS.
 - [ ] **Step 5: Commit** `feat(notifications): 入帳 and 全部入帳 in place with a toast, a busy row and a guarded retry`.
 
 ### Task 10: States — loading, empty, a failed source
 
-tasks.md 2.3 (empty state, failed-source line), 2.5. P4.
+tasks.md 2.3 (empty state, failed-source line), 2.5. R25, R26, R27, P4.
 
 **Files:**
-- Modify: `frontend/src/app/components/notifications/notifications.ts`, `notifications.html`, `notifications.scss`, `notifications.spec.ts`
+- Modify: `frontend/src/app/components/notifications/notifications.ts`, `notifications.html`, `notifications.scss`, `notifications.spec.ts`, `notifications.integration.spec.ts`
 
 **Interfaces:**
-- Consumes: `center.loaded()`, `loading()`, `failedSources()`, `nextUpcoming()`, `trackingRows()`; `failureLine` (Task 1); `focusRetryIfLost` (`accounting/retry-focus.ts`).
-- Produces: `protected readonly state: Signal<'loading' | 'empty' | 'list'>`; `protected retry(): void` (`center.refresh({ force: true })`); `protected openTracking(event: Event): void`.
+- Consumes: `center.loaded()`, `loading()`, `truncated()`, `failedSources()`, `nextUpcoming()`, `trackingRows()`, `invalidate()`; `failureLine` (Task 1); `focusRetryIfLost` (`accounting/retry-focus.ts`).
+- Produces: `protected readonly state: Signal<'loading' | 'empty' | 'list'>`; `protected retry(): void` (`center.invalidate()`); `protected readonly notes: Signal<string[]>` (the bottom lines); `protected openTracking(event: Event): void`.
 
 | State | When | Markup and copy |
 |---|---|---|
-| Loading | `!loaded()` and no task yet | `p.notif-loading[role="status"]` `讀取中…` (copy: planner); chips and links render |
-| Empty | `loaded()`, no counted task, no failed source | `div.notif-empty`: icon `pi pi-check-circle`, `h2` `都處理好了` (artboard); `p.empty-next` `下一件：測試銀行卡帳單 · 10/27 截止 · $1,824` = `下一件：${title} · ${when} · ${amount}` of `nextUpcoming()` (artboard), absent without one; `a.empty-tracking` `看追蹤中的 ${n} 件 ›` (artboard; n = Σ `trackingRows().count`), absent without rows — it opens the `details`, scrolls it into view and focuses its `summary` |
+| Loading | `!loaded()` (no round has settled: some task source, card statements included, has not answered) and no task yet | `p.notif-loading[role="status"]` `讀取中…` (copy: planner); chips and links render |
+| Empty | `loaded()`, no counted task, no failed source, not `truncated()` (a truncated inbox always has the catch-all task, so this is a second guard) | `div.notif-empty`: icon `pi pi-check-circle`, `h2` `都處理好了` (artboard); `p.empty-next` `下一件：測試銀行卡帳單 · 10/27 截止 · $1,824` = `下一件：${title} · ${when} · ${amount}` of `nextUpcoming()` (artboard), absent without one; `a.empty-tracking` `看追蹤中的 ${n} 件 ›` (artboard; n = Σ `trackingRows().count`), absent without rows — it opens the `details`, scrolls it into view and focuses its `summary` |
 | List | any counted task | Task 8's sections |
 | Failed source | `failedSources().length > 0`, in any state, as the last element of the page | `p.notif-failed` (`--app-text-muted`): `無法讀取：對帳` (spec) + `button.notif-retry` `重試`, disabled while `loading()`; the line stays in place during the retry and leaves only when no source is failed; after a retry that fails again focus returns to 重試 if it fell to `<body>` |
+
+| Truncated inbox | `truncated()`, as a bottom line before the failure line | `p.notif-partial` (`--app-text-muted`): `對帳項目較多，僅列出部分` (R25) |
 
 With a failed source and no counted task the page shows neither 都處理好了 nor 讀取中…: only the chips, 追蹤中 (if any), the links and the failure line.
 
@@ -668,10 +776,14 @@ With a failed source and no counted task the page shows neither 都處理好了 
   - `a failed inbox: 「無法讀取：對帳」 is the last element of the page, the other tasks stay`;
   - `two failed sources read 「無法讀取：帳單、對帳」`;
   - `a failed source with no task left: no 都處理好了, the failure line shows`;
-  - `重試 forces a refresh; the line stays and the button is disabled while loading; it leaves when the source recovers`;
+  - `重試 calls invalidate(); the line stays and the button is disabled while loading; it leaves when the source recovers`;
+  - `truncated: 「對帳項目較多，僅列出部分」 shows above the failure line's place and the catch-all row 「還有對帳項目未列出」 is listed in 要你確認`;
+  - `truncated with no other task: the catch-all row shows, 都處理好了 does not`;
+  - `not truncated: no such line`;
   - `a retry that fails again returns focus to 重試 when focus fell to <body>`;
   - `tasks arriving while another source is still loading render at once (no 讀取中… over a list)`;
-  - `a later refresh keeps the list on screen while it loads`.
+  - `a later round keeps the list on screen while it loads`.
+  `notifications.integration.spec.ts` (real services, as Task 9): `first open with a slow card statement: 讀取中… until the card's last read lands, then the bill row — 都處理好了 never appears in between` (flush everything but the payments read → `.notif-loading` present, `.notif-empty` absent; flush it → the row); `first open with nothing to do: 都處理好了 only after the card statements answered`; `an inbox answering counts.ask_items 3 with 1000 folded items: the catch-all row and the partial line, no 都處理好了`.
 - [ ] **Step 2: Run** `--include='src/app/components/notifications/*.spec.ts'` — Expected: the new cases FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** — Expected: PASS.
@@ -680,7 +792,7 @@ With a failed source and no counted task the page shows neither 都處理好了 
 ### Task 11: Tasks, design index, full suite, evidence
 
 **Files:**
-- Modify: `openspec/changes/add-notification-center/tasks.md` — tick 2.1–2.5 with notes: 2.1 「(`NavBadgeService` kept as a facade)」; 2.2 「(plus an interim e-invoice task until 6.2; debts from `getCounterparties`)」; 2.3 「(statement rows open the existing statement page until 4.2; handled link counts reconciliation actions only; one column, no pane)」; 2.4 「(phone bell on pages that use the shared page header; 股利 dot with 3.1)」; 2.5 「(snoozed: PR E, 5.3)」. Edit 6.6 to name the two call sites that remain (`inbox-panel.ts`, `reminders.ts`).
+- Modify: `openspec/changes/add-notification-center/tasks.md` — tick 2.1–2.5, each with a note that says what PR B does NOT prove (R29c), so no tick reads as full spec acceptance: 2.1 「(`NavBadgeService` kept as a facade. Not in B: snooze and its exclusion from the count — 5.3)」; 2.2 「(plus an interim e-invoice task; debts from `getCounterparties`; the inbox is read up to 1000 items, the rest is one catch-all task. Not in B: the e-invoice task copy and flow — 6.2 / 6.3; dividends, import failure, 國泰, auto-pay sources — 3.x / 5.2)」; 2.3 「(statement rows open the existing statement page; the handled link counts reconciliation actions only; one column. Not in B: the review route and the right pane — 4.2; 系統 rows — 3.x)」; 2.4 「(Not in B: the 股利 dot — 3.1; the phone bell on the ten pages that draw their own header: 帳戶明細, 帳戶設定, 記一筆／編輯, 提醒中心, 記錄明細, 多類別群組, 自訂報表, 回饋規則, 對帳帳單, 對帳明細)」; 2.5 「(grouping, tracking excluded, badges off, failed source. Not in B: snoozed — 5.4)」. Edit 6.6 to name the two call sites that remain (`inbox-panel.ts`, `reminders.ts`).
 - Modify: `design_handoff_v3/README.md` — **Colour mapping**: the count pill row becomes "background `--c-red-ink` / `--app-primary`, text `--app-count-ink` (white in light, the page background in dark: white is 2.9:1 on the dark red)"; add "navigation dots: `--c-red-ink` for overdue or failed, `--app-primary` otherwise".
 - Modify: `frontend/src/app/app.routes.ts` — the Caddy comment (`:8–12`) gains `/notifications`.
 
@@ -689,6 +801,17 @@ With a failed source and no counted task the page shows neither 都處理好了 
 - [ ] **Step 3: Run** `cd frontend && npx ng test --watch=false` — Expected: all pass (re-run a listed load-flaky test alone before calling it a failure); `npx ng build` — Expected: success. `grep -rn "item-count\|sub-count\|bell-count\|提醒中心 . 項" frontend/src/app --include=*.html --include=*.scss --include=*.ts` shows no production hit.
 - [ ] **Step 4: Evidence (outside the repo).** Before (the PR A branch head) / after builds served statically; Playwright with routed API stubs and fictional data; screens per the Screenshot plan and the probes below. Screens go into the PR description as a private gallery link.
 - [ ] **Step 5: Commit** `docs(openspec): tick add-notification-center 2.1–2.5 with notes; count pill and dot colour mapping`.
+
+**Not verified in PR B** (copy this list into the PR body under that heading):
+
+- Snoozed tasks leaving the list and the count (NC "Snooze on this device"; tasks 5.3 / 5.4 — PR E). B's count takes every counted task.
+- `/notifications/recon/:statementId` and the right pane at ≥ 1024 px (NC "One case at a time reconciliation"; 4.2 — PR D). B's 對帳 opens the existing statement page; the page is one column.
+- The e-invoice task's spec copy 「電子發票 · N 張要確認」, its sellers and `/notifications/einvoices` (NC "E-invoice task and flow"; 6.2 / 6.3 — PR F). B shows an interim 「N 張發票要確認」 linking to the reminders page.
+- System and portfolio sources: dividends, import failure, 國泰 daily statement, auto-pay skips; the 股利 dot; the AS scenario "Count in the sidebar, dot on the phone tab" (3.x, 5.2 — PR C / E). 系統 is empty and 投資 shows 0 in B.
+- "Every page header shows a bell": not on 帳戶明細, 帳戶設定, 記一筆／編輯, 提醒中心, 記錄明細, 多類別群組, 自訂報表, 回饋規則, 對帳帳單, 對帳明細 (they draw their own header).
+- "Items handled in the last 7 days" across sources: B counts reconciliation actions only and labels the link 已處理的對帳.
+- D2's "after the due date" for card bills: B tiers by the debit day (R6).
+- Exact per-statement counts when more than 1000 reconciliation items are open (R25): needs an API change.
 
 PR body must carry: the request load per refresh (R24: accounts, counterparties, queue, full inbox, latest import, actions, recalc status = 7, plus one statements list per account with questions, plus two reads per card), the R14 gap list, and the release note **`/notifications` must be added to the Caddy `@hub_spa` allowlist before the SPA is published** (outside the repo; reload and compare host / container checksums).
 
@@ -705,6 +828,8 @@ Before / after at 1440 and 390, light and dark, unless the row says otherwise. "
 | 追蹤中 open | `/notifications` at 1440 and 390 | same, `details` opened |
 | Empty state | `/notifications` at 1440 and 390 (light / dark) | no counted task; 測試二卡 due 10/27; three debts |
 | A failed source | `/notifications` at 1440 and 390 | inbox → 500: 「無法讀取：對帳」 with 重試; a second shot with every source failing |
+| Truncated inbox | `/notifications` at 1440 and 390 | inbox with 6 items of one statement and `counts.ask_items` 10: the statement row, 「還有對帳項目未列出 · 還有 4 筆要你決定」, the bottom line 「對帳項目較多，僅列出部分」 |
+| Slow card statement | `/notifications` at 1440 | the card's payments read delayed 3 s: 讀取中… first, never 都處理好了 |
 | In-place 入帳 | `/notifications` at 1440 and 390 | press 入帳 on 測試房租: busy row, then the 完成 toast; a 500 → 失敗 with 重試 |
 | Sidebar expanded | `/accounting` at 1440 (light / dark), before / after | count 7 red; a second shot with nothing overdue (primary pill); dots on 帳戶 (red) and 記帳記錄 (primary) |
 | Sidebar rail | `/accounting/entries/:id` at 1440 and `/accounting` at 1100, before / after | the pill on the bell icon; rail tip on hover |
@@ -723,7 +848,9 @@ Browser probes (Playwright, written into the evidence README with their output):
 - **Keyboard order through a row:** Tab from the last chip reaches the first row's primary, then its 逐期處理, then the next row's primary; Enter on 入帳 runs it; each focused control has a visible focus ring (screenshot).
 - **In-place 入帳 toast:** after 入帳 the toast's box does not intersect the floating 記一筆 (820, 1100, 1440) and sits above the tab bar and its + at 390; `elementFromPoint` at the last row's primary centre (scrolled to the page end) is that button at 820 / 1100 / 1440 (not the FAB) and at 390 (not the tab bar).
 - **Overlays:** with the 失敗 toast shown, the PageHeader ⋯ menu is not present on this page; a PrimeNG overlay is not opened by this page (stated, not probed).
-- **Requests:** one page open issues each source URL once (count the routed requests); a focus event inside 30 s issues none.
+- **Requests:** one page open issues each source URL once (count the routed requests; the inbox URL carries `limit=1000`); a focus event inside 30 s issues none; a failed 入帳 issues exactly one more round.
+- **Interleaving (R26):** the queue route held open by the stub, 入帳 answered 500 after the stub marks the instance posted, then the held response released with the old row — the row is gone once the newer round answers and the visible toast is still the 失敗 with 重試.
+- **Focus (R28):** after 入帳 on the first of two schedule rows, `document.activeElement` is the second row's `<button>` (not `<body>`, not `app-btn`).
 
 ## Verification
 
@@ -734,8 +861,11 @@ Checked against the worktree at `323228f4` (branch `feat/notif-b-notification-pa
 - **Nav model:** `navItemForUrl` and its 庫存 fallback `navigation.ts:84–93`; `NavBadge` `:95–99`; `summarizeGroupBadges` `:125–135`; `activeItem` / `activeGroup` `navigation-state.service.ts:40`, `:46–48`; sub-nav `show` `sub-nav.ts:19`; tab highlight and `hasDot` `mobile-nav.ts:21–32`; hidden groups validated against `NAV_GROUPS` `navigation-preferences.service.ts:14`.
 - **Entry points:** sidebar 記一筆 `sidebar.html:27–40`, groups loop `:41`, counts and dots `:56–71`, `:97–111`; `placeTip` selector `sidebar.ts:60`; page header gear `page-header.html:37–39`, `gear` `page-header.ts:79–81`, `back` `:50`, `subtitle` `:52`, `goBack` `:196–202`; timeline bell `timeline.html:14`, its state `timeline.ts:485–501`, `:722–731`, `:863–871`, `:1507–1536`, styles `timeline.scss:343–374` (`.bell-count` carries a `#fff` literal that goes with it); `isPhone` `timeline.ts:576`. The timeline's `counterparties` and `inbox` have no other consumer (grep).
 - **Own-header pages (R14 gap):** `grep -l "<h1"` minus `app-page-header` users gives the ten templates listed in Task 6; on a phone the accounting layout renders only the routed page (`accounting-layout.html:1–2`).
-- **Sources:** `getAccounts` `accounting.service.ts:118`, `getCounterparties` `:395`, `catchUpSchedule` `:481`, `getScheduleInstances` `:485`, `postScheduleInstance` `:493`, `getLatestImport` `:542` (404 → null); every schedule write bumps `entriesChanged` (`:439`). `InboxService.get` `inbox.service.ts:24`, `actions(limit = 50)` `:53`. `StatementsService.list` `statements.service.ts:23`; `reconProgress` `statement-view.ts:163–167`. `reminderDues` (45-day horizon) `billing-math.ts:137`, `:163–165`; `payDateOf` `:34`; `BillState` `billing.service.ts:15–33`; `ensure` `:101`, `refresh` `:121`, `bill` `:189`, `failed` `:194`. `importReviewCount` `import-review-count.ts:4–10`; the review count is shown on 帳戶 (`accounts.html:15`) — there is no separate review page. Ask bucket: the private `bucket()` in `inbox-view.ts` (default branch). `catch_up` posts "the pending periods due today or earlier" (`schedule_service.py:377`); the queue reaches 30 days ahead (`schedule_read.py:21`).
+- **Sources:** `getAccounts` `accounting.service.ts:118`, `getCounterparties` `:395`, `catchUpSchedule` `:481`, `getScheduleInstances` `:485`, `postScheduleInstance` `:493`, `getLatestImport` `:542` (404 → null); every schedule write bumps `entriesChanged` (`:439`). `InboxService.get` `inbox.service.ts:24`, `actions(limit = 50)` `:53`. `StatementsService.list` `statements.service.ts:23`; `reconProgress` `statement-view.ts:163–167`. `reminderDues` (45-day horizon) `billing-math.ts:137`, `:163–165`; `payDateOf` `:34`; `BillState` `billing.service.ts:15–33`; `ensure` `:101`, `refresh` `:121` (both return void today and subscribe inside `start`, `:128–186`; `commit` `:135–150`; `Pending` `:39`), `bill` `:189`, `failed` `:194`, `isSettled` `:204` (true once a key has ever landed, so it cannot say a re-read finished). Callers: `ensure` at `accounts.ts:230`, `reminders.ts:467`, `timeline.ts:860`, `nav-badge.service.ts:115`; `refresh` at `nav-badge.service.ts:113` only; `retry` at `reminders.ts:664`. `AccountingService.bump` taps `next` only (`accounting.service.ts:107–108`): a failed write changes no counter. `importReviewCount` `import-review-count.ts:4–10`; the review count is shown on 帳戶 (`accounts.html:15`) — there is no separate review page. Ask bucket: the private `bucket()` in `inbox-view.ts` (default branch). `catch_up` posts "the pending periods due today or earlier" (`schedule_service.py:377`); the queue reaches 30 days ahead (`schedule_read.py:21`).
 - **Reminders targets:** tab keys `all / todo / cards / debts / pending` `reminders.ts:55–61`, read from `?tab=` at `:439–440`; the handled list sits in the 待處理 tab (`reminders.html:26–29`).
 - **Tokens:** `--app-primary` `styles.scss:38` / `:195`; `--c-red-ink` `:69` / `:218`; `--c-red-soft` `:66` / `:216`; `--app-text-muted` `:28` / `:191`; dark `--app-bg` `#0f1218` `:184`. Computed contrast for P5: white on `#c53a3f` 5.18, on `#533afd` 6.19; `#0f1218` on `#ff6369` ≈ 6.5, on `#8b7dff` ≈ 5.8 (Task 6 re-computes them from the stylesheet).
 - **Artboard copy quoted:** 「數字只算要你動手的事」, chips `aria-label="來源"`, 「追蹤中 · 不計入數字」, 「已處理（近 7 天）12 件 ›」 (NotifDesktop / NotifPhone); 「都處理好了」, 「下一件：… · 10/27 截止 · $1,824」, 「看追蹤中的 6 件 ›」 (FeedbackSpec D); row copy 「10/20 截止 · 逾期 4 天」, 「最早 8/20」, 「N 筆要你決定」, 「已對上 17 / 28 行」, 記繳款 / 全部入帳 / 入帳 / 逐期處理 (NotifPhone `renderVals`). `shortDate` pads the month (`08/20`, `dates.ts:23`), so the plan's dates read `08/20` where the artboard reads `8/20`.
-- **Could not confirm:** that a positive `Counterparty.open_amounts` amount is 應收 — inferred from `−Σ amount` over receivable / payable entries (`settings_service.py:1122`); Task 3's implementer checks it against a receivable fixture and swaps the two labels if it is the other way, saying so in the task report. Whether the inbox's default page (500 items) can truncate a statement's items (the per-statement count would then be low). Whether `formatSigned` prints `−` or `-` (tests take the helper's output). Row / FAB / tab-bar overlap and rail pill placement (browser probes only).
+- **Inbox cap (R25):** `limit: int = Query(500, ge=1, le=1000)` (`routers/reconciliation.py:70`); counts over the whole set at `inbox_service.py:475`, the cut `keyed[:limit]` at `:477`, sort key (account name, account id, newest `period_end`, day, case id) at `:473`; `ask_items = len(unfolded)` `:439–442`; `"folded": question in FOLDED` `:420` with `FOLDED = {proposed, balance_gap, settlement, dividend, other}` `:37` — the same five questions the SPA's private `bucket()` sends away from 待處理. `InboxCounts.ask_items` is in the SPA model (`inbox.model.ts:105`). The e-invoice section is cut by the same `limit` but `einvoice_ask` is the full count (`inbox_service.py:482`), which is all B uses.
+- **Counterparty sign (R29a):** `tests/integration/test_settings_crud_api.py:425–443`.
+- **`app-btn` (R28):** template `btn.ts:6–29` (one inner `<button class="btn">` carrying `[attr.aria-label]="ariaLabel() || null"`, `:18`), inputs `:34–41`.
+- **Could not confirm:** whether the reminders 待處理 tab (the catch-all's target) lists items beyond its own default page of 500 — it calls `inbox.get()` without a limit; if not, the owner works through the first 500 and the rest surface as they are answered. Whether a promise resolved in `commit()` needs a `flushMicrotasks` under the repo's vitest fake timers (`toFake: ['Date']` leaves microtasks real; the plan's tests `await` them). Whether `formatSigned` prints `−` or `-` (tests take the helper's output). Row / FAB / tab-bar overlap and rail pill placement (browser probes only).
