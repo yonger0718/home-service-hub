@@ -34,7 +34,12 @@ export function scheduleTasks(queue: readonly ScheduleInstance[], today: string)
   const tasks: NotifTask[] = [];
   for (const [definitionId, items] of groups) {
     const open = items.filter((i) => i.status === 'pending' && i.due_date <= today).sort(byDue);
-    const partial = items.filter((i) => i.is_partial && !open.includes(i)).sort(byDue);
+    // Partial = a posted instance flagged is_partial. The queue endpoint sends exactly these besides the waiting
+    // pending rows (services/accounting-service/app/services/schedule_read.py:301-312: `status == "posted"` and
+    // `is_partial`), and the reminders page counts every flagged row (reminder-count.ts:21, schedule-queue.ts:86),
+    // so for rows the backend can send the two agree. A flagged skipped or pending row is not sent; if one ever
+    // arrives it makes no task here (the reminders page would still list it).
+    const partial = items.filter((i) => i.is_partial && i.status === 'posted').sort(byDue);
     const n = open.length;
     if (n === 0 && partial.length === 0) continue;
     const subject = n > 0 ? open : partial;
@@ -78,6 +83,8 @@ export function scheduleTasks(queue: readonly ScheduleInstance[], today: string)
       primary,
       secondary: n > 0 ? [STEP_LINK] : [],
       sortKey: oldest.due_date,
+      // Open count and oldest due date only; the tier is NOT part of it (a task moving from 今天 to 已逾期 keeps
+      // its fingerprint), so a snooze wake-up (PR E) must compare tiers itself.
       fingerprint: `${n}|${oldest.due_date}`,
     });
   }

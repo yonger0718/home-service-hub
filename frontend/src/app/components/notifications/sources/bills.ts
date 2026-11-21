@@ -1,4 +1,4 @@
-import { BillingEvent, payDateOf } from '../../accounting/billing/billing-math';
+import { BillingEvent } from '../../accounting/billing/billing-math';
 import { BillState } from '../../accounting/billing/billing.service';
 import { addDays, daysBetween, shortDate } from '../../accounting/dates';
 import { formatMoney } from '../../accounting/format';
@@ -22,7 +22,7 @@ export function billTasks(input: BillTaskInput): NotifTask[] {
     if (event.kind !== 'due') continue;
     const state = bill(event);
     if (!state || !(state.remaining > 0)) continue;
-    const payDate = state.payDate ?? payDateOf(event);
+    const payDate = state.payDate;
     if (payDate > horizon) continue;
     const tier: NotifTier = payDate < today ? 'overdue' : payDate === today ? 'today' : 'tracking';
     const when =
@@ -48,6 +48,8 @@ export function billTasks(input: BillTaskInput): NotifTask[] {
       primary: { label: '記繳款', route: `/accounting/accounts/${state.accountId}` },
       secondary: [],
       sortKey: payDate,
+      // Remaining amount and debit day only; the tier is NOT part of it (a bill moving from 追蹤中 to 今天 to 已逾期
+      // keeps its fingerprint), so a snooze wake-up (PR E) must compare tiers itself.
       fingerprint: `${state.remaining}|${payDate}`,
     });
   }

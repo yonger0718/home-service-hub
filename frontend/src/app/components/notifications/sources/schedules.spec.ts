@@ -144,4 +144,34 @@ describe('scheduleTasks', () => {
       scheduleTasks([inst(1, '2026-10-01', { status: 'skipped' }), inst(2, '2026-10-02', { status: 'posted' })], TODAY),
     ).toEqual([]);
   });
+
+  it('a skipped instance flagged partial makes no task', () => {
+    expect(scheduleTasks([inst(1, '2026-10-01', { status: 'skipped', is_partial: true })], TODAY)).toEqual([]);
+  });
+
+  it('a future pending instance flagged partial makes no task (the backend never sends one)', () => {
+    expect(scheduleTasks([inst(1, '2026-11-20', { status: 'pending', is_partial: true })], TODAY)).toEqual([]);
+  });
+
+  it('currency order follows the instances, USD first', () => {
+    const [t] = scheduleTasks(
+      [
+        inst(1, '2026-10-20', { totals: [{ currency: 'USD', amount: '-5.0000' }] }),
+        inst(2, '2026-10-21'),
+      ],
+      TODAY,
+    );
+    expect(t.amount).toBe(`${formatSigned(-5, 'USD')}、${formatSigned(-390, 'TWD')}`);
+  });
+
+  it('float amounts sum cleanly', () => {
+    const [t] = scheduleTasks(
+      [
+        inst(1, '2026-10-20', { totals: [{ currency: 'USD', amount: '-0.1' }] }),
+        inst(2, '2026-10-21', { totals: [{ currency: 'USD', amount: '-0.2' }] }),
+      ],
+      TODAY,
+    );
+    expect(t.amount).toBe('−US$0.3');
+  });
 });

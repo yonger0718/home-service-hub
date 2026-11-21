@@ -96,4 +96,33 @@ describe('billTasks', () => {
   it('skips closing events', () => {
     expect(billTasks({ dues: [due({ kind: 'closing' })], bill: () => state(), today: TODAY })).toEqual([]);
   });
+
+  it('two cards give two distinct ids', () => {
+    const b = due({ accountId: 12, name: '測試銀行卡乙' });
+    const tasks = billTasks({
+      dues: [due(), b],
+      bill: (e) => state({ accountId: e.accountId, name: e.name }),
+      today: TODAY,
+    });
+    expect(tasks.map((t) => t.id)).toEqual(['bill:11:2026-10-20', 'bill:12:2026-10-20']);
+  });
+
+  it('the tracking window crosses a year end', () => {
+    const [t] = billTasks({ dues: [due()], bill: () => state({ payDate: '2027-01-02' }), today: '2026-12-28' });
+    expect(t).toMatchObject({ tier: 'tracking', when: '01/02 截止' });
+    expect(billTasks({ dues: [due()], bill: () => state({ payDate: '2027-01-05' }), today: '2026-12-28' })).toEqual([]);
+    const [o] = billTasks({ dues: [due()], bill: () => state({ payDate: '2026-12-30' }), today: '2027-01-02' });
+    expect(o.when).toBe('12/30 截止 · 逾期 3 天');
+  });
+
+  it('a foreign-currency card shows its currency in the amount text', () => {
+    const [t] = run(due(), state({ currency: 'USD', statement: 120.5, paid: 20.5, remaining: 100 }));
+    expect(t.amount).toBe('US$100');
+    expect(t.meta).toBe('帳單 US$120.5 · 已繳 US$20.5');
+  });
+
+  it('float noise formats cleanly', () => {
+    const [t] = run(due(), state({ statement: 0.1 + 0.2, paid: 0, remaining: 0.1 + 0.2, currency: 'USD' }));
+    expect(t.amount).toBe('US$0.3');
+  });
 });
