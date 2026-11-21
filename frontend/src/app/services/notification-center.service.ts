@@ -53,7 +53,13 @@ export const BADGE_REFRESH_MIN_MS = 30_000;
  */
 export const READ_TIMEOUT_MS = 20_000;
 
-/** `open`: the 通知 page opened (not throttled); `focus`: window focus or page visible again; `timer`: a periodic caller. */
+/**
+ * 'open' (the notifications page being shown) is skipped when the newest round started less than this long ago: on a
+ * direct load the shell's startup round has just begun and a second one would read every source twice.
+ */
+export const OPEN_FRESH_MS = 5_000;
+
+/** `open`: the 通知 page opened (skipped only inside OPEN_FRESH_MS of a round start); `focus`: window focus or page visible again; `timer`: a periodic caller. */
 export type NotifRefreshReason = 'open' | 'focus' | 'timer';
 
 /** The reconciliation actions page read for the handled row (P8: the feed's default page). */
@@ -291,17 +297,15 @@ export class NotificationCenterService {
 
   /**
    * A round unless one is in flight (round() > settledRound()): then nothing. 'focus' and 'timer' are also skipped
-   * inside BADGE_REFRESH_MIN_MS of the last started round; 'open' is not.
+   * inside BADGE_REFRESH_MIN_MS of the last started round; 'open' inside OPEN_FRESH_MS of it (the startup round has
+   * just begun). `invalidate()` is never skipped.
    */
   refresh(options: { readonly reason: NotifRefreshReason }): void {
     if (untracked(this.roundId) > untracked(this.settledId)) {
       return;
     }
-    if (
-      options.reason !== 'open' &&
-      this.lastStartedAt !== null &&
-      Date.now() - this.lastStartedAt < BADGE_REFRESH_MIN_MS
-    ) {
+    const window = options.reason === 'open' ? OPEN_FRESH_MS : BADGE_REFRESH_MIN_MS;
+    if (this.lastStartedAt !== null && Date.now() - this.lastStartedAt < window) {
       return;
     }
     this.startRound();

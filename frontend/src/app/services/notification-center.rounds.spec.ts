@@ -8,7 +8,7 @@ import { makeAccount, makeEntry, makeInstance } from '../components/accounting/t
 import { AccountingService } from './accounting.service';
 import { InboxService } from '../components/accounting/inbox/inbox.service';
 import { StatementsService } from '../components/accounting/statements/statements.service';
-import { NotificationCenterService, READ_TIMEOUT_MS } from './notification-center.service';
+import { NotificationCenterService, OPEN_FRESH_MS, READ_TIMEOUT_MS } from './notification-center.service';
 
 /**
  * R26 / R27 with the real AccountingService, BillingService, InboxService, StatementsService and PortfolioService over
@@ -207,6 +207,7 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
     await firstRound();
     expect(center.tasks().some(task => task.id === 'sched:1')).toBe(true);
 
+    vi.advanceTimersByTime(OPEN_FRESH_MS + 1);
     center.refresh({ reason: 'open' });
     expect(center.round()).toBe(2);
     const second = take();
@@ -233,6 +234,7 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
 
   it('a write that commits but answers 500: invalidate() supersedes the in-flight round', async () => {
     await firstRound();
+    vi.advanceTimersByTime(OPEN_FRESH_MS + 1);
     center.refresh({ reason: 'open' });
     const second = take();
 
@@ -464,5 +466,33 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
     expect(center.round()).toBe(2);
     // One set of round reads (take() expects exactly one of each); the change round re-reads the card once.
     await settleRound(2);
+  });
+
+  describe('open right after a round (OPEN_FRESH_MS)', () => {
+    it('open 1 s after the round started: no request; open 6 s after: one round; invalidate 1 s after: a round', async () => {
+      await firstRound([]);
+      vi.advanceTimersByTime(1_000);
+      center.refresh({ reason: 'open' });
+      expect(center.round()).toBe(1);
+      http.expectNone(get(`${API}/accounts`));
+
+      vi.advanceTimersByTime(OPEN_FRESH_MS - 1_000);
+      center.refresh({ reason: 'open' });
+      expect(center.round()).toBe(2);
+      await flushRound(take(), { accounts: [CARD] });
+      const reads = cardReads();
+      reads.summary.flush(spend('-1000.0000'));
+      reads.payments.flush(payments());
+      await settle();
+
+      vi.advanceTimersByTime(1_000);
+      center.invalidate();
+      expect(center.round()).toBe(3);
+      await flushRound(take(), { accounts: [CARD] });
+      const again = cardReads();
+      again.summary.flush(spend('-1000.0000'));
+      again.payments.flush(payments());
+      await settle();
+    });
   });
 });
