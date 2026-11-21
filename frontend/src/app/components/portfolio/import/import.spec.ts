@@ -472,6 +472,155 @@ describe('Portfolio import controls', () => {
         expect(service.getRecalcStatus).not.toHaveBeenCalled();
       });
 
+      describe('fix round 1', () => {
+        const err500 = () => throwError(() => new HttpErrorResponse({ status: 500 }));
+
+        function failedCommit(name = '範例券商_202610.csv') {
+          service.uploadCsv.mockReturnValue(err500());
+          const fixture = setup();
+          const original = new File(['x'], name);
+          fixture.componentInstance.onSelect({ files: [original] });
+          fixture.componentInstance.commit();
+          return { fixture, original };
+        }
+
+        it('重試 re-sends the captured file and type after another file was picked', () => {
+          const { fixture, original } = failedCommit();
+          const retry = toast()!.action!;
+          // The page's file changes without a new toast (a toast would replace the 失敗 one).
+          fixture.componentInstance.file.set(new File(['y'], '另一份.csv'));
+          service.uploadCsv.mockClear();
+          service.uploadCsv.mockReturnValue(new Subject());
+          retry.run();
+          expect(service.uploadCsv).toHaveBeenCalledTimes(1);
+          const args = service.uploadCsv.mock.calls[0];
+          expect(args[0]).toBe('transactions');
+          expect(args[1]).toBe(original);
+          expect(args[2]).toBe(false);
+        });
+
+        it('a retry result does not overwrite the preview of the newly picked file', () => {
+          const { fixture } = failedCommit();
+          const retry = toast()!.action!;
+          fixture.componentInstance.file.set(new File(['y'], '另一份.csv'));
+          fixture.componentInstance.result.set({ ...preview, parsed: 77 });
+          const retried$ = new Subject<ImportResult>();
+          service.uploadCsv.mockReturnValue(retried$);
+          retry.run();
+          retried$.next({ ...preview, dry_run: false, parsed: 5, created: 5 }); retried$.complete();
+          expect(fixture.componentInstance.result()?.parsed).toBe(77);
+          expect(fixture.componentInstance.committed()).toBe(false);
+          expect(fixture.componentInstance.file()?.name).toBe('另一份.csv');
+          expect(toast()).toMatchObject({ kind: 'done' });
+        });
+
+        it('重試 still sends the captured request after the file was cleared', () => {
+          const { fixture, original } = failedCommit();
+          const retry = toast()!.action!;
+          fixture.componentInstance.onClear();
+          service.uploadCsv.mockClear();
+          service.uploadCsv.mockReturnValue(new Subject());
+          retry.run();
+          expect(service.uploadCsv).toHaveBeenCalledTimes(1);
+          expect(service.uploadCsv.mock.calls[0][1]).toBe(original);
+          expect(toast()?.text).not.toBe('請先選擇 CSV');
+        });
+
+        it('a retried dry run stays a dry run', () => {
+          service.uploadCsv.mockReturnValue(err500());
+          const fixture = setup();
+          fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+          expect(toast()?.action?.label).toBe('重試');
+          service.uploadCsv.mockClear();
+          service.uploadCsv.mockReturnValue(new Subject());
+          toast()!.action!.run();
+          expect(service.uploadCsv.mock.calls[0][2]).toBe(true);
+        });
+
+        it('重試 does not start a second upload while one is running', () => {
+          const { fixture } = failedCommit();
+          const retry = toast()!.action!;
+          service.uploadCsv.mockClear();
+          service.uploadCsv.mockReturnValue(new Subject());
+          fixture.componentInstance.commit();
+          expect(service.uploadCsv).toHaveBeenCalledTimes(1);
+          retry.run();
+          expect(service.uploadCsv).toHaveBeenCalledTimes(1);
+        });
+
+        it('重試 on a stale recalc failure does not POST once the status is completed, and a later status dismisses the toast', () => {
+          vi.useFakeTimers();
+          const fixture = partialAfterRunning([{ name: 'networth_backfill', status: 'failed' }]);
+          expect(toast()?.action?.label).toBe('重試');
+          const retry = toast()!.action!;
+          service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'completed' }));
+          (fixture.componentInstance as unknown as { startPolling(): void }).startPolling();
+          expect(toast()).toBeNull();
+          retry.run();
+          expect(service.triggerRecalc).not.toHaveBeenCalled();
+          fixture.destroy();
+        });
+
+        it('重試 while the recalc is running shows 進行中 again', () => {
+          vi.useFakeTimers();
+          service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+          const fixture = setup();
+          fixture.componentInstance.retryRecalc();
+          expect(toast()).toMatchObject({ kind: 'progress', text: '資料重算執行中…' });
+          expect(service.triggerRecalc).not.toHaveBeenCalled();
+          fixture.destroy();
+        });
+
+        it('a restart during an in-flight status read keeps polling afterwards', () => {
+          vi.useFakeTimers();
+          const first$ = new Subject<unknown>();
+          service.getRecalcStatus.mockReturnValue(first$);
+          const fixture = setup();
+          expect(service.getRecalcStatus).toHaveBeenCalledTimes(1);
+          (fixture.componentInstance as unknown as { startPolling(): void }).startPolling();
+          expect(service.getRecalcStatus).toHaveBeenCalledTimes(1);
+          service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+          first$.next({ state: 'idle' }); first$.complete();
+          expect(service.getRecalcStatus).toHaveBeenCalledTimes(2);
+          vi.advanceTimersByTime(5000);
+          expect(service.getRecalcStatus).toHaveBeenCalledTimes(3);
+          fixture.destroy();
+        });
+
+        it('partial with no retryable step and no deferred events keeps a neutral 失敗 text', () => {
+          for (const steps of [[], [{ name: 'a', status: 'ok' }, { name: 'b', status: 'skipped' }]]) {
+            TestBed.resetTestingModule();
+            const fixture = partialAfterRunning(steps);
+            expect(toast()?.text).toBe('資料重算尚未完成（失敗步驟：未知）');
+            expect(toast()?.text).not.toContain('歷史股利權益已記錄');
+            fixture.destroy();
+          }
+        });
+
+        it('verifyOverrideSymbol is cancelled on destroy', () => {
+          const verify$ = new Subject<unknown>();
+          service.verifyOverrideSymbol.mockReturnValue(verify$);
+          const fixture = setup();
+          fixture.componentInstance.setOverride('台灣50正2', '0050');
+          fixture.componentInstance.verifyName('台灣50正2', ['10/21']);
+          expect(verify$.observed).toBe(true);
+          fixture.destroy();
+          expect(verify$.observed).toBe(false);
+        });
+
+        it('a late upload error after destroy shows 失敗 without 重試', () => {
+          const commit$ = new Subject<ImportResult>();
+          const fixture = setup();
+          fixture.componentInstance.onSelect({ files: [new File(['x'], 'late.csv')] });
+          service.uploadCsv.mockReturnValue(commit$);
+          fixture.componentInstance.commit();
+          fixture.destroy();
+          commit$.error(new HttpErrorResponse({ status: 500 }));
+          expect(toast()).toMatchObject({ kind: 'error', action: null });
+          expect(toast()!.text).toMatch(/^匯入失敗：/);
+        });
+      });
+
       it('renders no p-toast', () => {
         const fixture = setup();
         expect(el(fixture).querySelector('p-toast')).toBeNull();
