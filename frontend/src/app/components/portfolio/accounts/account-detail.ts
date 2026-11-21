@@ -15,7 +15,7 @@ import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angu
 import { ActivatedRoute } from '@angular/router';
 import { BehaviorSubject, Observable, catchError, debounceTime, distinctUntilChanged, filter, map, merge, of, switchMap } from 'rxjs';
 
-import { ConfirmationService, MessageService } from 'primeng/api';
+import { ConfirmationService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
 import { CardModule } from 'primeng/card';
 import { ChartModule } from 'primeng/chart';
@@ -30,7 +30,6 @@ import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { SelectButtonModule } from 'primeng/selectbutton';
 import { SelectModule } from 'primeng/select';
 import { TagModule } from 'primeng/tag';
-import { ToastModule } from 'primeng/toast';
 
 import {
   BalanceHistory,
@@ -45,6 +44,8 @@ import {
   PatchBrokerAccount,
 } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { injectToasts, toastText } from '../../../services/toast.service';
+import { retryOnNetwork } from '../../accounting/http-errors';
 import { AppearanceService } from '../../../services/appearance.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { formatMoney } from '../../ui/format';
@@ -131,11 +132,10 @@ function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent
     SelectButtonModule,
     SelectModule,
     TagModule,
-    ToastModule,
     SwitchComponent,
     TagComponent,
   ],
-  providers: [ConfirmationService, MessageService],
+  providers: [ConfirmationService],
   templateUrl: './account-detail.html',
   styleUrl: './account-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -143,7 +143,7 @@ function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent
 export class PortfolioAccountDetailComponent implements OnInit {
   private portfolioService = inject(PortfolioService);
   private confirmationService = inject(ConfirmationService);
-  private messageService = inject(MessageService);
+  private readonly toasts = injectToasts();
   private route = inject(ActivatedRoute);
   private fb = inject(FormBuilder);
   private destroyRef = inject(DestroyRef);
@@ -456,6 +456,10 @@ export class PortfolioAccountDetailComponent implements OnInit {
       is_active: raw.is_active,
     };
 
+    this.sendEdit(accountId, patch);
+  }
+
+  private sendEdit(accountId: number, patch: PatchBrokerAccount): void {
     this.savingAccount.set(true);
     this.portfolioService.patchAccount(accountId, patch).subscribe({
       next: account => {
@@ -465,13 +469,13 @@ export class PortfolioAccountDetailComponent implements OnInit {
           this.account.set(account);
           this.closeEditDialog();
         }
-        this.messageService.add({ severity: 'success', summary: '已更新', detail: '帳戶資料已更新' });
+        this.toasts.done('帳戶資料已更新');
         if (!this.embedded()) this.loadBalanceHistory();
         this.portfolioService.notifyCashLedgerChanged();
       },
-      error: () => {
+      error: err => {
         this.savingAccount.set(false);
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '帳戶更新失敗' });
+        this.toasts.error('帳戶更新失敗', { retry: retryOnNetwork(err, () => this.sendEdit(accountId, patch)) });
       },
     });
   }
@@ -534,17 +538,21 @@ export class PortfolioAccountDetailComponent implements OnInit {
       note: note || null,
     };
 
+    this.sendTransaction(accountId, body);
+  }
+
+  private sendTransaction(accountId: number, body: CreateCashTransaction): void {
     this.savingTransaction.set(true);
     this.portfolioService.createCashTransaction(accountId, body).subscribe({
       next: () => {
         this.savingTransaction.set(false);
         if (accountId === this.effectiveId()) this.closeTransactionDialog();
-        this.messageService.add({ severity: 'success', summary: '已新增', detail: '交易已建立' });
+        this.toasts.done('交易已建立');
         this.ledgerWritten();
       },
-      error: () => {
+      error: err => {
         this.savingTransaction.set(false);
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '新增交易失敗' });
+        this.toasts.error('新增交易失敗', { retry: retryOnNetwork(err, () => this.sendTransaction(accountId, body)) });
       },
     });
   }
@@ -577,16 +585,18 @@ export class PortfolioAccountDetailComponent implements OnInit {
       return;
     }
 
+    this.sendDelete(txn, accountId);
+  }
+
+  private sendDelete(txn: CashTransaction, accountId: number): void {
     this.portfolioService.deleteCashTransaction(accountId, txn.id).subscribe({
       next: () => {
         this.ledgerWritten();
-        this.messageService.add({ severity: 'success', summary: '成功', detail: '已刪除' });
+        this.toasts.done('已刪除');
       },
       error: error => {
-        this.messageService.add({
-          severity: 'error',
-          summary: '錯誤',
-          detail: `刪除失敗: ${this.deleteErrorMessage(error)}`,
+        this.toasts.error(toastText('刪除失敗', this.deleteErrorMessage(error)), {
+          retry: retryOnNetwork(error, () => this.sendDelete(txn, accountId)),
         });
       },
     });
@@ -656,7 +666,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
 
   private abortSwitchedWrite(close: () => void): void {
     close();
-    this.messageService.add({ severity: 'warn', summary: '已取消', detail: ACCOUNT_SWITCHED_DETAIL });
+    this.toasts.error(toastText('已取消', ACCOUNT_SWITCHED_DETAIL));
   }
 
   private resetEditForm(): void {
@@ -687,7 +697,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
         this.account.set(account);
       },
       error: () => {
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '帳戶讀取失敗' });
+        this.toasts.error('帳戶讀取失敗', { retry: () => this.loadAccount() });
       },
     });
   }
@@ -706,7 +716,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
       },
       error: () => {
         this.loadingHistory.set(false);
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '餘額走勢讀取失敗' });
+        this.toasts.error('餘額走勢讀取失敗', { retry: () => this.loadBalanceHistory() });
       },
     });
   }
@@ -720,7 +730,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
     const requestQuery = this.withMergeRelated(query);
     return this.portfolioService.getCashTransactions(accountId, requestQuery).pipe(
       catchError(() => {
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '現金交易讀取失敗' });
+        this.toasts.error('現金交易讀取失敗');
         return of({ items: [], total: 0, offset: requestQuery.offset ?? 0, limit: requestQuery.limit ?? DEFAULT_PAGE_SIZE });
       }),
     );

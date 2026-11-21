@@ -1,20 +1,27 @@
 import { EnvironmentInjector, createEnvironmentInjector } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
-import { provideHttpClient } from '@angular/common/http';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { provideRouter } from '@angular/router';
-import { MessageService } from 'primeng/api';
+import { ConfirmationService } from 'primeng/api';
 import { DatePicker } from 'primeng/datepicker';
 import { Paginator } from 'primeng/paginator';
 import { of, Subject, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { ToastService } from '../../../services/toast.service';
 import { PortfolioDividendListComponent } from './dividend-list';
 import { Dividend, DividendQuery, ExDividendRecord, Paged } from '../../../models/portfolio.model';
 import { abbrInk, holdingAbbr } from '../dashboard/dashboard-math';
 import { squareToken } from '../square';
+
+const shown = () => TestBed.inject(ToastService).current();
+const clearToast = () => {
+  const toast = shown();
+  if (toast) TestBed.inject(ToastService).dismiss(toast.id);
+};
 
 const pending: Dividend = { id: 1, symbol: '9802', amount: 3090, ex_dividend_date: '2026-09-10',
   receipt_status: 'pending', revision: 3, cash_dividend_per_share: 3.1, payment_date: null };
@@ -129,7 +136,7 @@ describe('Dividend receipt confirmation', () => {
     service.getDividends.mockReturnValue(throwError(() => new Error('Synthetic failure')));
     fixture.componentInstance.fetch();
     fixture.detectChanges();
-    expect(fixture.nativeElement.textContent).toContain('查詢失敗');
+    expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '查詢失敗，請檢查篩選條件' }));
     fixture.destroy();
   });
   it('requires explicit date and account, sends revision, and guards duplicate submits', () => {
@@ -313,7 +320,6 @@ describe('Dividend filter-wide summary', () => {
 
   it('cancels the list request on destroy and ignores a late response', () => {
     const fixture = create();
-    const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
     const list = listCalls[0].response;
     expect(list.observed).toBe(true);
     fixture.destroy();
@@ -322,7 +328,7 @@ describe('Dividend filter-wide summary', () => {
     list.next({ items: [confirmed], total: 1 });
     list.error(new Error('late'));
     expect(fixture.componentInstance.dividends()).toEqual([]);
-    expect(add).not.toHaveBeenCalled();
+    expect(shown()).toBeNull();
   });
 
   it('cancels the previous list request when fetching again', () => {
@@ -403,7 +409,6 @@ describe('Dividend filter-wide summary', () => {
 
   it('hides the cards when the filter-wide load fails, keeps the list page and raises no toast', () => {
     const fixture = create();
-    const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
     respond(listCalls[0], { items: [confirmed], total: 3 });
     summaryCalls[0].response.error(new Error('Synthetic failure'));
     fixture.detectChanges();
@@ -414,7 +419,7 @@ describe('Dividend filter-wide summary', () => {
     expect(el(fixture).querySelector('.kpi-row')).toBeNull();
     expect(cards(fixture)).toHaveLength(0);
     expect(el(fixture).querySelector('[data-row-id="11"]')).not.toBeNull();
-    expect(toast).not.toHaveBeenCalled();
+    expect(shown()).toBeNull();
     fixture.destroy();
   });
 
@@ -1232,13 +1237,12 @@ describe('Dividend filter-wide summary', () => {
         .mockReturnValueOnce(throwError(() => ({ status: 500 })))
         .mockReturnValueOnce(throwError(() => ({ status: 422, error: { detail: [{ loc: ['body', 'receipt_date'], msg: 'Synthetic invalid date' }] } })));
       const fixture = rendered([tw]);
-      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
       open(fixture, 21);
       fill(fixture, '2026-11-18', '7');
 
       formButton(fixture, '確認已收到並入帳').click();
       fixture.detectChanges();
-      expect(toast).toHaveBeenCalledWith({ severity: 'error', summary: '收款確認未完成', detail: 'Synthetic stale revision' });
+      expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '收款確認未完成：Synthetic stale revision' }));
       expect(forms(fixture)).toHaveLength(0);
       expect(fixture.componentInstance.receiptBusy()).toBe(false);
       expect(listCalls).toHaveLength(2);
@@ -1252,7 +1256,7 @@ describe('Dividend filter-wide summary', () => {
       open(fixture, 21);
       fill(fixture, '2026-11-18', '7');
       formButton(fixture, '確認已收到並入帳').click();
-      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '收款確認未完成', detail: '請重新載入後核對' });
+      expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '收款確認未完成：請重新載入後核對' }));
       expect(listCalls).toHaveLength(3);
       expect(summaryCalls).toHaveLength(3);
 
@@ -1263,8 +1267,82 @@ describe('Dividend filter-wide summary', () => {
       open(fixture, 21);
       fill(fixture, '2026-11-18', '7');
       formButton(fixture, '確認已收到並入帳').click();
-      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '收款確認未完成', detail: '請重新載入後核對' });
+      expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '收款確認未完成：請重新載入後核對' }));
       fixture.destroy();
+    });
+
+    describe('save feedback', () => {
+      const serverError = () => throwError(() => new HttpErrorResponse({ status: 500 }));
+
+      it('a receipt confirmation answered 500 shows 重試, which re-sends the captured body once; a 422 shows none', () => {
+        service['confirmDividendReceipt']
+          .mockReturnValueOnce(serverError())
+          .mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 422 })));
+        const fixture = rendered([tw]);
+        open(fixture, 21);
+        fill(fixture, '2026-11-18', '7');
+        formButton(fixture, '確認已收到並入帳').click();
+        const body = service['confirmDividendReceipt'].mock.calls[0][1];
+        expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '收款確認未完成：請重新載入後核對' }));
+        expect(shown()?.action?.label).toBe('重試');
+
+        shown()!.action!.run();
+        expect(service['confirmDividendReceipt']).toHaveBeenCalledTimes(2);
+        expect(service['confirmDividendReceipt'].mock.calls[1]).toEqual([21, body]);
+        expect(shown()?.action).toBeNull();
+        fixture.destroy();
+      });
+
+      it('a create answered 500 shows 重試 that re-sends the captured record after the dialog was closed', () => {
+        service['createDividend'].mockReturnValueOnce(serverError());
+        const fixture = rendered([tw]);
+        const component = fixture.componentInstance;
+        component.openNew();
+        component.newDividend.symbol = '0056';
+        component.saveDividend();
+        expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '新增失敗，請檢查欄位' }));
+        const first = service['createDividend'].mock.calls[0][0];
+        component.showDialog.set(false);
+        component.newDividend.symbol = '2330';
+
+        shown()!.action!.run();
+        expect(service['createDividend']).toHaveBeenCalledTimes(2);
+        expect(service['createDividend'].mock.calls[1][0]).toEqual(first);
+        expect(first.symbol).toBe('0056');
+        fixture.destroy();
+      });
+
+      it('an update answered 500 shows 重試 for the same id; a 422 shows none', () => {
+        service['updateDividend'] = vi.fn()
+          .mockReturnValueOnce(serverError())
+          .mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 422 })));
+        const fixture = rendered([due]);
+        const component = fixture.componentInstance;
+        component.editDividend(due);
+        component.saveDividend();
+        expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '更新失敗，請檢查欄位' }));
+        const [id, payload] = service['updateDividend'].mock.calls[0];
+        expect(id).toBe(due.id);
+
+        shown()!.action!.run();
+        expect(service['updateDividend'].mock.calls[1]).toEqual([id, payload]);
+        expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '更新失敗，請檢查欄位', action: null }));
+        fixture.destroy();
+      });
+
+      it('a delete answered 500 shows 重試 that deletes the same record once', () => {
+        service['deleteDividend'] = vi.fn().mockReturnValueOnce(serverError()).mockReturnValueOnce(of({}));
+        const fixture = rendered([due]);
+        vi.spyOn(fixture.debugElement.injector.get(ConfirmationService), 'confirm')
+          .mockImplementation(options => { options.accept?.(); return fixture.debugElement.injector.get(ConfirmationService); });
+        fixture.componentInstance.deleteDividend(due);
+        expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '刪除失敗，請稍後再試' }));
+
+        shown()!.action!.run();
+        expect(service['deleteDividend'].mock.calls).toEqual([[due.id], [due.id]]);
+        expect(shown()).toEqual(expect.objectContaining({ kind: 'done', text: '紀錄已刪除' }));
+        fixture.destroy();
+      });
     });
 
     it('with 待收 selected keeps the previous list while the set reloads, then drops the row that came back confirmed', () => {
@@ -1352,18 +1430,17 @@ describe('Dividend filter-wide summary', () => {
       const accountsResponse = new Subject<{ items: typeof accounts }>();
       service['getAccounts'].mockImplementation(() => accountsResponse);
       const fixture = rendered([tw, due]);
-      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
       open(fixture, 21);
       fixture.componentInstance.saveDividend();
       respond(listCalls[1], { items: [due], total: 1 });
       fixture.detectChanges();
       expect(forms(fixture)).toHaveLength(0);
       accountsResponse.error(new Error('Synthetic failure'));
-      expect(toast).not.toHaveBeenCalledWith({ severity: 'error', summary: '無法取得收款帳戶' });
+      expect(shown()?.text).not.toBe('無法取得收款帳戶');
 
       service['getAccounts'].mockImplementation(() => throwError(() => new Error('Synthetic failure')));
       open(fixture, 13);
-      expect(toast).toHaveBeenCalledWith({ severity: 'error', summary: '無法取得收款帳戶' });
+      expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '無法取得收款帳戶' }));
       fixture.destroy();
     });
 
@@ -1393,7 +1470,6 @@ describe('Dividend filter-wide summary', () => {
     });
 
     it('cancels the receipt request on destroy: a late response neither throws nor reloads nor toasts', () => {
-      const toast = vi.spyOn(MessageService.prototype, 'add');
       try {
         const response = new Subject<Dividend>();
         service['confirmDividendReceipt'].mockReturnValue(response);
@@ -1403,16 +1479,16 @@ describe('Dividend filter-wide summary', () => {
         formButton(fixture, '確認已收到並入帳').click();
         expect(response.observed).toBe(true);
         const calls = service['getDividends'].mock.calls.length;
-        toast.mockClear();
+        clearToast();
 
         fixture.destroy();
         expect(response.observed).toBe(false);
         expect(() => response.next(twPaid)).not.toThrow();
         expect(() => response.error({ error: { detail: 'Synthetic late failure' } })).not.toThrow();
         expect(service['getDividends'].mock.calls.length).toBe(calls);
-        expect(toast).not.toHaveBeenCalled();
+        expect(shown()).toBeNull();
       } finally {
-        toast.mockRestore();
+        clearToast();
       }
     });
 
@@ -1426,29 +1502,28 @@ describe('Dividend filter-wide summary', () => {
     });
 
     it('toasts 無法取得收款帳戶 when the accounts cannot be loaded, retrying the init load when the form opens', () => {
-      const toast = vi.spyOn(MessageService.prototype, 'add');
       try {
         service['getAccounts'].mockImplementation(() => throwError(() => new Error('Synthetic failure')));
         const fixture = rendered([tw]);
-        expect(toast).not.toHaveBeenCalled();
+        expect(shown()).toBeNull();
 
         open(fixture, 21);
         expect(service['getAccounts']).toHaveBeenCalledTimes(2);
-        expect(toast).toHaveBeenCalledWith({ severity: 'error', summary: '無法取得收款帳戶' });
+        expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '無法取得收款帳戶' }));
         expect(Array.from(el(fixture).querySelectorAll('.receipt-form option')).map(o => o.textContent?.trim())).toEqual(['請選擇帳戶']);
 
-        toast.mockClear();
+        clearToast();
         service['getAccounts'].mockImplementation(() => of({ items: accounts }));
         formButton(fixture, '取消').click();
         open(fixture, 21);
         expect(service['getAccounts']).toHaveBeenCalledTimes(3);
-        expect(toast).not.toHaveBeenCalled();
+        expect(shown()).toBeNull();
         expect(Array.from(el(fixture).querySelectorAll('.receipt-form option')).map(o => o.textContent?.trim())).toEqual(['請選擇帳戶', '元大交割戶']);
         open(fixture, 21);
         expect(service['getAccounts']).toHaveBeenCalledTimes(3);
         fixture.destroy();
       } finally {
-        toast.mockRestore();
+        clearToast();
       }
     });
   });
@@ -1516,17 +1591,16 @@ describe('Dividend filter-wide summary', () => {
 
     it('menus: pending TW 編輯 / 修改扣款 / 刪除; confirmed TW 修改扣款 only; pending foreign 編輯 / 刪除; legacy and unresolved the info toast', () => {
       const fixture = rendered([tw, twPaid, usd, legacy, unresolved]);
-      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
 
       expect(menuFor(fixture, tw)).toEqual(['編輯', '修改扣款', '—', '刪除']);
       expect(menuFor(fixture, twPaid)).toEqual(['修改扣款']);
       expect(menuFor(fixture, usd)).toEqual(['編輯', '—', '刪除']);
-      expect(toast).not.toHaveBeenCalled();
+      expect(shown()).toBeNull();
 
       for (const row of [legacy, unresolved]) {
-        toast.mockClear();
+        clearToast();
         expect(menuFor(fixture, row)).toEqual([]);
-        expect(toast).toHaveBeenCalledWith({ severity: 'info', summary: '需人工釐清，不可直接改寫已收款或舊資料' });
+        expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '需人工釐清，不可直接改寫已收款或舊資料' }));
       }
       fixture.destroy();
     });
@@ -1536,13 +1610,12 @@ describe('Dividend filter-wide summary', () => {
       const pendingNoCurrency: Dividend = { ...tw, id: 42, currency: undefined };
       const confirmedNoMarket: Dividend = { ...twPaid, id: 43, market: undefined };
       const fixture = rendered([pendingNoMarket, pendingNoCurrency, confirmedNoMarket]);
-      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
 
       expect(menuFor(fixture, pendingNoMarket)).toEqual(['編輯', '—', '刪除']);
       expect(menuFor(fixture, pendingNoCurrency)).toEqual(['編輯', '—', '刪除']);
-      expect(toast).not.toHaveBeenCalled();
+      expect(shown()).toBeNull();
       expect(menuFor(fixture, confirmedNoMarket)).toEqual([]);
-      expect(toast).toHaveBeenCalledWith({ severity: 'info', summary: '需人工釐清，不可直接改寫已收款或舊資料' });
+      expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '需人工釐清，不可直接改寫已收款或舊資料' }));
       fixture.componentInstance.openDeductions(pendingNoMarket);
       expect(fixture.componentInstance.openDeductionsId()).toBeNull();
       fixture.destroy();
@@ -1551,10 +1624,9 @@ describe('Dividend filter-wide summary', () => {
     it('a confirmed row with zero net gets the info toast, not 修改扣款 (it has no cash leg to update)', () => {
       const zeroNet: Dividend = { ...twPaid, id: 44, amount: '0.0000' as never, stock_dividend_shares: 100 };
       const fixture = rendered([zeroNet]);
-      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
 
       expect(menuFor(fixture, zeroNet)).toEqual([]);
-      expect(toast).toHaveBeenCalledWith({ severity: 'info', summary: '需人工釐清，不可直接改寫已收款或舊資料' });
+      expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '需人工釐清，不可直接改寫已收款或舊資料' }));
       fixture.componentInstance.openDeductions(zeroNet);
       expect(fixture.componentInstance.openDeductionsId()).toBeNull();
       fixture.destroy();
@@ -1707,7 +1779,6 @@ describe('Dividend filter-wide summary', () => {
         .mockReturnValueOnce(throwError(() => ({ status: 409, error: { detail: 'Synthetic string detail' } })))
         .mockReturnValueOnce(throwError(() => ({ status: 422, error: { detail: [{ loc: ['body', 'fee'], msg: 'Synthetic invalid fee' }] } })));
       const fixture = rendered([tw]);
-      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
       const attempt = (call: number) => {
         respond(listCalls[call], { items: [tw], total: 1 });
         respond(summaryCalls[call], { items: [tw], total: 1 });
@@ -1720,16 +1791,16 @@ describe('Dividend filter-wide summary', () => {
       openDeductions(fixture, tw);
       button(fixture, '儲存').click();
       fixture.detectChanges();
-      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '扣款更新未完成', detail: 'entitlement changed; reload before editing' });
+      expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '扣款更新未完成：entitlement changed; reload before editing' }));
       expect(forms(fixture)).toHaveLength(0);
       expect(fixture.componentInstance.deductionsBusy()).toBe(false);
       expect(listCalls).toHaveLength(2);
       expect(summaryCalls).toHaveLength(2);
 
       attempt(1);
-      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '扣款更新未完成', detail: 'Synthetic string detail' });
+      expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '扣款更新未完成：Synthetic string detail' }));
       attempt(2);
-      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '扣款更新未完成', detail: '請重新載入後核對' });
+      expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '扣款更新未完成：請重新載入後核對' }));
       fixture.destroy();
     });
 
@@ -1738,7 +1809,6 @@ describe('Dividend filter-wide summary', () => {
         .mockReturnValueOnce(throwError(() => ({ status: 409, error: { code: 409, message: 'Synthetic served message', trace_id: null } })))
         .mockReturnValueOnce(throwError(() => ({ status: 422, error: { detail: [{ loc: ['body', 'receipt_date'], msg: 'Synthetic invalid date' }] } })));
       const fixture = rendered([tw]);
-      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
       const confirmOnce = () => {
         el(fixture).querySelector<HTMLButtonElement>('[data-row-id="21"] .c-actions app-btn button')!.click();
         fixture.detectChanges();
@@ -1754,12 +1824,12 @@ describe('Dividend filter-wide summary', () => {
       };
 
       confirmOnce();
-      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '收款確認未完成', detail: 'Synthetic served message' });
+      expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '收款確認未完成：Synthetic served message' }));
       respond(listCalls[1], { items: [tw], total: 1 });
       respond(summaryCalls[1], { items: [tw], total: 1 });
       fixture.detectChanges();
       confirmOnce();
-      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '收款確認未完成', detail: '請重新載入後核對' });
+      expect(shown()).toEqual(expect.objectContaining({ kind: 'error', text: '收款確認未完成：請重新載入後核對' }));
       fixture.destroy();
     });
 
@@ -1858,7 +1928,6 @@ describe('Dividend filter-wide summary', () => {
     });
 
     it('cancels the request on destroy: a late response neither throws nor reloads nor toasts', () => {
-      const toast = vi.spyOn(MessageService.prototype, 'add');
       try {
         const response = new Subject<Dividend>();
         service['updateDividendDeductions'] = vi.fn(() => response);
@@ -1868,16 +1937,16 @@ describe('Dividend filter-wide summary', () => {
         button(fixture, '儲存').click();
         expect(response.observed).toBe(true);
         const calls = service['getDividends'].mock.calls.length;
-        toast.mockClear();
+        clearToast();
 
         fixture.destroy();
         expect(response.observed).toBe(false);
         expect(() => response.error({ error: { message: 'Synthetic late failure' } })).not.toThrow();
         expect(service['getDividends'].mock.calls.length).toBe(calls);
-        expect(toast).not.toHaveBeenCalled();
+        expect(shown()).toBeNull();
         expect(() => component.cancelDeductions()).not.toThrow();
       } finally {
-        toast.mockRestore();
+        clearToast();
       }
     });
 

@@ -3,6 +3,8 @@ import { CommonModule } from '@angular/common';
 import { Subscription, catchError, of } from 'rxjs';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { injectToasts, toastText } from '../../../services/toast.service';
+import { retryOnNetwork } from '../../accounting/http-errors';
 import { BrokerAccount, Dividend, DividendQuery, ExDividendRecord } from '../../../models/portfolio.model';
 import { DialogModule } from 'primeng/dialog';
 import { FormsModule } from '@angular/forms';
@@ -10,9 +12,8 @@ import { InputTextModule } from 'primeng/inputtext';
 import { InputNumberModule } from 'primeng/inputnumber';
 import { DatePickerModule } from 'primeng/datepicker';
 import { PaginatorModule, PaginatorState } from 'primeng/paginator';
-import { ConfirmationService, MessageService, MenuItem } from 'primeng/api';
+import { ConfirmationService, MenuItem } from 'primeng/api';
 import { ConfirmDialogModule } from 'primeng/confirmdialog';
-import { ToastModule } from 'primeng/toast';
 import { MenuModule } from 'primeng/menu';
 import { Menu } from 'primeng/menu';
 import { BtnComponent } from '../../ui/btn/btn';
@@ -87,10 +88,10 @@ const SOURCE_OPTIONS = [
     CommonModule, DialogModule, FormsModule,
     InputTextModule, InputNumberModule, DatePickerModule,
     PaginatorModule,
-    ConfirmDialogModule, ToastModule, MenuModule,
+    ConfirmDialogModule, MenuModule,
     BtnComponent, BentoComponent, SegToggleComponent, TagComponent, FilterBarComponent,
   ],
-  providers: [ConfirmationService, MessageService],
+  providers: [ConfirmationService],
   templateUrl: './dividend-list.html',
   styleUrls: ['./dividend-list.scss', '../kpi-cards.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -98,7 +99,7 @@ const SOURCE_OPTIONS = [
 export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private confirmationService = inject(ConfirmationService);
-  private messageService = inject(MessageService);
+  private readonly toasts = injectToasts();
   private layoutMode = inject(LayoutModeService);
   private host = inject<ElementRef<HTMLElement>>(ElementRef);
   private injector = inject(Injector);
@@ -250,15 +251,20 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       return;
     }
     if (!receiptDate || accountId === null || this.receiptBusy()) return;
+    this.sendReceipt(row, { receipt_date: receiptDate, account_id: accountId, revision: row.revision ?? 1 });
+  }
+
+  private sendReceipt(row: Dividend, body: { receipt_date: string; account_id: number; revision: number }): void {
     this.receiptBusy.set(true);
     const settle = () => { this.receiptBusy.set(false); this.closeReceipt(); this.focusRowButton(row.id); this.reload(); };
     this.receiptSub?.unsubscribe();
-    this.receiptSub = this.portfolioService.confirmDividendReceipt(row.id, { receipt_date: receiptDate,
-      account_id: accountId, revision: row.revision ?? 1 }).subscribe({
+    this.receiptSub = this.portfolioService.confirmDividendReceipt(row.id, body).subscribe({
       next: () => settle(),
       error: err => {
         settle();
-        this.messageService.add({ severity: 'error', summary: '收款確認未完成', detail: serverReason(err) });
+        this.toasts.error(toastText('收款確認未完成', serverReason(err)), {
+          retry: retryOnNetwork(err, () => this.sendReceipt(row, body)),
+        });
       },
     });
   }
@@ -316,14 +322,20 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     const fee = amountInput(this.deductionsFee());
     const tax = amountInput(this.deductionsTax());
     if (fee === null || tax === null || this.deductionsBusy()) return;
+    this.sendDeductions(row, { fee, tax, revision: this.deductionsRevision });
+  }
+
+  private sendDeductions(row: Dividend, body: { fee: number; tax: number; revision: number }): void {
     this.deductionsBusy.set(true);
     const settle = () => { this.deductionsBusy.set(false); this.closeDeductions(); this.focusRowAction(row.id); this.reload(); };
     this.deductionsSub?.unsubscribe();
-    this.deductionsSub = this.portfolioService.updateDividendDeductions(row.id, { fee, tax, revision: this.deductionsRevision }).subscribe({
+    this.deductionsSub = this.portfolioService.updateDividendDeductions(row.id, body).subscribe({
       next: () => settle(),
       error: err => {
         settle();
-        this.messageService.add({ severity: 'error', summary: '扣款更新未完成', detail: serverReason(err) });
+        this.toasts.error(toastText('扣款更新未完成', serverReason(err)), {
+          retry: retryOnNetwork(err, () => this.sendDeductions(row, body)),
+        });
       },
     });
   }
@@ -356,7 +368,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       next: result => this.accounts.set(result.items),
       error: () => {
         this.accountsFailed = true;
-        if (this.receiptRow()) this.messageService.add({ severity: 'error', summary: '無法取得收款帳戶' });
+        if (this.receiptRow()) this.toasts.error('無法取得收款帳戶');
       },
     });
   }
@@ -431,7 +443,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       error: () => {
         if (seq !== this.fetchSeq) return;
         this.loading.set(false);
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '查詢失敗，請檢查篩選條件' });
+        this.toasts.error('查詢失敗，請檢查篩選條件');
       },
     });
   }
@@ -629,7 +641,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       return;
     }
     if (dividend.receipt_status && dividend.receipt_status !== 'pending') {
-      this.messageService.add({ severity: 'info', summary: '需人工釐清，不可直接改寫已收款或舊資料' });
+      this.toasts.error('需人工釐清，不可直接改寫已收款或舊資料');
       return;
     }
     this.menuItems = [
@@ -658,41 +670,47 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       message: `確定要刪除 ${dividend.symbol} 的這筆股利紀錄嗎？`,
       header: '確認刪除',
       icon: 'pi pi-exclamation-triangle',
-      accept: () => {
-        this.portfolioService.deleteDividend(dividend.id).subscribe({
-          next: () => {
-            this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已刪除' });
-            this.reload();
-          },
-          error: () => {
-            this.messageService.add({ severity: 'error', summary: '錯誤', detail: '刪除失敗，請稍後再試' });
-          },
-        });
+      accept: () => this.sendDelete(dividend),
+    });
+  }
+
+  private sendDelete(dividend: Dividend): void {
+    this.portfolioService.deleteDividend(dividend.id).subscribe({
+      next: () => {
+        this.toasts.done('紀錄已刪除');
+        this.reload();
+      },
+      error: err => {
+        this.toasts.error('刪除失敗，請稍後再試', { retry: retryOnNetwork(err, () => this.sendDelete(dividend)) });
       },
     });
   }
 
   saveDividend() {
-    if (this.isEdit() && this.newDividend.id) {
-      this.portfolioService.updateDividend(this.newDividend.id, this.newDividend).subscribe({
+    this.sendSave({ ...this.newDividend }, this.isEdit() && this.newDividend.id ? this.newDividend.id : null);
+  }
+
+  private sendSave(payload: Partial<Dividend>, id: number | null): void {
+    if (id !== null) {
+      this.portfolioService.updateDividend(id, payload).subscribe({
         next: () => {
           this.showDialog.set(false);
           this.reload();
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已更新' });
+          this.toasts.done('紀錄已更新');
         },
-        error: () => {
-          this.messageService.add({ severity: 'error', summary: '錯誤', detail: '更新失敗，請檢查欄位' });
+        error: err => {
+          this.toasts.error('更新失敗，請檢查欄位', { retry: retryOnNetwork(err, () => this.sendSave(payload, id)) });
         },
       });
     } else {
-      this.portfolioService.createDividend(this.newDividend).subscribe({
+      this.portfolioService.createDividend(payload).subscribe({
         next: () => {
           this.showDialog.set(false);
           this.reload();
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已新增' });
+          this.toasts.done('紀錄已新增');
         },
-        error: () => {
-          this.messageService.add({ severity: 'error', summary: '錯誤', detail: '新增失敗，請檢查欄位' });
+        error: err => {
+          this.toasts.error('新增失敗，請檢查欄位', { retry: retryOnNetwork(err, () => this.sendSave(payload, null)) });
         },
       });
     }

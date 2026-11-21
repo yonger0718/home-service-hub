@@ -1,10 +1,12 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
+import { of, throwError } from 'rxjs';
 import { provideRouter } from '@angular/router';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 
 import { ItemListComponent } from './item-list';
 import { ItemService } from '../../services/item.service';
+import { ToastService } from '../../services/toast.service';
 import { ItemResponse } from '../../models/item.model';
 
 describe('ItemListComponent', () => {
@@ -110,5 +112,69 @@ describe('ItemListComponent', () => {
     component.lowStockOnly = true;
 
     expect(component.displayedItems().map(item => item.name)).toEqual(['洗碗精']);
+  });
+
+  describe('feedback', () => {
+    const serverError = () => throwError(() => new HttpErrorResponse({ status: 500 }));
+    const toasts = () => TestBed.inject(ToastService);
+
+    it('a failed list load shows 無法載入物品清單 with 重試, which loads again', () => {
+      itemServiceMock.getAllFiltered.mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 500 })));
+      component.loadItems();
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '無法載入物品清單' }));
+      expect(toasts().current()?.action?.label).toBe('重試');
+
+      const calls = itemServiceMock.getAllFiltered.mock.calls.length;
+      toasts().current()!.action!.run();
+      expect(itemServiceMock.getAllFiltered).toHaveBeenCalledTimes(calls + 1);
+      expect(component.items()).toEqual(items);
+    });
+
+    it('saveItem answered 500 shows 重試 that re-sends the captured payload once, also for an update; a 400 shows none', () => {
+      itemServiceMock.create.mockReturnValueOnce(serverError());
+      component.showDialog();
+      component.newItem.name = '測試牙膏';
+      component.saveItem();
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '建立失敗' }));
+      const payload = itemServiceMock.create.mock.calls[0][0];
+      component.displayDialog = false;
+      component.newItem.name = '改過了';
+
+      toasts().current()!.action!.run();
+      expect(itemServiceMock.create).toHaveBeenCalledTimes(2);
+      expect(itemServiceMock.create.mock.calls[1][0]).toEqual(payload);
+      expect(toasts().current()?.text).toBe('物品已建立');
+
+      itemServiceMock.update.mockReturnValueOnce(serverError()).mockReturnValueOnce(
+        throwError(() => new HttpErrorResponse({ status: 400, error: { message: '名稱重複' } })));
+      component.editItem(items[0]);
+      component.saveItem();
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '更新失敗' }));
+      toasts().current()!.action!.run();
+      expect(itemServiceMock.update.mock.calls[1]).toEqual(itemServiceMock.update.mock.calls[0]);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '名稱重複', action: null }));
+    });
+
+    it('deleteItem answered 500 shows 重試 that deletes the same item once', () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      itemServiceMock.delete.mockReturnValueOnce(serverError());
+      component.deleteItem(2);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '刪除失敗' }));
+
+      toasts().current()!.action!.run();
+      expect(itemServiceMock.delete.mock.calls).toEqual([[2], [2]]);
+      expect(toasts().current()?.text).toBe('物品已刪除');
+    });
+
+    it('adjustQuantity answered 500 shows 重試 that sends the same adjustment once', () => {
+      itemServiceMock.createTransaction.mockReturnValueOnce(serverError());
+      const row = items[1];
+      component.adjustQuantity(row, -1);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '操作失敗' }));
+      expect(toasts().current()?.action?.label).toBe('重試');
+
+      toasts().current()!.action!.run();
+      expect(itemServiceMock.createTransaction.mock.calls.map(call => [call[0], call[1].type])).toEqual([[2, 'CONSUME'], [2, 'CONSUME']]);
+    });
   });
 });

@@ -1,10 +1,11 @@
-import { ApplicationRef, ChangeDetectorRef, DestroyRef, EnvironmentInjector, createComponent, createEnvironmentInjector } from '@angular/core';
+import { HttpErrorResponse } from '@angular/common/http';
+import { ApplicationRef, ChangeDetectorRef, EnvironmentInjector, createComponent } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
+import { ConfirmationService } from 'primeng/api';
 import { DatePicker } from 'primeng/datepicker';
 import { provideRouter } from '@angular/router';
-import { MessageService } from 'primeng/api';
-import { Subject, of } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -86,6 +87,8 @@ describe('PortfolioTransactionListComponent', () => {
         return response;
       }),
       createTransaction: vi.fn(() => of({})),
+      updateTransaction: vi.fn(() => of({})),
+      deleteTransaction: vi.fn(() => of({})),
     };
     TestBed.configureTestingModule({
       providers: [provideRouter([]), { provide: PortfolioService, useValue: portfolioService }],
@@ -539,8 +542,6 @@ describe('PortfolioTransactionListComponent', () => {
 
     it('cancels the list request on destroy and ignores a late response', () => {
       const fixture = create();
-      const messages = fixture.debugElement.injector.get(MessageService);
-      const add = vi.spyOn(messages, 'add');
       const list = listCalls[0].response;
       expect(list.observed).toBe(true);
       fixture.destroy();
@@ -549,7 +550,7 @@ describe('PortfolioTransactionListComponent', () => {
       list.next({ items: [buy], total: 1 });
       list.error(new Error('late'));
       expect(fixture.componentInstance.transactions()).toEqual([]);
-      expect(add).not.toHaveBeenCalled();
+      expect(TestBed.inject(ToastService).current()).toBeNull();
     });
 
     it('cancels the previous list request when fetching again', () => {
@@ -778,11 +779,72 @@ describe('PortfolioTransactionListComponent', () => {
     });
   });
 
-  // The save wiring (a 500 raising 重試) lands with the toast migration; this covers the dialog / outlet keyboard cycle.
-  it('with the edit dialog open, Tab from the dialog reaches the failure toast 重試', () => {
+  const serverError = () => throwError(() => new HttpErrorResponse({ status: 500 }));
+  const validationError = () => throwError(() => new HttpErrorResponse({ status: 422 }));
+
+  describe('save feedback', () => {
+    const toasts = () => TestBed.inject(ToastService);
+
+    it('a create answered 500 shows 重試, which re-sends the captured payload once, also after the dialog was closed', () => {
+      const fixture = create();
+      const component = fixture.componentInstance;
+      portfolioService['createTransaction'].mockReturnValueOnce(serverError());
+      component.openNew();
+      component.newTransaction.symbol = '2330';
+      component.saveTransaction();
+      const payload = portfolioService['createTransaction'].mock.calls[0][0];
+
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '新增失敗，請檢查欄位' }));
+      expect(toasts().current()?.action?.label).toBe('重試');
+      component.showDialog.set(false);
+      component.newTransaction.symbol = '0050';
+
+      toasts().current()!.action!.run();
+      expect(portfolioService['createTransaction']).toHaveBeenCalledTimes(2);
+      expect(portfolioService['createTransaction'].mock.calls[1][0]).toEqual(payload);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'done', text: '紀錄已新增' }));
+      expect(component.showDialog()).toBe(false);
+    });
+
+    it('an update answered 500 shows 重試 that re-sends to the same id; a 422 shows none', () => {
+      const fixture = create();
+      const component = fixture.componentInstance;
+      component.editTransaction({ ...buy });
+      portfolioService['updateTransaction'].mockReturnValueOnce(serverError());
+      component.saveTransaction();
+      const [id, payload] = portfolioService['updateTransaction'].mock.calls[0];
+      expect(id).toBe(buy.id);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '更新失敗，請檢查欄位' }));
+
+      component.openNew();
+      portfolioService['updateTransaction'].mockReturnValueOnce(validationError());
+      toasts().current()!.action!.run();
+      expect(portfolioService['updateTransaction'].mock.calls[1]).toEqual([id, payload]);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '更新失敗，請檢查欄位', action: null }));
+    });
+
+    it('a delete answered 500 shows 重試 that deletes the same row once', () => {
+      const fixture = create();
+      const component = fixture.componentInstance;
+      vi.spyOn(fixture.debugElement.injector.get(ConfirmationService), 'confirm')
+        .mockImplementation(options => { options.accept?.(); return fixture.debugElement.injector.get(ConfirmationService); });
+      portfolioService['deleteTransaction'].mockReturnValueOnce(serverError());
+      component.deleteTransaction(buy);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '刪除失敗，請稍後再試' }));
+
+      toasts().current()!.action!.run();
+      expect(portfolioService['deleteTransaction'].mock.calls).toEqual([[buy.id], [buy.id]]);
+      expect(toasts().current()?.text).toBe('紀錄已刪除');
+    });
+  });
+
+  it('with the edit dialog open, Tab from the dialog reaches the failure toast 重試 raised by a 500 save', () => {
     const fixture = create();
-    fixture.componentInstance.showDialog.set(true);
+    portfolioService['createTransaction'].mockReturnValueOnce(serverError());
+    fixture.componentInstance.openNew();
     fixture.detectChanges();
+    fixture.componentInstance.saveTransaction();
+    expect(fixture.componentInstance.showDialog()).toBe(true);
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
     expect(dialog).not.toBeNull();
 
@@ -791,10 +853,6 @@ describe('PortfolioTransactionListComponent', () => {
       hostElement: document.body.appendChild(document.createElement('div')),
     });
     TestBed.inject(ApplicationRef).attachView(outlet.hostView);
-    const scope = TestBed.inject(ToastService).scope(
-      createEnvironmentInjector([], TestBed.inject(EnvironmentInjector)).get(DestroyRef),
-    );
-    scope.error('儲存失敗', { retry: vi.fn() });
     outlet.changeDetectorRef.detectChanges();
 
     const real = cycleFocusables(dialog!);

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountsList, BrokerAccount } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { ToastService } from '../../../services/toast.service';
 import { CashFlowFormComponent } from '../cash-flow-form/cash-flow-form';
 import { PortfolioAccountsListComponent, cashTotal } from './accounts-list';
 
@@ -145,6 +146,34 @@ describe('PortfolioAccountsListComponent', () => {
     });
     expect(component.createDialogVisible()).toBe(false);
     expect(emitted.length).toBe(2);
+  });
+
+  it('submitCreate answered 500 shows 重試, which re-sends the captured body once; a 422 shows none', () => {
+    const { fixture } = render();
+    const component = fixture.componentInstance;
+    const toasts = TestBed.inject(ToastService);
+    const posts = () => httpMock.match(req => req.method === 'POST' && req.url === '/api/portfolio/accounts/');
+
+    component.openCreateDialog();
+    component.createForm.patchValue({ broker: 'sinopac', nickname: '永豐台幣', currency: 'TWD', opening_balance: '5000', opening_date: '2026-06-01' });
+    component.submitCreate();
+    const first = posts();
+    expect(first).toHaveLength(1);
+    const body = first[0].request.body;
+    first[0].flush({}, { status: 500, statusText: 'Server Error' });
+
+    const toast = toasts.current();
+    expect(toast).toEqual(expect.objectContaining({ kind: 'error', text: '新增帳戶失敗' }));
+    expect(toast?.action?.label).toBe('重試');
+    component.closeCreateDialog();
+    component.createForm.patchValue({ nickname: '改過了' });
+
+    toast!.action!.run();
+    const again = posts();
+    expect(again).toHaveLength(1);
+    expect(again[0].request.body).toEqual(body);
+    again[0].flush({}, { status: 422, statusText: 'Unprocessable' });
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '新增帳戶失敗', action: null }));
   });
 
   it('shows the broker · currency line, with the opening balance on the selected card only', () => {

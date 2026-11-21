@@ -2,6 +2,8 @@ import { Component, OnInit, inject, signal, ChangeDetectionStrategy } from '@ang
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ItemService } from '../../services/item.service';
+import { injectToasts } from '../../services/toast.service';
+import { retryOnNetwork } from '../accounting/http-errors';
 import {
   InventoryTransactionRequest,
   InventoryTransactionResponse,
@@ -15,13 +17,11 @@ import { InputTextModule } from 'primeng/inputtext';
 import { InputNumberModule } from 'primeng/inputnumber';
 import { ProgressBarModule } from 'primeng/progressbar';
 import { TextareaModule } from 'primeng/textarea';
-import { ToastModule } from 'primeng/toast';
 import { TagModule } from 'primeng/tag';
 import { AutoCompleteModule } from 'primeng/autocomplete';
 import { FileUploadModule } from 'primeng/fileupload';
 import { ImageModule } from 'primeng/image';
 import { TooltipModule } from 'primeng/tooltip';
-import { MessageService } from 'primeng/api';
 import { BtnComponent } from '../ui/btn/btn';
 import { TagComponent } from '../ui/tag/tag';
 import { PageHeaderComponent } from '../shell/page-header/page-header';
@@ -39,7 +39,6 @@ import { PageHeaderComponent } from '../shell/page-header/page-header';
     InputNumberModule,
     ProgressBarModule,
     TextareaModule,
-    ToastModule,
     TagModule,
     AutoCompleteModule,
     FileUploadModule,
@@ -48,14 +47,13 @@ import { PageHeaderComponent } from '../shell/page-header/page-header';
     BtnComponent,
     TagComponent
   ],
-  providers: [MessageService],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './item-list.html',
   styleUrl: './item-list.scss'
 })
 export class ItemListComponent implements OnInit {
   private itemService = inject(ItemService);
-  private messageService = inject(MessageService);
+  private readonly toasts = injectToasts();
 
   items = signal<ItemResponse[]>([]);
   history = signal<InventoryTransactionResponse[]>([]);
@@ -105,7 +103,7 @@ export class ItemListComponent implements OnInit {
   loadItems(): void {
     this.itemService.getAllFiltered(this.searchKeyword, this.lowStockOnly).subscribe({
       next: data => this.items.set(data),
-      error: () => this.messageService.add({ severity: 'error', summary: '錯誤', detail: '無法載入物品清單' })
+      error: () => this.toasts.error('無法載入物品清單', { retry: () => this.loadItems() })
     });
   }
 
@@ -147,7 +145,7 @@ export class ItemListComponent implements OnInit {
 
   saveItem() {
     if (!this.canSaveItem()) {
-      this.messageService.add({ severity: 'warn', summary: '提醒', detail: '請檢查名稱、數量與門檻欄位' });
+      this.toasts.error('請檢查名稱、數量與門檻欄位');
       return;
     }
 
@@ -164,40 +162,52 @@ export class ItemListComponent implements OnInit {
       imageUrl: this.newItem.imageUrl || undefined
     };
 
-    if (this.isEdit && this.newItem.id) {
-      this.itemService.update(this.newItem.id, payload).subscribe({
+    this.sendItem(payload, this.isEdit && this.newItem.id ? this.newItem.id : null);
+  }
+
+  private sendItem(payload: ItemRequest, id: number | null): void {
+    if (id !== null) {
+      this.itemService.update(id, payload).subscribe({
         next: () => {
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '物品已更新' });
+          this.toasts.done('物品已更新');
           this.displayDialog = false;
           this.loadItems();
         },
-        error: err => this.messageService.add({ severity: 'error', summary: '錯誤', detail: err?.error?.message || '更新失敗' })
+        error: err => this.toasts.error(err?.error?.message || '更新失敗', {
+          retry: retryOnNetwork(err, () => this.sendItem(payload, id)),
+        })
       });
       return;
     }
 
     this.itemService.create(payload).subscribe({
       next: () => {
-        this.messageService.add({ severity: 'success', summary: '成功', detail: '物品已建立' });
+        this.toasts.done('物品已建立');
         this.displayDialog = false;
         this.loadItems();
       },
-      error: err => this.messageService.add({ severity: 'error', summary: '錯誤', detail: err?.error?.message || '建立失敗' })
+      error: err => this.toasts.error(err?.error?.message || '建立失敗', {
+        retry: retryOnNetwork(err, () => this.sendItem(payload, null)),
+      })
     });
   }
 
   onUpload(event: { files: File[] }) {
     const file = event.files[0];
     if (this.isEdit && this.newItem.id) {
-      this.itemService.uploadImage(this.newItem.id, file).subscribe({
-        next: updatedItem => {
-          this.newItem.imageUrl = updatedItem.imageUrl;
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '圖片上傳成功' });
-          this.loadItems();
-        },
-        error: () => this.messageService.add({ severity: 'error', summary: '錯誤', detail: '圖片上傳失敗' })
-      });
+      this.sendUpload(this.newItem.id, file);
     }
+  }
+
+  private sendUpload(id: number, file: File): void {
+    this.itemService.uploadImage(id, file).subscribe({
+      next: updatedItem => {
+        this.newItem.imageUrl = updatedItem.imageUrl;
+        this.toasts.done('圖片上傳成功');
+        this.loadItems();
+      },
+      error: err => this.toasts.error('圖片上傳失敗', { retry: retryOnNetwork(err, () => this.sendUpload(id, file)) })
+    });
   }
 
   consumeOne(item: ItemResponse) {
@@ -226,7 +236,7 @@ export class ItemListComponent implements OnInit {
       },
       error: err => {
         this.loadItems();
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: err?.error?.message || '操作失敗' });
+        this.toasts.error(err?.error?.message || '操作失敗', { retry: retryOnNetwork(err, () => this.adjustQuantity(item, delta)) });
       },
     });
   }
@@ -270,20 +280,24 @@ export class ItemListComponent implements OnInit {
         this.history.set(rows);
         this.displayHistoryDialog = true;
       },
-      error: () => this.messageService.add({ severity: 'error', summary: '錯誤', detail: '無法載入異動歷史' })
+      error: () => this.toasts.error('無法載入異動歷史')
     });
   }
 
   deleteItem(id: number): void {
     if (confirm('確定要刪除此物品嗎？')) {
-      this.itemService.delete(id).subscribe({
-        next: () => {
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '物品已刪除' });
-          this.loadItems();
-        },
-        error: () => this.messageService.add({ severity: 'error', summary: '錯誤', detail: '刪除失敗' })
-      });
+      this.sendDelete(id);
     }
+  }
+
+  private sendDelete(id: number): void {
+    this.itemService.delete(id).subscribe({
+      next: () => {
+        this.toasts.done('物品已刪除');
+        this.loadItems();
+      },
+      error: err => this.toasts.error('刪除失敗', { retry: retryOnNetwork(err, () => this.sendDelete(id)) })
+    });
   }
 
   getStockStatusLabel(item: ItemResponse): string {
@@ -328,11 +342,13 @@ export class ItemListComponent implements OnInit {
   ) {
     this.itemService.createTransaction(itemId, payload).subscribe({
       next: () => {
-        this.messageService.add({ severity: 'success', summary: '成功', detail: successMessage });
+        this.toasts.done(successMessage);
         this.loadItems();
         callback?.();
       },
-      error: err => this.messageService.add({ severity: 'error', summary: '錯誤', detail: err?.error?.message || '操作失敗' })
+      error: err => this.toasts.error(err?.error?.message || '操作失敗', {
+        retry: retryOnNetwork(err, () => this.submitTransaction(itemId, payload, successMessage, callback)),
+      })
     });
   }
 

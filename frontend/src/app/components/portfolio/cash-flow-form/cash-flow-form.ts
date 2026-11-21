@@ -6,12 +6,12 @@ import { DatePickerModule } from 'primeng/datepicker';
 import { DialogModule } from 'primeng/dialog';
 import { InputNumberModule } from 'primeng/inputnumber';
 import { InputTextModule } from 'primeng/inputtext';
-import { MessageService } from 'primeng/api';
 import { SelectModule } from 'primeng/select';
-import { ToastModule } from 'primeng/toast';
 
 import { BROKER_LABELS, Broker, BrokerCashBalance, BrokerCashFlow } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { injectToasts, toastText } from '../../../services/toast.service';
+import { retryOnNetwork } from '../../accounting/http-errors';
 
 const TYPE_OPTIONS: { label: string; value: BrokerCashFlow['type'] }[] = [
   { label: '存入 Deposit', value: 'deposit' },
@@ -45,12 +45,9 @@ const BROKER_CURRENCY_DEFAULT: Record<Broker, string> = {
     InputNumberModule,
     InputTextModule,
     SelectModule,
-    ToastModule,
   ],
-  providers: [MessageService],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <p-toast></p-toast>
     <p-dialog
       [visible]="visible"
       (visibleChange)="onVisibleChange($event)"
@@ -118,7 +115,7 @@ export class CashFlowFormComponent {
 
   private fb = inject(FormBuilder);
   private portfolioService = inject(PortfolioService);
-  private messageService = inject(MessageService);
+  private readonly toasts = injectToasts();
 
   readonly brokerOptions = (Object.keys(BROKER_LABELS) as Broker[]).map(broker => ({
     label: BROKER_LABELS[broker],
@@ -173,16 +170,20 @@ export class CashFlowFormComponent {
       currency: raw.currency,
       note: raw.note ?? null,
     };
+    this.send(payload);
+  }
+
+  private send(payload: BrokerCashFlow): void {
     this.submitting.set(true);
     this.portfolioService.createBrokerCashFlow(payload).subscribe({
       next: result => {
         this.submitting.set(false);
-        this.messageService.add({ severity: 'success', summary: '已新增', detail: `${BROKER_LABELS[raw.broker]} ${result.currency}` });
+        this.toasts.done(toastText('已新增', `${BROKER_LABELS[payload.broker]} ${result.currency}`));
         this.created.emit(result);
         this.form.reset({
-          broker: raw.broker,
+          broker: payload.broker,
           type: 'deposit',
-          currency: raw.currency,
+          currency: payload.currency,
           amount: '',
           date: new Date(),
           note: null,
@@ -191,7 +192,7 @@ export class CashFlowFormComponent {
       },
       error: err => {
         this.submitting.set(false);
-        this.messageService.add({ severity: 'error', summary: '失敗', detail: err?.error?.detail ?? '新增失敗' });
+        this.toasts.error(err?.error?.detail ?? '新增失敗', { retry: retryOnNetwork(err, () => this.send(payload)) });
       },
     });
   }

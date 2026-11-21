@@ -4,6 +4,8 @@ import { RouterLink } from '@angular/router';
 import { Subscription, catchError, map, of } from 'rxjs';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { injectToasts } from '../../../services/toast.service';
+import { retryOnNetwork } from '../../accounting/http-errors';
 import { BROKER_LABELS, Broker, MarketCode, Transaction, TransactionType, TransactionQuery, brokerLabel } from '../../../models/portfolio.model';
 
 const BROKER_LABELS_MAP = BROKER_LABELS;
@@ -16,9 +18,8 @@ import { SelectModule } from 'primeng/select';
 import { DatePickerModule } from 'primeng/datepicker';
 import { CheckboxModule } from 'primeng/checkbox';
 import { PaginatorModule, PaginatorState } from 'primeng/paginator';
-import { ConfirmationService, MessageService, MenuItem } from 'primeng/api';
+import { ConfirmationService, MenuItem } from 'primeng/api';
 import { ConfirmDialogModule } from 'primeng/confirmdialog';
-import { ToastModule } from 'primeng/toast';
 import { MenuModule } from 'primeng/menu';
 import { Menu } from 'primeng/menu';
 import { BtnComponent } from '../../ui/btn/btn';
@@ -58,10 +59,10 @@ const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
     CommonModule, DialogModule, FormsModule,
     InputTextModule, InputNumberModule, SelectButtonModule, SelectModule,
     DatePickerModule, PaginatorModule, CheckboxModule,
-    ConfirmDialogModule, ToastModule, MenuModule,
+    ConfirmDialogModule, MenuModule,
     BtnComponent, SegToggleComponent, TimelineComponent, FilterBarComponent,
   ],
-  providers: [ConfirmationService, MessageService],
+  providers: [ConfirmationService],
   templateUrl: './transaction-list.html',
   styleUrls: ['./transaction-list.scss', '../kpi-cards.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -69,7 +70,7 @@ const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
 export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private confirmationService = inject(ConfirmationService);
-  private messageService = inject(MessageService);
+  private readonly toasts = injectToasts();
   private layoutMode = inject(LayoutModeService);
 
   @ViewChild('menu') menu!: Menu;
@@ -201,7 +202,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       error: () => {
         if (seq !== this.fetchSeq) return;
         this.loading.set(false);
-        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '查詢失敗，請檢查篩選條件' });
+        this.toasts.error('查詢失敗，請檢查篩選條件');
       },
     });
   }
@@ -401,25 +402,27 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       message: `確定要刪除 ${transaction.symbol} 的這筆交易紀錄嗎？`,
       header: '確認刪除',
       icon: 'pi pi-exclamation-triangle',
-      accept: () => {
-        this.portfolioService.deleteTransaction(transaction.id).subscribe({
-          next: () => {
-            const nextTotal = Math.max(this.total() - 1, 0);
-            const limit = this.query().limit ?? 25;
-            const maxOffset = nextTotal > 0
-              ? Math.floor((nextTotal - 1) / limit) * limit
-              : 0;
-            this.query.set({
-              ...this.query(),
-              offset: Math.min(this.query().offset ?? 0, maxOffset),
-            });
-            this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已刪除' });
-            this.reload();
-          },
-          error: () => {
-            this.messageService.add({ severity: 'error', summary: '錯誤', detail: '刪除失敗，請稍後再試' });
-          },
+      accept: () => this.sendDelete(transaction),
+    });
+  }
+
+  private sendDelete(transaction: Transaction): void {
+    this.portfolioService.deleteTransaction(transaction.id).subscribe({
+      next: () => {
+        const nextTotal = Math.max(this.total() - 1, 0);
+        const limit = this.query().limit ?? 25;
+        const maxOffset = nextTotal > 0
+          ? Math.floor((nextTotal - 1) / limit) * limit
+          : 0;
+        this.query.set({
+          ...this.query(),
+          offset: Math.min(this.query().offset ?? 0, maxOffset),
         });
+        this.toasts.done('紀錄已刪除');
+        this.reload();
+      },
+      error: err => {
+        this.toasts.error('刪除失敗，請稍後再試', { retry: retryOnNetwork(err, () => this.sendDelete(transaction)) });
       },
     });
   }
@@ -561,15 +564,19 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     if (this.isFxRateInvalid()) return;
 
     const payload = this.transactionPayload();
-    if (this.isEdit() && this.newTransaction.id) {
-      this.portfolioService.updateTransaction(this.newTransaction.id, payload).subscribe({
+    this.sendSave(payload, this.isEdit() && this.newTransaction.id ? this.newTransaction.id : null);
+  }
+
+  private sendSave(payload: Partial<Transaction>, id: number | null): void {
+    if (id !== null) {
+      this.portfolioService.updateTransaction(id, payload).subscribe({
         next: () => {
           this.showDialog.set(false);
           this.reload();
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已更新' });
+          this.toasts.done('紀錄已更新');
         },
-        error: () => {
-          this.messageService.add({ severity: 'error', summary: '錯誤', detail: '更新失敗，請檢查欄位' });
+        error: err => {
+          this.toasts.error('更新失敗，請檢查欄位', { retry: retryOnNetwork(err, () => this.sendSave(payload, id)) });
         },
       });
     } else {
@@ -577,10 +584,10 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
         next: () => {
           this.showDialog.set(false);
           this.reload();
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已新增' });
+          this.toasts.done('紀錄已新增');
         },
-        error: () => {
-          this.messageService.add({ severity: 'error', summary: '錯誤', detail: '新增失敗，請檢查欄位' });
+        error: err => {
+          this.toasts.error('新增失敗，請檢查欄位', { retry: retryOnNetwork(err, () => this.sendSave(payload, null)) });
         },
       });
     }

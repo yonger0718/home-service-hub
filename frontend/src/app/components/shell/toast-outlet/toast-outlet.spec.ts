@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Component, DestroyRef, EnvironmentInjector, createEnvironmentInjector } from '@angular/core';
@@ -232,5 +232,14 @@ describe('ToastOutletComponent', () => {
     expect(css).toContain('bottom: calc(64px + env(safe-area-inset-bottom');
     expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(css).not.toMatch(/rgba?\(/);
+  });
+
+  it('no PrimeNG toast remains', () => {
+    const root = join(process.cwd(), 'src/app');
+    const sources = (readdirSync(root, { recursive: true }) as string[])
+      .filter(file => /\.(ts|html)$/.test(file) && !file.endsWith('.spec.ts'));
+    expect(sources.length).toBeGreaterThan(100);
+    const hits = sources.filter(file => /\bp-toast\b|primeng\/toast|MessageService/.test(readFileSync(join(root, file), 'utf8')));
+    expect(hits).toEqual([]);
   });
 });

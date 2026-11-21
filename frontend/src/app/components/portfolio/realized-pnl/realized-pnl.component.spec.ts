@@ -4,13 +4,13 @@ import { provideRouter } from '@angular/router';
 import { DatePicker } from 'primeng/datepicker';
 import { Paginator } from 'primeng/paginator';
 import { Select } from 'primeng/select';
-import { MessageService } from 'primeng/api';
 import { Subject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RealizedPnlEvent, RealizedPnlPaged, RealizedPnlQuery, brokerLabel } from '../../../models/portfolio.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { ToastService } from '../../../services/toast.service';
 import { stockSquare } from '../square';
 import { REALIZED_FIXTURE, TODAY } from './realized-fixture.spec-data';
 import { barsAriaText, monthlyBars } from './realized-math';
@@ -430,7 +430,6 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
 
   it('hides the set silently on a load error and keeps the list page', () => {
     const fixture = create();
-    const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
     respond(listCalls[0], paged(REALIZED_FIXTURE.slice(0, 2), 5));
 
     allCalls[0].response.error(new Error('boom'));
@@ -442,7 +441,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     expect(component.marketEvents()).toBeNull();
     expect(component.events()).toEqual(REALIZED_FIXTURE.slice(0, 2));
     expect(component.total()).toBe(5);
-    expect(add).not.toHaveBeenCalled();
+    expect(TestBed.inject(ToastService).current()).toBeNull();
     expect(el(fixture).querySelector('.meta-loading')).toBeNull();
   });
 
