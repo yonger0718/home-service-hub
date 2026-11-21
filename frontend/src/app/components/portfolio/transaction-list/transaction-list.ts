@@ -413,19 +413,19 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     });
   }
 
-  private sendDelete(transaction: Transaction, retried = false): void {
+  private sendDelete(transaction: Transaction): void {
     this.deleting = true;
     this.portfolioService.deleteTransaction(transaction.id).pipe(finalize(() => (this.deleting = false))).subscribe({
       next: () => this.deleted(),
       error: err => {
-        // A retried delete answered 404: the first attempt did commit, so the record is gone.
-        if (retried && err instanceof HttpErrorResponse && err.status === 404) {
+        // The interceptor already retried once: a 404 here means the first attempt did commit, so the record is gone.
+        if (err instanceof HttpErrorResponse && err.status === 404) {
           this.deleted();
           return;
         }
         const text = '刪除失敗，請稍後再試';
         this.toasts.error(text, {
-          retry: guardedRetry(err, this.toasts, text, () => this.deleting, () => this.sendDelete(transaction, true)),
+          retry: guardedRetry(err, this.toasts, text, () => this.deleting, () => this.sendDelete(transaction)),
         });
       },
     });

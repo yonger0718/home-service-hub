@@ -1375,6 +1375,18 @@ describe('Dividend filter-wide summary', () => {
         fixture.destroy();
       });
 
+      it('a delete answered 404 on the first attempt counts as done too: reload and 完成', () => {
+        service['deleteDividend'] = vi.fn().mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 404 })));
+        const fixture = rendered([due]);
+        vi.spyOn(fixture.debugElement.injector.get(ConfirmationService), 'confirm')
+          .mockImplementation(options => { options.accept?.(); return fixture.debugElement.injector.get(ConfirmationService); });
+        const loads = listCalls.length;
+        fixture.componentInstance.deleteDividend(due);
+        expect(shown()).toEqual(expect.objectContaining({ kind: 'done', text: '紀錄已刪除' }));
+        expect(listCalls.length).toBeGreaterThan(loads);
+        fixture.destroy();
+      });
+
       it('a create answered 500 shows 重試 that re-sends the captured record after the dialog was closed', () => {
         service['createDividend'].mockReturnValueOnce(serverError());
         const fixture = rendered([tw]);

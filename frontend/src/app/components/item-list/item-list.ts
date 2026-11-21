@@ -1,3 +1,4 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { finalize } from 'rxjs';
 import { Component, OnInit, inject, signal, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
@@ -317,17 +318,24 @@ export class ItemListComponent implements OnInit {
   private sendDelete(id: number): void {
     this.deleting = true;
     this.itemService.delete(id).pipe(finalize(() => (this.deleting = false))).subscribe({
-      next: () => {
-        this.toasts.done('物品已刪除');
-        this.loadItems();
-      },
+      next: () => this.deleted(),
       error: err => {
+        // The interceptor already retried once: a 404 here means the first attempt did commit, so the item is gone.
+        if (err instanceof HttpErrorResponse && err.status === 404) {
+          this.deleted();
+          return;
+        }
         const text = '刪除失敗';
         this.toasts.error(text, {
           retry: guardedRetry(err, this.toasts, text, () => this.deleting, () => this.sendDelete(id)),
         });
       }
     });
+  }
+
+  private deleted(): void {
+    this.toasts.done('物品已刪除');
+    this.loadItems();
   }
 
   getStockStatusLabel(item: ItemResponse): string {

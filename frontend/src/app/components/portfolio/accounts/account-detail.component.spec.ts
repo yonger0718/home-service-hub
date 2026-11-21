@@ -786,6 +786,66 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
       return fixture;
     }
 
+    describe('read failures (one toast per reload)', () => {
+      const down = { status: 0, statusText: 'Unknown Error' };
+      const current = () => TestBed.inject(ToastService).current();
+
+      it('all three reads failing raise one 帳戶讀取失敗 whose 重試 re-sends all three; a successful retry leaves no toast', () => {
+        const texts = recordToasts();
+        const fixture = render({ accountId: 7, embedded: true });
+        summaryReq().flush({}, down);
+        historyReq(7).flush({}, down);
+        txnsReq(7).flush({}, down);
+        fixture.detectChanges();
+        expect(texts).toEqual(['帳戶讀取失敗']);
+        expect(current()).toEqual(expect.objectContaining({ kind: 'error', text: '帳戶讀取失敗' }));
+        expect(current()?.action?.label).toBe('重試');
+
+        current()!.action!.run();
+        summaryReq().flush(summaryFor(7));
+        historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+        txnsReq(7).flush({ items: [rowFor(71, 7)], total: 1, offset: 0, limit: 25 });
+        fixture.detectChanges();
+        expect(current()).toBeNull();
+        expect(texts).toEqual(['帳戶讀取失敗']);
+        expect(fixture.componentInstance.transactions().map(txn => txn.id)).toEqual([71]);
+      });
+
+      it('one read failing raises the same toast and the parts that arrived still render', () => {
+        const texts = recordToasts();
+        const fixture = render({ accountId: 7, embedded: true });
+        summaryReq().flush(summaryFor(7));
+        historyReq(7).flush({}, down);
+        txnsReq(7).flush({ items: [rowFor(71, 7)], total: 1, offset: 0, limit: 25 });
+        fixture.detectChanges();
+        expect(texts).toEqual(['帳戶讀取失敗']);
+        expect(current()?.action?.label).toBe('重試');
+        expect(fixture.nativeElement.querySelector('h2')?.textContent).toContain('帳戶 7');
+        expect(fixture.componentInstance.transactions().map(txn => txn.id)).toEqual([71]);
+
+        current()!.action!.run();
+        expect(summaryReq()).toBeTruthy();
+        expect(historyReq(7)).toBeTruthy();
+        expect(txnsReq(7)).toBeTruthy();
+      });
+
+      it('a later reload that succeeds dismisses the stale failure toast', () => {
+        const fixture = render({ accountId: 7, embedded: true });
+        summaryReq().flush({}, down);
+        historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+        txnsReq(7).flush({ items: [], total: 0, offset: 0, limit: 25 });
+        expect(current()?.text).toBe('帳戶讀取失敗');
+
+        TestBed.inject(PortfolioService).notifyCashLedgerChanged();
+        summaryReq().flush(summaryFor(7));
+        historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+        expect(current()?.text).toBe('帳戶讀取失敗');
+        txnsReq(7).flush({ items: [], total: 0, offset: 0, limit: 25 });
+        expect(current()).toBeNull();
+        expect(fixture.componentInstance.account()?.id).toBe(7);
+      });
+    });
+
     it('Regression A: 7 → 9 with 9\'s summary pending clears 7 at once — placeholder header, no 編輯, no write — until 9 lands', () => {
       const fixture = loaded(7);
       const component = fixture.componentInstance;
@@ -949,6 +1009,18 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
       fixture.componentInstance.submitEdit();
       httpMock.expectOne(req => req.method === 'PATCH').flush({ detail: [] }, { status: 422, statusText: 'Unprocessable' });
       expect(TestBed.inject(ToastService).current()).toEqual(expect.objectContaining({ kind: 'error', text: '帳戶更新失敗', action: null }));
+    });
+
+    it('executeDelete answered 404 on the first attempt counts as done (the interceptor\'s own retry already committed it): 完成 and a reload', () => {
+      const fixture = loaded(7);
+      const component = fixture.componentInstance;
+      component.executeDelete(component.transactions()[0], 7);
+      httpMock.expectOne(req => req.method === 'DELETE').flush({}, { status: 404, statusText: 'Not Found' });
+      expect(TestBed.inject(ToastService).current()).toEqual(expect.objectContaining({ kind: 'done', text: '已刪除' }));
+      summaryReq().flush(summaryFor(7));
+      historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+      txnsReq(7).flush({ items: [], total: 0, offset: 0, limit: 25 });
+      expect(component.transactions()).toEqual([]);
     });
 
     it('executeDelete answered 500 shows 重試, which sends the same DELETE once; a 403 shows none', () => {
@@ -1337,7 +1409,10 @@ describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
     expect(fixture.componentInstance.accountReady()).toBe(false);
     // The detail clears the stale account while another one loads, so the banner (and its action) is gone, never clickable.
     expect(el(fixture).querySelector('app-banner.overdraft-banner')).toBeNull();
-    httpMock.match(() => true);
+    // The switch to 9 sent its own three reads; nothing else is outstanding.
+    expect(httpMock.expectOne(req => req.url === '/api/portfolio/accounts/' && req.params.get('include_inactive') === 'true').cancelled).toBe(false);
+    expect(httpMock.expectOne(req => req.url === '/api/portfolio/accounts/9/balance-history').cancelled).toBe(false);
+    expect(httpMock.expectOne(req => req.url === '/api/portfolio/accounts/9/cash-transactions').cancelled).toBe(false);
   });
 
   it('formatCurrency: U+2212 before negatives in every currency, none for zero or positives', () => {
