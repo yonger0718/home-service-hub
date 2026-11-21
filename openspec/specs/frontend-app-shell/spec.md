@@ -173,7 +173,7 @@ On viewports ≥ 760px every route except `/accounting/reports` and the saved-re
 
 ### Requirement: Sidebar 記一筆 control
 
-From 760px the sidebar SHALL show a 記一筆 link at the top of its navigation, above the first group, on every page and while a sheet is open; below 760px it SHALL NOT render. Expanded it SHALL be a full-width filled `--app-primary` button with a + icon and the text 記一筆; as a rail it SHALL be a filled + icon button of the rail item size named `記一筆（快捷鍵 N）`, with a tooltip. It SHALL behave exactly like the floating button.
+From 760px the sidebar SHALL show a 記一筆 link at the top of its navigation, above the first group, on every page, inert with the sidebar while the 760–1023px sheet is open, and SHALL NOT render below 760px. Expanded it SHALL be a full-width filled `--app-primary` button with a + icon and the text 記一筆; as a rail, a filled + icon button named `記一筆（快捷鍵 N）` with a one-line tooltip. It SHALL behave like the floating button, except that on the new-entry form a plain click does nothing.
 
 #### Scenario: Expanded sidebar
 - **WHEN** the owner opens `/portfolio` at 1440px
@@ -191,6 +191,11 @@ From 760px the sidebar SHALL show a 記一筆 link at the top of its navigation,
 - **GIVEN** the owner is on the calendar at `?month=2026-10&day=2026-10-21` with an unsaved entry form
 - **WHEN** the owner clicks the sidebar control and confirms 放棄
 - **THEN** the entry form SHALL open with that month and day, and a ctrl- or meta-click SHALL be left to the browser
+
+#### Scenario: New-entry form
+- **GIVEN** the owner is on `/accounting/entry` with unsaved input
+- **WHEN** the owner clicks the sidebar control
+- **THEN** no discard prompt SHALL appear and no navigation SHALL happen; on an entry's edit form the click SHALL still ask first
 
 #### Scenario: Phone
 - **WHEN** the viewport is narrower than 760px
