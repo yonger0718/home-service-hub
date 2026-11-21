@@ -292,3 +292,71 @@ describe('sidebar wordmark', () => {
     expect(ratio(hex(theme, token), bg)).toBeGreaterThanOrEqual(4.5);
   });
 });
+
+describe('banner-warn pair (帳單 tag / bill dot / cap bar near)', () => {
+  const calScss = src('src/app/components/accounting/calendar-month/calendar-month.scss');
+  const overviewScss = src('src/app/components/accounting/month-overview/month-overview.scss');
+  const capScss = src('src/app/components/ui/cap-bar/cap-bar.scss');
+
+  it('is declared in both themes: owner hex, soft = the same colour at 10 % (light) / 14 % (dark)', () => {
+    expect(light['--app-banner-warn']).toBe('#8a6327');
+    expect(dark['--app-banner-warn']).toBe('#d0a06a');
+    expect(rgba(light, '--app-banner-warn-soft')).toEqual([0x8a, 0x63, 0x27, 0.1]);
+    expect(rgba(dark, '--app-banner-warn-soft')).toEqual([0xd0, 0xa0, 0x6a, 0.14]);
+  });
+
+  it('the 帳單 tag, legend swatch and 這個月要處理 tag use the pair; the bill dot is solid banner-warn', () => {
+    for (const css of [calScss, overviewScss]) {
+      const tag = block(css, '.tag-bill');
+      expect(tag).toMatch(/background:\s*var\(--app-banner-warn-soft\)/);
+      expect(tag).toMatch(/color:\s*var\(--app-banner-warn\)/);
+      expect(tag).not.toContain('--app-warning');
+    }
+    expect(block(calScss, '.bill-dot')).toMatch(/background:\s*var\(--app-banner-warn\)/);
+    expect(block(calScss, '.inv-dot')).toMatch(/background:\s*var\(--app-warning\)/);
+    expect(block(calScss, '.inv-mark')).toMatch(/color:\s*var\(--app-warning\)/);
+  });
+
+  it('the cap bar near state uses the pair', () => {
+    const near = block(capScss, '.near');
+    expect(near).toMatch(/--cap-fill:\s*var\(--app-banner-warn\)/);
+    expect(near).not.toContain('pill-ink');
+  });
+
+  // Backgrounds the text can sit on: --app-surface is the calendar card, the legend row, the 本月摘要 pane and a
+  // future day (transparent); --app-surface-soft is a past day; a selected day is --app-primary-soft over the card.
+  const backgrounds: [string, (theme: Record<string, string>) => string][] = [
+    ['future day / legend / 本月摘要 (surface)', (t) => hex(t, '--app-surface')],
+    ['past day (surface-soft)', (t) => hex(t, '--app-surface-soft')],
+    ['selected day (primary-soft over surface)', (t) => composite(rgba(t, '--app-primary-soft'), hex(t, '--app-surface'))],
+    ['page (bg)', (t) => hex(t, '--app-bg')],
+  ];
+
+  // Pinned ratios of the 帳單 tag text on its composited tint (2 decimals). The owner's two colours are fixed: the
+  // light cases below 4.5 are known and reported, not silently accepted — a change of token or surface moves a number
+  // and fails here. `page (bg)` is not a surface the tag sits on; it is listed for reference only.
+  const pinned: Record<string, number[]> = {
+    light: [4.61, 4.2, 4.0, 4.29],
+    dark: [5.71, 4.95, 4.51, 6.37],
+  };
+
+  describe.each([
+    ['light', light],
+    ['dark', dark],
+  ])('%s theme', (name, theme) => {
+    it('帳單 tag text on its soft tint: pinned ratio per background', () => {
+      const got = backgrounds.map(([, under]) =>
+        Number(ratio(hex(theme, '--app-banner-warn'), composite(rgba(theme, '--app-banner-warn-soft'), under(theme))).toFixed(2)),
+      );
+      expect(got).toEqual(pinned[name]);
+    });
+
+    it('帳單 tag text ≥ 4.5:1 on its tint over the future day / legend / 本月摘要 surface', () => {
+      expect(pinned[name][0]).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it.each(backgrounds)('cap bar near text on %s ≥ 4.5:1 (no tint)', (_label, under) => {
+      expect(ratio(hex(theme, '--app-banner-warn'), under(theme))).toBeGreaterThanOrEqual(4.5);
+    });
+  });
+});
