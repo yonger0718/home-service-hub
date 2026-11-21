@@ -177,8 +177,11 @@ describe('MonthOverviewComponent', () => {
       fixture.componentInstance.pickDay.subscribe(d => picked.push(d));
       (el.querySelector('.ov-today') as HTMLButtonElement).click();
       const bills = el.querySelectorAll<HTMLButtonElement>('.todo-bill');
-      expect(bills[0].textContent).toContain('玉山 UNI 帳單 $12,345 · 10/28 到期');
-      expect(bills[1].textContent).toContain('台新 帳單 $900 · 11/02 到期');
+      expect(bills[0].querySelector('.todo-tag.tag-bill')!.textContent!.trim()).toBe('帳單');
+      expect(bills[0].querySelector('.todo-text')!.textContent!.trim()).toBe('玉山 UNI $12,345 · 10/28 到期');
+      expect(bills[1].querySelector('.todo-text')!.textContent!.trim()).toBe('台新 $900 · 11/02 到期');
+      expect(bills[0].querySelector('.todo-chev.pi-angle-right')!.getAttribute('aria-hidden')).toBe('true');
+      expect(bills[0].textContent).toContain('帳單');
       bills[1].click();
       expect(picked).toEqual(['2026-10-21', '2026-11-02']);
       bills[0].click();
@@ -193,7 +196,10 @@ describe('MonthOverviewComponent', () => {
       const items = Array.from(el.querySelectorAll('.ov-todo button'));
       expect(items[0].classList.contains('todo-invoice')).toBe(true);
       expect(items[1].classList.contains('todo-bill')).toBe(true);
-      expect(items[0].textContent).toContain('發票待對帳 · 10/10 全家便利商店 $85');
+      expect(items[0].querySelector('.todo-tag.tag-invoice')!.textContent!.trim()).toBe('發票');
+      expect(items[0].querySelector('.todo-text')!.textContent!.trim()).toBe('10/10 全家便利商店 $85');
+      expect(items[0].querySelector('.todo-chev.pi-angle-right')).not.toBeNull();
+      expect(items[0].textContent).toContain('發票');
       (items[0] as HTMLButtonElement).click();
       expect(opened).toEqual([inv]);
     });

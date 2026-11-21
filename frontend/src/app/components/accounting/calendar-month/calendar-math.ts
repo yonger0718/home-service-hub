@@ -17,22 +17,23 @@ export interface CalendarCell {
   count: number;
 }
 
-export const CALENDAR_ROWS = 6;
-
 /**
- * Month grid of 6 rows × 7 columns. `weekStart` is `Preference.week_start` (0 = Sunday, 1 = Monday first).
- * The first row starts on the week-start day on or before day 1 (so a month beginning on that day has no
- * leading cells); every cell after the month's last day is a trailing next-month cell, always 42 in all.
+ * Month grid of only the weeks the month needs (4–6 rows × 7 columns). `weekStart` is `Preference.week_start`
+ * (0 = Sunday, 1 = Monday first). The first row starts on the week-start day on or before day 1 (so a month
+ * beginning on that day has no leading cells); the cells after the month's last day, up to the end of its last
+ * week, are trailing next-month cells. Leading and trailing cells carry `outside: true`.
  */
 export function buildCalendar(month: string, days: DailySummaryDay[], weekStart: number): CalendarCell[][] {
   const [year, monthNumber] = month.split('-').map(Number);
   const firstWeekday = new Date(Date.UTC(year, monthNumber - 1, 1)).getUTCDay();
   const lead = (firstWeekday - weekStart + 7) % 7;
+  const daysInMonth = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  const rowCount = Math.ceil((lead + daysInMonth) / 7);
   const start = addDays(`${month}-01`, -lead);
   const byDate = new Map(days.map(day => [day.date, day]));
 
   const rows: CalendarCell[][] = [];
-  for (let row = 0; row < CALENDAR_ROWS; row++) {
+  for (let row = 0; row < rowCount; row++) {
     const cells: CalendarCell[] = [];
     for (let column = 0; column < 7; column++) {
       const date = addDays(start, row * 7 + column);
@@ -109,6 +110,7 @@ export function cellAriaLabel(parts: {
   bill: 'due' | 'paid' | null;
   dueCount: number;
   invoices: number;
+  closing: boolean;
 }): string {
   const [year, month, day] = parts.date.split('-').map(Number);
   const weekday = WEEKDAYS[new Date(Date.UTC(year, month - 1, day)).getUTCDay()];
@@ -119,5 +121,6 @@ export function cellAriaLabel(parts: {
   if (parts.bill === 'due') items.push(`${parts.dueCount} 張卡繳費到期`);
   if (parts.bill === 'paid') items.push('已繳');
   if (parts.invoices > 0) items.push('發票待對帳');
+  if (parts.closing) items.push('信用卡結帳日');
   return items.join('，');
 }

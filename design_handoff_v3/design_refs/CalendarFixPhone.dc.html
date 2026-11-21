@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>記帳日曆 · 調整版 · 手機</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; position: relative; overflow: hidden; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500; display: flex; flex-direction: column">
+
+  <div style="padding: 14px 16px 0; display: flex; flex-direction: column; gap: 10px; flex: none">
+    <!-- 搜尋與篩選收成標題列的兩顆圖示 -->
+    <div style="display: flex; align-items: center; gap: 6px">
+      <h1 style="margin: 0; flex: 1; font-size: 24px; font-weight: 800; letter-spacing: -0.03em">記帳記錄</h1>
+      <button type="button" aria-label="搜尋與篩選" style="width: 40px; height: 40px; border-radius: 20px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; display: flex; align-items: center; justify-content: center">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z M20 20l-4-4"></path></svg>
+      </button>
+      <button type="button" aria-label="記帳設定" style="width: 40px; height: 40px; border-radius: 20px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; display: flex; align-items: center; justify-content: center">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1"></path></svg>
+      </button>
+    </div>
+    <nav aria-label="財務頁面" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+      <a href="#" aria-current="page" style="background: {{t.pillOn}}; color: {{t.text}}; font-size: 14px; font-weight: 700; min-height: 36px; border-radius: 9px; box-shadow: 0 1px 2px rgba(0,0,0,.08); display: flex; align-items: center; justify-content: center; text-decoration: none">記錄</a>
+      <a href="#" style="color: {{t.muted}}; font-size: 14px; min-height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center; text-decoration: none">帳戶</a>
+      <a href="#" style="color: {{t.muted}}; font-size: 14px; min-height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center; text-decoration: none">報表</a>
+      <a href="#" style="color: {{t.muted}}; font-size: 14px; min-height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center; text-decoration: none">記帳設定</a>
+    </nav>
+    <header style="display: flex; align-items: center; justify-content: space-between">
+      <div style="display: flex; align-items: center">
+        <button type="button" aria-label="上個月" style="width: 36px; height: 40px; border: 0; background: transparent; color: {{t.text}}; display: flex; align-items: center; justify-content: center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>
+        </button>
+        <h2 style="margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -0.02em">2026 年 11 月</h2>
+        <button type="button" aria-label="下個月" style="width: 36px; height: 40px; border: 0; background: transparent; color: {{t.text}}; display: flex; align-items: center; justify-content: center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"></path></svg>
+        </button>
+      </div>
+      <div role="radiogroup" aria-label="檢視模式" style="display: flex; background: {{t.soft}}; border-radius: 10px; padding: 2px">
+        <button type="button" role="radio" aria-checked="false" style="border: 0; background: transparent; font: inherit; font-size: 13px; min-height: 32px; padding: 0 12px; border-radius: 8px; color: {{t.muted}}">清單</button>
+        <button type="button" role="radio" aria-checked="true" style="border: 0; background: {{t.pillOn}}; font: inherit; font-size: 13px; font-weight: 700; min-height: 32px; padding: 0 12px; border-radius: 8px; color: {{t.text}}; box-shadow: 0 1px 2px rgba(0,0,0,.08)">日曆</button>
+      </div>
+    </header>
+    <dl aria-label="本月摘要" style="margin: -4px 4px 0; display: flex; gap: 14px; font-size: 13px">
+      <div style="display: flex; gap: 5px"><dt style="color: {{t.muted}}">支出</dt><dd style="margin: 0; font-weight: 800; color: {{t.out}}">−$22,133</dd></div>
+      <div style="display: flex; gap: 5px"><dt style="color: {{t.muted}}">收入</dt><dd style="margin: 0; font-weight: 800; color: {{t.in}}">$0</dd></div>
+      <div style="display: flex; gap: 5px"><dt style="color: {{t.muted}}">結餘</dt><dd style="margin: 0; font-weight: 800">−$22,133</dd></div>
+    </dl>
+  </div>
+
+  <!-- 日曆：只畫本月需要的 5 排 -->
+  <section aria-label="11 月日曆" style="flex: none; margin: 10px 12px 0; display: flex; flex-direction: column; gap: 4px">
+    <div style="display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px">
+      <sc-for list="{{weekdays}}" as="w" hint-placeholder-count="7">
+        <span style="font-size: 11px; font-weight: 700; color: {{w.fg}}; text-align: center; padding: 0 0 2px">{{w.label}}</span>
+      </sc-for>
+      <sc-for list="{{cells}}" as="c" hint-placeholder-count="35">
+        <sc-if value="{{c.isBlank}}" hint-placeholder-val="{{false}}"><div aria-hidden="true"></div></sc-if>
+        <sc-if value="{{c.isDay}}" hint-placeholder-val="{{true}}">
+          <button type="button" aria-label="{{c.aria}}" aria-pressed="{{c.pressed}}" onClick="{{c.pick}}" style="position: relative; overflow: hidden; height: {{cellH}}; box-sizing: border-box; font: inherit; color: {{t.text}}; border-radius: 11px; border: 1.5px solid {{c.border}}; background: {{c.bg}}; padding: 5px 2px 9px; display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer">
+            <span style="min-width: 22px; height: 22px; padding: 0 3px; box-sizing: border-box; border-radius: 11px; background: {{c.numBg}}; color: {{c.numFg}}; font-size: 13px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{c.day}}</span>
+            <span style="font-size: 10.5px; font-weight: 800; letter-spacing: -0.02em; color: {{t.out}}">{{c.netText}}</span>
+            <sc-if value="{{showDots}}" hint-placeholder-val="{{true}}">
+              <span style="display: flex; gap: 3px; min-height: 6px">
+                <sc-for list="{{c.dots}}" as="dot" hint-placeholder-count="1"><span style="width: 6px; height: 6px; border-radius: 3px; background: {{dot.color}}"></span></sc-for>
+              </span>
+            </sc-if>
+            <sc-if value="{{c.hasMark}}" hint-placeholder-val="{{false}}">
+              <span aria-hidden="true" style="position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 3px; background: {{c.markColor}}"></span>
+            </sc-if>
+            <sc-if value="{{c.hasHeat}}" hint-placeholder-val="{{false}}">
+              <span aria-hidden="true" style="position: absolute; left: 6px; right: 6px; bottom: 4px; height: 3px; border-radius: 2px; background: {{t.heatTrack}}; overflow: hidden"><span style="display: block; height: 3px; min-width: 4px; border-radius: 2px; width: {{c.heatW}}; background: {{t.heat}}"></span></span>
+            </sc-if>
+          </button>
+        </sc-if>
+      </sc-for>
+    </div>
+    <sc-if value="{{dayMode}}" hint-placeholder-val="{{false}}">
+      <button type="button" onClick="{{clearDay}}" aria-label="回到整月日曆" style="width: 100%; min-height: 28px; border: 0; background: transparent; color: {{t.muted}}; display: flex; align-items: center; justify-content: center; gap: 6px; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer">
+        <span style="width: 32px; height: 4px; border-radius: 2px; background: {{t.border}}"></span>展開整月
+      </button>
+    </sc-if>
+  </section>
+
+  <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px 100px; display: flex; flex-direction: column; gap: 10px">
+    <!-- 今天條：不用捲就看得到 -->
+    <sc-if value="{{monthMode}}" hint-placeholder-val="{{true}}">
+      <button type="button" onClick="{{goToday}}" style="display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 14px; border-radius: 16px; border: 0; background: {{t.surface}}; box-shadow: {{t.shadow}}; color: {{t.text}}; font: inherit; text-align: left; cursor: pointer">
+        <span style="width: 34px; height: 34px; border-radius: 17px; background: {{t.primary}}; color: #FFFFFF; font-size: 13px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex: none">20</span>
+        <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+          <b style="font-size: 14px; font-weight: 700">今天 · 1 筆</b>
+          <small style="font-size: 12px; color: {{t.muted}}">咖啡 · 另有 2 張帳單今天到期</small>
+        </span>
+        <b style="font-size: 15px; font-weight: 800; color: {{t.out}}">−$85</b>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 18l6-6-6-6"></path></svg>
+      </button>
+    </sc-if>
+
+    <sc-if value="{{dayMode}}" hint-placeholder-val="{{false}}">
+      <div style="display: flex; align-items: center; gap: 4px">
+        <button type="button" aria-label="前一天" onClick="{{prevDay}}" style="width: 40px; height: 40px; border: 0; background: transparent; color: {{t.text}}; display: flex; align-items: center; justify-content: center; cursor: pointer">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>
+        </button>
+        <span style="flex: 1; display: flex; flex-direction: column; align-items: center">
+          <b style="font-size: 16px; font-weight: 800">{{dayLabel}}</b>
+          <small style="font-size: 12px; font-weight: 700; color: {{dayNetColor}}">{{dayNetText}}</small>
+        </span>
+        <button type="button" aria-label="後一天" onClick="{{nextDay}}" style="width: 40px; height: 40px; border: 0; background: transparent; color: {{t.text}}; display: flex; align-items: center; justify-content: center; cursor: pointer">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"></path></svg>
+        </button>
+      </div>
+      <sc-if value="{{hasBillLine}}" hint-placeholder-val="{{false}}">
+        <div style="display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 12px; border-radius: 12px; background: {{t.warnSoft}}; font-size: 13px; font-weight: 600">
+          <span style="font-size: 11px; font-weight: 700; color: {{t.warnInk}}">帳單</span>國泰 CUBE 卡 $8,535、玉山 Pi 卡 $3,785 到期
+        </div>
+      </sc-if>
+      <sc-if value="{{hasRows}}" hint-placeholder-val="{{true}}">
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; overflow: hidden">
+          <sc-for list="{{rows}}" as="r" hint-placeholder-count="2">
+            <div style="display: flex; align-items: center; gap: 12px; padding: 9px 14px; min-height: 58px; border-bottom: 1px solid {{t.line}}">
+              <span style="width: 38px; height: 38px; border-radius: 19px; background: {{r.color}}; display: flex; align-items: center; justify-content: center; flex: none">
+                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{r.icon}}"></path></svg>
+              </span>
+              <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px">
+                <b style="font-size: 15px; font-weight: 700">{{r.title}}</b>
+                <small style="font-size: 12px; color: {{t.muted}}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.sub}}</small>
+              </span>
+              <b style="font-size: 15px; font-weight: 700; color: {{t.out}}">{{r.amtText}}</b>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+      <sc-if value="{{noRows}}" hint-placeholder-val="{{false}}">
+        <p style="margin: 6px 0; text-align: center; font-size: 14px; color: {{t.muted}}">{{emptyText}}</p>
+      </sc-if>
+      <a href="EntryPhone.dc.html" style="min-height: 44px; border-radius: 12px; border: 1px dashed {{t.border}}; color: {{t.primary}}; font-size: 14px; font-weight: 700; display: flex; align-items: center; justify-content: center; text-decoration: none">＋ 在這天記一筆</a>
+    </sc-if>
+  </div>
+
+  <nav aria-label="主要導覽" style="position: absolute; left: 0; right: 0; bottom: 0; height: 84px; box-sizing: border-box; padding: 6px 8px 22px; background: {{t.glass}}; border-top: 1px solid {{t.border}}; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center">
+    <a href="#" style="display: flex; flex-direction: column; align-items: center; gap: 3px; color: {{t.muted}}; font-size: 11px; text-decoration: none">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8 M15 7h6v6"></path></svg><span>投資</span>
+    </a>
+    <a href="EntryPhone.dc.html" aria-label="記一筆" style="justify-self: center; width: 52px; height: 52px; border-radius: 26px; background: {{t.primary}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 16px rgba(83,58,253,.28); text-decoration: none">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14 M5 12h14"></path></svg>
+    </a>
+    <a href="#" aria-current="page" style="display: flex; flex-direction: column; align-items: center; gap: 3px; color: {{t.primary}}; font-size: 11px; font-weight: 700; text-decoration: none">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01"></path></svg><span>財務</span>
+    </a>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { sel: null };
+  }
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0b0d12', surface: '#151a22', glass: 'rgba(21,26,34,0.94)', soft: '#1e2530', border: '#2a3340', line: '#222a36', text: '#f3f6fb', muted: '#99a3b3', pillOn: '#2a3241',
+      primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)', warnSoft: 'rgba(208,160,106,0.14)', warnInk: '#d0a06a',
+      heat: 'rgba(255,99,105,0.75)', heatTrack: 'rgba(255,255,255,0.06)', out: '#ff6369', in: '#43c98a', dayBg: '#171c25',
+      shadow: '0 12px 28px rgba(0,0,0,0.4)'
+    } : {
+      bg: '#f1f3f6', surface: '#fbfcfe', glass: 'rgba(250,252,255,0.94)', soft: '#e9edf2', border: '#dfe4ec', line: '#e8ecf2', text: '#151821', muted: '#5f6673', pillOn: '#ffffff',
+      primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)', warnSoft: 'rgba(138,99,39,0.10)', warnInk: '#8a6327',
+      heat: 'rgba(229,72,77,0.6)', heatTrack: 'rgba(18,26,40,0.06)', out: '#e5484d', in: '#1f9d6b', dayBg: '#fbfcfe',
+      shadow: '0 10px 30px rgba(18,26,40,0.045)'
+    };
+    const I = {
+      food: 'M7 3v8 M4 3v5a3 3 0 0 0 6 0V3 M7 11v10 M17 3c-2 2-3 4-3 7h3v11', bus: 'M5 16V6a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v10 M5 11h14 M5 16h14v2H5z M8 21v-3 M16 21v-3',
+      bag: 'M6 7h12l1 14H5L6 7z M9 7a3 3 0 0 1 6 0', home: 'M3 11l9-7 9 7 M5 10v10h14V10'
+    };
+    const CAT = { 餐飲: ['#f59e0b', I.food], 購物: ['#ec4899', I.bag], 交通: ['#3b82f6', I.bus], 居家: ['#10b981', I.home] };
+    const E = (d, time, cat, title, account, amt, merchant) => ({ d, time, cat, title, account, amt, merchant });
+    const entries = [
+      E(1, '08:10', '餐飲', '早餐', '錢包', 85, '美而美'), E(1, '10:15', '購物', '全聯採買', '玉山 Pi 卡', 742, '全聯福利中心'),
+      E(3, '12:20', '餐飲', '午餐', '錢包', 120, '便當店'), E(3, '08:05', '交通', '高鐵', '國泰 CUBE 卡', 1490, '台灣高鐵'),
+      E(5, '19:30', '餐飲', '晚餐聚餐', '玉山 Pi 卡', 1250, '饗食天堂'), E(6, '12:30', '餐飲', '午餐', '錢包', 130, '便當店'),
+      E(8, '19:50', '購物', '屈臣氏', '玉山 Pi 卡', 389, '屈臣氏'), E(9, '19:10', '餐飲', '晚餐', '錢包', 260, ''),
+      E(11, '14:30', '居家', 'IKEA 書櫃', '國泰 CUBE 卡', 2980, 'IKEA'), E(12, '12:20', '餐飲', '午餐', '錢包', 120, '便當店'),
+      E(14, '11:00', '購物', '全聯採買', '玉山 Pi 卡', 1026, '全聯福利中心'), E(15, '08:40', '交通', '捷運', '錢包', 45, ''),
+      E(17, '09:00', '居家', '房租', '玉山銀行', 12000, '房東'), E(18, '12:15', '餐飲', '午餐', '錢包', 125, '便當店'),
+      E(19, '19:42', '購物', '全聯採買', '玉山 Pi 卡', 1286, '全聯福利中心'), E(20, '15:10', '餐飲', '咖啡', '錢包', 85, '路易莎')
+    ];
+    const money = (n) => '$' + n.toLocaleString('en-US');
+    const short = (n) => '−' + (n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n));
+    const WD = ['日', '一', '二', '三', '四', '五', '六'];
+    const wdOf = (d) => (d - 1) % 7;
+    const TODAY = 20;
+    const sel = this.state.sel;
+    const byDay = {};
+    entries.forEach((e) => { (byDay[e.d] = byDay[e.d] || []).push(e); });
+    const sum = (l) => l.reduce((s, e) => s + e.amt, 0);
+    let maxOut = 1;
+    Object.values(byDay).forEach((l) => { maxOut = Math.max(maxOut, sum(l)); });
+    const pickDay = (d) => this.setState({ sel: Math.max(1, Math.min(30, d)) });
+    const MARK = { 5: t.muted, 20: t.warnInk };
+    const all = [];
+    for (let d = 1; d <= 30; d++) {
+      const list = byDay[d] || [];
+      const out = sum(list);
+      const cats = [];
+      list.forEach((e) => { if (cats.indexOf(e.cat) < 0) cats.push(e.cat); });
+      const isSel = d === sel;
+      const future = d > TODAY;
+      all.push({
+        isBlank: false, isDay: true, day: d, pick: () => pickDay(d), pressed: isSel ? 'true' : 'false',
+        aria: '11 月 ' + d + ' 日 星期' + WD[wdOf(d)] + (list.length ? '，' + list.length + ' 筆，支出 ' + money(out) : '，沒有記錄'),
+        bg: isSel ? t.primarySoft : future ? 'transparent' : t.dayBg, border: isSel ? t.primary : 'transparent',
+        numBg: d === TODAY ? t.primary : 'transparent', numFg: d === TODAY ? '#FFFFFF' : future ? t.muted : t.text,
+        netText: list.length ? short(out) : '', dots: cats.slice(0, 3).map((c) => ({ color: CAT[c][0] })),
+        hasMark: !!MARK[d], markColor: MARK[d] || 'transparent', hasHeat: out > 0, heatW: Math.round((out / maxOut) * 100) + '%'
+      });
+    }
+    for (let i = 0; i < 5; i++) all.push({ isBlank: true, isDay: false });
+    const row = sel ? Math.floor((sel - 1) / 7) : 0;
+    const cells = sel ? all.slice(row * 7, row * 7 + 7) : all;
+    const weekdays = WD.map((w, i) => ({ label: w, fg: i === 0 || i === 6 ? t.muted : t.text }));
+    const dl = sel ? (byDay[sel] || []) : [];
+    const rows = dl.map((e) => ({ title: e.title, icon: CAT[e.cat][1], color: CAT[e.cat][0], sub: e.time + ' · ' + (e.merchant ? e.merchant + ' · ' : '') + e.account, amtText: '−' + money(e.amt) }));
+    return {
+      t, weekdays, cells, rows,
+      monthMode: !sel, dayMode: !!sel, showDots: !sel, cellH: sel ? '54px' : '74px',
+      goToday: () => pickDay(TODAY), clearDay: () => this.setState({ sel: null }),
+      dayLabel: sel ? '11/' + sel + ' 週' + WD[wdOf(sel)] + (sel === TODAY ? ' · 今天' : '') : '',
+      dayNetText: dl.length ? dl.length + ' 筆 · −' + money(sum(dl)) : '沒有記錄', dayNetColor: dl.length ? t.out : t.muted,
+      hasBillLine: sel === 20, hasRows: rows.length > 0, noRows: !!sel && rows.length === 0,
+      emptyText: sel && sel > TODAY ? '還沒到這天' : '這天沒有記錄',
+      prevDay: () => pickDay((sel || TODAY) - 1), nextDay: () => pickDay((sel || TODAY) + 1)
+    };
+  }
+}
+</script>
+</body>
+</html>

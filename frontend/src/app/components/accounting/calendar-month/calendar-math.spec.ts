@@ -34,32 +34,40 @@ const OCTOBER: DailySummaryDay[] = [
 ];
 
 describe('buildCalendar', () => {
-  it('lays February 2026 out Monday-first from Mon 2026-01-26 over 6 rows', () => {
-    const rows = buildCalendar('2026-02', [], 1);
-    expect(rows.length).toBe(6);
+  it('lays November 2026 out Sunday-first over 5 rows ending with 5 trailing cells', () => {
+    const rows = buildCalendar('2026-11', [], 0);
+    expect(rows.length).toBe(5);
     expect(rows.every(row => row.length === 7)).toBe(true);
-    expect(rows[0][0]).toMatchObject({ date: '2026-01-26', day: 26, outside: true });
-    expect(rows[0][6]).toMatchObject({ date: '2026-02-01', day: 1, outside: false });
-    expect(rows[5][6]).toMatchObject({ date: '2026-03-08', outside: true });
+    expect(rows[0][0]).toMatchObject({ date: '2026-11-01', outside: false });
+    expect(rows[4][6]).toMatchObject({ date: '2026-12-05', outside: true });
+    expect(rows[4].filter(cell => cell.outside).length).toBe(5);
   });
 
-  it('lays February 2026 out Sunday-first', () => {
+  it('draws 4 rows with no outside cell for February 2026 Sunday-first', () => {
     const rows = buildCalendar('2026-02', [], 0);
-    expect(rows.length).toBe(6);
-    expect(rows[0][0]).toMatchObject({ date: '2026-02-01', outside: false });
-    expect(rows[3][6]).toMatchObject({ date: '2026-02-28', outside: false });
-    expect(rows[4][0]).toMatchObject({ date: '2026-03-01', outside: true });
-    expect(rows[5][6]).toMatchObject({ date: '2026-03-14', outside: true });
+    expect(rows.length).toBe(4);
+    expect(rows.flat().some(cell => cell.outside)).toBe(false);
+    expect(rows[3][6]).toMatchObject({ date: '2026-02-28' });
   });
 
-  it('starts on day 1 when the month begins on the week-start day and fills the 6 rows from the next month', () => {
-    // 2026-06-01 is a Monday: no leading cells; the remaining cells of the 6 × 7 grid are trailing July days.
+  it('draws 6 rows for August 2026 Sunday-first', () => {
+    expect(buildCalendar('2026-08', [], 0).length).toBe(6);
+  });
+
+  it('draws 6 rows for November 2026 Monday-first (6 leading cells)', () => {
+    const rows = buildCalendar('2026-11', [], 1);
+    expect(rows.length).toBe(6);
+    expect(rows[0][0]).toMatchObject({ date: '2026-10-26', outside: true });
+    expect(rows[0][6]).toMatchObject({ date: '2026-11-01', outside: false });
+  });
+
+  it('starts on day 1 with no leading cells when the month begins on the week-start day', () => {
+    // 2026-06-01 is a Monday; 30 days → 5 rows, 5 trailing July cells.
     const cells = buildCalendar('2026-06', [], 1).flat();
-    expect(cells.length).toBe(42);
+    expect(cells.length).toBe(35);
     expect(cells[0]).toMatchObject({ date: '2026-06-01', outside: false });
     expect(cells.filter(cell => !cell.outside).length).toBe(30);
-    expect(cells[30]).toMatchObject({ date: '2026-07-01', outside: true });
-    expect(cells[41].date).toBe('2026-07-12');
+    expect(cells[34].date).toBe('2026-07-05');
   });
 
   it('maps the figures by date and keeps outside cells empty', () => {
@@ -81,7 +89,8 @@ describe('buildCalendar', () => {
   it('crosses the year boundary for December 2026 Monday-first', () => {
     const cells = buildCalendar('2026-12', [], 1).flat();
     expect(cells[0]).toMatchObject({ date: '2026-11-30', outside: true });
-    expect(cells[41]).toMatchObject({ date: '2027-01-10', outside: true });
+    expect(cells.length).toBe(35);
+    expect(cells[34]).toMatchObject({ date: '2027-01-03', outside: true });
   });
 });
 
@@ -170,6 +179,7 @@ describe('cellAriaLabel', () => {
     bill: null as 'due' | 'paid' | null,
     dueCount: 0,
     invoices: 1,
+    closing: false,
   };
 
   it('names the date with weekday and joins the parts', () => {
@@ -180,6 +190,10 @@ describe('cellAriaLabel', () => {
     const label = cellAriaLabel({ ...base, bill: 'paid', dueCount: 2, invoices: 0 });
     expect(label.endsWith('已繳')).toBe(true);
     expect(label).not.toContain('繳費到期');
+  });
+
+  it('ends with 信用卡結帳日 on a closing day', () => {
+    expect(cellAriaLabel({ ...base, closing: true }).endsWith('，信用卡結帳日')).toBe(true);
   });
 
   it('names a Sunday as 週日', () => {

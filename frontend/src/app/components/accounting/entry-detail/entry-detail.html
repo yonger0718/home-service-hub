@@ -9,6 +9,31 @@
     <p class="load-error">記錄讀取失敗，請稍後再試。</p>
   }
 
+  @if (compact()) {
+    <!-- Stays mounted while a step loads the next entry (focus on a step button or ✕ stays in the drawer). -->
+    <div class="drawer-bar">
+      <button type="button" class="step-prev" aria-label="上一筆" (click)="stepEntry(-1)"><i class="pi pi-angle-up" aria-hidden="true"></i></button>
+      <button type="button" class="step-next" aria-label="下一筆" (click)="stepEntry(1)"><i class="pi pi-angle-down" aria-hidden="true"></i></button>
+      <span class="drawer-hint">↑↓ 切換</span>
+      <button type="button" class="close" data-pane-close aria-label="關閉（Esc）" (click)="close()"><i class="pi pi-times" aria-hidden="true"></i></button>
+    </div>
+    <div class="drawer-body">
+      @if (detail()) {
+        <ng-container [ngTemplateOutlet]="main" />
+      }
+    </div>
+    @if (detail()) {
+      <div class="drawer-foot">
+        <ng-container [ngTemplateOutlet]="actionsTpl" />
+      </div>
+    }
+  } @else if (detail()) {
+    <ng-container [ngTemplateOutlet]="main" />
+    <ng-container [ngTemplateOutlet]="actionsTpl" />
+  }
+</section>
+
+<ng-template #main>
   @if (detail(); as d) {
     <app-lock-banner [locked]="d.locked" />
 
@@ -18,20 +43,33 @@
       </a>
     }
 
-    <div class="dhead" [style.background]="colorOf(d)" [style.color]="textOn(d.category_color)">
-      @if (!inSheet()) {
-        <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>
-      }
-      <span class="ico">{{ iconOf(d) }}</span>
-      <span class="cat">{{ categoryPath() }}</span>
-    </div>
+    @if (drawer()) {
+      <div class="dcompact">
+        <span class="ico" [style.background]="colorOf(d)" aria-hidden="true">{{ iconOf(d) }}</span>
+        <span class="dname">
+          <b class="detail-name">{{ d.name || categoryLeaf() }}</b>
+          <span class="dkind">{{ d.category ? kindLabel(d.kind) + ' · ' + categoryPath() : kindLabel(d.kind) }}</span>
+        </span>
+        <span class="amt detail-total" [class.neg]="total() < 0" [class.pos]="total() > 0">
+          {{ formatMoney(total(), d.currency, { sign: true }) }}
+        </span>
+      </div>
+    } @else {
+      <div class="dhead" [style.background]="colorOf(d)" [style.color]="textOn(d.category_color)">
+        @if (!inSheet()) {
+          <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>
+        }
+        <span class="ico">{{ iconOf(d) }}</span>
+        <span class="cat">{{ categoryPath() }}</span>
+      </div>
 
-    <div class="dtitle">
-      <b class="detail-name">{{ d.name || categoryLeaf() }}</b>
-      <span class="amt detail-total" [class.neg]="total() < 0" [class.pos]="total() > 0">
-        {{ formatMoney(total(), d.currency, { sign: true }) }}
-      </span>
-    </div>
+      <div class="dtitle">
+        <b class="detail-name">{{ d.name || categoryLeaf() }}</b>
+        <span class="amt detail-total" [class.neg]="total() < 0" [class.pos]="total() > 0">
+          {{ formatMoney(total(), d.currency, { sign: true }) }}
+        </span>
+      </div>
+    }
     @if (scheduleLink(); as link) {
       <div class="schedule-line">
         <button type="button" class="schedule-pill" (click)="openSchedule(link.definition_id)">
@@ -57,15 +95,23 @@
       </div>
     }
 
-    <div class="dgrid">
-      <div><small>帳戶</small><b>{{ d.account_name }}</b></div>
-      <div><small>{{ debtKind() ? '對象' : '商家' }}</small><b>{{ (debtKind() ? d.counterparty : d.merchant) || '—' }}</b></div>
-      <div><small>日期</small><b>{{ slashDate(d.entry_date) }}</b></div>
-      <div><small>專案</small><b>{{ d.project || '—' }}</b></div>
-      <div><small>交易類型</small><b>{{ kindLabel(d.kind) }}</b></div>
-      <div><small>事件類型</small><b>{{ eventKindLabel(d) }}</b></div>
-      <div><small>時間</small><b>{{ d.entry_time ? d.entry_time.slice(0, 5) : '—' }}</b></div>
-    </div>
+    @if (drawer()) {
+      <dl class="dtable">
+        @for (field of drawerFields(); track field.label) {
+          <div><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></div>
+        }
+      </dl>
+    } @else {
+      <div class="dgrid">
+        <div><small>帳戶</small><b>{{ d.account_name }}</b></div>
+        <div><small>{{ debtKind() ? '對象' : '商家' }}</small><b>{{ (debtKind() ? d.counterparty : d.merchant) || '—' }}</b></div>
+        <div><small>日期</small><b>{{ slashDate(d.entry_date) }}</b></div>
+        <div><small>專案</small><b>{{ d.project || '—' }}</b></div>
+        <div><small>交易類型</small><b>{{ kindLabel(d.kind) }}</b></div>
+        <div><small>事件類型</small><b>{{ eventKindLabel(d) }}</b></div>
+        <div><small>時間</small><b>{{ d.entry_time ? d.entry_time.slice(0, 5) : '—' }}</b></div>
+      </div>
+    }
     @if (d.posted_date && d.posted_date !== d.entry_date) {
       <p class="posted">入帳日 {{ slashDate(d.posted_date) }}</p>
     }
@@ -113,7 +159,7 @@
       <app-entry-reward-reprice-card [detail]="d" [amountText]="repriceAmount" (changed)="load(d.id, true)" />
     </app-entry-reward-section>
 
-    <app-entry-einvoice-card [detail]="d" (changed)="load(d.id, true)" />
+    <app-entry-einvoice-card [detail]="d" [compact]="drawer()" (changed)="load(d.id, true)" />
 
     @if (related().length) {
       <div class="dsec">關聯記錄</div>
@@ -205,7 +251,7 @@
           <p class="form-error" role="alert">{{ formError() }}</p>
         }
         <div class="btnrow">
-          <button type="button" (click)="closePanel()">取消</button>
+          <button type="button" class="delete-cancel" (click)="closePanel()">取消</button>
           @if (d.group && !d.schedule) {
             <button type="button" class="danger delete-group" [disabled]="busy()" (click)="confirmDelete('group')">刪除整組</button>
           }
@@ -267,7 +313,11 @@
         </div>
       </div>
     }
+  }
+</ng-template>
 
+<ng-template #actionsTpl>
+  @if (detail(); as d) {
     <nav class="actions" aria-label="記錄動作">
       <button type="button" class="action-edit" [disabled]="!canEdit()" (click)="edit()"><i class="ico pi pi-pencil" aria-hidden="true"></i>編輯</button>
       <button type="button" class="action-copy" (click)="copy()"><i class="ico pi pi-copy" aria-hidden="true"></i>複製</button>
@@ -280,4 +330,4 @@
       <button type="button" class="danger action-delete" [disabled]="locked()" (click)="openPanel('delete')"><i class="ico pi pi-trash" aria-hidden="true"></i>刪除</button>
     </nav>
   }
-</section>
+</ng-template>

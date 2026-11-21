@@ -3,7 +3,9 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  Injector,
   OnInit,
+  afterNextRender,
   computed,
   effect,
   inject,
@@ -57,6 +59,7 @@ import { parseTags } from '../entry-form/entry-draft';
 import { addDays, currentMonth, dayLabel, monthLabel, monthRange, todayIso } from '../dates';
 import { calendarParams, readCalendarQuery, writeCalendarQuery } from './calendar-url';
 import { nextDueItems } from '../month-overview/due-items';
+import { CalFiltersToggleComponent } from './cal-filters-toggle';
 import { AccountingOverviewService, OverviewState } from '../month-overview/overview.service';
 import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, QUERY_DEBOUNCE_MS, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
@@ -437,7 +440,7 @@ export type ProjectFilter = number | typeof NO_PROJECT | null;
 @Component({
   selector: 'app-ledger-timeline',
   standalone: true,
-  imports: [PageHeaderComponent, CalendarDayPanelComponent, SwipeXDirective, CalendarMonthComponent, CalendarTodayBarComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent, FilterBarComponent],
+  imports: [PageHeaderComponent, CalendarDayPanelComponent, SwipeXDirective, CalendarMonthComponent, CalendarTodayBarComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent, FilterBarComponent, CalFiltersToggleComponent],
   templateUrl: './timeline.html',
   styleUrls: ['../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -472,6 +475,10 @@ export class LedgerTimelineComponent implements OnInit {
   private queryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly queryInput = viewChild<ElementRef<HTMLInputElement>>('queryInput');
   private readonly calendarGrid = viewChild(CalendarMonthComponent);
+  private readonly filterBar = viewChild(FilterBarComponent);
+  /** Set when `calendarFiltersOpen` was written by the timeline itself (no focus move). */
+  private skipFilterFocus = false;
+  private readonly injector = inject(Injector);
 
   private readonly bills = inject(BillingService);
   private readonly calendar = inject(BusinessCalendarService);
@@ -532,6 +539,8 @@ export class LedgerTimelineComponent implements OnInit {
   readonly view = computed<TimelineView>(() => (this.urlDay() !== null ? 'calendar' : this.chosenView()));
   /** 日曆 at ≥ 1024 px: the month figures sit in the monthbar and the day's rows live in the right pane. */
   readonly wideCalendar = computed(() => this.view() === 'calendar' && this.layoutMode.mode() === 'panes');
+  /** In 日曆 the account filter lives inside the filter panel (and gets a chip); in 清單 it stays inline. */
+  readonly accountInPanel = computed(() => this.view() === 'calendar');
   /** 日曆 below 1024 px (phone and sheet): one-line figures, week strip, 今天 bar. */
   readonly narrowCalendar = computed(() => this.view() === 'calendar' && this.layoutMode.mode() !== 'panes');
   /** True when the shown month is today's month. */
@@ -911,6 +920,62 @@ export class LedgerTimelineComponent implements OnInit {
   private publishToPane(): void {
     const pane = this.pane;
     effect(() => this.overview.calendar.set(this.view() === 'calendar'));
+    effect(() => this.overview.calendarFiltersActive.set(this.view() === 'calendar' && this.filtersActive()));
+    // Entering narrow 日曆 (also by crossing 1024 px) starts expanded only when something is active; leaving collapses it.
+    // A month change keeps `narrowCalendar` true, so it is not an entry.
+    effect(() => {
+      const narrow = this.narrowCalendar();
+      untracked(() => {
+        const open = narrow && this.filtersActive();
+        if (open !== this.overview.calendarFiltersOpen()) {
+          this.skipFilterFocus = true;
+          this.overview.calendarFiltersOpen.set(open);
+        }
+      });
+    });
+    // The owner opening the row (title-row button) lands in the search field; the automatic opens above do not move focus.
+    effect(() => {
+      const open = this.overview.calendarFiltersOpen();
+      const skip = this.skipFilterFocus;
+      this.skipFilterFocus = false;
+      if (open && !skip && this.narrowCalendar()) {
+        afterNextRender(() => this.queryInput()?.nativeElement.focus({ preventScroll: true }), { injector: this.injector });
+      }
+    });
+    // Collapsing the row (true -> false) inside narrow 日曆 would leave an open panel hanging: close it, focus stays put.
+    let rowOpenBefore = false;
+    effect(() => {
+      const open = this.overview.calendarFiltersOpen();
+      untracked(() => {
+        if (rowOpenBefore && !open && this.narrowCalendar()) {
+          this.filterBar()?.close(false);
+        }
+        rowOpenBefore = open;
+      });
+    });
+    // Crossing 1024 px while 日曆 stays: the filters stay, but an open panel would outlive its opener, so close it
+    // without sending focus to a button that is unmounting. Not on the first run.
+    let panesBefore: boolean | null = null;
+    effect(() => {
+      const panes = this.layoutMode.mode() === 'panes';
+      untracked(() => {
+        if (panesBefore !== null && panes !== panesBefore && this.view() === 'calendar') {
+          this.filterBar()?.close(false);
+        }
+        panesBefore = panes;
+      });
+    });
+    // A view change (日曆 ↔ 清單) leaves an open panel anchored to a button that may be gone: close it, focus stays put.
+    let viewBefore: TimelineView | null = null;
+    effect(() => {
+      const view = this.view();
+      untracked(() => {
+        if (viewBefore !== null && view !== viewBefore) {
+          this.filterBar()?.close(false);
+        }
+        viewBefore = view;
+      });
+    });
     effect(() => pane.month.set(this.month()));
     effect(() => pane.today.set(this.today()));
     effect(() => pane.selectedDay.set(this.selectedDay()));
@@ -931,6 +996,7 @@ export class LedgerTimelineComponent implements OnInit {
       pane.searchHasMore.set(searching && this.hasMore());
     });
     effect(() => pane.filtered.set(this.filtersActive()));
+    effect(() => pane.chips.set(this.filterChips()));
     effect(() => pane.mainCurrency.set(this.mainCurrency()));
     // One search, two boxes: the filter bar's field follows `query` unless the owner is typing in it (IME, trailing space).
     effect(() => {
@@ -963,6 +1029,10 @@ export class LedgerTimelineComponent implements OnInit {
       retryDay: () => this.retryDay(),
       retrySearch: () => this.load(true),
       loadMore: () => this.loadMore(),
+      // The commands object is created once: the filter bar is read at call time, never captured.
+      toggleFilters: anchor => this.filterBar()?.toggle(anchor),
+      removeFilter: key => this.removeFilter(key),
+      clearFilters: () => this.clearFilters(),
     });
     inject(DestroyRef).onDestroy(() => {
       this.pendingInvoice = null;
@@ -970,6 +1040,8 @@ export class LedgerTimelineComponent implements OnInit {
       ++this.probeRequestId;
       pane.clear();
       this.overview.calendar.set(false);
+      this.overview.calendarFiltersOpen.set(false);
+      this.overview.calendarFiltersActive.set(false);
     });
   }
 
@@ -1680,9 +1752,14 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
 
-  /** Secondary-filter chips: one per set category/project/etc. Account and search are never chips. */
+  /** Secondary-filter chips: one per set category/project/etc. Search is never a chip; the account is one only while it sits inside the panel (日曆). */
   readonly filterChips = computed<FilterChip[]>(() => {
     const chips: FilterChip[] = [];
+    const account = this.accountFilter();
+    if (this.accountInPanel() && account !== null) {
+      const name = this.accounts().find(a => a.id === account)?.name;
+      chips.push({ key: 'account', label: name ? `帳戶：${name}` : '帳戶' });
+    }
     const kind = this.kindFilter();
     if (kind !== null) {
       chips.push({ key: 'kind', label: `類型：${ENTRY_KIND_LABELS[kind]}` });
@@ -1715,6 +1792,7 @@ export class LedgerTimelineComponent implements OnInit {
 
   removeFilter(key: string): void {
     switch (key) {
+      case 'account': this.setAccount(''); break;
       case 'kind': this.setKind(''); break;
       case 'category': this.setCategory(''); break;
       case 'project': this.setProject(''); break;
@@ -1725,6 +1803,9 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   resetSecondaryFilters(): void {
+    if (this.accountInPanel()) {
+      this.removeFilter('account');
+    }
     for (const key of ['kind', 'category', 'project', 'tag', 'merchant', 'amount']) {
       this.removeFilter(key);
     }
@@ -1735,6 +1816,8 @@ export class LedgerTimelineComponent implements OnInit {
     if (open) {
       this.ensureOptions();
     }
+    // The right pane's 篩選 button reflects the panel (aria-expanded / aria-controls).
+    this.pane.filterPanel.set(open ? (this.filterBar()?.panelId ?? null) : null);
   }
 
   /** The calendar view carries its month and day into an opened entry; the 清單 view drops the query. */

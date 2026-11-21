@@ -1299,7 +1299,7 @@ describe('LedgerTimelineComponent', () => {
         const { fixture, el } = renderCalendar();
         fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, dotsState: 'error' });
         fixture.detectChanges();
-        expect(el.querySelectorAll('button.cell').length).toBe(42);
+        expect(el.querySelectorAll('button.cell').length).toBe(31);
         expect(el.querySelector('.dot')).toBeNull();
         expect(el.querySelector('.load-error')).toBeNull();
       });
@@ -1331,7 +1331,7 @@ describe('LedgerTimelineComponent', () => {
     it('restores 日曆 on init and loads the daily summary instead of an entry page', () => {
       const { el } = renderCalendar();
       expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
-      expect(el.querySelectorAll('app-calendar-month button.cell').length).toBe(42);
+      expect(el.querySelectorAll('app-calendar-month button.cell').length).toBe(31);
       expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .net'))).toBe('−734');
       expect(el.querySelector('.sentinel')).toBeNull();
       expect(el.querySelector('button.more')).toBeNull();
@@ -1900,13 +1900,13 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelector('.cal-figures')).toBeNull();
     });
 
-    it('phone default: 42 cells with dots and a 「今天 · 3 筆 … −$250」 bar, no rows (spec Phone default)', async () => {
+    it('phone default: 31 cells with dots and a 「今天 · 3 筆 … −$250」 bar, no rows (spec Phone default)', async () => {
       todayItems = [makeEntry({ id: 1, name: '早餐' }), makeEntry({ id: 2, name: '捷運' }), makeEntry({ id: 3, name: '咖啡' })];
       fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, dots: new Map([['2026-10-01', [{ key: '3' }, { key: '99' }] as never]]), dotsState: 'ready' });
       const { el } = await openNarrow('/accounting?month=2026-10', 'phone', {
         days: [{ date: TODAY, expense: '-1250.0000', income: '1000.0000', count: 3 }],
       });
-      expect(cells(el).length).toBe(42);
+      expect(cells(el).length).toBe(31);
       expect(el.querySelectorAll('button.cell[data-date="2026-10-01"] .dot').length).toBe(2);
       const bar = text(el.querySelector('app-calendar-today-bar'));
       expect(bar).toContain('今天 · 3 筆');
@@ -1966,7 +1966,7 @@ describe('LedgerTimelineComponent', () => {
       expect(cells(el).length).toBe(7);
       el.querySelector<HTMLButtonElement>('button.expand-month')!.click();
       fixture.detectChanges();
-      expect(cells(el).length).toBe(42);
+      expect(cells(el).length).toBe(31);
       expect(el.querySelector('button.expand-month')).toBeNull();
       expect(el.querySelector('app-calendar-today-bar')).not.toBeNull();
     });
@@ -1983,7 +1983,7 @@ describe('LedgerTimelineComponent', () => {
         expand.click();
         fixture.detectChanges();
         await fixture.whenStable();
-        expect(cells(el).length).toBe(42);
+        expect(cells(el).length).toBe(31);
         expect(document.activeElement).toBe(cell(el, '2026-10-21'));
       });
 
@@ -2211,7 +2211,7 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-21', 'panes');
       flushEntries([]);
       fixture.detectChanges();
-      expect(cells(el).length).toBe(42);
+      expect(cells(el).length).toBe(31);
       expect(el.querySelector('.monthbar-figures')).not.toBeNull();
       expect(el.querySelector('.cal-figures')).toBeNull();
       expect(el.querySelector('app-calendar-today-bar')).toBeNull();
@@ -2227,7 +2227,7 @@ describe('LedgerTimelineComponent', () => {
       expect(strip.style.touchAction || '').toBe('');
       swipe(cell(el, '2026-10-21'), [200, 30], [120, 34]);
       expect(navigate).not.toHaveBeenCalled();
-      expect(strip.querySelectorAll('button.cell').length).toBe(42);
+      expect(strip.querySelectorAll('button.cell').length).toBe(31);
     });
 
     it('the calendar grid instance survives a day pick and 展開整月, keeping focus on a cell', async () => {
@@ -2249,6 +2249,163 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
       expect(el.querySelector('app-calendar-month')).toBe(grid);
       expect(grid.isConnected).toBe(true);
+    });
+
+    describe('< 1024 px search and filter behind a title-row button (Task 5)', () => {
+      const toggle = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('app-page-header .cal-filters-toggle');
+      const row = (el: HTMLElement) => el.querySelector<HTMLElement>('.filter-bar-row')!;
+      const rowShown = (el: HTMLElement) => !row(el).hasAttribute('hidden');
+      const dropOptionReads = () => httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+
+      it('phone 日曆: the header has the toggle (collapsed) and the row is hidden; clicking opens it with .filter-q focused, again hides it', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        document.body.appendChild(el);
+        try {
+          const button = toggle(el)!;
+          expect(button.getAttribute('aria-label')).toBe('搜尋與篩選');
+          expect(button.getAttribute('aria-expanded')).toBe('false');
+          expect(button.classList.contains('has-active')).toBe(false);
+          expect(rowShown(el)).toBe(false);
+          button.click();
+          fixture.detectChanges();
+          await fixture.whenStable();
+          fixture.detectChanges();
+          expect(button.getAttribute('aria-expanded')).toBe('true');
+          expect(rowShown(el)).toBe(true);
+          expect(document.activeElement).toBe(el.querySelector('.filter-q'));
+          button.click();
+          fixture.detectChanges();
+          expect(button.getAttribute('aria-expanded')).toBe('false');
+          expect(rowShown(el)).toBe(false);
+        } finally {
+          el.remove();
+        }
+      });
+
+      it('the toggle sits inside .page-actions, before the gear slot', async () => {
+        const { el } = await openNarrow('/accounting?month=2026-10');
+        expect(el.querySelector('app-page-header .page-actions .cal-filters-toggle')).not.toBeNull();
+      });
+
+      it('a search text marks the toggle has-active', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        fixture.componentInstance.setQuery('全聯');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(toggle(el)!.classList.contains('has-active')).toBe(true);
+      });
+
+      it('entering 日曆 with a filter active starts expanded', async () => {
+        localStorage.setItem(VIEW_KEY, 'list');
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10&merchant=%E5%85%A8%E8%81%AF');
+        // openNarrow sets the stored view first; the URL carries the filter, so 日曆 opens with it active.
+        expect(fixture.componentInstance.filtersActive()).toBe(true);
+        expect(toggle(el)!.getAttribute('aria-expanded')).toBe('true');
+        expect(rowShown(el)).toBe(true);
+      });
+
+      it('with the row collapsed and a filter active the chips stay and × removes the filter', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10&merchant=%E5%85%A8%E8%81%AF');
+        toggle(el)!.click();
+        fixture.detectChanges();
+        expect(rowShown(el)).toBe(false);
+        expect(el.querySelector('.filter-chips')).not.toBeNull();
+        (el.querySelector('.chip-remove[aria-label="移除 商家：全聯"]') as HTMLButtonElement).click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(fixture.componentInstance.merchantFilter()).toBe('');
+      });
+
+      it('清單 has no toggle and always shows the row', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(toggle(el)).toBeNull();
+        expect(rowShown(el)).toBe(true);
+      });
+
+      it('panes → phone with a search text active: the row is expanded and .filter-q holds the text', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10', 'panes');
+        fixture.componentInstance.setQuery('全聯');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(rowShown(el)).toBe(false);
+        TestBed.inject(LayoutModeService).set('phone');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(TestBed.inject(AccountingOverviewService).calendarFiltersOpen()).toBe(true);
+        expect(rowShown(el)).toBe(true);
+        expect(el.querySelector<HTMLInputElement>('.filter-q')!.value).toBe('全聯');
+      });
+
+      it('panes → phone with the anchored panel open: the panel is closed', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10', 'panes');
+        TestBed.inject(CalendarPaneService).commands()!.toggleFilters(document.body);
+        fixture.detectChanges();
+        dropOptionReads();
+        expect(el.querySelector('.filter-panel')).not.toBeNull();
+        TestBed.inject(LayoutModeService).set('phone');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(el.querySelector('.filter-panel')).toBeNull();
+      });
+
+      it('phone → panes with the row open: no row is shown and the pane box holds the text', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        fixture.componentInstance.setQuery('全聯');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        toggle(el)!.click();
+        fixture.detectChanges();
+        expect(rowShown(el)).toBe(true);
+        TestBed.inject(LayoutModeService).set('panes');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(rowShown(el)).toBe(false);
+        expect(TestBed.inject(CalendarPaneService).search()).toBe('全聯');
+      });
+
+      it('collapsing the row with the panel open closes the panel', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        toggle(el)!.click();
+        fixture.detectChanges();
+        TestBed.inject(CalendarPaneService).commands()!.toggleFilters(document.body);
+        fixture.detectChanges();
+        dropOptionReads();
+        expect(el.querySelector('.filter-panel')).not.toBeNull();
+        toggle(el)!.click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(rowShown(el)).toBe(false);
+        expect(el.querySelector('.filter-panel')).toBeNull();
+      });
+
+      it('leaving 日曆 closes the row state; coming back with nothing active starts collapsed', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        toggle(el)!.click();
+        fixture.detectChanges();
+        expect(TestBed.inject(AccountingOverviewService).calendarFiltersOpen()).toBe(true);
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(TestBed.inject(AccountingOverviewService).calendarFiltersOpen()).toBe(false);
+        viewButton(el, '日曆').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(toggle(el)!.getAttribute('aria-expanded')).toBe('false');
+      });
+
+      it('a 5-week month renders 5 .week rows and the today bar directly follows .strip-area (no filter row between month bar and grid)', async () => {
+        const { el } = await openNarrow('/accounting?month=2026-11');
+        expect(el.querySelectorAll('.week').length).toBe(5);
+        expect(el.querySelector('.strip-area')!.nextElementSibling!.tagName.toLowerCase()).toBe('app-calendar-today-bar');
+        expect(rowShown(el)).toBe(false);
+        expect(el.querySelector('.filter-chips')).toBeNull();
+      });
     });
   });
 
@@ -2409,12 +2566,12 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith();
       const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
       const requests = billRequests();
-      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid')).toBeNull();
       expect(cell(el, '2026-10-15').classList).toContain('closing');
 
       answerBill(requests, '-12345.0000');
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
       expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10 月 5 日 週一，1 張卡繳費到期');
 
       selectDay(fixture, el, '2026-10-05');
@@ -2433,7 +2590,7 @@ describe('LedgerTimelineComponent', () => {
       answerBill(billRequests(), '-12345.0000');
       fixture.detectChanges();
       expect(cell(el, '2026-10-05').querySelector('.bill-dot')).not.toBeNull();
-      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid')).toBeNull();
     });
 
     it('hides a zero statement everywhere and keeps it resolved across a view switch', () => {
@@ -2447,7 +2604,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       expectNoBillRequest();
       fixture.detectChanges();
-      expect(el.querySelectorAll('.bill-mark, .bill-dot').length).toBe(0);
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid, .bill-dot').length).toBe(0);
       expect(cell(el, '2026-10-15').classList).toContain('closing');
 
       selectDay(fixture, el, '2026-10-05');
@@ -2458,7 +2615,7 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('-800.0000', ['500.0000', '300.0000']);
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('已繳');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('已繳');
       selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
     });
@@ -2479,8 +2636,8 @@ describe('LedgerTimelineComponent', () => {
       // CARD3 closes on the 22nd: its 09/22 statement is due 10/12.
       answer(11, '-300.0000', ['300.0000'], '2026-08-23', '2026-09-22', '2026-10-02');
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
-      expect(text(cell(el, '2026-10-12').querySelector('.bill-mark'))).toBe('已繳');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-12').querySelector('.tag-bill, .tag-paid'))).toBe('已繳');
     });
 
     it('never reads 已繳 while a same-day card is unresolved or failed (a paid sibling does not settle it)', () => {
@@ -2495,12 +2652,12 @@ describe('LedgerTimelineComponent', () => {
       answerBill(paid, '-800.0000', ['800.0000']);
       fixture.detectChanges();
       // CARD2 is still in flight: the day is a 帳單 day, not 已繳.
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
       pending.summary.flush('boom', { status: 500, statusText: 'Server Error' });
       pending.payments.flush('boom', { status: 500, statusText: 'Server Error' });
       fixture.detectChanges();
       // CARD2 failed: unknown is never 已繳.
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
     });
 
     it('draws no mark for a zero or refund-heavy statement, and a zero beside a paid card reads 已繳', () => {
@@ -2517,15 +2674,15 @@ describe('LedgerTimelineComponent', () => {
       answer(11, '-800.0000', ['800.0000']);
       fixture.detectChanges();
       expect(el.querySelectorAll('.bill-dot').length).toBe(0);
-      expect(el.querySelectorAll('.bill-mark').length).toBe(1);
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('已繳');
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid').length).toBe(1);
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('已繳');
     });
 
     it('draws nothing for a lone refund-heavy statement', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('500.0000');
       fixture.detectChanges();
-      expect(el.querySelectorAll('.bill-mark, .bill-dot').length).toBe(0);
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid, .bill-dot').length).toBe(0);
     });
 
     it('hides a statement that cannot be read', () => {
@@ -2534,14 +2691,14 @@ describe('LedgerTimelineComponent', () => {
       requests.summary.flush('boom', { status: 500, statusText: 'Server Error' });
       requests.payments.flush({ items: [], total: 0, limit: 100, offset: 0 });
       fixture.detectChanges();
-      expect(el.querySelectorAll('.bill-mark').length).toBe(0);
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid').length).toBe(0);
     });
 
     it('shows what was paid and what remains on a partly paid statement', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('-12345.0000', ['5000.0000']);
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
 
       selectDay(fixture, el, '2026-10-05');
       showDayRowsInList(fixture);
@@ -2564,11 +2721,11 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       const requests = billRequests();
       fixture.detectChanges();
-      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).not.toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid')).not.toBeNull();
 
       answerBill(requests, '-12345.0000', ['12345.0000']);
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('已繳');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('已繳');
     });
 
     it('resolves each statement once while moving between months', () => {
@@ -2582,7 +2739,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-11');
       flushBill('-200.0000', [], OCT_CYCLE);
       fixture.detectChanges();
-      expect(cell(el, '2026-11-04').querySelector('.bill-mark')).not.toBeNull();
+      expect(cell(el, '2026-11-04').querySelector('.tag-bill, .tag-paid')).not.toBeNull();
 
       (el.querySelector('.month-prev') as HTMLButtonElement).click();
       fixture.detectChanges();
@@ -2590,7 +2747,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       expectNoBillRequest();
       fixture.detectChanges();
-      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).not.toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid')).not.toBeNull();
     });
 
     it('announces the unpaid due days of the next 7 days in the list and opens the first in the calendar', () => {
@@ -2788,7 +2945,7 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith([...ACCOUNTS, monthly]);
       flushBill('-500.0000', [], { start: '2026-09-01', end: '2026-09-30', due: '2026-10-05', paidTo: '2026-10-02' });
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
       expect(cell(el, '2026-10-31').classList).toContain('closing');
     });
 
@@ -2807,7 +2964,7 @@ describe('LedgerTimelineComponent', () => {
       });
       fixture.detectChanges();
 
-      expect(el.querySelectorAll('.bill-mark').length).toBe(1);
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid').length).toBe(1);
       expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10 月 5 日 週一，1 張卡繳費到期');
       selectDay(fixture, el, '2026-10-05');
       showDayRowsInList(fixture);
@@ -2824,7 +2981,7 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
       flushDaily('2026-10');
       fixture.detectChanges();
-      expect(el.querySelectorAll('.bill-mark, .cell.closing').length).toBe(0);
+      expect(el.querySelectorAll('.week .tag, .cell.closing').length).toBe(0);
       selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
     });
@@ -3223,6 +3380,147 @@ describe('LedgerTimelineComponent', () => {
       });
       fixture.detectChanges();
       expect(pane().invoices().length).toBe(2);
+    });
+
+    it('hides the filter row, chips and 清除篩選 row in 日曆 with filters active; 清單 still shows them', () => {
+      const { fixture, el } = renderPanes();
+      el.querySelector<HTMLButtonElement>('.filter-toggle')!.click();
+      fixture.detectChanges();
+      httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+      const select = el.querySelector<HTMLSelectElement>('.filter-account')!;
+      select.value = '7';
+      select.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+      httpMock!.match(() => true).forEach(r => !r.cancelled && r.flush(r.request.url.includes('daily') ? { days: [] } : []));
+      fixture.detectChanges();
+      expect(pane().chips().length).toBe(1);
+      expect(el.querySelector('.filter-bar-row')!.hasAttribute('hidden')).toBe(true);
+      expect(el.querySelector('.filter-chips')).toBeNull();
+      expect(el.querySelector('.match-row')).toBeNull();
+      viewButton(el, '清單').click();
+      fixture.detectChanges();
+      flushEntries([]);
+      httpMock!.match(() => true);
+      fixture.detectChanges();
+      expect(el.querySelector('.filter-bar-row')!.hasAttribute('hidden')).toBe(false);
+      expect(el.querySelector('.match-row')).not.toBeNull();
+    });
+
+    describe('account filter in 日曆', () => {
+      const openPanelNow = (fixture: { detectChanges(): void }, el: HTMLElement) => {
+        el.querySelector<HTMLButtonElement>('.filter-toggle')!.click();
+        fixture.detectChanges();
+        httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+      };
+      const chooseAccount = (fixture: { detectChanges(): void }, el: HTMLElement, id: string) => {
+        const select = el.querySelector<HTMLSelectElement>('.filter-account')!;
+        select.value = id;
+        select.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+        httpMock!.match(() => true).forEach(r => !r.cancelled && r.flush(r.request.url.includes('daily') ? { days: [] } : []));
+        fixture.detectChanges();
+      };
+      const chipTexts = (el: HTMLElement) => Array.from(el.querySelectorAll('.filter-chip')).map(c => text(c).replace(/\s*[×✕x]$/, '').trim());
+
+      it('puts the account select first in the opened panel, not in the primary slot', () => {
+        const { fixture, el } = renderPanes();
+        expect(el.querySelector('.slot-primary .filter-account')).toBeNull();
+        expect(el.querySelector('.filter-account')).toBeNull();
+        openPanelNow(fixture, el);
+        const first = el.querySelector('.filter-panel .slot-secondary .hub-filter-field');
+        expect(first?.querySelector('.filter-account')).not.toBeNull();
+        expect(text(first!.querySelector('.field-label'))).toBe('帳戶');
+      });
+
+      it('adds the 帳戶 chip and 篩選 1 when an account is chosen; 重設 clears it; the pane gets the chip', () => {
+        const { fixture, el } = renderPanes();
+        openPanelNow(fixture, el);
+        chooseAccount(fixture, el, '7');
+        expect(chipTexts(el)).toEqual([]);
+        expect(text(el.querySelector('.filter-toggle'))).toBe('篩選 1');
+        expect(pane().chips().map(c => c.label)).toEqual(['帳戶：富邦 J卡']);
+        el.querySelector<HTMLButtonElement>('.panel-reset')!.click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(pane().chips()).toEqual([]);
+      });
+
+      it('pane commands.removeFilter("account") clears the account', () => {
+        const { fixture, el } = renderPanes();
+        openPanelNow(fixture, el);
+        chooseAccount(fixture, el, '7');
+        pane().commands()!.removeFilter('account');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(pane().chips()).toEqual([]);
+      });
+
+      it('commands.toggleFilters opens the panel anchored to the given button, reading the filter bar at call time', () => {
+        const { fixture, el } = renderPanes();
+        const anchor = document.createElement('button');
+        document.body.appendChild(anchor);
+        pane().commands()!.toggleFilters(anchor);
+        fixture.detectChanges();
+        httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+        expect(el.querySelector('.filter-panel.popover')).not.toBeNull();
+        anchor.remove();
+      });
+
+      it("publishes the open filter panel's id (null while closed) for the right pane's 篩選 button", () => {
+        const { fixture, el } = renderPanes();
+        expect(pane().filterPanel()).toBeNull();
+        const anchor = document.createElement('button');
+        document.body.appendChild(anchor);
+        pane().commands()!.toggleFilters(anchor);
+        fixture.detectChanges();
+        httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+        const panel = el.querySelector('.filter-panel.popover')!;
+        expect(panel.id).not.toBe('');
+        expect(pane().filterPanel()).toBe(panel.id);
+        pane().commands()!.toggleFilters(anchor);
+        fixture.detectChanges();
+        expect(pane().filterPanel()).toBeNull();
+        anchor.remove();
+      });
+
+      it('a view change (日曆 → 清單) closes an anchored panel without focusing its anchor', () => {
+        const { fixture, el } = renderPanes();
+        const anchor = document.createElement('button');
+        document.body.appendChild(anchor);
+        const focus = vi.spyOn(anchor, 'focus');
+        pane().commands()!.toggleFilters(anchor);
+        fixture.detectChanges();
+        httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+        expect(el.querySelector('.filter-panel')).not.toBeNull();
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(el.querySelector('.filter-panel')).toBeNull();
+        expect(focus).not.toHaveBeenCalled();
+        expect(pane().filterPanel()).toBeNull();
+        anchor.remove();
+      });
+
+      it('keeps the account in 清單 inline without a chip, and keeps the filter across 日曆 to 清單 to 日曆', () => {
+        const { fixture, el } = renderPanes();
+        openPanelNow(fixture, el);
+        chooseAccount(fixture, el, '7');
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        flushEntries([]);
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(el.querySelector('.slot-primary .filter-account')).not.toBeNull();
+        expect((el.querySelector('.filter-account') as HTMLSelectElement).value).toBe('7');
+        expect(el.querySelector('.filter-chip')).toBeNull();
+        viewButton(el, '日曆').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(pane().chips().map(c => c.label)).toEqual(['帳戶：富邦 J卡']);
+        if (!el.querySelector('.filter-panel')) openPanelNow(fixture, el);
+        expect(el.querySelector<HTMLSelectElement>('.filter-panel .filter-account')!.value).toBe('7');
+      });
     });
 
     it('publishes the 日曆 view and the month to the pane services', () => {

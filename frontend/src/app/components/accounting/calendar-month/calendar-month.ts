@@ -23,7 +23,7 @@ interface CalendarCellView extends CalendarCell {
   tabIndex: 0 | -1;
   /** Cards whose payment falls due on this day. */
   dueCount: number;
-  /** A card's statement closes on this day (top border). */
+  /** A card's statement closes on this day (結帳 tag / dot). */
   closing: boolean;
 }
 
@@ -89,7 +89,7 @@ export class CalendarMonthComponent {
 
   readonly weekdays = computed(() => Array.from({ length: 7 }, (_, i) => WEEKDAY_NAMES[(this.weekStart() + i) % 7]));
 
-  /** The 6-row grid, cut to the week of `weekOf` in week mode. */
+  /** The month's 4–6 row grid, cut to the week of `weekOf` in week mode. */
   private readonly grid = computed(() => {
     const grid = buildCalendar(this.month(), this.days(), this.weekStart());
     const weekOf = this.weekOf();
@@ -142,6 +142,7 @@ export class CalendarMonthComponent {
         const bill = dueCount > 0 ? (this.paidDays().has(cell.date) ? 'paid' : 'due') : null;
         const invoices = cell.outside ? 0 : (this.invoiceDays().get(cell.date) ?? 0);
         const colours = cell.outside || future || weekOf ? [] : (this.dots().get(cell.date) ?? []);
+        const closing = !cell.outside && closingDays.has(cell.date);
         const weekday = new Date(Date.UTC(Number(cell.date.slice(0, 4)), Number(cell.date.slice(5, 7)) - 1, cell.day)).getUTCDay();
         return {
           ...cell,
@@ -153,10 +154,10 @@ export class CalendarMonthComponent {
           invoices,
           future,
           weekend: weekday === 0 || weekday === 6,
-          label: cellAriaLabel({ date: cell.date, count: cell.count, expense: cell.expense, income: cell.income, currency, bill, dueCount, invoices }),
+          label: cellAriaLabel({ date: cell.date, count: cell.count, expense: cell.expense, income: cell.income, currency, bill, dueCount, invoices, closing }),
           tabIndex: cell.date === tabDate ? 0 : -1,
           dueCount,
-          closing: !cell.outside && closingDays.has(cell.date),
+          closing,
         };
       }),
     );

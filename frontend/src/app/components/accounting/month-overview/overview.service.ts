@@ -22,6 +22,12 @@ export class AccountingOverviewService {
   /** The timeline is in 日曆 view (any width); the timeline owns it and clear() leaves it alone, like `visible`. */
   readonly calendar = signal(false);
 
+  /** < 1024 px 日曆: the filter bar row under the title is expanded (the title-row button toggles it; the timeline resets it). */
+  readonly calendarFiltersOpen = signal(false);
+
+  /** A search text or filter is active in 日曆 (the title-row button shows a dot); written by the timeline. */
+  readonly calendarFiltersActive = signal(false);
+
   clear(): void {
     this.month.set(currentMonth());
     this.summary.set(null);

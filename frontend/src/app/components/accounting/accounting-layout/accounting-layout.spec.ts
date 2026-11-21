@@ -93,6 +93,54 @@ describe('AccountingLayoutComponent', () => {
       expect(harness.routeNativeElement!.querySelector('.list-pane .sum')).toBeNull();
     });
 
+    describe('search and filter button below 1024 px (Task 5)', () => {
+      const toggle = (root: Element) => root.querySelector<HTMLButtonElement>('app-page-header .cal-filters-toggle');
+
+      it('sheet width 820 in 日曆: the layout header has the toggle and it flips overview.calendarFiltersOpen', async () => {
+        localStorage.setItem('hh.accounting.timelineView', 'calendar');
+        const harness = await start('sheet', '/accounting?month=2026-10', 820);
+        await find(harness, '.dwrap--sheet > app-page-header .cal-filters-toggle');
+        const root = harness.routeNativeElement!;
+        const overview = TestBed.inject(AccountingOverviewService);
+        expect(overview.calendarFiltersOpen()).toBe(false);
+        expect(toggle(root)!.getAttribute('aria-expanded')).toBe('false');
+        toggle(root)!.click();
+        harness.detectChanges();
+        expect(overview.calendarFiltersOpen()).toBe(true);
+        expect(toggle(root)!.getAttribute('aria-expanded')).toBe('true');
+        toggle(root)!.click();
+        harness.detectChanges();
+        expect(overview.calendarFiltersOpen()).toBe(false);
+      });
+
+      it('sheet 日曆 with the in-row panel open → panes: the panel is gone and .cal-search holds the search text', async () => {
+        localStorage.setItem('hh.accounting.timelineView', 'calendar');
+        const harness = await start('sheet', '/accounting?month=2026-10', 820);
+        await find(harness, '.dwrap--sheet > app-page-header .cal-filters-toggle');
+        const root = harness.routeNativeElement!;
+        const http = TestBed.inject(HttpTestingController);
+        TestBed.inject(CalendarPaneService).commands()!.setQuery('全聯');
+        toggle(root)!.click();
+        harness.detectChanges();
+        (await find(harness, '.filter-toggle') as HTMLButtonElement).click();
+        harness.detectChanges();
+        expect(root.querySelector('.filter-panel')).not.toBeNull();
+        TestBed.inject(LayoutModeService).set('panes');
+        harness.detectChanges();
+        await find(harness, '.cal-base .cal-search');
+        expect(root.querySelector('.filter-panel')).toBeNull();
+        expect(root.querySelector<HTMLInputElement>('.cal-base .cal-search')!.value).toBe('全聯');
+        http.match(() => true);
+      });
+
+      it('panes mode has no toggle', async () => {
+        localStorage.setItem('hh.accounting.timelineView', 'calendar');
+        const harness = await start('panes', '/accounting?month=2026-10', 1100);
+        await find(harness, '.cal-base .cal-search');
+        expect(toggle(harness.routeNativeElement!)).toBeNull();
+      });
+    });
+
     it('renders no day rows under the grid in 日曆 at 1100px with a day selected', async () => {
       localStorage.setItem('hh.accounting.timelineView', 'calendar');
       const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
@@ -139,7 +187,7 @@ describe('AccountingLayoutComponent', () => {
         await find(harness, '.cal-base app-month-overview');
         const root = harness.routeNativeElement!;
         const search = root.querySelector<HTMLInputElement>('.cal-base .cal-search')!;
-        expect(search.placeholder).toBe('搜尋整月：名稱、商家、備註');
+        expect(search.placeholder).toBe('搜尋整月');
         expect(root.querySelector('.pane-empty')).toBeNull();
         expect(root.querySelector('app-calendar-day-panel')).toBeNull();
       });
@@ -286,8 +334,137 @@ describe('AccountingLayoutComponent', () => {
         const label = await find(harness, '.cal-base app-calendar-day-panel .dp-label');
         expect(label.textContent!.trim()).toBe('10/21 週三');
         const root = harness.routeNativeElement!;
-        expect(root.querySelector('.cal-search')).toBeNull();
+        expect(root.querySelector('.cal-base .cal-top .cal-search')).not.toBeNull();
         expect(root.querySelector('app-month-overview')).toBeNull();
+      });
+
+      describe('top row (.cal-top)', () => {
+        const input = (root: Element) => root.querySelector<HTMLInputElement>('.cal-base .cal-search')!;
+
+        it('is there in summary, day and results bases', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base app-month-overview');
+          const root = harness.routeNativeElement!;
+          expect(root.querySelector('.cal-base > .cal-top .cal-filter')).not.toBeNull();
+          await TestBed.inject(Router).navigateByUrl('/accounting?month=2026-10&day=2026-10-21');
+          await find(harness, '.cal-base .dp-step');
+          expect(root.querySelector('.cal-base > .cal-top .cal-search-box svg')).not.toBeNull();
+          await TestBed.inject(Router).navigateByUrl('/accounting?month=2026-10');
+          pane().commands()!.setQuery('咖啡');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          expect(root.querySelector('.cal-base > .cal-top .cal-filter')).not.toBeNull();
+        });
+
+        it('篩選 calls toggleFilters with the button; chips show the count, × and 清除全部 call the commands', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-filter');
+          const root = harness.routeNativeElement!;
+          const real = pane().commands()!;
+          const toggleFilters = vi.fn();
+          const removeFilter = vi.fn();
+          const clearFilters = vi.fn();
+          pane().commands.set({ ...real, toggleFilters, removeFilter, clearFilters });
+          const button = root.querySelector<HTMLButtonElement>('.cal-base .cal-filter')!;
+          expect(button.getAttribute('aria-haspopup')).toBe('dialog');
+          expect(button.textContent!.replace(/\s+/g, '')).toBe('篩選');
+          button.click();
+          expect(toggleFilters).toHaveBeenCalledWith(button);
+          pane().chips.set([{ key: 'kind', label: '類型：支出' }, { key: 'account', label: '帳戶：測試帳戶' }]);
+          harness.detectChanges();
+          expect(button.textContent!.replace(/\s+/g, '')).toBe('篩選2');
+          const chips = root.querySelectorAll('.cal-base app-filter-chips .filter-chip');
+          expect(chips.length).toBe(2);
+          chips[0].querySelector<HTMLButtonElement>('.chip-remove')!.click();
+          expect(removeFilter).toHaveBeenCalledWith('kind');
+          root.querySelector<HTMLButtonElement>('.cal-base .clear-all')!.click();
+          expect(clearFilters).toHaveBeenCalled();
+        });
+
+        it('篩選 exposes the panel state: aria-expanded, and aria-controls naming the open panel', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          const button = (await find(harness, '.cal-base .cal-filter')) as HTMLButtonElement;
+          const root = harness.routeNativeElement!;
+          expect(button.getAttribute('aria-haspopup')).toBe('dialog');
+          expect(button.getAttribute('aria-expanded')).toBe('false');
+          expect(button.hasAttribute('aria-controls')).toBe(false);
+          button.click();
+          const panel = await find(harness, '.list-pane .filter-panel.popover');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(button.getAttribute('aria-expanded')).toBe('true');
+          });
+          expect(button.getAttribute('aria-controls')).toBe(panel.id);
+          expect(root.querySelector(`#${panel.id}`)).toBe(panel);
+          button.click();
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(button.getAttribute('aria-expanded')).toBe('false');
+          });
+          expect(button.hasAttribute('aria-controls')).toBe(false);
+        });
+
+        it('Enter on a text with a day selected clears the day first, then sets the query', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          await find(harness, '.cal-base .dp-step');
+          const router = TestBed.inject(Router);
+          const setQuery = vi.spyOn(pane().commands()!, 'setQuery');
+          const el = input(harness.routeNativeElement!);
+          el.value = '咖啡';
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10'));
+          expect(setQuery).toHaveBeenCalledWith('咖啡');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          expect(harness.routeNativeElement!.querySelector('.cal-base .dp-step')).toBeNull();
+        });
+
+        it('the 300 ms debounce commit with a day selected does the same', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          await find(harness, '.cal-base .dp-step');
+          const router = TestBed.inject(Router);
+          const setQuery = vi.spyOn(pane().commands()!, 'setQuery');
+          const el = input(harness.routeNativeElement!);
+          vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+          try {
+            el.value = '咖啡';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            vi.advanceTimersByTime(400);
+          } finally {
+            vi.useRealTimers();
+          }
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10'));
+          expect(setQuery).toHaveBeenCalledWith('咖啡');
+        });
+
+        it('an empty commit with a day selected keeps the day', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          await find(harness, '.cal-base .dp-step');
+          const router = TestBed.inject(Router);
+          const el = input(harness.routeNativeElement!);
+          el.value = '   ';
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+          harness.detectChanges();
+          expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21');
+          expect(pane().selectedDay()).toBe('2026-10-21');
+        });
+
+        it('Esc with a text and no day empties it and the base returns to the summary', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-search');
+          pane().commands()!.setQuery('咖啡');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          const el = input(harness.routeNativeElement!);
+          el.value = '咖啡';
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+          await find(harness, '.cal-base app-month-overview');
+          expect(pane().search()).toBe('');
+        });
       });
 
       it('‹ › and 本月摘要 write the URL with replaceUrl', async () => {
@@ -424,7 +601,7 @@ describe('AccountingLayoutComponent', () => {
           const http = TestBed.inject(HttpTestingController);
           return (await vi.waitFor(() => {
             http.match(`/api/accounting/entries/${id}`).forEach(req => req.flush(makeEntryDetail({ id })));
-            return find(harness, '.pane-host.drawer .close[aria-label="關閉"]');
+            return find(harness, '.pane-host.drawer .close[aria-label="關閉（Esc）"]');
           })) as HTMLButtonElement;
         }
 
@@ -472,7 +649,40 @@ describe('AccountingLayoutComponent', () => {
           // No ✕ of the drawer's own: exactly one 關閉, the page's.
           await answerDetail(harness, 5);
           expect(root.querySelector('.drawer-close')).toBeNull();
-          expect(root.querySelectorAll('.detail-pane [aria-label="關閉"]').length).toBe(1);
+          expect(root.querySelectorAll('.detail-pane [aria-label^="關閉"]').length).toBe(1);
+        });
+
+        it('clips the drawer only for a loaded entry detail: not while it loads or after it fails, never for the reminder centre or the group page', async () => {
+          const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/accounting-layout/accounting-layout.scss'), 'utf8');
+          // The selector the stylesheet clips the drawer with, matched against the live DOM.
+          const clipped = css.match(/\n(\.pane-host\.drawer:has\([^{]*\)) \{/)?.[1] ?? '.no-clipped-rule';
+          const harness = await start('panes', ENTRY, 1100);
+          const router = TestBed.inject(Router);
+          const http = TestBed.inject(HttpTestingController);
+          const drawer = await find(harness, '.pane-host.drawer');
+          await find(harness, '.pane-host.drawer app-entry-detail');
+          expect(drawer.matches('.pane-host.drawer')).toBe(true);
+          // Loading: the default drawer pads the page's loading state.
+          expect(drawer.matches(clipped)).toBe(false);
+          await answerDetail(harness, 5);
+          expect(drawer.matches(clipped)).toBe(true);
+
+          // Another entry that fails to load: 讀取失敗 sits in the padded default drawer.
+          await router.navigateByUrl('/accounting/entries/6?month=2026-10&day=2026-10-21');
+          await vi.waitFor(() => {
+            http.match('/api/accounting/entries/6').forEach(req => req.flush('boom', { status: 500, statusText: 'Server Error' }));
+            harness.detectChanges();
+            expect(drawer.querySelector('.load-error')).not.toBeNull();
+          });
+          expect(drawer.matches(clipped)).toBe(false);
+
+          await router.navigateByUrl('/accounting/reminders');
+          await find(harness, '.pane-host.drawer app-accounting-reminders');
+          expect(drawer.matches(clipped)).toBe(false);
+
+          await router.navigateByUrl('/accounting/entries/5/group?month=2026-10&day=2026-10-21');
+          await find(harness, '.pane-host.drawer app-split-group');
+          expect(drawer.matches(clipped)).toBe(false);
         });
 
         it("focuses the page's own ✕ when the drawer opens over a page already shown (清單 → 日曆 with an entry open)", async () => {
@@ -488,7 +698,7 @@ describe('AccountingLayoutComponent', () => {
           await find(harness, '.pane-host.drawer');
           await vi.waitFor(() => {
             harness.detectChanges();
-            expect(document.activeElement).toBe(close);
+            expect(document.activeElement).toBe(harness.routeNativeElement!.querySelector('.pane-host.drawer [data-pane-close]'));
           });
         });
 
@@ -665,7 +875,7 @@ describe('AccountingLayoutComponent', () => {
             return { paths: stack._history.slice(1).map(state => state.path), index: stack._historyIndex - 1 };
           }
 
-          const CLOSE = '.pane-host.drawer .close[aria-label="關閉"]';
+          const CLOSE = '.pane-host.drawer .close[aria-label="關閉（Esc）"]';
 
           /** 日曆 on 10/21 at 1100 px; the day panel's row `id` clicked, the drawer open on it (a push, as every row open). */
           async function openRow(id: number): Promise<{ harness: RouterTestingHarness; router: Router }> {
@@ -716,6 +926,69 @@ describe('AccountingLayoutComponent', () => {
               expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBeNull();
             });
             expect(history()).toEqual({ paths: [DAY_21, '/accounting/entries/8/group?month=2026-10&day=2026-10-21'], index: 0 });
+          });
+
+          it('下一筆 / 上一筆 by keyboard keep focus on that button of the newly shown entry, and ↓ keeps stepping from it', async () => {
+            const { harness, router } = await openRow(7);
+            const drawer = await present(harness, '.pane-host.drawer');
+            await present(harness, CLOSE);
+            const next = await present(harness, '.pane-host.drawer .drawer-bar .step-next');
+            next.focus();
+            next.click();
+            await serving(harness, () => {
+              expect(router.url).toBe(at(8, '2026-10-21'));
+              expect(drawer.querySelector('.dcompact')).not.toBeNull();
+              expect(document.activeElement).toBe(drawer.querySelector('.drawer-bar .step-next'));
+            });
+            // ↓ from the focused button (the layout's drawer keys) steps again, focus still on 下一筆.
+            key(document.activeElement!, 'ArrowDown');
+            await serving(harness, () => {
+              expect(router.url).toBe(at(9, '2026-10-21'));
+              expect(drawer.querySelector('.dcompact')).not.toBeNull();
+              expect(document.activeElement).toBe(drawer.querySelector('.drawer-bar .step-next'));
+            });
+            const prev = drawer.querySelector<HTMLElement>('.drawer-bar .step-prev')!;
+            prev.focus();
+            prev.click();
+            await serving(harness, () => {
+              expect(router.url).toBe(at(8, '2026-10-21'));
+              expect(drawer.querySelector('.dcompact')).not.toBeNull();
+              expect(document.activeElement).toBe(drawer.querySelector('.drawer-bar .step-prev'));
+            });
+          });
+
+          it('↓ from a foot action lands focus on the bar ✕ of the next entry (the action it left is gone)', async () => {
+            const { harness, router } = await openRow(7);
+            const drawer = await present(harness, '.pane-host.drawer');
+            const copy = await present(harness, '.pane-host.drawer .drawer-foot .action-copy');
+            copy.focus();
+            key(copy, 'ArrowDown');
+            await serving(harness, () => {
+              expect(router.url).toBe(at(8, '2026-10-21'));
+              expect(drawer.querySelector('.dcompact')).not.toBeNull();
+              expect(document.activeElement).toBe(drawer.querySelector(CLOSE.replace('.pane-host.drawer ', '')));
+            });
+          });
+
+          it('下一筆 onto a split row keeps focus inside the drawer while its group view replaces the detail', async () => {
+            const split: EntryGroupSummary = {
+              id: 4, kind: 'split', name: null, merchant: null, description: null, count: 2, total: '-200.0000', currency: 'TWD',
+            };
+            entries = [
+              ENTRIES[0],
+              ...[8, 10].map(id => makeEntry({ id, entry_date: '2026-10-21', posted_date: '2026-10-21', amount: '-100.0000', group: split })),
+              ENTRIES[2],
+            ];
+            const { harness, router } = await openRow(7);
+            const drawer = await present(harness, '.pane-host.drawer');
+            const next = await present(harness, '.pane-host.drawer .drawer-bar .step-next');
+            next.focus();
+            next.click();
+            await serving(harness, () => {
+              expect(router.url).toBe('/accounting/entries/8/group?month=2026-10&day=2026-10-21');
+              expect(drawer.querySelector('app-split-group')).not.toBeNull();
+              expect(drawer.contains(document.activeElement)).toBe(true);
+            });
           });
 
           it('↓ past the last row crosses to the earlier day; ✕ closes onto that new day and the next Back leaves 日曆', async () => {
@@ -1870,6 +2143,22 @@ describe('AccountingLayoutComponent', () => {
       const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/accounting-layout/accounting-layout.scss'), 'utf8');
       const block = css.match(/\n\.cal-base \{([^}]*)\}/)?.[1] ?? '';
       expect(block).toContain('padding-bottom: calc(14px + var(--fab-clear, 0px))');
+    });
+    it("keeps the drawer's default scroll and padding (reminders, group page, form) and clips it only for the compact detail", () => {
+      const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/accounting-layout/accounting-layout.scss'), 'utf8');
+      const declarations = (block: string) => block.split(';').map(line => line.trim()).filter(Boolean).sort();
+      // The default drawer is exactly origin/main's: it scrolls and pads whatever page it hosts.
+      const base = css.match(/\n\.pane-host\.drawer \{([^}]*)\}/)?.[1] ?? '';
+      expect(declarations(base)).toEqual(
+        declarations(`background: var(--app-surface); border: 1px solid var(--app-border); border-radius: var(--radius-lg);
+          box-shadow: var(--app-raised-shadow); inset: 0; overflow-y: auto; padding: var(--pane-pad-top) 14px 14px;
+          position: absolute; z-index: 3;`),
+      );
+      // The clipped flex column only when the routed page is the loaded compact entry detail (its own bar / body / foot).
+      const compact = css.match(/\n\.pane-host\.drawer:has\(> app-entry-detail\.entry-detail--drawer\) \{([^}]*)\}/)?.[1] ?? '';
+      expect(declarations(compact)).toEqual(declarations('display: flex; flex-direction: column; overflow: hidden; padding: 0;'));
+      const form = css.match(/\n\.pane-host\.drawer--form \{([^}]*)\}/)?.[1] ?? '';
+      expect(declarations(form)).toEqual(declarations('left: auto; width: min(560px, 90vw);'));
     });
   });
 });

@@ -10,11 +10,21 @@
   margin-bottom: 1rem;
 }
 
+/* Neither the row nor a chip on screen (日曆's hidden row): the bar takes no space; an open panel is positioned out of
+   flow (popover anchored fixed, phone sheet fixed), so it still shows. */
+.filter-bar--empty {
+  margin-bottom: 0;
+}
+
 .filter-bar-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.filter-bar-row[hidden] {
+  display: none;
 }
 
 .slot-search {
@@ -49,51 +59,6 @@
     border-color: var(--app-primary);
     box-shadow: 0 0 0 3px var(--app-focus-ring);
   }
-}
-
-.filter-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.filter-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  min-height: 28px;
-  padding: 0 4px 0 10px;
-  border-radius: var(--radius-pill);
-  background: var(--app-surface-soft);
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-
-.chip-remove {
-  width: 24px;
-  height: 24px;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--app-text-muted);
-  font: inherit;
-  cursor: pointer;
-
-  &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 3px var(--app-focus-ring);
-  }
-}
-
-.clear-all {
-  border: 0;
-  background: transparent;
-  color: var(--app-primary);
-  font: inherit;
-  font-size: 0.75rem;
-  font-weight: 700;
-  cursor: pointer;
 }
 
 .filter-panel.popover {

@@ -68,10 +68,22 @@
   } @else {
     <ul class="ov-todo">
       @for (inv of sortedInvoices(); track inv.id) {
-        <li><button type="button" class="todo-invoice" (click)="openInvoice.emit(inv)">發票待對帳 · {{ shortDate(inv.issue_date) }} {{ inv.seller_name }} {{ formatMoney(inv.total_amount, currency()) }}</button></li>
+        <li>
+          <button type="button" class="todo-row todo-invoice" (click)="openInvoice.emit(inv)">
+            <span class="todo-tag tag-invoice">發票</span>
+            <span class="todo-text">{{ shortDate(inv.issue_date) }} {{ inv.seller_name }} {{ formatMoney(inv.total_amount, currency()) }}</span>
+            <i class="todo-chev pi pi-angle-right" aria-hidden="true"></i>
+          </button>
+        </li>
       }
       @for (due of sortedDues(); track due.key) {
-        <li><button type="button" class="todo-bill" (click)="pickDay.emit(due.date)">{{ due.name }} 帳單 {{ due.amountText }} · {{ shortDate(due.date) }} 到期</button></li>
+        <li>
+          <button type="button" class="todo-row todo-bill" (click)="pickDay.emit(due.date)">
+            <span class="todo-tag tag-bill">帳單</span>
+            <span class="todo-text">{{ due.name }} {{ due.amountText }} · {{ shortDate(due.date) }} 到期</span>
+            <i class="todo-chev pi pi-angle-right" aria-hidden="true"></i>
+          </button>
+        </li>
       }
     </ul>
   }

@@ -150,14 +150,50 @@
   font-size: var(--fs-sm);
 }
 
-.ov-todo button {
+.ov-todo .todo-row {
+  align-items: center;
   background: transparent;
   border: 0;
-  border-top: 1px solid var(--app-border);
+  border-bottom: 1px solid var(--app-border);
   color: inherit;
   cursor: pointer;
+  display: flex;
   font: inherit;
-  padding: 6px 0;
+  gap: 10px;
+  min-height: 42px;
+  padding: 0;
   text-align: left;
   width: 100%;
+}
+
+.todo-tag {
+  border-radius: 6px;
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.tag-bill {
+  background: var(--app-banner-warn-soft);
+  color: var(--app-banner-warn);
+}
+
+.tag-invoice {
+  background: color-mix(in srgb, var(--app-text-muted) 14%, transparent);
+  color: var(--app-text-muted);
+}
+
+.todo-text {
+  flex: 1;
+  min-width: 0;
+  /* A long row never leaves one character alone on its second line. */
+  text-wrap: pretty;
+}
+
+.todo-chev {
+  color: var(--app-text-muted);
+  flex: none;
 }

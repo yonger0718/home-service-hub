@@ -16,10 +16,11 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { calendarParams, writeCalendarQuery } from '../timeline/calendar-url';
-import { ActivatedRouteSnapshot, NavigationEnd, Params, Router, RouterOutlet } from '@angular/router';
+import { ActivatedRouteSnapshot, NavigationEnd, NavigationStart, Params, Router, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 
 import { BtnComponent } from '../../ui/btn/btn';
+import { FilterChipsComponent } from '../../ui/filter-bar/filter-chips';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
@@ -34,6 +35,7 @@ import { addDays } from '../dates';
 import type { InboxEinvoice } from '../inbox/einvoice.model';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
 import type { TimelineRow } from '../timeline/timeline';
+import { CalFiltersToggleComponent } from '../timeline/cal-filters-toggle';
 import { AccountingOverviewService } from '../month-overview/overview.service';
 import { QUERY_DEBOUNCE_MS, focusables, isHandledKey, trapFocus, OVERLAY_ATTR } from '../accounting-ui';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
@@ -100,6 +102,8 @@ const PAGE_CLOSE = '.close[aria-label="關閉"], [data-pane-close]';
     CalendarDayPanelComponent,
     PageHeaderComponent,
     BtnComponent,
+    FilterChipsComponent,
+    CalFiltersToggleComponent,
   ],
   templateUrl: './accounting-layout.html',
   styleUrl: './accounting-layout.scss',
@@ -205,6 +209,8 @@ export class AccountingLayoutComponent {
   private focusBeforeOverlay: HTMLElement | null = null;
   /** The sheet / drawer was open (focus moved into it), so its closing owes focus somewhere other than `<body>`. */
   private overlayWasOpen = false;
+  /** Focus was inside the open drawer when the current navigation started (`keepFocusInDrawer`). */
+  private drawerHadFocus = false;
 
   constructor() {
     effect(() => this.overview.visible.set(this.showOverview()));
@@ -220,12 +226,25 @@ export class AccountingLayoutComponent {
 
     this.router.events
       .pipe(
+        filter((event): event is NavigationStart => event instanceof NavigationStart),
+        takeUntilDestroyed(),
+      )
+      .subscribe(() => {
+        const drawer = this.drawerOpen() ? this.drawer()?.nativeElement : undefined;
+        this.drawerHadFocus = !!drawer && drawer.contains(this.document.activeElement);
+      });
+    this.router.events
+      .pipe(
         filter((event): event is NavigationEnd => event instanceof NavigationEnd),
         takeUntilDestroyed(),
       )
       .subscribe(event => {
         this.url.set(event.urlAfterRedirects);
         this.routeState.set(readLayoutState(this.router.routerState.snapshot.root));
+        if (this.drawerHadFocus) {
+          this.drawerHadFocus = false;
+          this.keepFocusInDrawer();
+        }
       });
 
     effect(onCleanup => {
@@ -460,6 +479,10 @@ export class AccountingLayoutComponent {
 
   /** One search shared with the filter bar: the timeline owns the query. */
   onSearch(text: string): void {
+    // Typing while a day is selected shows the results: the day goes first (an empty commit keeps it).
+    if (text.trim() !== '' && this.pane.selectedDay()) {
+      this.onClearDay();
+    }
     this.pane.commands()?.setQuery(text);
   }
 
@@ -640,6 +663,27 @@ export class AccountingLayoutComponent {
             this.closeButton()?.nativeElement ??
             this.detailPane()?.nativeElement.querySelector<HTMLElement>('[data-pane-close]')
           )?.focus();
+        },
+      },
+      { injector: this.injector },
+    );
+  }
+
+  /**
+   * A navigation inside the open drawer (a step, detail → group view) removed the focused control with the page part it
+   * sat in: focus would drop to <body>, out of the modal drawer, and ↑ ↓ would stop reaching it. Put it back on the
+   * page's ✕, else its first control, else the dialog itself. Focus that moved somewhere live is left alone.
+   */
+  private keepFocusInDrawer(): void {
+    afterNextRender(
+      {
+        write: () => {
+          const drawer = this.drawerOpen() ? this.drawer()?.nativeElement : undefined;
+          const active = this.document.activeElement;
+          if (!drawer || (active && active !== this.document.body && active.isConnected)) {
+            return;
+          }
+          (drawer.querySelector<HTMLElement>(PAGE_CLOSE) ?? focusables(drawer)[0] ?? drawer).focus();
         },
       },
       { injector: this.injector },

@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -27,6 +30,7 @@ describe('CalendarMonthComponent', () => {
 
   function render(
     inputs: Partial<{
+      month: string;
       weekStart: number;
       selected: string | null;
       today: string;
@@ -44,10 +48,11 @@ describe('CalendarMonthComponent', () => {
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({ imports: [CalendarMonthComponent] });
     const fixture = TestBed.createComponent(CalendarMonthComponent);
-    fixture.componentRef.setInput('month', '2026-10');
+    fixture.componentRef.setInput('month', inputs.month ?? '2026-10');
     fixture.componentRef.setInput('days', DAYS);
     fixture.componentRef.setInput('currency', 'TWD');
     for (const [key, value] of Object.entries(inputs)) {
+      if (key === 'month') continue;
       fixture.componentRef.setInput(key, value);
     }
     fixture.detectChanges();
@@ -58,16 +63,18 @@ describe('CalendarMonthComponent', () => {
 
   const text = (node: Element | null) => node?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
 
-  it('renders 42 day cells under a Sunday-first weekday header', () => {
+  it('renders only the weeks the month needs under a Sunday-first weekday header', () => {
     const { el } = render();
-    expect(el.querySelectorAll('button.cell').length).toBe(42);
+    expect(el.querySelectorAll('.week').length).toBe(5);
+    expect(el.querySelectorAll('button.cell').length).toBe(31);
     expect(Array.from(el.querySelectorAll('.weekdays span')).map(text)).toEqual(['日', '一', '二', '三', '四', '五', '六']);
   });
 
   it('starts the header on Monday when weekStart is 1', () => {
     const { el } = render({ weekStart: 1 });
     expect(Array.from(el.querySelectorAll('.weekdays span')).map(text)).toEqual(['一', '二', '三', '四', '五', '六', '日']);
-    expect(el.querySelector('button.cell')!.getAttribute('data-date')).toBe('2026-09-28');
+    expect(el.querySelector('.week')!.querySelectorAll('.cell-blank').length).toBe(3);
+    expect(el.querySelector('button.cell')!.getAttribute('data-date')).toBe('2026-10-01');
   });
 
   it('shows the net in the cell with tone classes and an aria label', () => {
@@ -93,13 +100,25 @@ describe('CalendarMonthComponent', () => {
     expect(emitted).toEqual(['2026-10-05']);
   });
 
-  it('disables the cells of the adjacent months and leaves them blank', () => {
-    const { cell } = render();
-    const outside = cell('2026-09-30');
-    expect(outside.disabled).toBe(true);
-    expect(outside.classList).toContain('outside');
-    expect(outside.querySelector('.net, .heat, .dots')).toBeNull();
-    expect(cell('2026-10-01').disabled).toBe(false);
+  it('month mode: adjacent-month cells are blank aria-hidden spans, not buttons', () => {
+    const { el, cell } = render({ month: '2026-11' });
+    expect(el.querySelectorAll('.week').length).toBe(5);
+    expect(el.querySelectorAll('button.cell').length).toBe(30);
+    expect(el.querySelectorAll('.cell-blank').length).toBe(5);
+    expect(el.querySelectorAll('.cell-blank[aria-hidden="true"]').length).toBe(5);
+    expect(el.querySelector('button.cell.outside')).toBeNull();
+    expect(cell('2026-12-01')).toBeNull();
+    expect(Array.from(el.querySelectorAll('.cell-blank')).every(blank => text(blank) === '')).toBe(true);
+    expect(cell('2026-11-01').disabled).toBe(false);
+  });
+
+  it('week mode: the week holding 11/30 keeps its 5 outside cells as enabled buttons', () => {
+    const { el } = render({ month: '2026-11', weekOf: '2026-11-30' });
+    expect(el.querySelectorAll('button.cell').length).toBe(7);
+    const outside = Array.from(el.querySelectorAll<HTMLButtonElement>('button.cell.outside'));
+    expect(outside.length).toBe(5);
+    expect(outside.every(button => !button.disabled)).toBe(true);
+    expect(el.querySelector('.cell-blank')).toBeNull();
   });
 
   it('week mode: an outside cell is enabled and emits its date when picked', () => {
@@ -112,12 +131,6 @@ describe('CalendarMonthComponent', () => {
     expect(outside.getAttribute('aria-pressed')).toBe('false');
     outside.click();
     expect(emitted).toEqual(['2026-09-28']);
-  });
-
-  it('month mode: an outside cell stays disabled', () => {
-    const { cell } = render({ weekStart: 0 });
-    expect(cell('2026-09-28').disabled).toBe(true);
-    expect(cell('2026-09-28').hasAttribute('aria-pressed')).toBe(false);
   });
 
   it('week mode: ArrowRight from 10/31 moves focus and tabindex to the outside cell 11/01 (Review Focus 8)', () => {
@@ -153,30 +166,31 @@ describe('CalendarMonthComponent', () => {
       const twoCards = cell('2026-10-05');
       expect(twoCards.querySelector('.due-badge')).toBeNull();
       expect(twoCards.querySelector('i.pi-credit-card')).toBeNull();
-      expect(text(twoCards.querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(twoCards.querySelector('.tag.tag-bill'))).toBe('帳單');
       expect(twoCards.classList).toContain('due');
       expect(twoCards.getAttribute('aria-label')).toContain('2 張卡繳費到期');
       expect(cell('2026-10-12').getAttribute('aria-label')).toContain('1 張卡繳費到期');
     });
 
-    it('marks closing days with a border class and no mark', () => {
+    it('marks closing days with a 結帳 tag and a named label', () => {
       const { cell } = render({ billing: BILLING });
       const closing = cell('2026-10-15');
       expect(closing.classList).toContain('closing');
-      expect(closing.querySelector('.bill-mark, .bill-dot')).toBeNull();
-      expect(closing.getAttribute('aria-label')).toBe('10 月 15 日 週四');
+      expect(closing.querySelector('.tag-bill, .bill-dot')).toBeNull();
+      expect(text(closing.querySelector('.tag.tag-closing'))).toBe('結帳');
+      expect(closing.getAttribute('aria-label')).toBe('10 月 15 日 週四，信用卡結帳日');
       expect(cell('2026-10-05').classList).not.toContain('closing');
     });
 
     it('leaves other days without a mark', () => {
       const { el, cell } = render({ billing: BILLING });
-      expect(el.querySelectorAll('.bill-mark').length).toBe(2);
-      expect(cell('2026-10-02').querySelector('.bill-mark')).toBeNull();
+      expect(el.querySelectorAll('.week .tag-bill').length).toBe(2);
+      expect(cell('2026-10-02').querySelector('.tag')).toBeNull();
       expect(cell('2026-10-02').classList).not.toContain('due');
     });
 
     it('shows no billing marks without events', () => {
-      expect(render().el.querySelectorAll('.bill-mark, .bill-dot, .cell.closing, .cell.due').length).toBe(0);
+      expect(render().el.querySelectorAll('.week .tag, .bill-dot, .closing-dot, .cell.closing, .cell.due').length).toBe(0);
     });
   });
   it('uses a .72rem caption fallback when rendered outside the accounting layout', () => {
@@ -258,13 +272,13 @@ describe('CalendarMonthComponent', () => {
     it('marks bills as text wide and as dots compact; a paid day reads paid in the name', () => {
       const paidDays = new Set(['2026-10-12']);
       const wide = render({ ...base, billing: BILL, paidDays });
-      expect(text(wide.cell('2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(wide.cell('2026-10-05').querySelector('.tag-bill'))).toBe('帳單');
       expect(wide.cell('2026-10-05').getAttribute('aria-label')).toContain('2 張卡繳費到期');
-      expect(text(wide.cell('2026-10-12').querySelector('.bill-mark'))).toBe('已繳');
+      expect(text(wide.cell('2026-10-12').querySelector('.tag-paid'))).toBe('已繳');
       expect(wide.cell('2026-10-12').getAttribute('aria-label')).toContain('已繳');
       const narrow = render({ ...base, billing: BILL, paidDays, compact: true });
       expect(narrow.cell('2026-10-05').querySelector('.bill-dot')).not.toBeNull();
-      expect(narrow.cell('2026-10-05').querySelector('.bill-mark')).toBeNull();
+      expect(narrow.cell('2026-10-05').querySelector('.tag')).toBeNull();
       expect(text(narrow.cell('2026-10-05'))).not.toContain('帳單');
     });
 
@@ -281,7 +295,7 @@ describe('CalendarMonthComponent', () => {
     it('hides the bar and dots from assistive technology', () => {
       const dots = new Map([['2026-10-19', ['#a']]]);
       const { cell } = render({ ...base, dots });
-      expect(cell('2026-10-19').querySelector('.heat')!.getAttribute('aria-hidden')).toBe('true');
+      expect(cell('2026-10-19').querySelector('.heat-track')!.getAttribute('aria-hidden')).toBe('true');
       expect(cell('2026-10-19').querySelector('.dots')!.getAttribute('aria-hidden')).toBe('true');
     });
 
@@ -415,10 +429,71 @@ describe('CalendarMonthComponent', () => {
       expect(cell('2026-10-05').querySelector('.d')!.classList).not.toContain('weekend');
     });
 
+    it('fills past days and today, leaves future days unfilled', () => {
+      const { cell } = render({ ...base, today: '2026-10-22' });
+      expect(cell('2026-10-21').classList).toContain('past');
+      expect(cell('2026-10-22').classList).toContain('past');
+      expect(cell('2026-10-22').classList).toContain('today');
+      expect(cell('2026-10-25').classList).toContain('future');
+      expect(cell('2026-10-25').classList).not.toContain('past');
+    });
+
+    it('draws the heat bar inside a track, none without spend or on a future day', () => {
+      const { cell } = render(base);
+      expect(cell('2026-10-19').querySelector<HTMLElement>('.heat-track > .heat')!.style.width).toBe('100%');
+      expect(cell('2026-10-06').querySelector('.heat-track')).toBeNull();
+      expect(cell('2026-10-25').querySelector('.heat-track')).toBeNull();
+    });
+
+    it('tags closing and due days in order, paid in the neutral style', () => {
+      const period = { start: '2026-08-16', end: '2026-09-15' };
+      const ev = (kind: 'due' | 'closing', date: string): BillingEvent => ({ accountId: 1, name: 'A', kind, date, period, nextClosing: '2026-10-15' });
+      const billing = [ev('due', '2026-10-05'), ev('closing', '2026-10-05'), ev('due', '2026-10-12'), ev('closing', '2026-10-15')];
+      const { cell } = render({ ...base, billing, paidDays: new Set(['2026-10-12']) });
+      expect(Array.from(cell('2026-10-05').querySelectorAll('.tag')).map(text)).toEqual(['帳單', '結帳']);
+      expect(Array.from(cell('2026-10-12').querySelectorAll('.tag')).map(text)).toEqual(['已繳']);
+      expect(cell('2026-10-12').querySelector('.tag-paid')).not.toBeNull();
+      expect(text(cell('2026-10-15').querySelector('.tag.tag-closing'))).toBe('結帳');
+    });
+
+    it('uses dots for due and closing days when compact, with no tags', () => {
+      const period = { start: '2026-08-16', end: '2026-09-15' };
+      const billing: BillingEvent[] = [
+        { accountId: 1, name: 'A', kind: 'due', date: '2026-10-05', period, nextClosing: '2026-10-15' },
+        { accountId: 1, name: 'A', kind: 'closing', date: '2026-10-15', period, nextClosing: '2026-11-15' },
+      ];
+      const { cell } = render({ ...base, billing, compact: true });
+      expect(cell('2026-10-05').querySelector('.bill-dot')).not.toBeNull();
+      expect(cell('2026-10-15').querySelector('.closing-dot')).not.toBeNull();
+      expect(cell('2026-10-05').querySelector('.tag')).toBeNull();
+      expect(cell('2026-10-15').querySelector('.tag')).toBeNull();
+    });
+
+    it('no longer styles a closing day with an inset top rule', () => {
+      const scss = readFileSync(resolve(__dirname, 'calendar-month.scss'), 'utf8');
+      expect(scss).not.toContain('inset 0 2px 0');
+    });
+
+    it('reads the legend as spend bar, category, 帳單 and 結帳', () => {
+      const { el } = render(base);
+      expect(Array.from(el.querySelectorAll('.legend-item')).map(text)).toEqual([
+        '當天支出（相對本月最高）',
+        '類別',
+        '帳單到期日',
+        '結帳信用卡結帳日',
+      ]);
+      expect(text(el.querySelector('.legend .sr-only'))).toBe('色條為當天支出相對本月最高的比例，圓點為類別，帳單為繳費到期日，結帳為信用卡結帳日');
+    });
+
     it('shows the legend only on wide month mode', () => {
       expect(render(base).el.querySelector('.legend')).not.toBeNull();
       expect(render({ ...base, compact: true }).el.querySelector('.legend')).toBeNull();
       expect(render({ ...base, weekOf: '2026-10-21' }).el.querySelector('.legend')).toBeNull();
     });
+  });
+
+  it('keeps the selection border on a selected future day in compact cells (scss source)', () => {
+    const scss = readFileSync(resolve(__dirname, 'calendar-month.scss'), 'utf8');
+    expect(scss).toContain('&.future:not(.sel)');
   });
 });

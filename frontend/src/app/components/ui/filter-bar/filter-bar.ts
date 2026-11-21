@@ -8,15 +8,18 @@ import {
   Renderer2,
   afterNextRender,
   computed,
+  effect,
   inject,
   input,
   output,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { SheetPullDirective } from '../../accounting/sheet-pull.directive';
+import { FilterChipsComponent } from './filter-chips';
 
 export interface FilterChip {
   key: string;
@@ -31,7 +34,7 @@ let nextPanelId = 0;
 @Component({
   selector: 'app-filter-bar',
   standalone: true,
-  imports: [NgTemplateOutlet, SheetPullDirective],
+  imports: [NgTemplateOutlet, SheetPullDirective, FilterChipsComponent],
   templateUrl: './filter-bar.html',
   styleUrl: './filter-bar.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -46,8 +49,14 @@ export class FilterBarComponent {
   private readonly panel = viewChild<ElementRef<HTMLElement>>('panel');
   /** Removes the document pointerdown listener; only set while the panel is open. */
   private unlistenPointerDown: (() => void) | null = null;
+  /** Remove the window resize / scroll listeners that keep an anchored panel in place; only set while it is open. */
+  private unlistenPlacement: (() => void)[] = [];
 
   readonly chips = input<FilterChip[]>([]);
+  /** Hides only the search / 篩選 row; the chips and the panel still render (the panel opens through `toggle`). */
+  readonly rowHidden = input(false);
+  /** Hides only the chips (a pane elsewhere shows them). */
+  readonly chipsHidden = input(false);
   readonly remove = output<string>();
   readonly clearAll = output<void>();
   readonly reset = output<void>();
@@ -56,16 +65,47 @@ export class FilterBarComponent {
   readonly panelId = `filter-panel-${++nextPanelId}`;
   readonly open = signal(false);
   readonly count = computed(() => this.chips().length);
+  /** No chip host without chips: an empty block in the bar's flex column would still add the 8 px gap. */
+  readonly chipsShown = computed(() => !this.chipsHidden() && this.chips().length > 0);
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+
+  /** The outside button the panel is anchored to (null: the bar's own 篩選 button). */
+  private anchor: HTMLElement | null = null;
+  readonly anchorTop = signal<number | null>(null);
+  readonly anchorRight = signal<number | null>(null);
+  private openPhone = false;
 
   constructor() {
     inject(DestroyRef).onDestroy(() => this.stopListening());
+    // A layout change (phone sheet <-> popover) while open closes the panel without moving focus.
+    effect(() => {
+      const phone = this.isPhone();
+      untracked(() => {
+        if (this.open() && phone !== this.openPhone) this.close(false);
+      });
+    });
   }
 
-  toggle(): void {
+  /** With `anchor` the popover is fixed under that button, right-aligned to it, and focus returns to it on close. */
+  toggle(anchor?: HTMLElement): void {
     if (this.open()) {
       this.close();
       return;
+    }
+    this.anchor = anchor ?? null;
+    this.openPhone = this.isPhone();
+    if (anchor) {
+      this.place();
+      const win = this.document.defaultView;
+      if (win) {
+        const replace = () => this.place();
+        win.addEventListener('resize', replace);
+        win.addEventListener('scroll', replace, { capture: true, passive: true });
+        this.unlistenPlacement = [
+          () => win.removeEventListener('resize', replace),
+          () => win.removeEventListener('scroll', replace, { capture: true }),
+        ];
+      }
     }
     this.open.set(true);
     this.openChange.emit(true);
@@ -76,13 +116,29 @@ export class FilterBarComponent {
     afterNextRender(() => this.panel()?.nativeElement.focus({ preventScroll: true }), { injector: this.injector });
   }
 
+  /** Fixed position under the anchor, right-aligned to it, kept inside the viewport. */
+  private place(): void {
+    const anchor = this.anchor;
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const width = this.document.defaultView?.innerWidth ?? 1024;
+    const panelWidth = Math.min(560, width - 16);
+    this.anchorTop.set(Math.round(rect.bottom + 6));
+    this.anchorRight.set(Math.round(Math.min(Math.max(width - rect.right, 8), Math.max(8, width - panelWidth - 8))));
+  }
+
   /** `restoreFocus` is false for an outside pointerdown: the user's click target keeps focus. */
   close(restoreFocus = true): void {
     if (!this.open()) return;
     this.stopListening();
     this.open.set(false);
     this.openChange.emit(false);
-    if (restoreFocus) this.toggleBtn()?.nativeElement.focus({ preventScroll: true });
+    const returnTo = this.anchor ?? this.toggleBtn()?.nativeElement;
+    this.anchor = null;
+    this.anchorTop.set(null);
+    this.anchorRight.set(null);
+    // An anchor that left the document (its pane unmounted) is never focused.
+    if (restoreFocus && returnTo?.isConnected) returnTo.focus({ preventScroll: true });
   }
 
   /** A child that handled Escape (an open calendar or select overlay) calls preventDefault(); IME composition too. */
@@ -98,11 +154,14 @@ export class FilterBarComponent {
     const target = event.target as Element | null;
     if (!target || this.host.nativeElement.contains(target)) return;
     if (target.closest?.(PORTALED_OVERLAY_SELECTOR)) return;
+    if (this.anchor?.contains(target)) return;
     this.close(false);
   }
 
   private stopListening(): void {
     this.unlistenPointerDown?.();
     this.unlistenPointerDown = null;
+    this.unlistenPlacement.forEach(off => off());
+    this.unlistenPlacement = [];
   }
 }

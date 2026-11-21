@@ -1,6 +1,10 @@
 <section class="timeline">
   @if (!embedded()) {
-    <app-page-header></app-page-header>
+    <app-page-header>
+      @if (narrowCalendar()) {
+        <app-cal-filters-toggle />
+      }
+    </app-page-header>
   }
 
   <div class="monthbar">
@@ -87,7 +91,7 @@
     }
   </div>
   }
-  <app-filter-bar [chips]="filterChips()" (remove)="removeFilter($event)" (clearAll)="clearFilters()" (reset)="resetSecondaryFilters()" (openChange)="onFilterPanelOpen($event)">
+  <app-filter-bar [rowHidden]="wideCalendar() || (narrowCalendar() && !overview.calendarFiltersOpen())" [chipsHidden]="wideCalendar()" [chips]="filterChips()" (remove)="removeFilter($event)" (clearAll)="clearFilters()" (reset)="resetSecondaryFilters()" (openChange)="onFilterPanelOpen($event)">
     <input
       filterBarSearch
       #queryInput
@@ -100,13 +104,20 @@
       (input)="onQueryInput($event)"
       (keydown)="onQueryKeydown($event)"
     />
-    <select filterBarPrimary class="filter-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
-      <option value="" [selected]="accountFilter() === null">全部帳戶</option>
-      @for (account of accounts(); track account.id) {
-        <option [value]="account.id" [selected]="accountFilter() === account.id">{{ account.name }}</option>
-      }
-    </select>
+    @if (!accountInPanel()) {
+      <select filterBarPrimary class="filter-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
+        <ng-container *ngTemplateOutlet="accountOptions" />
+      </select>
+    }
     <div filterBarSecondary class="filter-fields">
+      @if (accountInPanel()) {
+        <label class="hub-filter-field">
+          <span class="field-label">帳戶</span>
+          <select class="filter-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
+            <ng-container *ngTemplateOutlet="accountOptions" />
+          </select>
+        </label>
+      }
       <label class="hub-filter-field">
         <span class="field-label">類型</span>
         <select class="filter-kind" aria-label="類型" (change)="setKind($any($event.target).value)">
@@ -152,6 +163,12 @@
       </div>
     </div>
   </app-filter-bar>
+  <ng-template #accountOptions>
+    <option value="" [selected]="accountFilter() === null">全部帳戶</option>
+    @for (account of accounts(); track account.id) {
+      <option [value]="account.id" [selected]="accountFilter() === account.id">{{ account.name }}</option>
+    }
+  </ng-template>
 
   @if (filtersActive()) {
     @if (view() === 'list') {
@@ -159,7 +176,7 @@
         <span class="match-count">符合條件 {{ total() ?? '—' }} 筆</span>
         <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
       </div>
-    } @else {
+    } @else if (!wideCalendar()) {
       <div class="match-row match-row--calendar">
         <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
       </div>

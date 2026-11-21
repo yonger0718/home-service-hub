@@ -1,4 +1,4 @@
-import { Location } from '@angular/common';
+import { Location, NgTemplateOutlet } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -38,7 +38,9 @@ import {
   parseMoneyExact,
   parseMoneyText,
 } from '../amount-text';
-import { shortDate, slashDate, todayIso } from '../dates';
+import { shortDate, slashDate, todayIso, weekdayLabel } from '../dates';
+import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
+import { AccountingOverviewService } from '../month-overview/overview.service';
 import { currencySymbol, formatMoney, formatNumber } from '../format';
 import { debtEventLine } from '../debt-events';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
@@ -101,11 +103,11 @@ interface Chip {
 @Component({
   selector: 'app-entry-detail',
   standalone: true,
-  imports: [RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent, AppEntryRewardSectionComponent],
+  imports: [NgTemplateOutlet, RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent, AppEntryRewardSectionComponent],
   templateUrl: './entry-detail.html',
   styleUrl: './entry-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '(keydown)': 'onKeydown($event)' },
+  host: { '(keydown)': 'onKeydown($event)', '[class.entry-detail--drawer]': 'compact()' },
 })
 export class EntryDetailComponent implements OnInit {
   private service = inject(AccountingService);
@@ -130,7 +132,21 @@ export class EntryDetailComponent implements OnInit {
   readonly passbookId = signal<number | null>(null);
   /** In the layout's 760–1023 px sheet the sheet's own ✕ closes it: no second close control here. */
   readonly inSheet = computed(() => this.layoutMode.mode() === 'sheet');
+  /** The calendar drawer (≥ 1024 px, 日曆): a compact head and fields, the actions pinned at the bottom. */
+  private readonly overview = inject(AccountingOverviewService);
+  private readonly calendarPane = inject(CalendarPaneService);
+  readonly drawer = computed(() => this.layoutMode.mode() === 'panes' && this.overview.calendar());
   readonly detail = signal<EntryDetail | null>(null);
+  /**
+   * A drawer step (↑ ↓, 上一筆 / 下一筆) away from a shown entry: its bar stays mounted while the next entry loads, so
+   * focus on a step button or ✕ never leaves the modal drawer. Cleared once that read settles.
+   */
+  private readonly stepping = signal(false);
+  /**
+   * The drawer shows the compact page (bar, scrolling body, pinned foot): with an entry to show, or while a step loads
+   * the next one. A first load, or a failed read, sits in the layout's default drawer (padded, scrolling).
+   */
+  readonly compact = computed(() => this.drawer() && (this.detail() !== null || this.stepping()));
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly loadError = signal(false);
   /**
@@ -521,6 +537,7 @@ export class EntryDetailComponent implements OnInit {
       // Another entry: drop the shown one at once, so nothing acts on it while the new one loads. A reload of the
       // same entry keeps it (and keeps it when that reload fails).
       if (this.detail()?.id !== id) {
+        this.stepping.set(this.drawer() && (this.detail() !== null || this.stepping()));
         this.detail.set(null);
       }
       this.load(id);
@@ -562,6 +579,36 @@ export class EntryDetailComponent implements OnInit {
   isSibling(id: number): boolean {
     return this.siblingIds().has(id);
   }
+
+  /** ↑ / ↓ of the drawer's bar: the timeline steps to the neighbouring entry. */
+  stepEntry(delta: 1 | -1): void {
+    this.calendarPane.commands()?.stepEntry(delta);
+  }
+
+  /** The drawer's two-column table: the four always-on cells, then the ones that carry something non-default. */
+  readonly drawerFields = computed<{ label: string; value: string }[]>(() => {
+    const detail = this.detail();
+    if (!detail) {
+      return [];
+    }
+    const [, month, day] = detail.entry_date.split('-').map(Number);
+    const fields = [
+      { label: '帳戶', value: detail.account_name },
+      { label: this.debtKind() ? '對象' : '商家', value: (this.debtKind() ? detail.counterparty : detail.merchant) || '—' },
+      { label: '日期', value: `${month}/${day} ${weekdayLabel(detail.entry_date)}` },
+      { label: '時間', value: detail.entry_time ? detail.entry_time.slice(0, 5) : '—' },
+    ];
+    if (detail.project) {
+      fields.push({ label: '專案', value: detail.project });
+    }
+    if (detail.kind !== 'expense' && detail.kind !== 'income') {
+      fields.push({ label: '交易類型', value: this.kindLabel(detail.kind) });
+    }
+    if (this.eventKindLabel(detail) !== '單次') {
+      fields.push({ label: '事件類型', value: this.eventKindLabel(detail) });
+    }
+    return fields;
+  });
 
   /** The entry shown, only while it is also the one in the URL; writes act on nothing else. */
   private routedDetail(): EntryDetail | null {
@@ -608,11 +655,13 @@ export class EntryDetailComponent implements OnInit {
       .subscribe({
         next: detail => {
           if (seq === this.loadSeq) {
+            this.stepping.set(false);
             this.detail.set(detail);
           }
         },
         error: () => {
           if (seq === this.loadSeq) {
+            this.stepping.set(false);
             if (afterWrite || this.detail()?.id !== id) {
               this.detail.set(null);
             }
@@ -835,6 +884,17 @@ export class EntryDetailComponent implements OnInit {
       this.applyAccountDefault(detail, panel, panel === 'settle' && !!chosen && chosen.currency !== detail.currency);
     }
     this.panel.set(panel);
+    if (panel === 'delete' && this.drawer()) {
+      // In the drawer the confirm renders at the end of the scrolling body: bring it into view, ⏎ lands on 取消.
+      afterNextRender(
+        () => {
+          const confirm = this.host.nativeElement.querySelector<HTMLElement>('.delete-confirm');
+          confirm?.scrollIntoView?.({ block: 'nearest' });
+          confirm?.querySelector<HTMLElement>('.delete-cancel')?.focus();
+        },
+        { injector: this.injector },
+      );
+    }
     if (panel === 'reopen' || panel === 'close') {
       // The confirm renders below the related rows: focus brings it into view, and ⏎ lands on 取消, not the opener.
       this.focusInPanel('.debt-cancel');
