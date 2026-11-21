@@ -13,7 +13,7 @@
   </div>
 
   @if (loadError()) {
-    <p class="load-error">提醒讀取失敗，請稍後再試。</p>
+    <app-banner class="page-load-error" tone="error" heading="提醒讀取失敗，請稍後再試。" actionLabel="重試" (action)="retry()" />
   } @else {
     <!-- The panel bumps entriesChanged after each answer; the load() effect then re-reads the inbox. -->
     @if (showInbox()) {

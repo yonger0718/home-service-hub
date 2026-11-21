@@ -581,7 +581,7 @@ describe('EntryDetailComponent', () => {
     http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
 
-    expect(el(fixture).querySelector('.load-error')).not.toBeNull();
+    expect(el(fixture).querySelector('.page-load-error')).not.toBeNull();
     expect(el(fixture).querySelector('.detail-name')?.textContent?.trim()).toBe('代付 晚餐');
   });
 
@@ -604,6 +604,23 @@ describe('EntryDetailComponent', () => {
     expect(back).toHaveBeenCalledTimes(1);
   });
 
+  it('a failed read shows an 錯誤 banner with 記錄讀取失敗，請稍後再試。; 重試 reads the same entry again and the banner leaves on success', () => {
+    const fixture = TestBed.createComponent(EntryDetailComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
+    fixture.detectChanges();
+    const root = el(fixture);
+    expect(root.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('記錄讀取失敗，請稍後再試。');
+    expect(root.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(root.querySelector('.page-load-error .banner-close')).toBeNull();
+    root.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    http.expectOne('/api/accounting/entries/42').flush(RECEIVABLE);
+    fixture.detectChanges();
+    expect(root.querySelector('.page-load-error')).toBeNull();
+    expect(root.querySelector('.detail-name')?.textContent?.trim()).toBe('代付 晚餐');
+  });
+
   it('shows ✕ on the load-error page and leaves it for the parent list', () => {
     const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
     const fixture = TestBed.createComponent(EntryDetailComponent);
@@ -612,7 +629,7 @@ describe('EntryDetailComponent', () => {
     http.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
     fixture.detectChanges();
 
-    expect(el(fixture).querySelector('.load-error')).not.toBeNull();
+    expect(el(fixture).querySelector('.page-load-error')).not.toBeNull();
     el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
     expect(navigate).toHaveBeenCalledWith('/accounting');
   });
@@ -751,7 +768,7 @@ describe('EntryDetailComponent', () => {
     http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
 
-    expect(el(fixture).querySelector('.load-error')).not.toBeNull();
+    expect(el(fixture).querySelector('.page-load-error')).not.toBeNull();
     expect(el(fixture).querySelector('.detail-name')).toBeNull();
   });
 
@@ -1588,7 +1605,7 @@ describe('EntryDetailComponent', () => {
       http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
       http.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
       fixture.detectChanges();
-      expect(root.querySelector('.load-error')).not.toBeNull();
+      expect(root.querySelector('.page-load-error')).not.toBeNull();
       expect(root.classList.contains('entry-detail--drawer')).toBe(false);
       expect(root.querySelector('.drawer-bar')).toBeNull();
     });
@@ -1626,7 +1643,7 @@ describe('EntryDetailComponent', () => {
       http.expectOne('/api/accounting/entries/45').flush('boom', { status: 500, statusText: 'Server Error' });
       fixture.detectChanges();
       expect(root.querySelector('.drawer-bar')).toBeNull();
-      expect(root.querySelector('.load-error')).not.toBeNull();
+      expect(root.querySelector('.page-load-error')).not.toBeNull();
       expect(root.classList.contains('entry-detail--drawer')).toBe(false);
     });
 

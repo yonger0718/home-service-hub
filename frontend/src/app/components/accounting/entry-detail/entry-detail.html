@@ -6,7 +6,7 @@
         <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>
       </div>
     }
-    <p class="load-error">記錄讀取失敗，請稍後再試。</p>
+    <app-banner class="page-load-error" tone="error" heading="記錄讀取失敗，請稍後再試。" actionLabel="重試" (action)="retry()" />
   }
 
   @if (compact()) {

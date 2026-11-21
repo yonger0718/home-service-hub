@@ -671,7 +671,7 @@ describe('AccountingLayoutComponent', () => {
           await vi.waitFor(() => {
             http.match('/api/accounting/entries/6').forEach(req => req.flush('boom', { status: 500, statusText: 'Server Error' }));
             harness.detectChanges();
-            expect(drawer.querySelector('.load-error')).not.toBeNull();
+            expect(drawer.querySelector('.page-load-error')).not.toBeNull();
           });
           expect(drawer.matches(clipped)).toBe(false);
 

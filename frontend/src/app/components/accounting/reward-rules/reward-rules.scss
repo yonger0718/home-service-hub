@@ -126,7 +126,6 @@
   padding: 0 12px;
 }
 
-.rr-error { color: var(--tone-neg-pill-ink, var(--c-red-pill-ink)); margin: 0; }
 
 .rr-grid {
   align-items: start;
@@ -304,3 +303,5 @@
 }
 
 .rr-none { color: var(--app-text-muted); margin: 4px 0; }
+
+.page-load-error { margin: 0; }

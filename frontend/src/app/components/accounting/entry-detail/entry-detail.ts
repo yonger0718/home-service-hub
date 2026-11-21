@@ -52,6 +52,8 @@ import { AppEntryRewardRepriceCardComponent } from './reward-reprice-card';
 import { RewardAmountText } from './reward-cards';
 import { AppEntryRewardSectionComponent } from './reward-section';
 import { storedGroupNet } from './split-card';
+import { BannerComponent } from '../../ui/banner/banner';
+
 
 /**
  * What a settlement is worth in the debt's currency (design D3): its `amount` in the same currency, else its
@@ -104,7 +106,7 @@ interface Chip {
 @Component({
   selector: 'app-entry-detail',
   standalone: true,
-  imports: [NgTemplateOutlet, RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent, AppEntryRewardSectionComponent],
+  imports: [BannerComponent, NgTemplateOutlet, RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent, AppEntryRewardSectionComponent],
   templateUrl: './entry-detail.html',
   styleUrl: './entry-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -646,8 +648,18 @@ export class EntryDetailComponent implements OnInit {
     });
   }
 
+  private lastLoadId: number | null = null;
+
+  /** 重試 on the read-failure banner: the entry the route last asked for. */
+  retry(): void {
+    if (this.lastLoadId !== null) {
+      this.load(this.lastLoadId);
+    }
+  }
+
   /** `afterWrite`: a reload after a successful write; when it fails the stale record is cleared, not shown. */
   load(id: number, afterWrite = false): void {
+    this.lastLoadId = id;
     const seq = ++this.loadSeq;
     this.loadError.set(false);
     this.service

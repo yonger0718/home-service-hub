@@ -31,7 +31,7 @@
   }
 
   @if (error(); as message) {
-    <p class="rr-error" role="alert">{{ message }}</p>
+    <app-banner class="page-load-error" tone="error" [heading]="message" actionLabel="重試" (action)="retry()" />
   }
 
   <div class="rr-grid" [attr.aria-busy]="loading() || null">

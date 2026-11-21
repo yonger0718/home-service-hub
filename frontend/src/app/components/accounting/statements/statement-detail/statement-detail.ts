@@ -39,6 +39,8 @@ import {
   statementChips,
 } from '../statement-view';
 import { StatementsService } from '../statements.service';
+import { BannerComponent } from '../../../ui/banner/banner';
+
 
 type SegmentKey = 'matched' | 'statement' | 'ledger';
 
@@ -48,7 +50,7 @@ const ENTRY_LIMIT = 500;
 @Component({
   selector: 'app-statement-detail',
   standalone: true,
-  imports: [RouterLink, SkeletonComponent],
+  imports: [RouterLink, SkeletonComponent, BannerComponent],
   templateUrl: './statement-detail.html',
   styleUrls: ['../../entry-row.scss', '../../sheet.scss', './statement-detail.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,

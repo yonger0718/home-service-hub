@@ -346,8 +346,23 @@ describe('SplitGroupComponent (多類別 group view)', () => {
     fixture.detectChanges();
     http.expectOne('/api/accounting/entries/42').flush('no', { status: 404, statusText: 'Not Found' });
     fixture.detectChanges();
-    expect(el(fixture).querySelector('.load-error')).not.toBeNull();
+    expect(el(fixture).querySelector('.page-load-error')).not.toBeNull();
     expect(el(fixture).querySelector('.error-head .close')).not.toBeNull();
+  });
+
+  it('a failed read shows an 錯誤 banner; 重試 reads the same entry again and the banner leaves on success', () => {
+    const fixture = TestBed.createComponent(SplitGroupComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    const root = el(fixture);
+    expect(root.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('記錄讀取失敗，請稍後再試。');
+    expect(root.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(root.querySelector('.page-load-error .banner-close')).toBeNull();
+    root.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    http.expectOne('/api/accounting/entries/42').flush(splitDetail());
+    fixture.detectChanges();
+    expect(root.querySelector('.page-load-error')).toBeNull();
   });
 
   it('draws the folder tile of its members, +N past four and the badge of the count', () => {

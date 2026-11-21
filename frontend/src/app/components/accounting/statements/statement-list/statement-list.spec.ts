@@ -166,16 +166,20 @@ describe('StatementListComponent', () => {
       .flush('nope', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
     const el = fixture.nativeElement as HTMLElement;
-    expect(text(el.querySelector('.load-error'))).toBe('帳單讀取失敗');
+    expect(el.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('帳單讀取失敗');
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
+    expect(el.querySelectorAll('.page-load-error')).toHaveLength(1);
     expect(el.querySelector('app-skeleton')).toBeNull();
 
-    el.querySelector<HTMLButtonElement>('.retry')!.click();
+    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
     fixture.detectChanges();
     http
       .expectOne('/api/accounting/accounts/6/statements')
       .flush([statement({ matched_count: 1, open_case_count: 0 })]);
     fixture.detectChanges();
     expect(text(el.querySelector('.statement-row .sub'))).toBe('對帳 1/1');
+    expect(el.querySelector('.page-load-error')).toBeNull();
   });
 
   it('drops a superseded list when the account changes', () => {

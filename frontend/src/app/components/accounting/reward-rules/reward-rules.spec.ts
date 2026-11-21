@@ -147,6 +147,32 @@ describe('RewardRulesOverviewComponent', () => {
   const card = (el: Element, name: string) =>
     Array.from(el.querySelectorAll<HTMLElement>('.rr-card')).find(c => text(c.querySelector('.rr-card-name')) === name)!;
 
+  it('a failed read shows an 錯誤 banner with the message and 重試; 重試 re-reads with the same query (account, state, archived)', async () => {
+    TestBed.inject(LayoutModeService).set('panes');
+    const harness = await RouterTestingHarness.create();
+    await harness.navigateByUrl('/accounting/reward-rules?account_id=11&state=active&archived=1');
+    harness.detectChanges();
+    const failed = overviewRequest();
+    const query = failed.request.urlWithParams;
+    expect(query).toContain('account_id=11');
+    expect(query).toContain('state=active');
+    failed.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    harness.detectChanges();
+    const el = harness.routeNativeElement as HTMLElement;
+    expect(el.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBeTruthy();
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
+
+    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    harness.detectChanges();
+    const again = overviewRequest();
+    expect(again.request.urlWithParams).toBe(query);
+    again.flush(OVERVIEW);
+    harness.detectChanges();
+    expect(el.querySelector('.page-load-error')).toBeNull();
+    expect(el.querySelector('.rr-card')).not.toBeNull();
+  });
+
   it('requests GET /reward-rules once with state=all by default and shows the chips with counts', async () => {
     const { el, request } = await open();
     expect(request.request.urlWithParams).toBe(`${URL}?state=all`);
@@ -501,7 +527,8 @@ describe('RewardRulesOverviewComponent', () => {
     overviewRequest().flush({ detail: '讀取失敗了' }, { status: 500, statusText: 'Server Error' });
     harness.detectChanges();
     const el = harness.routeNativeElement as HTMLElement;
-    expect(text(el.querySelector('[role="alert"]'))).toBe('讀取失敗了');
+    expect(text(el.querySelector('.page-load-error .banner-title'))).toBe('讀取失敗了');
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
     expect(el.querySelector('.rr-grid')?.getAttribute('aria-busy')).toBeNull();
   });
 

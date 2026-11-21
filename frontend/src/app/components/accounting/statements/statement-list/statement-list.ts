@@ -13,12 +13,14 @@ import {
   statementChips,
 } from '../statement-view';
 import { StatementsService } from '../statements.service';
+import { BannerComponent } from '../../../ui/banner/banner';
+
 
 /** `/accounting/accounts/:id/statements`: live rows, plus the historical periods summary table. */
 @Component({
   selector: 'app-statement-list',
   standalone: true,
-  imports: [RouterLink, SkeletonComponent],
+  imports: [RouterLink, SkeletonComponent, BannerComponent],
   templateUrl: './statement-list.html',
   styleUrls: ['../../entry-row.scss', './statement-list.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,

@@ -42,10 +42,7 @@
   </ng-template>
 
   @if (loadError()) {
-    <div class="load-error-block">
-      <p class="load-error">帳戶讀取失敗，請稍後再試。</p>
-      <button type="button" class="retry accounts-retry" (click)="retry()">重試</button>
-    </div>
+    <app-banner class="page-load-error" tone="error" heading="帳戶讀取失敗，請稍後再試。" actionLabel="重試" (action)="retry()" />
   } @else if (!loaded()) {
     <app-skeleton rows="3" />
   } @else if (accounts().length === 0) {

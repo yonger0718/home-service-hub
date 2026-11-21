@@ -19,6 +19,8 @@ import { writeErrorMessage } from '../http-errors';
 import {
   RULE_STATE_LABELS, RewardUnit, mutedLine, postingSummary, rateChip, rewardFigure, ruleTitle, usageUnit, windowText,
 } from '../reward-rule-text';
+import { BannerComponent } from '../../ui/banner/banner';
+
 
 export type RewardRuleFilter = RewardRuleState | 'all';
 
@@ -173,7 +175,7 @@ export function headlineText(shown: number, accounts: RewardRuleOverviewAccount[
 /** 回饋規則總覽 (D3): one card per account with rules, their period usage as cap bars, filtered by state through the URL. */
 @Component({
   selector: 'app-reward-rules',
-  imports: [RouterLink, AccountIconComponent, CapBarComponent],
+  imports: [BannerComponent, RouterLink, AccountIconComponent, CapBarComponent],
   templateUrl: './reward-rules.html',
   styleUrl: './reward-rules.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -299,7 +301,17 @@ export class RewardRulesOverviewComponent {
     leavePage(this.router, this.location, '/accounting/settings');
   }
 
+  /** 重試 on the read-failure banner: the same query again. */
+  retry(): void {
+    if (this.lastQuery) {
+      this.load(this.lastQuery);
+    }
+  }
+
+  private lastQuery: RewardRuleOverviewQuery | null = null;
+
   private load(query: RewardRuleOverviewQuery): void {
+    this.lastQuery = query;
     this.loadSub?.unsubscribe();
     this.loading.set(true);
     this.error.set(null);

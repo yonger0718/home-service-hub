@@ -41,6 +41,8 @@ import {
   windowEmpty,
 } from './report-math';
 import { ReportTrendComponent } from './trend-tab';
+import { BannerComponent } from '../../ui/banner/banner';
+
 
 export type ReportTab = 'overview' | 'trend' | 'rank' | 'plan';
 
@@ -68,7 +70,7 @@ const CURRENCY_NAMES: Record<string, string> = { TWD: '台幣', JPY: '日圓', U
  */
 @Component({
   selector: 'app-accounting-reports',
-  imports: [NgTemplateOutlet, RouterLink, PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
+  imports: [BannerComponent, NgTemplateOutlet, RouterLink, PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
   templateUrl: './reports.html',
   styleUrl: './reports.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

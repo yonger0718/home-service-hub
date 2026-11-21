@@ -701,9 +701,11 @@ describe('AccountingAccountsComponent', () => {
       if (!pending.cancelled) pending.flush(PREFERENCE_BODY);
     }
     fixture.detectChanges();
-    expect(el.querySelector('.load-error')?.textContent).toContain('帳戶讀取失敗');
+    expect(el.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('帳戶讀取失敗，請稍後再試。');
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
 
-    el.querySelector<HTMLButtonElement>('.accounts-retry')!.click();
+    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
     fixture.detectChanges();
     expect(el.querySelector('app-skeleton')).not.toBeNull();
     http.expectOne(ACCOUNTS_GET).flush(ACCOUNTS);
@@ -714,7 +716,7 @@ describe('AccountingAccountsComponent', () => {
     fixture.detectChanges();
     flushBills();
     fixture.detectChanges();
-    expect(el.querySelector('.load-error')).toBeNull();
+    expect(el.querySelector('.page-load-error')).toBeNull();
     expect(rows(el).length).toBeGreaterThan(0);
   });
 

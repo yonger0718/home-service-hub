@@ -699,15 +699,17 @@ describe('AccountingReportsComponent', () => {
     first.trends[0].flush({ detail: 'boom' }, failure);
     harness.detectChanges();
 
-    expect(el.querySelector('.rp-error')?.textContent).toContain('報表讀取失敗');
+    expect(el.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('報表讀取失敗');
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
     expect(el.querySelector('.rp-figure')).toBeNull();
-    el.querySelector<HTMLButtonElement>('.rp-retry')!.click();
+    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
     const retried = pending();
     expect(retried.breakdowns).toHaveLength(3);
     expect(retried.trends).toHaveLength(1);
     answer(retried);
     harness.detectChanges();
-    expect(el.querySelector('.rp-error')).toBeNull();
+    expect(el.querySelector('.page-load-error')).toBeNull();
     expect(texts(el, '.rp-figure-value')[0]).toBe('$41,890');
   });
   describe('running periods (polish D1, D8)', () => {
@@ -952,7 +954,7 @@ describe('AccountingReportsComponent', () => {
       });
       harness.detectChanges();
       for (const request of http.match(r => r.url === BREAKDOWN && r.params.get('group_by') === 'merchant')) request.flush(sampleBreakdown(breakdownQuery(request)));
-      expect(el.querySelector('.rp-error')).toBeNull();
+      expect(el.querySelector('.page-load-error')).toBeNull();
       expect(texts(el, '.rp-figure-value')[0]).toBe('$4,233');
       expect(texts(el, '.rp-figure-foot')[0]).toBe('比 10 月同期 ▼ 2,677 · 比去年同期 ▼ 887 · 截至 11/7');
       expect(el.querySelector('.ov-after')).toBeNull();

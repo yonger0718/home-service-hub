@@ -41,6 +41,8 @@ import { debtActorLabel } from '../debt-events';
 import { TimelineRow, buildDays } from '../timeline/timeline';
 import { DefinitionRow, QueueRow, definitionRows, queueRows } from './schedule-queue';
 import { ScheduleSheetComponent } from './schedule-sheet/schedule-sheet';
+import { BannerComponent } from '../../ui/banner/banner';
+
 
 /** Open receivables / payables read for the counts and dates, and per expanded counterparty. */
 export const REMINDER_ENTRY_LIMIT = 500;
@@ -255,7 +257,7 @@ export function debtReminders(counterparties: Counterparty[], openEntries: Ledge
 @Component({
   selector: 'app-accounting-reminders',
   standalone: true,
-  imports: [AccountIconComponent, RouterLink, NgTemplateOutlet, ScheduleSheetComponent, AppInboxPanelComponent, AppInboxHandledListComponent],
+  imports: [BannerComponent, AccountIconComponent, RouterLink, NgTemplateOutlet, ScheduleSheetComponent, AppInboxPanelComponent, AppInboxHandledListComponent],
   templateUrl: './reminders.html',
   styleUrls: ['../filters.scss', '../entry-row.scss', './reminders.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -491,6 +493,11 @@ export class AccountingRemindersComponent {
       }
       this.statementsByAccount.set(new Map(accountIds.map((accountId, index) => [accountId, lists[index]])));
     });
+  }
+
+  /** 重試 on the read-failure banner. */
+  retry(): void {
+    this.load();
   }
 
   private load(): void {

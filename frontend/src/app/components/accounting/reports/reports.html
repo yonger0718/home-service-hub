@@ -49,7 +49,7 @@
   }
 
   @if (state() === 'error') {
-    <p class="rp-error" role="alert">報表讀取失敗 <button type="button" class="rp-retry" (click)="reload()">重試</button></p>
+    <app-banner class="page-load-error" tone="error" heading="報表讀取失敗" actionLabel="重試" (action)="reload()" />
   } @else {
     <div class="rp-figures" [attr.aria-busy]="state() === 'loading'">
       @for (figure of figures(); track figure.label) {

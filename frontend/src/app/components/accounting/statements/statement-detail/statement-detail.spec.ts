@@ -217,7 +217,29 @@ describe('StatementDetailComponent', () => {
     const el = fixture.nativeElement as HTMLElement;
     expect(text(el.querySelector('.period'))).toContain('2026/09/20');
     expect(text(el.querySelector('.compare .load-error'))).toBe('帳本讀取失敗');
-    expect(el.querySelector('.load-error-block')).toBeNull();
+    expect(el.querySelector('.page-load-error')).toBeNull();
+  });
+
+  it('a section read failure (帳本) shows no page banner', () => {
+    const fixture = loaded(statement(), 'error');
+    expect(fixture.nativeElement.querySelector('.page-load-error')).toBeNull();
+  });
+
+  it('a failed statement read shows an 錯誤 banner with 帳單讀取失敗 and 重試; 重試 reads again and the banner leaves on success', () => {
+    const fixture = render();
+    http.expectOne('/api/accounting/accounts/6/statements/1').flush('nope', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('帳單讀取失敗');
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
+    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    fixture.detectChanges();
+    expect(el.querySelector('app-skeleton')).not.toBeNull();
+    flushDetail(statement());
+    fixture.detectChanges();
+    expect(el.querySelector('.page-load-error')).toBeNull();
+    expect(text(el.querySelector('.period'))).toContain('2026/09/20');
   });
 
   it('shows 帳本讀取失敗 instead of an empty segment when entries fail, then renders rows after retry', () => {

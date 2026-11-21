@@ -36,6 +36,8 @@ import {
   groupParentUrl,
   readGroupNavState,
 } from './group-nav';
+import { BannerComponent } from '../../ui/banner/banner';
+
 
 /**
  * The 多類別 group view (PR-9): the split as one record, MOZE style. Routed by one of its members
@@ -46,7 +48,7 @@ import {
 @Component({
   selector: 'app-split-group',
   standalone: true,
-  imports: [RouterLink, LockBannerComponent, SplitFolderComponent],
+  imports: [BannerComponent, RouterLink, LockBannerComponent, SplitFolderComponent],
   templateUrl: './split-group.html',
   styleUrls: ['../entry-detail/entry-detail.scss', './split-group.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -127,7 +129,17 @@ export class SplitGroupComponent implements OnInit {
     });
   }
 
+  private lastLoadId: number | null = null;
+
+  /** 重試 on the read-failure banner: the entry the route last asked for. */
+  retry(): void {
+    if (this.lastLoadId !== null) {
+      this.load(this.lastLoadId);
+    }
+  }
+
   private load(id: number): void {
+    this.lastLoadId = id;
     const seq = ++this.loadSeq;
     this.loadError.set(false);
     this.service

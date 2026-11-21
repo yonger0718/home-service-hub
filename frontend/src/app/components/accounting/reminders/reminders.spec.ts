@@ -721,7 +721,42 @@ describe('AccountingRemindersComponent', () => {
     http.expectOne(r => r.url === INBOX_URL).flush(inboxOut());
     http.expectOne(r => r.url === '/api/accounting/accounts').flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
-    expect(text((fixture.nativeElement as HTMLElement).querySelector('.load-error'))).toBe('提醒讀取失敗，請稍後再試。');
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.page-load-error .banner-title')?.textContent?.trim()).toBe('提醒讀取失敗，請稍後再試。');
+    expect(el.querySelector('.page-load-error [role="alert"]')).not.toBeNull();
+    expect(el.querySelector('.page-load-error .banner-close')).toBeNull();
+  });
+
+  it('重試 reads again, keeps one banner while it fails again, and the banner leaves on success', () => {
+    const fixture = TestBed.createComponent(AccountingRemindersComponent);
+    fixture.detectChanges();
+    const failAll = () => {
+      http.expectOne('/api/accounting/counterparties').flush([]);
+      http.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
+      http.expectOne(r => r.url === '/api/accounting/schedules/instances').flush([]);
+      http.expectOne(r => r.url === '/api/accounting/schedules/definitions').flush([]);
+      http.expectOne(r => r.url === INBOX_URL).flush(inboxOut());
+    };
+    const el = fixture.nativeElement as HTMLElement;
+    failAll();
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    const first = el.querySelector('.page-load-error');
+    expect(first).not.toBeNull();
+
+    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    fixture.detectChanges();
+    failAll();
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.page-load-error')).toHaveLength(1);
+    expect(el.querySelector('.page-load-error')).toBe(first);
+
+    el.querySelector<HTMLButtonElement>('.page-load-error .banner-action')!.click();
+    failAll();
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush([]);
+    fixture.detectChanges();
+    expect(el.querySelector('.page-load-error')).toBeNull();
   });
 
   describe('待完成交易', () => {

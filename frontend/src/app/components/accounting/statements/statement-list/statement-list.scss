@@ -41,21 +41,6 @@
   margin: 8px 0;
 }
 
-.load-error {
-  color: var(--tone-neg, var(--c-red));
-  margin: 8px 0 4px;
-}
-
-.retry {
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-pill);
-  cursor: pointer;
-  font: inherit;
-  font-weight: 700;
-  padding: 4px 12px;
-}
-
 .statement-row {
   grid-template-areas:
     'name'
@@ -112,3 +97,5 @@
   margin-left: 6px;
   padding: 0 6px;
 }
+
+.page-load-error { margin: 8px 0 12px; }

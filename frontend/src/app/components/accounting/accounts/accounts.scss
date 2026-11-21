@@ -1,7 +1,7 @@
 .ledger-accounts { display: flex; flex-direction: column; max-width: 100%; min-width: 0; }
 
 .import-status { color: var(--app-text-muted); font-size: 0.85rem; font-weight: 600; margin: 0.25rem 0; overflow-wrap: anywhere; }
-.import-status--failed, .load-error { color: var(--app-danger); }
+.import-status--failed { color: var(--app-danger); }
 
 .nw {
   background: var(--app-surface-soft);
@@ -114,16 +114,6 @@
   gap: 8px;
 }
 
-.load-error-block {
-  align-items: center;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 1.5rem 0;
-
-  .load-error { margin: 0; }
-}
-
 .retry {
   background: var(--app-surface-soft);
   border: 1px solid var(--app-border);
@@ -160,3 +150,5 @@
   padding: 6px 14px;
   text-decoration: none;
 }
+
+.page-load-error { margin: 8px 0 12px; }
