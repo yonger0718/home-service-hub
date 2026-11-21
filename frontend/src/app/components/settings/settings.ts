@@ -36,6 +36,7 @@ const GROUP_DESCRIPTIONS: Record<NavGroupId, string> = {
   portfolio: '概覽、交易、股利、已實現、現金、匯入',
   accounting: '記帳記錄、帳戶、記帳設定',
   system: '設定',
+  notifications: '通知',
 };
 
 /** Current time for the 資料更新 "上次" label; overridable in tests. */

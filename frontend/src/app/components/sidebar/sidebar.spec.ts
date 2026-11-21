@@ -112,7 +112,8 @@ describe('SidebarComponent', () => {
 
   it('rail at 1100 shows a tooltip per item', async () => {
     const { host } = await render(1100, '/portfolio', {
-      'accounting-timeline': { count: 2, label: '提醒中心 2 項' },
+      'accounting': { dot: true, tone: 'red', label: '有逾期的卡費' },
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
       import: { dot: true, label: '最近一次匯入失敗' },
     });
 
@@ -132,10 +133,11 @@ describe('SidebarComponent', () => {
       expect(item.getAttribute('aria-label')!.startsWith(navItem.sidebarLabel)).toBe(true);
     }
     const label = (path: string) => items.find(item => item.getAttribute('href') === path)!.getAttribute('aria-label');
-    expect(label('/accounting')).toBe('記帳記錄，提醒中心 2 項');
+    expect(label('/accounting')).toBe('記帳記錄，有待確認的匯入紀錄');
     expect(label('/portfolio/import')).toBe('匯入，最近一次匯入失敗');
     expect(label('/portfolio/transactions')).toBe('交易紀錄');
-    expect(items.find(item => item.getAttribute('href') === '/accounting')!.querySelector('.item-count')!.textContent!.trim()).toBe('2');
+    expect(items.find(item => item.getAttribute('href') === '/accounting')!.querySelector('.item-dot')).not.toBeNull();
+    expect(host.querySelector('.item-count')).toBeNull();
     expect(items.find(item => item.getAttribute('href') === '/portfolio/import')!.querySelector('.item-dot')).not.toBeNull();
 
     // The fixed tooltip is placed at the item's centre when the pointer or focus reaches it.
@@ -156,17 +158,18 @@ describe('SidebarComponent', () => {
 
   it('folded group shows sum and dot', async () => {
     const onPortfolio = await render(1440, '/portfolio', {
-      'accounting-timeline': { count: 2, label: '提醒中心 2 項' },
-      accounting: { count: 1, label: '1 筆待確認' },
+      'accounting': { dot: true, tone: 'red', label: '有逾期的卡費' },
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
     });
     const finance = heading(onPortfolio.host, '財務');
     expect(finance.getAttribute('aria-expanded')).toBe('true');
-    expect(finance.querySelector('.group-count')).toBeNull();
+    expect(finance.querySelector('.group-dot')).toBeNull();
 
     finance.click();
     await onPortfolio.update();
     expect(finance.getAttribute('aria-expanded')).toBe('false');
-    expect(text(finance.querySelector('.group-count'))).toBe('3');
+    expect(finance.querySelectorAll('.group-dot').length).toBe(1);
+    expect(finance.querySelector('.group-count')).toBeNull();
     expect(onPortfolio.host.querySelector('a.side-item[href="/accounting"]')).toBeNull();
     expect(onPortfolio.prefs.foldedGroups()).toEqual(['accounting']);
 
@@ -226,15 +229,71 @@ describe('SidebarComponent', () => {
 
   it('badges off hides the item badges', async () => {
     const { host, prefs, update } = await render(1440, '/portfolio', {
-      'accounting-timeline': { count: 2, label: '提醒中心 2 項' },
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
     });
-    expect(host.querySelector('a.side-item[href="/accounting"] .item-count')).not.toBeNull();
+    expect(host.querySelector('a.side-item[href="/accounting"] .item-dot')).not.toBeNull();
 
     prefs.setShowBadges(false);
     await update();
     const timeline = host.querySelector('a.side-item[href="/accounting"]')!;
-    expect(timeline.querySelector('.item-count')).toBeNull();
+    expect(timeline.querySelector('.item-dot')).toBeNull();
     expect(timeline.getAttribute('aria-label')).toBe('記帳記錄');
+  });
+
+  it('no nav item renders a count (expanded and rail)', async () => {
+    const badges: Record<string, NavBadge> = {
+      'accounting': { dot: true, tone: 'red', label: '有逾期的卡費' },
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
+    };
+    const expanded = await render(1440, '/portfolio', badges);
+    expect(expanded.host.querySelector('.item-count, .group-count')).toBeNull();
+    TestBed.resetTestingModule();
+    localStorage.clear();
+    const rail = await render(1100, '/portfolio', badges);
+    expect(rail.host.querySelector('.item-count, .group-count')).toBeNull();
+    expect(rail.host.querySelectorAll('.item-dot').length).toBe(2);
+  });
+
+  it('a primary dot carries item-dot--primary, a red one does not', async () => {
+    const { host } = await render(1440, '/portfolio', {
+      'accounting': { dot: true, tone: 'red', label: '有逾期的卡費' },
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
+      import: { dot: true, label: '最近一次匯入失敗' },
+    });
+    const dot = (path: string) => host.querySelector(`a.side-item[href="${path}"] .item-dot`)!;
+    expect(dot('/accounting').classList.contains('item-dot--primary')).toBe(true);
+    expect(dot('/accounting/accounts').classList.contains('item-dot--primary')).toBe(false);
+    expect(dot('/portfolio/import').classList.contains('item-dot--primary')).toBe(false);
+  });
+
+  it('a folded group shows one dot, red when any of its items is red', async () => {
+    const primaryOnly = await render(1440, '/portfolio', {
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
+    });
+    const head = heading(primaryOnly.host, '財務');
+    head.click();
+    await primaryOnly.update();
+    expect(head.querySelectorAll('.group-dot').length).toBe(1);
+    expect(head.querySelector('.group-dot')!.classList.contains('group-dot--primary')).toBe(true);
+    TestBed.resetTestingModule();
+    localStorage.clear();
+
+    const mixed = await render(1440, '/portfolio', {
+      'accounting': { dot: true, tone: 'red', label: '有逾期的卡費' },
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
+    });
+    const head2 = heading(mixed.host, '財務');
+    head2.click();
+    await mixed.update();
+    expect(head2.querySelectorAll('.group-dot').length).toBe(1);
+    expect(head2.querySelector('.group-dot')!.classList.contains('group-dot--primary')).toBe(false);
+  });
+
+  it('styles dots with the red-ink and primary tokens and has no count rule', () => {
+    const scss = readFileSync(join(process.cwd(), 'src/app/components/sidebar/sidebar.scss'), 'utf8');
+    expect(scss).toContain('var(--c-red-ink)');
+    expect(scss).toContain('var(--app-primary)');
+    expect(scss).not.toMatch(/\.item-count|\.group-count/);
   });
 
   it('marks the host compact on a short screen and keeps one scroll container', async () => {

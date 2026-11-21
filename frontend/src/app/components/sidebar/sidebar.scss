@@ -180,28 +180,18 @@
   gap: 6px;
 }
 
-.group-count {
-  align-items: center;
-  background: var(--app-primary-soft);
-  border-radius: 9px;
-  box-sizing: border-box;
-  color: var(--app-primary);
-  display: flex;
-  font-size: var(--fs-micro);
-  font-weight: var(--fw-heavy);
-  height: 18px;
-  justify-content: center;
-  min-width: 18px;
-  padding: 0 5px;
-}
-
 .group-dot,
 .item-dot {
-  background: var(--c-red);
+  background: var(--c-red-ink);
   border-radius: 50%;
   flex: none;
   height: 8px;
   width: 8px;
+}
+
+.group-dot--primary,
+.item-dot--primary {
+  background: var(--app-primary);
 }
 
 .group-hint {
@@ -278,22 +268,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.item-count {
-  align-items: center;
-  background: var(--app-primary);
-  border-radius: 10px;
-  box-sizing: border-box;
-  color: #fff;
-  display: flex;
-  flex: none;
-  font-size: var(--fs-micro);
-  font-weight: var(--fw-heavy);
-  height: 20px;
-  justify-content: center;
-  min-width: 20px;
-  padding: 0 6px;
 }
 
 /* ── Rail (72 px) ───────────────────────────────────────────────── */
@@ -391,17 +365,6 @@
     i {
       font-size: 1.2rem;
     }
-  }
-
-  .item-count {
-    border-radius: 8px;
-    font-size: 10px;
-    height: 16px;
-    min-width: 16px;
-    padding: 0 4px;
-    position: absolute;
-    right: 1px;
-    top: 2px;
   }
 
   .item-dot {

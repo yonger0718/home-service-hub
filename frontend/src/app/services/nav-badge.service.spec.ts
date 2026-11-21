@@ -193,7 +193,7 @@ describe('NavBadgeService', () => {
     const svc = service();
     svc.refresh();
     answer(0, { latest: importRun(1) });
-    expect(svc.badges()['accounting']).toEqual({ count: 1, label: '1 筆待確認' });
+    expect(svc.badges()['accounting']).toEqual({ dot: true, label: '1 筆待確認' });
   });
 
   it('latest import 404 (null) → no accounting key', () => {
@@ -214,20 +214,20 @@ describe('NavBadgeService', () => {
     const svc = service();
     svc.refresh();
     answer(0, { queue: [makeInstance({ id: 1, due_date: TODAY }), makeInstance({ id: 2, due_date: '2026-10-25' })] });
-    expect(svc.badges()['accounting-timeline']).toEqual({ count: 1, label: '提醒中心 1 項' });
+    expect(svc.badges()['accounting-timeline']).toEqual({ dot: true, label: '提醒中心 1 項' });
   });
 
   it('a failing source hides only its own badge', () => {
     const svc = service();
     svc.refresh();
     answer(0, { queue: [makeInstance({ due_date: TODAY })], latest: importRun(2) });
-    expect(svc.badges()['accounting-timeline']).toEqual({ count: 1, label: '提醒中心 1 項' });
+    expect(svc.badges()['accounting-timeline']).toEqual({ dot: true, label: '提醒中心 1 項' });
 
     vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
     svc.refresh();
     expect(() => answer(1, { queue: [makeInstance({ due_date: TODAY })], counterparties: 'error', latest: importRun(2) })).not.toThrow();
     expect('accounting-timeline' in svc.badges()).toBe(false);
-    expect(svc.badges()['accounting']).toEqual({ count: 2, label: '2 筆待確認' });
+    expect(svc.badges()['accounting']).toEqual({ dot: true, label: '2 筆待確認' });
   });
 
   it('refresh within 30 s is skipped, after 30 s refires', () => {
@@ -276,7 +276,7 @@ describe('NavBadgeService', () => {
 
     land(latest.subjects[1], importRun(3));
     TestBed.tick();
-    expect(svc.badges()['accounting']).toEqual({ count: 3, label: '3 筆待確認' });
+    expect(svc.badges()['accounting']).toEqual({ dot: true, label: '3 筆待確認' });
 
     (accountingStub['accountsChanged'] as WritableSignal<number>).set(1);
     TestBed.tick();
@@ -376,7 +376,7 @@ describe('NavBadgeService', () => {
     });
     expect(svc.badges()).toEqual({});
     answer(1, { latest: importRun(1) });
-    expect(svc.badges()).toEqual({ accounting: { count: 1, label: '1 筆待確認' } });
+    expect(svc.badges()).toEqual({ accounting: { dot: true, label: '1 筆待確認' } });
   });
 
   it('stale accounts snapshot never reaches the statements (ensure or refresh)', () => {
@@ -429,7 +429,7 @@ describe('NavBadgeService', () => {
     svc.refresh();
     answer(0, { counterparties: [counterparty(1, 1)] });
     expect(getInbox).toHaveBeenCalledWith({ limit: 1 });
-    expect(svc.badges()['accounting-timeline']).toEqual({ count: 3, label: '提醒中心 3 項' });
+    expect(svc.badges()['accounting-timeline']).toEqual({ dot: true, label: '提醒中心 3 項' });
   });
 
   it('counts e-invoice questions with the inbox asks', () => {
@@ -437,7 +437,7 @@ describe('NavBadgeService', () => {
     const svc = service();
     svc.refresh();
     answer(0, { counterparties: [counterparty(1, 1)] });
-    expect(svc.badges()['accounting-timeline']).toEqual({ count: 4, label: '提醒中心 4 項' });
+    expect(svc.badges()['accounting-timeline']).toEqual({ dot: true, label: '提醒中心 4 項' });
   });
 
   it('a failed inbox read counts 0 and keeps the other reminders', () => {
@@ -445,7 +445,7 @@ describe('NavBadgeService', () => {
     const svc = service();
     svc.refresh();
     answer(0, { counterparties: [counterparty(1, 1)] });
-    expect(svc.badges()['accounting-timeline']).toEqual({ count: 1, label: '提醒中心 1 項' });
+    expect(svc.badges()['accounting-timeline']).toEqual({ dot: true, label: '提醒中心 1 項' });
   });
 
   it('timeline and badge agree', () => {
@@ -464,7 +464,7 @@ describe('NavBadgeService', () => {
       today: TODAY,
     });
     expect(expected).toBe(2);
-    expect(svc.badges()['accounting-timeline']).toEqual({ count: expected, label: `提醒中心 ${expected} 項` });
+    expect(svc.badges()['accounting-timeline']).toEqual({ dot: true, label: `提醒中心 ${expected} 項` });
   });
   describe('card statements on a refresh (payments made elsewhere, no local write)', () => {
     function paidInFull(): void {
@@ -477,7 +477,7 @@ describe('NavBadgeService', () => {
       const svc = service();
       svc.start();
       answer(0, { accounts: [card(9)] });
-      expect(svc.badges()['accounting-timeline']).toEqual({ count: 1, label: '提醒中心 1 項' });
+      expect(svc.badges()['accounting-timeline']).toEqual({ dot: true, label: '提醒中心 1 項' });
       const reads = (accountingStub['getEntries'] as ReturnType<typeof vi.fn>).mock.calls.length;
 
       paidInFull();
@@ -502,7 +502,7 @@ describe('NavBadgeService', () => {
 
       expect(accounts.subjects).toHaveLength(1);
       expect((accountingStub['getEntries'] as ReturnType<typeof vi.fn>).mock.calls.length).toBe(reads);
-      expect(svc.badges()['accounting-timeline']).toEqual({ count: 1, label: '提醒中心 1 項' });
+      expect(svc.badges()['accounting-timeline']).toEqual({ dot: true, label: '提醒中心 1 項' });
     });
 
     it('re-reads once per accepted refresh, not on every later run of the badge effect', () => {

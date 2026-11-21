@@ -10,10 +10,8 @@
         [attr.aria-current]="current ? 'page' : null"
       >
         {{ item.label }}
-        @if (itemBadge?.count) {
-          <span class="sub-count" aria-hidden="true">{{ itemBadge?.count }}</span>
-        } @else if (itemBadge?.dot) {
-          <span class="sub-dot" aria-hidden="true"></span>
+        @if (itemBadge?.dot) {
+          <span class="sub-dot" [class.sub-dot--primary]="itemBadge?.tone === 'primary'" aria-hidden="true"></span>
         }
       </a>
     }

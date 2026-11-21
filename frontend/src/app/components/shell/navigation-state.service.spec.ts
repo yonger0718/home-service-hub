@@ -14,7 +14,7 @@ import { NavigationStateService } from './navigation-state.service';
 class BlankPage {}
 
 const BADGES: Record<string, NavBadge> = {
-  'accounting-timeline': { count: 2, label: '提醒中心 2 項' },
+  'accounting-timeline': { dot: true, label: '提醒中心 2 項' },
   import: { dot: true, label: '最近一次匯入失敗' },
 };
 
@@ -59,6 +59,14 @@ async function create(width = 1440, url = '/portfolio') {
 
 describe('NavigationStateService', () => {
   beforeEach(() => localStorage.clear());
+
+  it('on /notifications activeItem is 通知 and activeGroup is no visible group', async () => {
+    const { nav } = await create(1440, '/notifications');
+
+    expect(nav.activeItem().id).toBe('notifications');
+    expect(nav.activeGroup().id).toBe('notifications');
+    expect(nav.visibleGroups().some(group => group.id === nav.activeGroup().id)).toBe(false);
+  });
 
   it('tracks the active item and group from the router', async () => {
     const { nav, router } = await create(1440, '/portfolio/transactions');

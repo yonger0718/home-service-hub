@@ -54,13 +54,8 @@
           >
             <span class="group-label">{{ group.label }}</span>
             <span class="group-meta">
-              @if (folded && sum.count > 0) {
-                <span class="group-count" aria-hidden="true">{{ sum.count }}</span>
-              }
               @if (folded && sum.dot) {
-                <span class="group-dot" aria-hidden="true"></span>
-              }
-              @if (folded && (sum.count > 0 || sum.dot)) {
+                <span class="group-dot" [class.group-dot--primary]="sum.tone === 'primary'" aria-hidden="true"></span>
                 <span class="sr-only">
                   @for (item of group.items; track item.id) {
                     @if (badge(item); as itemBadge) {
@@ -95,19 +90,15 @@
                 <span class="item-icon">
                   <i class="pi {{ item.icon }}" aria-hidden="true"></i>
                   @if (!expanded()) {
-                    @if (itemBadge?.count) {
-                      <span class="item-count" aria-hidden="true">{{ itemBadge?.count }}</span>
-                    } @else if (itemBadge?.dot) {
-                      <span class="item-dot" aria-hidden="true"></span>
+                    @if (itemBadge?.dot) {
+                      <span class="item-dot" [class.item-dot--primary]="itemBadge?.tone === 'primary'" aria-hidden="true"></span>
                     }
                   }
                 </span>
                 @if (expanded()) {
                   <span class="item-label">{{ item.sidebarLabel }}</span>
-                  @if (itemBadge?.count) {
-                    <span class="item-count" aria-hidden="true">{{ itemBadge?.count }}</span>
-                  } @else if (itemBadge?.dot) {
-                    <span class="item-dot" aria-hidden="true"></span>
+                  @if (itemBadge?.dot) {
+                    <span class="item-dot" [class.item-dot--primary]="itemBadge?.tone === 'primary'" aria-hidden="true"></span>
                   }
                 } @else {
                   <span class="side-tip" aria-hidden="true">

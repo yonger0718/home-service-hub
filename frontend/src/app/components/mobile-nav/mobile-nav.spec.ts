@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
@@ -12,21 +14,21 @@ import { MobileNavComponent } from './mobile-nav';
 class BlankPage {}
 
 const BADGES: Record<string, NavBadge> = {
-  accounting: { count: 1, label: '1 筆待確認' },
+  accounting: { dot: true, label: '1 筆待確認' },
   import: { dot: true, label: '最近一次匯入失敗' },
 };
 
 /** The last `render`'s fixture, for a test that navigates after rendering. */
 let rendered: ComponentFixture<MobileNavComponent>;
 
-async function render(url: string, opts: { hidden?: string[]; badges?: boolean } = {}): Promise<HTMLElement> {
+async function render(url: string, opts: { hidden?: string[]; badges?: boolean; values?: Record<string, NavBadge> } = {}): Promise<HTMLElement> {
   if (opts.hidden) localStorage.setItem('hh-nav-hidden', JSON.stringify(opts.hidden));
   if (opts.badges === false) localStorage.setItem('hh-nav-badges', '0');
   TestBed.configureTestingModule({
     providers: [
       provideRouter([{ path: '**', component: BlankPage }]),
       { provide: MATCH_MEDIA, useValue: () => ({ matches: true, addEventListener: () => {}, removeEventListener: () => {} }) },
-      { provide: NavBadgeService, useValue: { badges: signal(BADGES) } },
+      { provide: NavBadgeService, useValue: { badges: signal(opts.values ?? BADGES) } },
     ],
   });
   await TestBed.inject(Router).navigateByUrl(url);
@@ -110,6 +112,34 @@ describe('MobileNavComponent', () => {
     expect(el.querySelector('.m-tab .visually-hidden')).toBeNull();
   });
 
+  it('a non-active group with a dot shows tab-dot; primary-only gets tab-dot--primary', async () => {
+    const red = await render('/portfolio');
+    expect(tab(red, '財務').querySelector('.tab-dot')).not.toBeNull();
+    expect(tab(red, '財務').querySelector('.tab-dot--primary')).toBeNull();
+    TestBed.resetTestingModule();
+    localStorage.clear();
+
+    const primary = await render('/portfolio', {
+      values: { 'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' } },
+    });
+    expect(tab(primary, '財務').querySelector('.tab-dot.tab-dot--primary')).not.toBeNull();
+  });
+
+  it('the active group shows none', async () => {
+    const el = await render('/accounting');
+    expect(tab(el, '財務').querySelector('.tab-dot')).toBeNull();
+  });
+
+  it('on /notifications no tab is highlighted and no tab has aria-current', async () => {
+    const el = await render('/notifications');
+
+    expect(el.querySelector('.m-tab.active')).toBeNull();
+    expect(el.querySelector('.m-tab[aria-current]')).toBeNull();
+    // No group is current, so every group's dot shows.
+    expect(tab(el, '財務').querySelector('.tab-dot')).not.toBeNull();
+    expect(tab(el, '投資').querySelector('.tab-dot')).not.toBeNull();
+  });
+
   it('names the tab bar 分頁導覽', async () => {
     expect((await render('/portfolio')).querySelector('nav.m-tabbar')!.getAttribute('aria-label')).toBe('分頁導覽');
   });
@@ -128,5 +158,12 @@ describe('MobileNavComponent', () => {
     expect(el.querySelector('.m-tab.active')).toBeNull();
     expect(el.querySelector('.m-tab[aria-current]')).toBeNull();
     expect(tab(el, '設定').classList.contains('active')).toBe(false);
+  });
+
+  it('styles dots with the red-ink and primary tokens and has no count rule', () => {
+    const scss = readFileSync(join(process.cwd(), 'src/app/components/mobile-nav/mobile-nav.scss'), 'utf8');
+    expect(scss).toContain('var(--c-red-ink)');
+    expect(scss).toContain('var(--app-primary)');
+    expect(scss).not.toMatch(/\.sub-count|\.item-count|\.group-count/);
   });
 });

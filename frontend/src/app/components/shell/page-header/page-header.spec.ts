@@ -45,12 +45,14 @@ class MenuHost {
 
 @Component({
   imports: [PageHeaderComponent],
-  template: `<app-page-header [back]="true"></app-page-header>`,
+  template: `<app-page-header [back]="true" [backFallback]="fallback"></app-page-header>`,
 })
-class BackHost {}
+class BackHost {
+  fallback: string | null = null;
+}
 
 /** `/settings` reached by `urls` in order (the first is the router's first navigation); `/blocked` is always refused. */
-async function renderBack(urls: string[], opts: { mode?: LayoutMode; hidden?: string[] } = {}) {
+async function renderBack(urls: string[], opts: { mode?: LayoutMode; hidden?: string[]; fallback?: string } = {}) {
   if (opts.hidden) localStorage.setItem('hh-nav-hidden', JSON.stringify(opts.hidden));
   TestBed.configureTestingModule({
     providers: [
@@ -69,6 +71,7 @@ async function renderBack(urls: string[], opts: { mode?: LayoutMode; hidden?: st
   const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
   const navigate = vi.spyOn(router, 'navigateByUrl');
   const fixture = TestBed.createComponent(BackHost);
+  fixture.componentInstance.fallback = opts.fallback ?? null;
   fixture.detectChanges();
   const el = fixture.nativeElement as HTMLElement;
   return { el, back, navigate, button: el.querySelector<HTMLButtonElement>('button.page-back') };
@@ -205,6 +208,32 @@ describe('PageHeaderComponent', () => {
 
       expect(back).toHaveBeenCalledTimes(1);
       expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('backFallback: without app history ‹ navigates to it', async () => {
+      const { button, back, navigate } = await renderBack(['/notifications'], { fallback: '/accounting' });
+
+      button!.click();
+
+      expect(navigate).toHaveBeenCalledWith('/accounting');
+      expect(back).not.toHaveBeenCalled();
+    });
+
+    it('backFallback is ignored when the app has history', async () => {
+      const { button, back, navigate } = await renderBack(['/portfolio', '/notifications'], { fallback: '/accounting' });
+
+      button!.click();
+
+      expect(back).toHaveBeenCalledTimes(1);
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('without backFallback the landing path is used (unchanged)', async () => {
+      const { button, navigate } = await renderBack(['/notifications']);
+
+      button!.click();
+
+      expect(navigate).toHaveBeenCalledWith('/portfolio');
     });
 
     it('navigates to the landing path (/portfolio by default) on a first navigation to /settings', async () => {

@@ -10,6 +10,7 @@ import { PaneStateService } from '../../services/pane-state.service';
 import { timelineCalendarParams } from '../accounting/timeline/calendar-url';
 import {
   NAV_GROUPS,
+  NOTIFICATIONS_GROUP,
   NavBadge,
   NavGroup,
   NavGroupId,
@@ -44,7 +45,7 @@ export class NavigationStateService {
    */
   readonly calendarQuery: Signal<Params> = computed(() => timelineCalendarParams(this.router, this.url()));
   readonly activeGroup: Signal<NavGroup> = computed(
-    () => NAV_GROUPS.find(group => group.id === this.activeItem().group) ?? NAV_GROUPS[0],
+    () => [...NAV_GROUPS, NOTIFICATIONS_GROUP].find(group => group.id === this.activeItem().group) ?? NAV_GROUPS[0],
   );
   readonly visibleGroups: Signal<readonly NavGroup[]> = computed(() => {
     const hidden = this.prefs.hiddenGroups();

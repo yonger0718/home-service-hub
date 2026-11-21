@@ -48,6 +48,8 @@ export class PageHeaderComponent {
   readonly title = input<string>();
   /** Phones only: a ‹ 返回 button before the title. */
   readonly back = input(false);
+  /** Where ‹ goes when the app has no history to go back to; the landing path when unset. */
+  readonly backFallback = input<string | null>(null);
   /** Muted line under the h1 on every width (e.g. the dashboard's quote time). */
   readonly subtitle = input<string | null>(null);
 
@@ -197,7 +199,7 @@ export class PageHeaderComponent {
     if (this.hasAppHistory()) {
       this.location.back();
     } else {
-      void this.router.navigateByUrl(this.nav.landingPath());
+      void this.router.navigateByUrl(this.backFallback() ?? this.nav.landingPath());
     }
   }
 }

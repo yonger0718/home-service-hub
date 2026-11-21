@@ -83,12 +83,12 @@ export class NavBadgeService {
     if (reminders) {
       const count = countReminders({ ...reminders, dues: this.dues(), bill: event => this.bills.bill(event) });
       if (count > 0) {
-        badges['accounting-timeline'] = { count, label: `提醒中心 ${count} 項` };
+        badges['accounting-timeline'] = { dot: true, label: `提醒中心 ${count} 項` };
       }
     }
     const review = importReviewCount(this.latestImport());
     if (review > 0) {
-      badges['accounting'] = { count: review, label: `${review} 筆待確認` };
+      badges['accounting'] = { dot: true, label: `${review} 筆待確認` };
     }
     const recalc = this.recalc();
     const recalcFailed = !!recalc && recalc.kind !== 'quotes' && recalc.state === 'failed';
