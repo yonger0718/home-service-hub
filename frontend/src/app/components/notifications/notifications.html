@@ -1,0 +1,54 @@
+<div class="notif-page">
+  <app-page-header [back]="true" backFallback="/accounting" [subtitle]="subtitle()"></app-page-header>
+
+  <div class="notif-chips" role="radiogroup" aria-label="來源">
+    @for (option of chips; track option.key) {
+      <button type="button" role="radio" [attr.aria-checked]="chip() === option.key" [attr.aria-label]="chipName(option)" (click)="pick(option.key)">
+        {{ option.label }}<span class="chip-count" aria-hidden="true">{{ counts()[option.key] }}</span>
+      </button>
+    }
+  </div>
+
+  @for (section of sections(); track section.tier) {
+    <section class="notif-section" [class.notif-section--alert]="section.tier === 'overdue' || section.tier === 'system'" [attr.aria-labelledby]="'notif-sec-' + section.tier">
+      <h2 [id]="'notif-sec-' + section.tier">
+        <span class="sec-dot" aria-hidden="true"></span>{{ section.label }}&ngsp;<span class="sec-count">{{ section.tasks.length }}</span>
+      </h2>
+      <ul class="notif-card">
+        @for (task of section.tasks; track task.id) {
+          <li>
+            <app-notif-row [task]="task" [busy]="isBusy(task.id)" [solid]="phone() && section.tier === 'overdue'" (run)="onRun(task, $event)" />
+          </li>
+        }
+      </ul>
+    </section>
+  }
+
+  @if (chipEmpty()) {
+    <p class="notif-none">這個來源目前沒有要處理的事</p>
+  }
+
+  @if (trackingRows().length > 0) {
+    <details class="notif-tracking">
+      <summary>
+        <span class="tracking-head">追蹤中&ngsp;<span class="tracking-note">· 不計入數字</span></span>&ngsp;<span class="tracking-sum">{{ trackingSum() }}</span>
+      </summary>
+      @for (row of trackingRows(); track row.id) {
+        <div class="tracking-row">
+          <span class="tracking-body">
+            <b class="tracking-title">{{ row.title }}</b>
+            @if (row.meta) {
+              <small class="tracking-meta">{{ row.meta }}</small>
+            }
+          </span>
+          <a class="tracking-link" [routerLink]="row.link.route" [queryParams]="row.link.queryParams ?? null" [attr.aria-label]="row.link.label + '：' + row.title">{{ row.link.label }}</a>
+        </div>
+      }
+    </details>
+  }
+
+  @if (center.handled(); as handled) {
+    <a class="notif-handled" routerLink="/accounting/reminders" [queryParams]="{ tab: 'todo' }">已處理的對帳（近 7 天）{{ handled }} ›</a>
+  }
+  <a class="notif-reminders" routerLink="/accounting/reminders">提醒中心（借還款、週期與分期管理）</a>
+</div>

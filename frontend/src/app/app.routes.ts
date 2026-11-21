@@ -87,6 +87,7 @@ export const routes: Routes = [
   { path: 'inventory', loadComponent: () => import('./components/item-list/item-list').then(m => m.ItemListComponent) },
   { path: 'shopping-list', loadComponent: () => import('./components/shopping-list/shopping-list').then(m => m.ShoppingListComponent) },
   { path: 'settings', loadComponent: () => import('./components/settings/settings').then(m => m.SettingsComponent) },
+  { path: 'notifications', loadComponent: () => import('./components/notifications/notifications').then(m => m.NotificationsComponent) },
   
   // Portfolio routes
   { path: 'portfolio', loadComponent: () => import('./components/portfolio/dashboard/dashboard').then(m => m.PortfolioDashboardComponent) },

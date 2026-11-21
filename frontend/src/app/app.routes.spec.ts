@@ -190,6 +190,7 @@ const LIST_LEVEL: [string, string, string?][] = [
   ['/accounting/settings', '記帳設定'],
   ['/accounting/reports', '報表'],
   ['/settings', '設定'],
+  ['/notifications', '通知'],
 ];
 
 const DRILL_DOWN: [string, string][] = [
@@ -251,6 +252,11 @@ describe('phone route matrix (390 px)', () => {
         expect(root.querySelector('button.page-back[aria-label="返回"]')).not.toBeNull();
         expect(root.querySelector('app-sub-nav')).not.toBeNull();
         expect(root.querySelector('app-sub-nav')?.querySelector('a.active') ?? null).toBeNull();
+      } else if (url === '/notifications') {
+        // 通知 is a pushed screen too: ‹, no bell (it would link to itself), no tab highlighted.
+        expect(root.querySelector('button.page-back[aria-label="返回"]')).not.toBeNull();
+        expect(root.querySelector('a.header-bell')).toBeNull();
+        expect(root.querySelector('app-sub-nav a.active') ?? null).toBeNull();
       } else {
         expect(root.querySelector('a[aria-label="設定"][href="/settings"]')).not.toBeNull();
         expect(root.querySelector('button.page-back')).toBeNull();
@@ -421,6 +427,25 @@ describe('accounting navigation', () => {
     ['/accounting/accounts/5/entries/9/group', '帳戶'],
     ['/accounting/settings', '記帳設定'],
   ];
+
+  it('/notifications highlights no tab and no sidebar group, and marks the 通知 item current', async () => {
+    const item = navItemForUrl('/notifications');
+    expect(item.id).toBe('notifications');
+    TestBed.configureTestingModule({ imports: [SidebarComponent, SubNavComponent],
+      providers: [provideRouter([{ path: '**', children: [] }]), { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } }],
+    });
+    await TestBed.inject(Router).navigateByUrl('/notifications');
+    const sub = TestBed.createComponent(SubNavComponent);
+    sub.detectChanges();
+    expect((sub.nativeElement as HTMLElement).querySelector('a.active')).toBeNull();
+    const sidebar = TestBed.createComponent(SidebarComponent);
+    sidebar.detectChanges();
+    const el = sidebar.nativeElement as HTMLElement;
+    const active = el.querySelectorAll('a[aria-current="page"]');
+    expect(active.length).toBe(1);
+    expect(active[0].getAttribute('href')).toBe('/notifications');
+    expect(el.querySelector('.group-head.current')).toBeNull();
+  });
 
   for (const [url, label] of HIGHLIGHT) {
     it(`highlights ${label} in the sidebar and the mobile sub-nav on ${url}`, async () => {
