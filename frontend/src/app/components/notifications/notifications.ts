@@ -124,15 +124,21 @@ export class NotificationsComponent {
   /** The counts are exact: a round settled and no source failed (a failed source's tasks are missing: lower bounds). */
   protected readonly countsFinal = computed(() => this.center.loaded() && this.center.failedSources().length === 0);
 
-  protected readonly subtitle = computed<string | null>(() => {
-    // `summary()` is NO_TASKS until the first round settles: no subtitle rather than a false all-clear.
-    if (!this.countsFinal()) {
-      return null;
+  /**
+   * Never absent (the chips would shift down when it appeared). Before the first round settles `summary()` is
+   * NO_TASKS, and with a source failed the counts are lower bounds: neither claims an all-clear or a count.
+   */
+  protected readonly subtitle = computed<string>(() => {
+    if (!this.center.loaded()) {
+      return '讀取中…';
+    }
+    if (this.center.failedSources().length > 0) {
+      return '部分資料無法讀取';
     }
     const { total, overdue } = this.center.summary();
     if (total === 0) {
       // Truncated: the catch-all task normally makes the total non-zero; zero here is not "all clear" either.
-      return this.center.truncated() ? null : '沒有要處理的事';
+      return this.center.truncated() ? '項目較多，僅列出部分' : '沒有要處理的事';
     }
     const parts = [`${total} 件要處理`];
     if (overdue > 0) {

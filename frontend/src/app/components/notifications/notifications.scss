@@ -15,6 +15,14 @@
   }
 }
 
+/* Phone: the shared header brings 16 px of its own bottom margin on top of the page's 14 px gap (30 px, ~40 px
+   measured with the 44 px header row); header to chips is the same 14 px as chips to the first section. */
+@media (max-width: 759.98px) {
+  app-page-header {
+    margin-bottom: 0;
+  }
+}
+
 .notif-chips {
   display: flex;
   gap: 6px;

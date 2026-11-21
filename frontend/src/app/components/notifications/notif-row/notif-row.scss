@@ -119,9 +119,13 @@
 .notif-actions {
   align-items: center;
   display: flex;
-  flex: none;
+  /* One width for every row, content at the right: the body (and so the amount) then ends at the same x on every
+     row. 200 px = the widest pair, 全部入帳 (4 x 13.6 px + 2 x 17.6 px padding = 90 px, +22 px for the busy spinner)
+     + 8 px gap + 逐期處理 (4 x 13 px + 2 x 12 px = 76 px) = 174 px idle / 196 px busy. */
+  flex: 0 0 200px;
   flex-wrap: wrap;
   gap: 8px;
+  justify-content: flex-end;
   margin-left: auto;
 }
 
@@ -190,16 +194,17 @@
     min-width: 0;
   }
 
-  /* Title first, then tag, then amount. The title's basis is 140 px: when title + tag + amount do not fit on one
-     line the amount drops under the title instead of squeezing it. At 320 px the head is 240 px wide, so the
-     title is never narrower than 140 px (about 9 CJK characters per line, 2 lines). */
+  /* Title first, then tag, then amount. The title's basis is 200 px: unless the title keeps at least 200 px beside
+     the tag and amount, the amount drops under the title instead of squeezing it (at 390 px it was ~155 px). At
+     320 px the head is 240 px wide, so the title is never narrower than 200 px (about 13 CJK characters per line,
+     2 lines). */
   .notif-head {
     flex-wrap: wrap;
   }
 
   .notif-title {
     display: -webkit-box;
-    flex: 1 1 140px;
+    flex: 1 1 200px;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     overflow-wrap: anywhere;
@@ -212,6 +217,7 @@
 
   .notif-actions {
     flex: 0 0 100%;
+    justify-content: flex-start;
     margin-left: 0;
     padding-left: 52px;
   }

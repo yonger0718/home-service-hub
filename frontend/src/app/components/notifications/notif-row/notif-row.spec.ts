@@ -284,6 +284,18 @@ describe('NotifRowComponent', () => {
       expect(rule(phone, '.notif-head')).toMatch(/flex-wrap:\s*wrap/);
     });
 
+    it('below 760 px the title needs 200 px before the amount stays beside it (else the amount drops under)', () => {
+      expect(rule(phone, '.notif-title')).toMatch(/flex:\s*1 1 200px/);
+    });
+
+    it('at 760 px and up the actions have one fixed width, content right-aligned, so every amount ends at the same x', () => {
+      const top = css.slice(0, css.indexOf('@media'));
+      expect(rule(top, '.notif-actions')).toMatch(/flex:\s*0 0 200px/);
+      expect(rule(top, '.notif-actions')).toMatch(/justify-content:\s*flex-end/);
+      expect(rule(phone, '.notif-actions')).toMatch(/flex:\s*0 0 100%/);
+      expect(rule(phone, '.notif-actions')).toMatch(/justify-content:\s*flex-start/);
+    });
+
     it('at 760 px and up the title is a single-line ellipsis', () => {
       const t = rule(css.slice(0, css.indexOf('@media')), '.notif-title');
       expect(t).toMatch(/white-space:\s*nowrap/);

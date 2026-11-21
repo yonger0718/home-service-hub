@@ -25,7 +25,7 @@
   @for (section of sections(); track section.tier) {
     <section class="notif-section" [class.notif-section--alert]="section.tier === 'overdue' || section.tier === 'system'" [attr.aria-labelledby]="'notif-sec-' + section.tier">
       <h2 [id]="'notif-sec-' + section.tier">
-        <span class="sec-dot" aria-hidden="true"></span>{{ section.label }}&ngsp;<span class="sec-count">{{ section.tasks.length }}</span>
+        <span class="sec-dot" aria-hidden="true"></span>{{ section.label }}@if (center.loaded()) {&ngsp;<span class="sec-count">{{ section.tasks.length }}</span>}
       </h2>
       <ul class="notif-card">
         @for (task of section.tasks; track task.id) {

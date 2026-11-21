@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { HttpErrorResponse } from '@angular/common/http';
 import { computed, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
@@ -213,7 +216,7 @@ describe('NotificationsComponent', () => {
       loaded.set(false);
       tasks.set([]);
       const root = mount();
-      expect(root.querySelector('.page-subtitle')).toBeNull();
+      expect(subtitle(root)).toBe('讀取中…');
       expect(root.textContent).not.toContain('沒有要處理的事');
       const chips = Array.from(root.querySelectorAll<HTMLButtonElement>('.notif-chips button'));
       expect(chips.map(c => text(c))).toEqual(['全部', '財務', '投資']);
@@ -226,6 +229,16 @@ describe('NotificationsComponent', () => {
       expect(text(root.querySelector('.notif-chips button'))).toBe('全部5');
       expect(subtitle(root)).toContain('5 件要處理');
       expect(root.querySelectorAll('app-notif-row').length).toBe(5);
+    });
+    it('the section headings carry no number until loaded, then the count', async () => {
+      loaded.set(false);
+      tasks.set(TASKS);
+      const root = mount();
+      expect(Array.from(root.querySelectorAll('section.notif-section h2')).map(h => text(h))).toEqual(['已逾期', '今天', '要你確認', '系統']);
+      expect(root.querySelector('.sec-count')).toBeNull();
+      loaded.set(true);
+      await settle();
+      expect(Array.from(root.querySelectorAll('section.notif-section h2')).map(h => text(h))).toEqual(['已逾期 2', '今天 1', '要你確認 1', '系統 1']);
     });
     it('hides 追蹤中 that the service already holds', () => {
       loaded.set(false);
@@ -341,7 +354,7 @@ describe('NotificationsComponent', () => {
       expect(text(q(root, '.notif-failed .banner-title'))).toBe('無法讀取：帳單、對帳');
     });
 
-    it('a failed source with no task left: no 都處理好了, no 讀取中…, no subtitle; the failure line, chips and links show', () => {
+    it('a failed source with no task left: no 都處理好了, no 讀取中… row, the subtitle 「部分資料無法讀取」; the failure line, chips and links show', () => {
       tasks.set([]);
       failedSources.set(['recon']);
       const root = mount();
@@ -349,7 +362,7 @@ describe('NotificationsComponent', () => {
       expect(q(root, '.notif-loading')).toBeNull();
       expect(root.textContent).not.toContain('沒有要處理的事');
       expect(root.textContent).not.toContain('都處理好了');
-      expect(q(root, '.page-subtitle')).toBeNull();
+      expect(subtitle(root)).toBe('部分資料無法讀取');
       expect(text(q(root, '.notif-failed'))).toBe('無法讀取：對帳 重試');
       expect(root.querySelectorAll('.notif-chips button').length).toBe(3);
       expect(q(root, 'details.notif-tracking')).not.toBeNull();
@@ -370,22 +383,22 @@ describe('NotificationsComponent', () => {
       expect(banner.querySelector('.banner-title')!.firstChild).toBe(node);
     });
 
-    it('a failed source: the rows render, but no subtitle and no chip count (lower bounds), chip names are bare labels', () => {
+    it('a failed source: the rows render, the subtitle is 「部分資料無法讀取」 and there is no chip count (lower bounds), chip names are bare labels', () => {
       failedSources.set(['recon']);
       const root = mount();
       expect(root.querySelectorAll('app-notif-row').length).toBe(5);
-      expect(q(root, '.page-subtitle')).toBeNull();
+      expect(subtitle(root)).toBe('部分資料無法讀取');
       const chips = Array.from(root.querySelectorAll<HTMLButtonElement>('.notif-chips button'));
       expect(chips.map(c => text(c))).toEqual(['全部', '財務', '投資']);
       expect(chips.map(c => c.getAttribute('aria-label'))).toEqual(['全部', '財務', '投資']);
       expect(q(root, '.chip-count')).toBeNull();
     });
 
-    it('truncated with nothing listed: no 「沒有要處理的事」 subtitle', () => {
+    it('truncated with nothing listed: the subtitle is 「項目較多，僅列出部分」, never the all-clear', () => {
       tasks.set([]);
       truncated.set(true);
       const root = mount();
-      expect(q(root, '.page-subtitle')).toBeNull();
+      expect(subtitle(root)).toBe('項目較多，僅列出部分');
     });
 
     it('after a 重試 that succeeds the counts and the subtitle come back', async () => {
@@ -1278,6 +1291,15 @@ describe('NotificationsComponent', () => {
         expect(button(root, RENT.id).disabled).toBe(false);
         expect(document.activeElement).toBe(control(root, RENT.id));
       });
+    });
+  });
+
+  describe('scss rules (source pins)', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app/components/notifications/notifications.scss'), 'utf8');
+
+    it('on a phone the header adds no bottom margin of its own: header to chips is the page gap (14 px), as chips to section', () => {
+      const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
+      expect(phone).toMatch(/app-page-header\s*\{[^}]*margin-bottom:\s*0/);
     });
   });
 });
