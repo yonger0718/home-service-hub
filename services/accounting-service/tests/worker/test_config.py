@@ -83,3 +83,18 @@ def test_config_einvoice_defaults():
     cfg = config.load({})
     assert cfg.einvoice_folder == "電子發票/財政部" and cfg.einvoice_timeout_s == 60
     assert config.load({"STATEMENT_EINVOICE_FOLDER": "/a/b/"}).einvoice_folder == "a/b"
+
+
+def test_parser_oauth_token_file_default_and_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DEFAULT_PARSER_OAUTH_TOKEN_FILE", "~/.config/homehub-parser-oauth-token")  # undo the isolation
+    assert config.load({}).parser_oauth_token_file == Path("~/.config/homehub-parser-oauth-token").expanduser()
+    tok = tmp_path / "tok"
+    assert config.load({"STATEMENT_PARSER_OAUTH_TOKEN_FILE": str(tok)}).parser_oauth_token_file == tok
+
+
+def test_default_token_path_is_isolated_from_the_runner(tmp_path, monkeypatch):
+    assert not config.load({}).parser_oauth_token_file.exists()  # autouse fixture: nonexistent
+    real = tmp_path / "token"
+    real.write_text("sk-ant-oat01-FAKE-TEST-TOKEN")
+    monkeypatch.setattr(config, "DEFAULT_PARSER_OAUTH_TOKEN_FILE", str(real))
+    assert config.load({}).parser_oauth_token_file == real

@@ -131,3 +131,15 @@ def test_put_replaces_and_delete_removes(client, ledger):
     assert (body["name"], body["chart"], body["config"]["metric"]) == ("新名", "table", "income")
     assert client.delete(f"/reports/saved/{saved['id']}").status_code == 204
     assert client.get(f"/reports/saved/{saved['id']}").status_code == 404
+
+
+def test_inverted_amount_range_422_on_write(client, ledger):
+    """#254: a saved config with amount_min > amount_max is refused (POST and PUT); compared as numbers, not text."""
+    inverted = _config(filters={"amount_min": "-100", "amount_max": "-500"})
+    response = client.post("/reports/saved", json=_body(config=inverted))
+    assert response.status_code == 422
+    assert "amount_min must not exceed amount_max" in response.text
+    report = _create(client, config=_config(filters={"amount_min": "9", "amount_max": "10"}))  # "9" > "10" as text
+    put = client.put(f"/reports/saved/{report['id']}", json=_body(config=inverted))
+    assert put.status_code == 422
+    assert _create(client, name="一樣", config=_config(filters={"amount_min": "5", "amount_max": "5.00"}))

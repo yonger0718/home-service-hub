@@ -1,0 +1,96 @@
+:host {
+  display: block;
+  min-width: 0;
+  position: relative;
+}
+
+.pk-trigger {
+  align-items: center;
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 6px;
+  justify-content: space-between;
+  min-height: 36px;
+  min-width: 0;
+  padding: 4px 10px;
+  width: 100%;
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+}
+
+.pk-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pk-chevron {
+  color: var(--app-text-muted);
+  flex: none;
+}
+
+.pk-popover {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--app-raised-shadow);
+  // Anchored to the trigger's end edge and sized to the longest label, so a narrow trigger never wraps labels.
+  left: auto;
+  margin-top: 4px;
+  max-height: 60vh;
+  max-width: min(22rem, calc(100vw - 2rem));
+  min-width: max(100%, 11rem);
+  overflow-y: auto;
+  padding: 6px;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  width: max-content;
+  z-index: 1200;
+
+  .pk-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.pk-option {
+  align-items: baseline;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 8px;
+
+  &.active,
+  &:hover,
+  &:focus {
+    background: var(--app-surface-soft);
+    outline: none;
+  }
+
+  &[aria-selected='true'] {
+    font-weight: 700;
+  }
+
+  &[aria-disabled='true'] {
+    cursor: default;
+    opacity: 0.5;
+  }
+}
+
+.pk-hint {
+  color: var(--app-text-muted);
+  font-size: var(--fs-micro);
+}

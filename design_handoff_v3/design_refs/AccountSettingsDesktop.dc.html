@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>帳戶設定 · 桌面</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="min-height: 100vh; display: flex; flex-wrap: wrap; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+
+  <aside aria-label="主要導覽" style="flex: 0 0 72px; box-sizing: border-box; background: {{t.glass}}; border-right: 1px solid {{t.border}}; padding: 18px 0; display: flex; flex-direction: column; align-items: center; gap: 6px">
+    <a href="#" aria-label="Home Hub 首頁" style="width: 36px; height: 36px; border-radius: 12px; background: {{t.accent}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.onAccent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7 M5 10v10h14V10"></path></svg>
+    </a>
+    <nav style="display: flex; flex-direction: column; align-items: center; gap: 4px">
+      <sc-for list="{{railGroups}}" as="g" hint-placeholder-count="3">
+        <div style="width: 32px; height: 1px; background: {{t.border}}; margin: 6px 0"></div>
+        <sc-for list="{{g.items}}" as="item" hint-placeholder-count="3">
+          <a href="{{item.href}}" aria-label="{{item.label}}" title="{{item.label}}" aria-current="{{item.current}}" style="width: 44px; height: 40px; border-radius: 12px; background: {{item.bg}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{item.fg}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{item.icon}}"></path></svg>
+          </a>
+        </sc-for>
+      </sc-for>
+    </nav>
+  </aside>
+
+  <main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 24px 28px 48px">
+    <div style="max-width: 1240px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start">
+
+      <!-- 左：帳戶列表（縮略） -->
+      <section aria-label="帳戶" style="flex: 1 1 300px; max-width: 340px; min-width: 0; display: flex; flex-direction: column; gap: 10px">
+        <h1 style="margin: 0 4px; font-size: 26px; font-weight: 800; letter-spacing: -0.03em">帳戶</h1>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; overflow: hidden">
+          <sc-for list="{{accounts}}" as="a" hint-placeholder-count="6">
+            <a href="#" aria-current="{{a.current}}" style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; min-height: 56px; background: {{a.bg}}; border-bottom: 1px solid {{t.line}}; color: {{t.text}}; text-decoration: none">
+              <span style="width: 36px; height: 36px; border-radius: 11px; background: {{a.color}}; color: #FFFFFF; font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex: none">{{a.short}}</span>
+              <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+                <b style="font-size: 14px; font-weight: 700">{{a.name}}</b>
+                <small style="font-size: 12px; color: {{t.muted}}">{{a.sub}}</small>
+              </span>
+              <b style="font-size: 14px; font-weight: 700; color: {{a.amtColor}}">{{a.amt}}</b>
+            </a>
+          </sc-for>
+        </div>
+      </section>
+
+      <!-- 右：帳戶設定 -->
+      <section aria-label="帳戶設定" style="flex: 999 1 560px; min-width: 0; background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 22px; overflow: hidden">
+        <header style="display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid {{t.line}}">
+          <a href="#" aria-label="取消" style="width: 40px; height: 40px; border-radius: 12px; background: {{t.soft}}; color: {{t.text}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18 M6 6l12 12"></path></svg>
+          </a>
+          <h2 style="margin: 0; flex: 1; font-size: 17px; font-weight: 800">帳戶設定</h2>
+          <span role="status" style="font-size: 12px; font-weight: 700; color: {{t.warnInk}}">有 1 項未儲存</span>
+          <button type="button" style="min-height: 40px; padding: 0 18px; border-radius: 12px; border: 0; background: {{t.primary}}; color: #FFFFFF; font: inherit; font-size: 14px; font-weight: 700">儲存</button>
+        </header>
+
+        <div style="display: flex; align-items: center; gap: 14px; padding: 18px 20px 6px">
+          <span style="width: 56px; height: 56px; border-radius: 17px; background: #3f8f6b; color: #FFFFFF; font-size: 18px; font-weight: 800; display: flex; align-items: center; justify-content: center">Pi</span>
+          <span style="display: flex; flex-direction: column; gap: 3px">
+            <b style="font-size: 20px; font-weight: 800; letter-spacing: -0.02em">玉山 Pi 卡</b>
+            <small style="font-size: 13px; color: {{t.muted}}">信用卡 · 本期應繳 $12,860 · 12/10 自動扣繳</small>
+          </span>
+        </div>
+
+        <nav aria-label="設定區段" style="position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px 12px; background: {{t.surface}}; border-bottom: 1px solid {{t.line}}">
+          <sc-for list="{{sections}}" as="s" hint-placeholder-count="6">
+            <a href="{{s.href}}" aria-current="{{s.current}}" onClick="{{s.pick}}" style="min-height: 34px; padding: 0 12px; border-radius: 999px; background: {{s.bg}}; color: {{s.fg}}; font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px; text-decoration: none">{{s.label}}
+              <sc-if value="{{s.hasCount}}" hint-placeholder-val="{{false}}"><span style="font-size: 11px; padding: 1px 6px; border-radius: 8px; background: {{t.surface}}">{{s.count}}</span></sc-if>
+            </a>
+          </sc-for>
+        </nav>
+
+        <div style="padding: 8px 20px 24px; display: flex; flex-direction: column; gap: 22px">
+
+          <!-- 基本 -->
+          <section id="s-basic" aria-labelledby="h-basic" style="display: flex; flex-direction: column">
+            <h3 id="h-basic" style="margin: 10px 0 4px; font-size: 13px; font-weight: 800; letter-spacing: 0.08em; color: {{t.muted}}">基本</h3>
+            <label style="display: flex; align-items: center; gap: 16px; min-height: 52px; border-bottom: 1px solid {{t.line}}">
+              <span style="width: 132px; font-size: 14px; color: {{t.muted}}">名稱</span>
+              <input value="玉山 Pi 卡" style="flex: 1; min-width: 0; min-height: 40px; padding: 0 12px; border-radius: 11px; border: 1px solid {{t.border}}; background: {{t.field}}; color: {{t.text}}; font: inherit; font-size: 15px">
+            </label>
+            <div style="display: flex; align-items: center; gap: 16px; min-height: 52px; border-bottom: 1px solid {{t.line}}">
+              <span style="width: 132px; font-size: 14px; color: {{t.muted}}">主幣種</span>
+              <b style="font-size: 15px">TWD</b>
+              <small style="font-size: 12px; color: {{t.muted}}">已有記錄，無法變更</small>
+            </div>
+            <div style="display: flex; align-items: center; gap: 16px; min-height: 52px; border-bottom: 1px solid {{t.line}}">
+              <span style="width: 132px; font-size: 14px; color: {{t.muted}}">帳戶分組</span>
+              <button type="button" aria-haspopup="listbox" style="min-height: 40px; padding: 0 12px; border-radius: 11px; border: 1px solid {{t.border}}; background: {{t.field}}; color: {{t.text}}; font: inherit; font-size: 15px; display: flex; align-items: center; gap: 8px">信用卡
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+              </button>
+            </div>
+            <label style="display: flex; align-items: center; gap: 16px; min-height: 52px; border-bottom: 1px solid {{t.line}}">
+              <span style="width: 132px; font-size: 14px; color: {{t.muted}}">初始金額</span>
+              <span style="display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 12px; border-radius: 11px; border: 1px solid {{t.border}}; background: {{t.field}}; width: 180px; box-sizing: border-box">
+                <span style="color: {{t.muted}}">$</span>
+                <input value="0" inputmode="decimal" style="flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: {{t.text}}; font: inherit; font-size: 15px; text-align: right">
+              </span>
+            </label>
+            <div style="display: flex; align-items: center; gap: 16px; min-height: 52px">
+              <span style="width: 132px; font-size: 14px; color: {{t.muted}}">納入總餘額</span>
+              <button type="button" role="switch" aria-checked="true" aria-label="納入總餘額" style="width: 46px; height: 28px; border-radius: 14px; border: 0; background: {{t.primary}}; padding: 3px; display: flex; justify-content: flex-end"><span style="width: 22px; height: 22px; border-radius: 11px; background: #FFFFFF"></span></button>
+            </div>
+          </section>
+
+          <!-- 外觀 -->
+          <section id="s-look" aria-labelledby="h-look" style="display: flex; flex-direction: column; gap: 10px">
+            <h3 id="h-look" style="margin: 0; font-size: 13px; font-weight: 800; letter-spacing: 0.08em; color: {{t.muted}}">外觀</h3>
+            <div style="display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start">
+              <span style="display: flex; flex-direction: column; align-items: center; gap: 6px">
+                <span style="width: 64px; height: 64px; border-radius: 19px; background: #3f8f6b; color: #FFFFFF; font-size: 20px; font-weight: 800; display: flex; align-items: center; justify-content: center">Pi</span>
+                <small style="font-size: 11px; color: {{t.muted}}">預覽</small>
+              </span>
+              <div style="flex: 1; min-width: 280px; display: flex; flex-direction: column; gap: 12px">
+                <div role="radiogroup" aria-label="圖示來源" style="display: inline-flex; align-self: flex-start; background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+                  <sc-for list="{{lookTabs}}" as="l" hint-placeholder-count="3">
+                    <button type="button" role="radio" aria-checked="{{l.checked}}" onClick="{{l.pick}}" style="border: 0; background: {{l.bg}}; color: {{l.fg}}; font: inherit; font-size: 13px; font-weight: 700; min-height: 34px; padding: 0 14px; border-radius: 9px; cursor: pointer">{{l.label}}</button>
+                  </sc-for>
+                </div>
+                <sc-if value="{{lookUpload}}" hint-placeholder-val="{{false}}">
+                  <div style="display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 14px; border: 1px dashed {{t.border}}">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4 M7 9l5-5 5 5 M4 20h16"></path></svg>
+                    <span style="flex: 1; font-size: 13px; color: {{t.muted}}">拖曳圖片到這裡，或</span>
+                    <button type="button" style="min-height: 36px; padding: 0 14px; border-radius: 10px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 13px; font-weight: 700">選擇檔案</button>
+                    <small style="font-size: 11px; color: {{t.muted}}">PNG / JPG / WebP · 5 MB 以內</small>
+                  </div>
+                </sc-if>
+                <sc-if value="{{lookLogo}}" hint-placeholder-val="{{true}}">
+                  <div role="radiogroup" aria-label="內建 logo" style="display: flex; flex-wrap: wrap; gap: 8px">
+                    <sc-for list="{{logos}}" as="g" hint-placeholder-count="6">
+                      <button type="button" role="radio" aria-checked="{{g.checked}}" aria-label="{{g.label}}" style="width: 56px; height: 56px; border-radius: 15px; border: 2px solid {{g.ring}}; background: {{t.soft}}; padding: 4px; display: flex; align-items: center; justify-content: center">
+                        <span style="width: 40px; height: 40px; border-radius: 11px; background: {{g.color}}; color: #FFFFFF; font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{g.short}}</span>
+                      </button>
+                    </sc-for>
+                  </div>
+                </sc-if>
+                <sc-if value="{{lookText}}" hint-placeholder-val="{{false}}">
+                  <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: {{t.muted}}">文字
+                      <input value="Pi" maxlength="4" style="width: 72px; min-height: 38px; padding: 0 10px; border-radius: 10px; border: 1px solid {{t.border}}; background: {{t.field}}; color: {{t.text}}; font: inherit; font-size: 15px">
+                    </label>
+                    <span role="radiogroup" aria-label="顏色" style="display: flex; gap: 6px">
+                      <sc-for list="{{swatches}}" as="w" hint-placeholder-count="7">
+                        <button type="button" role="radio" aria-checked="{{w.checked}}" aria-label="{{w.label}}" style="width: 30px; height: 30px; border-radius: 15px; border: 2px solid {{w.ring}}; background: {{w.color}}; padding: 0"></button>
+                      </sc-for>
+                    </span>
+                  </div>
+                </sc-if>
+              </div>
+            </div>
+          </section>
+
+          <!-- 信用卡 -->
+          <section id="s-card" aria-labelledby="h-card" style="display: flex; flex-direction: column">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin: 0 0 4px">
+              <h3 id="h-card" style="margin: 0; font-size: 13px; font-weight: 800; letter-spacing: 0.08em; color: {{t.muted}}">信用卡</h3>
+              <span style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: {{t.muted}}">信用帳戶
+                <button type="button" role="switch" aria-checked="{{creditChecked}}" aria-label="信用帳戶" onClick="{{toggleCredit}}" style="width: 46px; height: 28px; border-radius: 14px; border: 0; background: {{creditTrack}}; padding: 3px; display: flex; justify-content: {{creditKnob}}; cursor: pointer"><span style="width: 22px; height: 22px; border-radius: 11px; background: #FFFFFF"></span></button>
+              </span>
+            </div>
+            <sc-if value="{{credit}}" hint-placeholder-val="{{true}}">
+              <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 56px; border-bottom: 1px solid {{t.line}}; padding: 6px 0">
+                <span style="width: 132px; font-size: 14px; color: {{t.muted}}">結帳日</span>
+                <span style="display: flex; align-items: center; border: 1px solid {{t.border}}; border-radius: 11px; background: {{t.field}}; overflow: hidden">
+                  <button type="button" aria-label="減一天" onClick="{{dayDown}}" style="width: 40px; height: 40px; border: 0; background: transparent; color: {{t.text}}; font-size: 18px; cursor: pointer">−</button>
+                  <b style="min-width: 64px; text-align: center; font-size: 15px">{{closingText}}</b>
+                  <button type="button" aria-label="加一天" onClick="{{dayUp}}" style="width: 40px; height: 40px; border: 0; background: transparent; color: {{t.text}}; font-size: 18px; cursor: pointer">＋</button>
+                </span>
+                <small style="font-size: 12px; color: {{t.muted}}">{{cycleText}}</small>
+              </div>
+              <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 56px; border-bottom: 1px solid {{t.line}}; padding: 6px 0">
+                <span style="width: 132px; font-size: 14px; color: {{t.muted}}">繳款期限</span>
+                <span role="radiogroup" aria-label="繳款期限算法" style="display: inline-flex; background: {{t.soft}}; border-radius: 11px; padding: 3px; gap: 2px">
+                  <button type="button" role="radio" aria-checked="true" style="border: 0; background: {{t.pillOn}}; color: {{t.text}}; font: inherit; font-size: 13px; font-weight: 700; min-height: 32px; padding: 0 12px; border-radius: 8px">結帳後</button>
+                  <button type="button" role="radio" aria-checked="false" style="border: 0; background: transparent; color: {{t.muted}}; font: inherit; font-size: 13px; min-height: 32px; padding: 0 12px; border-radius: 8px">每月固定日</button>
+                </span>
+                <span style="display: flex; align-items: center; border: 1px solid {{t.border}}; border-radius: 11px; background: {{t.field}}; overflow: hidden">
+                  <button type="button" aria-label="減一天" style="width: 40px; height: 40px; border: 0; background: transparent; color: {{t.text}}; font-size: 18px">−</button>
+                  <b style="min-width: 56px; text-align: center; font-size: 15px">15 天</b>
+                  <button type="button" aria-label="加一天" style="width: 40px; height: 40px; border: 0; background: transparent; color: {{t.text}}; font-size: 18px">＋</button>
+                </span>
+                <small style="font-size: 12px; color: {{t.muted}}">{{dueText}}</small>
+              </div>
+              <label style="display: flex; align-items: center; gap: 16px; min-height: 52px; border-bottom: 1px solid {{t.line}}">
+                <span style="width: 132px; font-size: 14px; color: {{t.muted}}">信用額度</span>
+                <span style="display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 12px; border-radius: 11px; border: 1px solid {{t.border}}; background: {{t.field}}; width: 180px; box-sizing: border-box">
+                  <span style="color: {{t.muted}}">$</span>
+                  <input value="200,000" inputmode="decimal" style="flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: {{t.text}}; font: inherit; font-size: 15px; text-align: right">
+                </span>
+              </label>
+              <sc-for list="{{cardSelects}}" as="cs" hint-placeholder-count="3">
+                <div style="display: flex; align-items: center; gap: 16px; min-height: 52px; border-bottom: 1px solid {{t.line}}">
+                  <span style="width: 132px; font-size: 14px; color: {{t.muted}}">{{cs.k}}</span>
+                  <button type="button" aria-haspopup="listbox" style="min-height: 40px; padding: 0 12px; border-radius: 11px; border: 1px solid {{t.border}}; background: {{t.field}}; color: {{t.text}}; font: inherit; font-size: 15px; display: flex; align-items: center; gap: 8px">{{cs.v}}
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+                  </button>
+                  <small style="font-size: 12px; color: {{t.muted}}">{{cs.hint}}</small>
+                </div>
+              </sc-for>
+            </sc-if>
+            <sc-if value="{{notCredit}}" hint-placeholder-val="{{false}}">
+              <p style="margin: 6px 0 0; font-size: 13px; color: {{t.muted}}">打開「信用帳戶」才會出現結帳日、繳款期限、額度與自動扣繳。</p>
+            </sc-if>
+          </section>
+
+          <!-- 回饋規則 -->
+          <section id="s-reward" aria-labelledby="h-reward" style="display: flex; flex-direction: column">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin: 0 0 4px">
+              <h3 id="h-reward" style="margin: 0; font-size: 13px; font-weight: 800; letter-spacing: 0.08em; color: {{t.muted}}">回饋規則 · 本期 10/26–11/25</h3>
+              <a href="RewardRulesDesktop.dc.html" style="font-size: 13px; font-weight: 700; color: {{t.primary}}; text-decoration: none">所有卡片的規則 ›</a>
+            </div>
+            <sc-for list="{{rules}}" as="r" hint-placeholder-count="3">
+              <div style="display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid {{t.line}}; opacity: {{r.opacity}}">
+                <span aria-hidden="true" title="拖曳排序" style="color: {{t.muted}}; cursor: grab">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6h.01 M9 12h.01 M9 18h.01 M15 6h.01 M15 12h.01 M15 18h.01"></path></svg>
+                </span>
+                <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+                  <span style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+                    <b style="font-size: 15px; font-weight: 700">{{r.name}}</b>
+                    <span style="font-size: 12px; font-weight: 800; padding: 2px 8px; border-radius: 8px; background: {{t.primarySoft}}; color: {{t.primary}}">{{r.rate}}</span>
+                    <sc-if value="{{r.hasTag}}" hint-placeholder-val="{{false}}"><span style="font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 8px; background: {{t.neutralSoft}}; color: {{t.muted}}">{{r.tag}}</span></sc-if>
+                    <small style="font-size: 12px; color: {{t.muted}}">· {{r.posting}}</small>
+                  </span>
+                  <sc-if value="{{r.hasCap}}" hint-placeholder-val="{{true}}">
+                    <span style="display: flex; align-items: center; gap: 10px">
+                      <span role="img" aria-label="{{r.capAria}}" style="flex: 1; max-width: 360px; height: 6px; border-radius: 999px; background: {{t.soft}}; overflow: hidden; display: flex">
+                        <span style="width: {{r.usedW}}; background: {{r.bar}}"></span>
+                        <span style="width: {{r.estW}}; background: {{r.barSoft}}"></span>
+                      </span>
+                      <small style="font-size: 12px; font-weight: 700; color: {{r.capFg}}">{{r.capText}}</small>
+                    </span>
+                  </sc-if>
+                  <sc-if value="{{r.noCap}}" hint-placeholder-val="{{false}}">
+                    <small style="font-size: 12px; color: {{t.muted}}">{{r.noCapText}}</small>
+                  </sc-if>
+                </span>
+                <button type="button" role="switch" aria-checked="{{r.checked}}" aria-label="{{r.switchLabel}}" style="width: 42px; height: 26px; border-radius: 13px; border: 0; background: {{r.track}}; padding: 3px; display: flex; justify-content: {{r.knob}}"><span style="width: 20px; height: 20px; border-radius: 10px; background: #FFFFFF"></span></button>
+                <button type="button" aria-label="{{r.moreLabel}}" style="width: 36px; height: 36px; border-radius: 10px; border: 0; background: transparent; color: {{t.muted}}; display: flex; align-items: center; justify-content: center">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg>
+                </button>
+              </div>
+            </sc-for>
+            <button type="button" style="align-self: flex-start; margin-top: 10px; min-height: 38px; padding: 0 14px; border-radius: 11px; border: 0; background: {{t.primarySoft}}; color: {{t.primary}}; font: inherit; font-size: 14px; font-weight: 700">＋ 新增規則</button>
+          </section>
+
+          <!-- 國外交易 -->
+          <section id="s-fx" aria-labelledby="h-fx" style="display: flex; flex-direction: column">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin: 0 0 4px">
+              <h3 id="h-fx" style="margin: 0; font-size: 13px; font-weight: 800; letter-spacing: 0.08em; color: {{t.muted}}">國外交易手續費</h3>
+              <button type="button" role="switch" aria-checked="true" aria-label="國外交易手續費" style="width: 46px; height: 28px; border-radius: 14px; border: 0; background: {{t.primary}}; padding: 3px; display: flex; justify-content: flex-end"><span style="width: 22px; height: 22px; border-radius: 11px; background: #FFFFFF"></span></button>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 52px; border-bottom: 1px solid {{t.line}}">
+              <span style="width: 132px; font-size: 14px; color: {{t.muted}}">費率</span>
+              <span style="display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 12px; border-radius: 11px; border: 1px solid {{t.border}}; background: {{t.field}}; width: 120px; box-sizing: border-box">
+                <input value="1.5" inputmode="decimal" aria-label="手續費百分比" style="flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: {{t.text}}; font: inherit; font-size: 15px; text-align: right">
+                <span style="color: {{t.muted}}">%</span>
+              </span>
+              <span role="radiogroup" aria-label="計算方式" style="display: inline-flex; background: {{t.soft}}; border-radius: 11px; padding: 3px; gap: 2px">
+                <button type="button" role="radio" aria-checked="true" style="border: 0; background: {{t.pillOn}}; color: {{t.text}}; font: inherit; font-size: 13px; font-weight: 700; min-height: 32px; padding: 0 12px; border-radius: 8px">另記一筆手續費</button>
+                <button type="button" role="radio" aria-checked="false" style="border: 0; background: transparent; color: {{t.muted}}; font: inherit; font-size: 13px; min-height: 32px; padding: 0 12px; border-radius: 8px">併入金額</button>
+              </span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 16px; min-height: 52px">
+              <span style="width: 132px; font-size: 14px; color: {{t.muted}}">退款時退回</span>
+              <button type="button" role="switch" aria-checked="false" aria-label="退款時退回手續費" style="width: 46px; height: 28px; border-radius: 14px; border: 0; background: {{t.border}}; padding: 3px; display: flex; justify-content: flex-start"><span style="width: 22px; height: 22px; border-radius: 11px; background: #FFFFFF"></span></button>
+            </div>
+          </section>
+
+          <!-- 其他 -->
+          <section id="s-more" aria-labelledby="h-more" style="display: flex; flex-direction: column; gap: 10px">
+            <h3 id="h-more" style="margin: 0; font-size: 13px; font-weight: 800; letter-spacing: 0.08em; color: {{t.muted}}">其他</h3>
+            <label style="display: flex; flex-direction: column; gap: 6px">
+              <span style="font-size: 14px; color: {{t.muted}}">備註</span>
+              <textarea rows="2" style="min-height: 64px; padding: 10px 12px; border-radius: 11px; border: 1px solid {{t.border}}; background: {{t.field}}; color: {{t.text}}; font: inherit; font-size: 14px; resize: vertical">網購、超市主力卡</textarea>
+            </label>
+            <div style="display: flex; flex-wrap: wrap; gap: 10px; padding-top: 6px">
+              <button type="button" style="min-height: 40px; padding: 0 14px; border-radius: 11px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 14px; font-weight: 600">還原 MOZE 設定</button>
+              <button type="button" style="min-height: 40px; padding: 0 14px; border-radius: 11px; border: 1px solid {{t.dangerLine}}; background: {{t.surface}}; color: {{t.dangerInk}}; font: inherit; font-size: 14px; font-weight: 700">封存帳戶</button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1440,"height":1900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { section: 'basic', look: 'logo', credit: true, closing: 25 };
+  }
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', glass: 'rgba(23,28,36,0.75)', soft: '#202733', border: '#313a48', line: '#252c38', field: '#131820',
+      text: '#f3f6fb', muted: '#99a3b3', accent: '#e6ebf5', onAccent: '#171c24', pillOn: '#2a3241',
+      primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)', primaryBarSoft: 'rgba(139,125,255,0.38)',
+      warnSoft: 'rgba(208,160,106,0.14)', warnInk: '#d0a06a', warnBar: '#d0a06a', warnBarSoft: 'rgba(208,160,106,0.4)',
+      neutralSoft: 'rgba(150,165,197,0.15)', dangerInk: '#ff6369', dangerLine: 'rgba(255,99,105,0.5)', out: '#ff6369', in: '#43c98a',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', glass: 'rgba(250,252,255,0.8)', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2', field: '#ffffff',
+      text: '#151821', muted: '#5f6673', accent: '#1d2433', onAccent: '#ffffff', pillOn: '#fafcff',
+      primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)', primaryBarSoft: 'rgba(83,58,253,0.3)',
+      warnSoft: 'rgba(138,99,39,0.10)', warnInk: '#8a6327', warnBar: '#a87a32', warnBarSoft: 'rgba(168,122,50,0.35)',
+      neutralSoft: 'rgba(123,135,168,0.14)', dangerInk: '#c9373c', dangerLine: 'rgba(201,55,60,0.45)', out: '#e5484d', in: '#1f9d6b',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)'
+    };
+    const I = {
+      chart: 'M3 17l6-6 4 4 8-8 M15 7h6v6',
+      list: 'M8 6h13 M8 12h13 M8 18h13 M3.5 6h.01 M3.5 12h.01 M3.5 18h.01',
+      wallet: 'M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01',
+      pie: 'M12 3v9h9 M21 12a9 9 0 1 1-9-9',
+      sliders: 'M4 6h10 M18 6h2 M4 12h4 M12 12h8 M4 18h12 M16 4v4 M10 10v4 M18 16v4',
+      bell: 'M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9 M13.7 21a2 2 0 0 1-3.4 0',
+      cog: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1'
+    };
+    const NAV = [
+      [['portfolio', '投資概覽', I.chart, 'Main.dc.html'], ['transactions', '交易紀錄', I.list, 'PfTransactions.dc.html']],
+      [['ledger', '記帳記錄', I.list, 'CalendarDesktop.dc.html'], ['accounts', '帳戶', I.wallet, '#'], ['reports', '報表', I.pie, 'ReportsDesktop.dc.html'], ['ledger-settings', '記帳設定', I.sliders, 'RewardRulesDesktop.dc.html']],
+      [['notif', '通知', I.bell, 'NotifDesktop.dc.html'], ['settings', '設定', I.cog, 'SettingsDesktop.dc.html']]
+    ];
+    const railGroups = NAV.map((items) => ({ items: items.map(([id, label, icon, href]) => {
+      const on = id === 'accounts';
+      return { label, icon, href, current: on ? 'page' : 'false', bg: on ? t.primarySoft : 'transparent', fg: on ? t.primary : t.muted };
+    }) }));
+
+    const accounts = [
+      ['台新 Richart', 'RI', '#5f86c9', '銀行', '$186,420', 'in'],
+      ['現金', '$', '#7d889c', '錢包', '$3,250', 'in'],
+      ['玉山 Pi 卡', 'Pi', '#3f8f6b', '信用卡 · 12/10 扣繳', '−$12,860', 'out', true],
+      ['國泰 CUBE 卡', 'CU', '#3d7f8a', '信用卡 · 11/25 扣繳', '−$6,320', 'out'],
+      ['台新 @GoGo 卡', 'Go', '#c4553a', '信用卡', '−$2,180', 'out'],
+      ['元大交割戶', '元', '#8a6327', '證券', '$54,000', 'in']
+    ].map(([name, short, color, sub, amt, tone, sel]) => ({ name, short, color, sub, amt, amtColor: tone === 'out' ? t.out : t.text,
+      bg: sel ? t.primarySoft : 'transparent', current: sel ? 'true' : 'false' }));
+
+    const SECTIONS = [['basic', '基本', '#s-basic'], ['look', '外觀', '#s-look'], ['card', '信用卡', '#s-card'], ['reward', '回饋規則', '#s-reward', 3], ['fx', '國外交易', '#s-fx'], ['more', '其他', '#s-more']];
+    const sections = SECTIONS.map(([key, label, href, count]) => {
+      const on = this.state.section === key;
+      return { label, href, current: on ? 'true' : 'false', pick: () => this.setState({ section: key }),
+        bg: on ? t.primarySoft : t.soft, fg: on ? t.primary : t.text, hasCount: !!count, count: count || '' };
+    });
+
+    const look = this.state.look;
+    const lookTabs = [['upload', '上傳圖片'], ['logo', '內建 logo'], ['text', '文字＋顏色']].map(([key, label]) => {
+      const on = look === key;
+      return { label, checked: on ? 'true' : 'false', pick: () => this.setState({ look: key }), bg: on ? t.pillOn : 'transparent', fg: on ? t.text : t.muted };
+    });
+    const logos = [['玉山 Pi', 'Pi', '#3f8f6b', true], ['國泰', 'CU', '#3d7f8a'], ['台新', 'TS', '#c4553a'], ['永豐', 'SP', '#7b5ea8'], ['中信', 'CT', '#3a7f4f'], ['富邦', 'FB', '#2f6f9f'], ['匯豐', 'HS', '#b5323a']]
+      .map(([label, short, color, on]) => ({ label, short, color, checked: on ? 'true' : 'false', ring: on ? t.primary : 'transparent' }));
+    const swatches = [['綠', '#3f8f6b', true], ['青', '#3d7f8a'], ['藍', '#2f6f9f'], ['紫', '#7b5ea8'], ['紅', '#b5323a'], ['橘', '#c4553a'], ['灰', '#7d889c']]
+      .map(([label, color, on]) => ({ label, color, checked: on ? 'true' : 'false', ring: on ? t.text : 'transparent' }));
+
+    const closing = this.state.closing;
+    const next = (d) => (d % 31) + 1;
+    const credit = this.state.credit;
+    const cardSelects = [
+      { k: '額度共用', v: '不共用', hint: '' },
+      { k: '主帳戶', v: '無（獨立帳單）', hint: '' },
+      { k: '自動扣繳', v: '台新 Richart', hint: '到期日自動從這個帳戶扣款' }
+    ];
+
+    const money = (n) => '$' + n.toLocaleString('en-US');
+    const rules = [
+      { name: '一般消費', rate: '1%', posting: '次期 15 號入帳', cap: 500, used: 236, est: 64, on: true },
+      { name: '全聯・家樂福加碼', rate: '5%', posting: '次期 15 號入帳', cap: 200, used: 180, est: 13, on: true },
+      { name: '海外消費', rate: '2.5%', posting: '次期 15 號入帳', cap: null, used: 0, est: 0, on: false, tag: '已停用' }
+    ].map((r) => {
+      const total = r.used + r.est;
+      const near = r.cap && total / r.cap >= 0.9;
+      return {
+        name: r.name, rate: r.rate, posting: r.posting, opacity: r.on ? '1' : '0.65',
+        hasTag: !!r.tag, tag: r.tag || '',
+        hasCap: !!r.cap && r.on, noCap: !r.cap || !r.on,
+        noCapText: r.on ? '無上限' : '停用中，不估算回饋',
+        usedW: r.cap ? ((r.used / r.cap) * 100).toFixed(1) + '%' : '0%',
+        estW: r.cap ? ((r.est / r.cap) * 100).toFixed(1) + '%' : '0%',
+        bar: near ? t.warnBar : t.primary, barSoft: near ? t.warnBarSoft : t.primaryBarSoft,
+        capFg: near ? t.warnInk : t.muted,
+        capText: money(total) + ' / ' + money(r.cap || 0) + (near ? ' · 快到上限' : ''),
+        capAria: '本期已入帳 ' + money(r.used) + '，預估 ' + money(r.est) + '，上限 ' + money(r.cap || 0),
+        checked: r.on ? 'true' : 'false', track: r.on ? t.primary : t.border, knob: r.on ? 'flex-end' : 'flex-start',
+        switchLabel: r.name + ' 啟用', moreLabel: r.name + ' 更多動作'
+      };
+    });
+
+    return {
+      t, railGroups, accounts, sections, lookTabs, logos, swatches, rules, cardSelects,
+      lookUpload: look === 'upload', lookLogo: look === 'logo', lookText: look === 'text',
+      credit, notCredit: !credit,
+      creditChecked: credit ? 'true' : 'false', creditTrack: credit ? t.primary : t.border, creditKnob: credit ? 'flex-end' : 'flex-start',
+      toggleCredit: () => this.setState({ credit: !this.state.credit }),
+      closingText: closing + ' 號',
+      cycleText: '本期 10/' + next(closing) + '–11/' + closing + '，下期從 11/' + next(closing) + ' 開始',
+      dueText: '11/' + closing + ' 結帳 → 結帳後 15 天截止（遇假日順延）',
+      dayDown: () => this.setState({ closing: Math.max(1, this.state.closing - 1) }),
+      dayUp: () => this.setState({ closing: Math.min(28, this.state.closing + 1) })
+    };
+  }
+}
+</script>
+</body>
+</html>

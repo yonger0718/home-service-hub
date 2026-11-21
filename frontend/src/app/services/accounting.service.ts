@@ -15,6 +15,7 @@ import {
   CategoryInput,
   CategoryNode,
   Counterparty,
+  DebtReviewPage,
   CounterpartyInput,
   DailySummary,
   EntryDetail,
@@ -71,6 +72,11 @@ export function toParams(query: object): HttpParams {
     }
   }
   return params;
+}
+
+/** The query of an update that confirms dropping a stored fee / discount (#396); none when not asked. */
+function dropOptions(dropChildren: boolean): { params?: Record<string, string> } {
+  return dropChildren ? { params: { drop_children: 'true' } } : {};
 }
 
 @Injectable({
@@ -230,8 +236,13 @@ export class AccountingService {
     return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries`, input));
   }
 
-  updateEntry(id: number, input: EntryInput): Observable<EntryDetail> {
-    return this.bump(this.http.put<EntryDetail>(`${this.apiUrl}/entries/${id}`, input));
+  /**
+   * `dropChildren` (here and on the transfer / split updates): confirm that the update deletes a stored fee /
+   * discount the body no longer carries (`?drop_children=true`, #396). Without it the API refuses such an update
+   * with 409 `children_unconfirmed`; with it the API needs the admin scope.
+   */
+  updateEntry(id: number, input: EntryInput, dropChildren = false): Observable<EntryDetail> {
+    return this.bump(this.http.put<EntryDetail>(`${this.apiUrl}/entries/${id}`, input, dropOptions(dropChildren)));
   }
 
   /** Replace only the entry's reward rule links; the row and its fee / discount children stay as they are (#293). */
@@ -249,8 +260,14 @@ export class AccountingService {
     return this.bump(this.http.post<RewardReprice>(`${this.apiUrl}/entries/${id}/reward-reprice`, { keep }));
   }
 
-  deleteEntry(id: number): Observable<void> {
-    return this.bump(this.http.delete<void>(`${this.apiUrl}/entries/${id}`));
+  /**
+   * Deletes the entry with its fee / discount children and, for a transfer, the other leg. `cascade` confirms the
+   * delete of a child on another account than its parent, which the API otherwise refuses (#390). The answer lists
+   * the removed rows; no caller reads it.
+   */
+  deleteEntry(id: number, cascade = false): Observable<void> {
+    const options = cascade ? { params: { cascade: 'true' } } : {};
+    return this.bump(this.http.delete<void>(`${this.apiUrl}/entries/${id}`, options));
   }
 
   settleEntry(id: number, input: SettleInput): Observable<EntryDetail> {
@@ -259,6 +276,26 @@ export class AccountingService {
 
   refundEntry(id: number, input: RefundInput): Observable<EntryDetail> {
     return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries/${id}/refund`, input));
+  }
+
+  /** #391: clears `is_closed` on a receivable / payable original; its remainder follows from its settlements again. */
+  reopenDebt(id: number): Observable<EntryDetail> {
+    return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries/${id}/reopen`, {}));
+  }
+
+  /** #391: sets `is_closed` on a receivable / payable original: no remainder, whatever its settlements sum to. */
+  closeDebt(id: number): Observable<EntryDetail> {
+    return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries/${id}/close`, {}));
+  }
+
+  /** #401: the closes with a remainder that wait for the owner's 已確認 (newest first). */
+  getDebtReviews(limit = 50): Observable<DebtReviewPage> {
+    return this.http.get<DebtReviewPage>(`${this.apiUrl}/debt-events/to-review`, { params: { limit } });
+  }
+
+  /** #401: the owner's 已確認 of a close event. Not a ledger write: `entriesChanged` is not bumped. */
+  reviewDebtEvent(eventId: number): Observable<void> {
+    return this.http.post<void>(`${this.apiUrl}/debt-events/${eventId}/review`, {});
   }
 
   createBalanceAdjustment(input: BalanceAdjustmentInput): Observable<EntryDetail> {
@@ -271,8 +308,8 @@ export class AccountingService {
     );
   }
 
-  updateTransfer(groupId: string, input: TransferInput): Observable<unknown> {
-    return this.bump(this.http.put<unknown>(`${this.apiUrl}/transfers/${groupId}`, input));
+  updateTransfer(groupId: string, input: TransferInput, dropChildren = false): Observable<unknown> {
+    return this.bump(this.http.put<unknown>(`${this.apiUrl}/transfers/${groupId}`, input, dropOptions(dropChildren)));
   }
 
   createSplit(input: SplitInput): Observable<SplitResult> {
@@ -280,13 +317,13 @@ export class AccountingService {
   }
 
   /** Upserts the members by id (keep / full / new / dropped); one member dissolves the split. */
-  updateSplit(groupId: number, input: SplitInput): Observable<SplitResult> {
-    return this.bump(this.http.put<SplitResult>(`${this.apiUrl}/splits/${groupId}`, input));
+  updateSplit(groupId: number, input: SplitInput, dropChildren = false): Observable<SplitResult> {
+    return this.bump(this.http.put<SplitResult>(`${this.apiUrl}/splits/${groupId}`, input, dropOptions(dropChildren)));
   }
 
   /** Converts an ungrouped entry into a split; the entry is the anchor and keeps its id. */
-  convertEntryToSplit(entryId: number, input: SplitInput): Observable<SplitResult> {
-    return this.bump(this.http.put<SplitResult>(`${this.apiUrl}/entries/${entryId}/split`, input));
+  convertEntryToSplit(entryId: number, input: SplitInput, dropChildren = false): Observable<SplitResult> {
+    return this.bump(this.http.put<SplitResult>(`${this.apiUrl}/entries/${entryId}/split`, input, dropOptions(dropChildren)));
   }
 
   deleteSplit(groupId: number): Observable<void> {

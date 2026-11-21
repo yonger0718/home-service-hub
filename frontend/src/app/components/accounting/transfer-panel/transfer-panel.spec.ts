@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CategoryNode, EntryDetail, LedgerAccount } from '../../../models/accounting.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { TransferCommon } from '../entry-form/transfer-math';
+import { pullGrab } from '../sheet-pull.testing';
 import { TransferPanelComponent } from './transfer-panel';
 
 function account(id: number, name: string, currency: string, balance: string): LedgerAccount {
@@ -161,6 +162,83 @@ describe('TransferPanelComponent', () => {
     req.flush({});
   });
 
+  // #396: PUT /transfers confirms a drop only for a fee / discount this panel loaded and the owner cleared.
+  it.each([
+    ['kept', [{ id: 70, kind: 'fee', amount: '-10.0000' }], false, []],
+    ['cleared', [{ id: 70, kind: 'fee', amount: '-10.0000' }], true, ['drop_children']],
+    ['never there', [], false, []],
+  ] as const)('editing a transfer whose out fee is %s', async (_name, children, clear, keys) => {
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730')]);
+    const out = { id: 7, kind: 'transfer_out', account_id: 1, amount: '-3000.0000', category_id: 33, children } as unknown as EntryDetail;
+    const inn = { id: 8, kind: 'transfer_in', account_id: 3, amount: '3000.0000', category_id: 33, children: [] } as unknown as EntryDetail;
+    fixture.componentRef.setInput('edit', { groupId: 'g-9', out, in: inn });
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    if (clear) {
+      fixture.componentInstance.setChild('out', 'fee', '');
+    }
+
+    fixture.componentInstance.submit(COMMON, 'g-9')!.subscribe();
+    const req = http.expectOne(r => r.url === '/api/accounting/transfers/g-9');
+    expect(req.request.params.keys()).toEqual([...keys]);
+    expect(req.request.body.out_fee).toEqual(children.length && !clear ? { amount: '10', name: '手續費' } : null);
+    req.flush({});
+  });
+
+  // #396: the API keeps each stored leg in its role (the body's out side updates the stored out leg), so after ⇄ the
+  // stored out leg's fee is not in its body any more: the save confirms that drop and sends the fee on the in side.
+  it('after ⇄ on a transfer whose out leg has a stored fee, confirms the out leg drop and sends the fee on the in side', async () => {
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730')]);
+    const out = { id: 7, kind: 'transfer_out', account_id: 1, amount: '-3000.0000', category_id: 33, children: [{ id: 70, kind: 'fee', amount: '-10.0000' }] } as unknown as EntryDetail;
+    const inn = { id: 8, kind: 'transfer_in', account_id: 3, amount: '3000.0000', category_id: 33, children: [] } as unknown as EntryDetail;
+    fixture.componentRef.setInput('edit', { groupId: 'g-9', out, in: inn });
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>('.swap')!.click();
+    fixture.detectChanges();
+
+    fixture.componentInstance.submit(COMMON, 'g-9')!.subscribe();
+    const req = http.expectOne(r => r.url === '/api/accounting/transfers/g-9');
+    expect(req.request.params.get('drop_children')).toBe('true');
+    expect(req.request.body).toMatchObject({
+      from_account_id: 3, to_account_id: 1, out_fee: null, out_discount: null, in_fee: { amount: '10', name: '手續費' }, in_discount: null,
+    });
+    req.flush({});
+  });
+
+  // Final review: a fee text that is not an amount is not "cleared"; saving it would drop the stored fee and confirm it.
+  it.each(['1.2.3', '0', 'abc'])('refuses to save a fee typed as %s instead of dropping the stored fee', async text => {
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730')]);
+    const out = { id: 7, kind: 'transfer_out', account_id: 1, amount: '-3000.0000', category_id: 33, children: [{ id: 70, kind: 'fee', amount: '-10.0000' }] } as unknown as EntryDetail;
+    const inn = { id: 8, kind: 'transfer_in', account_id: 3, amount: '3000.0000', category_id: 33, children: [] } as unknown as EntryDetail;
+    fixture.componentRef.setInput('edit', { groupId: 'g-9', out, in: inn });
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.componentInstance.setChild('out', 'fee', text);
+
+    expect(fixture.componentInstance.submit(COMMON, 'g-9')).toBeNull();
+    expect(fixture.componentInstance.error()).toBe('轉出手續費不是有效金額；要移除請清空欄位');
+    http.expectNone(r => r.url.includes('/transfers'));
+  });
+
+  it('a copy of a transfer with a fee is a new transfer and never confirms', async () => {
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730')]);
+    const out = { id: 7, kind: 'transfer_out', account_id: 1, amount: '-3000.0000', category_id: 33, children: [{ id: 70, kind: 'fee', amount: '-10.0000' }] } as unknown as EntryDetail;
+    const inn = { id: 8, kind: 'transfer_in', account_id: 3, amount: '3000.0000', category_id: 33, children: [] } as unknown as EntryDetail;
+    fixture.componentRef.setInput('edit', { groupId: 'g-9', out, in: inn });
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.componentInstance.setChild('out', 'fee', '');
+
+    fixture.componentInstance.submit(COMMON, null)!.subscribe();
+    const req = http.expectOne(r => r.url === '/api/accounting/transfers');
+    expect(req.request.params.keys()).toEqual([]);
+    req.flush({});
+  });
+
   it('refuses the same account on both sides', async () => {
     const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(2, '日幣現金', 'JPY', '53635')]);
     fixture.componentInstance.setTo(1);
@@ -260,6 +338,17 @@ describe('TransferPanelComponent', () => {
     fixture.detectChanges();
     expect(escape.defaultPrevented).toBe(true);
     expect(el.querySelector('.sheet')).toBeNull();
+  });
+
+  it('a pull on the fee sheet grab bar closes it', async () => {
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730')]);
+    const el = fixture.nativeElement as HTMLElement;
+    el.querySelector<HTMLButtonElement>('.out-tile .plus')!.click();
+    fixture.detectChanges();
+    pullGrab(el.querySelector<HTMLElement>('.overlay .sheet .grab')!);
+    fixture.detectChanges();
+    expect(el.querySelector('.sheet')).toBeNull();
+    expect(fixture.componentInstance.sheet()).toBeNull();
   });
 
   it('keeps an archived leg selectable, labelled, only when editing', async () => {

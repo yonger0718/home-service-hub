@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScheduleDefinitionDetail } from '../../../../models/accounting.model';
 import { AccountingToastService } from '../../accounting-toast';
 import { makeDefinition, makeInstance } from '../../testing/fixtures';
+import { pullGrab } from '../../sheet-pull.testing';
 import { ScheduleSheetComponent } from './schedule-sheet';
 
 function detail(overrides: Partial<ScheduleDefinitionDetail> = {}): ScheduleDefinitionDetail {
@@ -278,6 +279,15 @@ describe('ScheduleSheetComponent', () => {
     expect(() => req.flush(null)).not.toThrow();
     expect(closed).toHaveBeenCalledTimes(1);
     // No reload of a destroyed sheet (http.verify in afterEach).
+  });
+
+  it('a pull on the grab bar closes the sheet', () => {
+    const el = render(detail());
+    const closed = vi.fn();
+    fixture.componentInstance.closed.subscribe(closed);
+    pullGrab(el.querySelector<HTMLElement>('.sheet .grab')!);
+    fixture.detectChanges();
+    expect(closed).toHaveBeenCalledTimes(1);
   });
 
   describe('period amounts and 套用範圍 (proposal decision 24)', () => {

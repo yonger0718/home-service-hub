@@ -90,6 +90,24 @@ export function formatSigned(value: string | number | null | undefined, currency
 }
 
 /**
+ * Abbreviated `formatSigned` for tight spaces: the same sign and currency prefix, amounts under 1,000
+ * in full, `29.6k` / `72k` from 1,000 (one decimal, trailing `.0` dropped) and `1.23M` / `1.5M` from
+ * 1,000,000 (two decimals at most, trailing zeros dropped). 999,950 and up reads `1M`, never `1000k`.
+ */
+export function formatSignedShort(value: string | number | null | undefined, currency: string): string {
+  const amount = toNumber(value);
+  const magnitude = Math.abs(amount);
+  if (magnitude < 1000) {
+    return formatSigned(amount, currency);
+  }
+  const tenthsOfK = Math.round(magnitude / 100) / 10;
+  const body = tenthsOfK >= 1000
+    ? `${Number((Math.round(magnitude / 10000) / 100).toFixed(2))}M`
+    : `${Number(tenthsOfK.toFixed(1))}k`;
+  return `${amount < 0 ? MINUS : '+'}${currencySymbol(currency)}${body}`;
+}
+
+/**
  * Compact figure for tight spaces (calendar cells): whole units, no symbol, `−` for negatives;
  * from 10,000 `1.2萬`, from 100,000,000 `1.2億` (one decimal, trailing `.0` trimmed).
  * Every currency (JPY, USD …) is whole units here; `currency` keeps the call shape of `formatMoney`.
@@ -148,4 +166,30 @@ export function decimalText(value: string | null | undefined): string {
   const fraction = (match[3] ?? '').replace(/0+$/, '');
   const digits = fraction ? `${whole}.${fraction}` : whole;
   return match[1] === '-' && /[1-9]/.test(digits) ? `-${digits}` : digits;
+}
+
+/** A plain decimal's text without padding zeros or a sign on zero (`'-0.50'` → `'-0.5'`); null when not one. */
+function canonicalDecimal(value: string | number | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const match = /^([+-]?)(\d*)(?:\.(\d*))?$/.exec(String(value).trim());
+  if (!match || (match[2] === '' && !match[3])) {
+    return null;
+  }
+  const whole = match[2].replace(/^0+/, '');
+  const fraction = (match[3] ?? '').replace(/0+$/, '');
+  if (!whole && !fraction) {
+    return '0';
+  }
+  return `${match[1] === '-' ? '-' : ''}${whole || '0'}${fraction ? `.${fraction}` : ''}`;
+}
+
+/**
+ * Two server decimals denote the same number (`'220.0000'` and `'220'`), compared on the text: no `Number`
+ * round-trip, so amounts past 2^53 keep every digit. A missing or non-decimal value equals nothing, not even itself.
+ */
+export function sameDecimal(a: string | number | null | undefined, b: string | number | null | undefined): boolean {
+  const left = canonicalDecimal(a);
+  return left !== null && left === canonicalDecimal(b);
 }

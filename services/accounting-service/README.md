@@ -93,7 +93,10 @@ Reports (`/reports/*`, 2026-10-31, openspec `add-accounting-reports`; GET needs 
 
 Writes (every new row gets `source = 'manual'`, and an edit of a schedule-posted row keeps `source = 'schedule'`; an edit of a statement-booked row (`source = 'statement'`, e.g. a stand-in) keeps that source when it changes no structural field (`coverage_service.STRUCTURAL_KEYS`) and the row has no fee / discount child before or after (category, name, merchant, description, tags), so a categorised stand-in stays replaceable; any other edit makes the row `manual`; amounts are unsigned with at most 4 decimals; 422 names the field, 409 is a conflict or `locked_until_cutover`)
 
-- `POST /entries` (expense, income, receivable, payable; optional `fee` / `discount` children, FX fields, `reward_rule_ids`; the response may carry `proposed_fee`), `PUT /entries/{id}`, `DELETE /entries/{id}`
+- `POST /entries` (expense, income, receivable, payable; optional `fee` / `discount` children, FX fields, `reward_rule_ids`; the response may carry `proposed_fee`), `PUT /entries/{id}`, `DELETE /entries/{id}[?cascade=true]` -> `{deleted: [...]}`: every row removed (the entry, the other leg of its transfer, the fee / discount children of either, each with a `role`); a child on another account than its parent is refused with 409 `cascade_unconfirmed` until `cascade=true` (#390)
+- Confirming parameters (#396): an update (`PUT /entries/{id}`, `PUT /entries/{id}/split`, `PUT /transfers/{transfer_group_id}`, `PUT /splits/{group_id}`) that would delete a stored fee / discount child whose kind the body does not carry is refused with 409 `children_unconfirmed` until `drop_children=true`. `drop_children=true` and `cascade=true` are the owner's confirmation: a request that sets one needs the `admin` scope (`legacy` passes), else 403; the refusal texts do not name the parameters
+- Closed debts (#391): `POST /entries/{id}/reopen` and `POST /entries/{id}/close` clear and set `is_closed` on a receivable / payable original (`write` scope, answer the entry detail, idempotent). The flag only: amounts and settlements are untouched, and `open_amount` follows. Until these routes only the MOZE import set the flag, and a closed debt refused every settlement. `close` is refused (`422`, `loan_schedule`) while a schedule that is not ended repays the entry, and (`422`, `open_amount`, #403) when nothing is left: a debt its settlements cleared needs no flag, and closed at zero it would hide a remainder that a deleted settlement brings back. Nothing reopens a debt automatically, and the flag is not a field of the write body.
+- Debt events (#401): every call of the two routes that really changes the flag writes one `debt_state_event` (the caller's token label, the remainder it took out or brought back, a snapshot of the entry). The table has no foreign key to `ledger_entry`: an event outlives its entry, and no route edits or deletes one. `GET /entries/{id}` answers them as `debt_events` (oldest first). A close with a remainder by a caller without the owner's scope (`admin` / `legacy`) waits on `GET /debt-events/to-review` (`read`) until `POST /debt-events/{event_id}/review` (`admin` only, `204`) or a reopen; a caller holding only `write` cannot confirm its own close. Each item answers `open_amount` (the remainder at the close, which decides the list) and `current_open_amount` (#403: the remainder now, null for a deleted debt). Since #401 a close writes nothing to `description`.
 - `POST /entries/{id}/settle` (收款 / 還款, same currency, at most the open amount), `POST /entries/{id}/refund` (expense only, same currency, at most the unrefunded amount)
 - `POST /transfers` -> `{transfer_group_id, out_entry_id, in_entry_id}`, `PUT /transfers/{transfer_group_id}`
 - `POST /splits` -> `{group_id, member_ids}`, `PUT /splits/{group_id}`, `DELETE /splits/{group_id}`
@@ -292,6 +295,8 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
   `lead_business_days`, `weekly_open_case_limit`, `expected_statement_grace_days`, `min_buffer`, `state_file`
   (default `~/.local/state/homehub-notify/state.json`) and a `[lead_overrides]` table per account id.
   The 國泰證券 daily-statement status section is off unless `portfolio_base` is set (the portfolio API, e.g. `http://127.0.0.1:8001`);
+  `portfolio_token_file` (optional) holds the portfolio API bearer token (#117; an unreadable or empty file makes the section's
+  unreadable line);
   `cathay_run_time` (default `"06:40"`, Asia/Taipei) is the worker's daily run and `cathay_run_grace_minutes` (default 15, 0 to 1439)
   how long after it a missing run counts as stale. With `--as-of D` the section is evaluated at D 07:00 Asia/Taipei.
 - CLI (run from `services/accounting-service` with the notifier venv):
@@ -563,6 +568,7 @@ Configuration (all optional; empty means default):
 | `STATEMENT_PARSER_CLI` | `/home/opc/.local/bin/claude` | Claude Code CLI binary; set it to the pinned copy (see "Pinned CLI copy"), because the default is the auto-updater's symlink |
 | `STATEMENT_PARSER_CLI_VERSION` | `2.1.296` | pinned CLI version; any other version disables parsing (`failed/sandbox`) |
 | `STATEMENT_PARSER_MODEL` | `claude-sonnet-5-5` | pinned model |
+| `STATEMENT_PARSER_OAUTH_TOKEN_FILE` | `~/.config/homehub-parser-oauth-token` | a regular file here means token mode (setup-token); absent or a directory means login mode (worker) |
 | `STATEMENT_PARSER_CONFIG_DIR` | `~/.local/state/home-hub-parser/claude` | parser login directory (worker) |
 | `STATEMENT_PARSER_SANDBOX` | `true` | run the parser under bubblewrap |
 | `STATEMENT_PARSER_ALLOW_UNSANDBOXED` | `false` | must be `true` for `STATEMENT_PARSER_SANDBOX=false`; otherwise the parser refuses to start (tests only) |
@@ -583,6 +589,7 @@ Configuration (all optional; empty means default):
 | `STATEMENT_FLEX_POLL_ATTEMPTS` | `12` | `flex`: GetStatement attempts while IB reports the statement pending |
 | `STATEMENT_FLEX_POLL_INTERVAL` | `10` | `flex`: seconds between those attempts |
 | `STATEMENT_PORTFOLIO_API_URL` | `http://127.0.0.1:8001` | `flex`, `cathay`: portfolio service base URL |
+| `STATEMENT_PORTFOLIO_TOKEN_FILE` | unset | `flex`, `cathay`: file holding the portfolio API bearer token (#117, a write label); set but missing or empty = exit 2 |
 | `STATEMENT_CATHAY_FOLDER` | `投資/國泰證券/日對帳單` | `cathay`: Drive folder under the Drive root; also the password-file key |
 | `STATEMENT_CATHAY_CUTOVER` | `2026-10-16` | `cathay`: statements dated before this day are never committed (`pre_cutover`) |
 | `STATEMENT_CATHAY_TIMEOUT_S` | `60` | `cathay`: portfolio HTTP timeout in seconds |
@@ -603,7 +610,8 @@ call per file); budget for that before bumping. The version also folds in the pa
 and `worker.mask.FINGERPRINT` (bumped whenever a masking rule changes what the parser receives), so a code change to
 any of them re-parses the failed files the same way.
 
-Parser logins. The parser runs in a sandbox that sees only its own login directory. Create separate logins, never a
+Parser logins. Token mode (`claude setup-token`) is preferred: see "Parser token (setup-token, preferred)" in
+`deploy/statements/README.md`. The `/login` steps below are the login-mode fallback. The parser runs in a sandbox that sees only its own login directory. Create separate logins, never a
 copy of `~/.claude/.credentials.json`: a copied refresh token rotates on use and can log out the owner's interactive CLI
 and the Multica agents that share it.
 

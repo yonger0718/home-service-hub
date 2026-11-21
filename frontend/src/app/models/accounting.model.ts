@@ -69,6 +69,10 @@ export interface RewardUsage {
   estimated: string;
   cap: string | null;
   remaining: string | null;
+  /** The account the row's first rule pays into; `reward_is_money` false → figures read 「N <name>」 (D1a). */
+  reward_account_id: number;
+  reward_account_name: string;
+  reward_is_money: boolean;
 }
 
 /** One reward accrual on an entry (`EntryOut.accruals`). */
@@ -163,6 +167,13 @@ export interface RewardRuleOverviewAccount {
   account_name: string;
   is_credit: boolean;
   is_archived: boolean;
+  icon: string | null;
+  logo: string | null;
+  logo_hash: string | null;
+  /** The effective card closing day (own, else the combined parent's); null for calendar-only accounts. */
+  closing_day: number | null;
+  /** Today's window per in-date rule (a shared-cap group once), whatever the filters (#342). */
+  usage: RewardUsage[];
   rules: RewardRuleOverviewRule[];
 }
 
@@ -227,6 +238,8 @@ export interface LedgerAccount {
   is_archived: boolean;
   include_in_total: boolean;
   is_credit: boolean;
+  /** 「1 點 = 1 元」 points account counted as money (#323 A2); absent from older APIs. */
+  cash_equivalent?: boolean;
   closing_day: number | null;
   due_rule: DueRule | null;
   due_value: number | null;
@@ -352,8 +365,9 @@ export interface LedgerEntry {
    */
   is_settlement: boolean;
   /**
-   * `EntryOut.is_closed`: a receivable / payable original MOZE marked settled (target isSettle), even when its
-   * settlements do not net it to zero. The server then reports `open_amount` 0 and `is_settled` true.
+   * `EntryOut.is_closed`: a receivable / payable original closed by the MOZE import (target isSettle) or by 標記結清
+   * (#391), even when its settlements do not net it to zero. The server then reports `open_amount` 0 and
+   * `is_settled` true; 重新開啟 clears it.
    */
   is_closed: boolean;
   /**
@@ -393,6 +407,47 @@ export interface EntryDetail extends LedgerEntry {
   proposed_fee?: string | null;
   /** `EntryDetailOut.loan_schedule`: a payable / receivable original that a schedule repays (剩餘 · 已還 · 下期). */
   loan_schedule?: LoanSchedule | null;
+  /** `EntryDetailOut.debt_events` (#401): the closes / reopens of a receivable / payable, oldest first. Missing on an
+   * API from before #401. */
+  debt_events?: DebtEvent[];
+}
+
+/** `DebtEventOut` (#401). `open_amount`: the remainder a close took out or a reopen brought back. `needs_review`: this
+ * close is the debt's latest event, left a remainder and waits for the owner's 已確認. */
+export interface DebtEvent {
+  id: number;
+  action: 'close' | 'reopen';
+  /** The caller's token label (`spa`, `hermes`, …); null without one. */
+  actor: string | null;
+  open_amount: string;
+  currency: string;
+  event_date: string;
+  needs_review: boolean;
+}
+
+/** `DebtReviewItem` (#401): a close that waits for the owner. `deleted`: the entry is gone and the name, counterparty,
+ * date and amount are the snapshot taken at the close. */
+export interface DebtReviewItem {
+  event_id: number;
+  entry_id: number;
+  deleted: boolean;
+  kind: 'receivable' | 'payable';
+  name: string | null;
+  counterparty: string | null;
+  entry_date: string;
+  amount: string;
+  currency: string;
+  open_amount: string;
+  /** #403: the debt's remainder now (`open_amount` is the one at the close). Null for a deleted debt; missing on an
+   * API from before #403. */
+  current_open_amount?: string | null;
+  actor: string | null;
+  event_date: string;
+}
+
+export interface DebtReviewPage {
+  items: DebtReviewItem[];
+  total: number;
 }
 
 export interface EntryPage {
@@ -568,6 +623,8 @@ export interface SplitResult {
 export interface SettleInput {
   account_id: number;
   amount: string;
+  /** Unsigned, in the debt's currency; sent only when the account's currency differs from the entry's. */
+  original_amount?: string;
   entry_date: string;
   entry_time: string | null;
   description: string | null;
@@ -617,6 +674,8 @@ export interface AccountInput {
    * `{this account} ∪ members` one `credit_sharing_id` and clears it from accounts that left the set.
    */
   credit_sharing_members?: number[];
+  /** Sent only when changed on a non-credit account; omitted keeps the stored value. */
+  cash_equivalent?: boolean;
 }
 
 export interface AccountGroup {

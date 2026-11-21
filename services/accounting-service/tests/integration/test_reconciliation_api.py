@@ -1,6 +1,7 @@
 """Reconciliation routes (R1c Task 8): case detail, owner actions, dismiss, revert, action and audit listings.
 Synthetic data only."""
 from datetime import date, timedelta
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select, text
@@ -98,6 +99,19 @@ def test_case_detail_lists_child_and_split_twins_too(client, seed, db_session, r
     cases = {c.line_id: c for c in _cases(db_session, stmt.id, "open") if c.kind == "line_unmatched"}
     assert client.get(f"/reconciliation/cases/{cases[fee.id].id}", headers=H).json()["owner_twins"] == [child.id]
     assert client.get(f"/reconciliation/cases/{cases[mys.id].id}", headers=H).json()["owner_twins"] == sorted([a.id, b.id])
+
+
+def test_case_detail_names_a_larger_settlement_receipt_as_the_owner_twin(client, seed, db_session, run):
+    """#389: a deposit line that may be one transfer of a repayment the owner recorded as one larger receipt."""
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 9, 1))
+    debt = seed.entry(bank, "-600", kind="receivable", day=DAY - timedelta(days=20))
+    db_session.flush()
+    receipt = seed.entry(bank, "600", kind="receivable", day=DAY, is_settlement=True, settles_entry_id=debt.id)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, bank, [_line(1, DAY, "轉入", 200, "deposit")], kind="bank",
+                               opening=Decimal("1000"))
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "line_unmatched"]
+    assert client.get(f"/reconciliation/cases/{case.id}", headers=H).json()["owner_twins"] == [receipt.id]
 
 
 def test_case_detail_owner_twins_is_empty_without_a_twin(client, unmatched):

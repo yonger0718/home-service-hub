@@ -46,6 +46,7 @@ from app.services.entry_write_service import STATEMENT_SOURCE
 from app.services.errors import CodedConflictError
 from app.services.portfolio_client import Dividend, DividendFeed, PortfolioClient, PortfolioUnavailable
 from app.services.reconciliation_actions import audit
+from app.services.reconciliation_hints import STAND_IN_DELETED_HINT
 from app.services.statements import matching, retired
 
 KIND = "dividend"
@@ -54,7 +55,6 @@ MISMATCH_HINT = "dividend_mismatch"
 FAMILY_HINTS = (AMBIGUOUS_HINT, MISMATCH_HINT)
 # a dividend line's plain case: no hint, or the owner-deleted marker `_desired_cases` gives a line whose booked
 # receipt the owner deleted while the feed cannot say more (final review M1)
-STAND_IN_DELETED_HINT = "stand_in_deleted"  # reconciliation_actions.STAND_IN_DELETED_HINT (a circular import)
 PLAIN_HINTS = (None, STAND_IN_DELETED_HINT)
 WINDOW_DAYS = 3
 ITEM_SOURCE = "dividend"

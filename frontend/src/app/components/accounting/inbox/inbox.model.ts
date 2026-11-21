@@ -84,6 +84,10 @@ export interface InboxItem {
   proposal: InboxProposal | null;
   actions: InboxButton[];
   rule_hint: InboxRuleHint | null;
+  /** #392: settlement entries this bank line may be one part of (a repayment recorded as one entry for the sum).
+   *  Non-empty only on a `bank_only` item (which then has no `group_key` and no `rule_hint`) or a `proposed` one
+   *  whose proposal records the line. An older API omits it. */
+  part_of?: InboxEntry[];
   /** The case's note (a bank-early reward line: how to fix the rule or accept the credit). */
   note?: string | null;
 }

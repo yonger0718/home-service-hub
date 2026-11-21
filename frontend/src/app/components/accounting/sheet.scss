@@ -4,7 +4,10 @@
   display: flex;
   inset: 0;
   justify-content: center;
+  /* The backdrop never starts a document scroll (no pull-to-refresh from it); the sheet pans its own content. */
+  overscroll-behavior: none;
   position: fixed;
+  touch-action: none;
   z-index: 1100;
 }
 
@@ -14,16 +17,46 @@
   max-height: 92%;
   max-width: 560px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 8px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  /* Containing block for the grab bar's hit area. */
+  position: relative;
+  /* The spring back after a grab-bar pull (appSheetPull); none while the finger moves it. */
+  transition: transform 160ms ease;
   width: 100%;
+
+  &.pulling {
+    transition: none;
+  }
 }
 
+/* The 36 × 4 px bar keeps its 16 px block (margin box); its pull hit area is a ::before spanning the sheet's full
+   width, 44 px tall, bottom edge on the bar's margin-box bottom: it reaches up over the sheet's top padding (the part
+   above the sheet is clipped by the scroller) and never covers the title below. */
 .grab {
   background: var(--app-border);
   border-radius: 2px;
+  cursor: grab;
   height: 4px;
   margin: 2px auto 10px;
+  touch-action: none;
   width: 36px;
+
+  &::before {
+    content: '';
+    height: 44px;
+    left: 0;
+    /* top stays auto (the static position: the bar's top); -30px = 44 - (4 px bar + 10 px bottom margin). */
+    margin-top: -30px;
+    position: absolute;
+    right: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet {
+    transition: none;
+  }
 }
 
 h3 {

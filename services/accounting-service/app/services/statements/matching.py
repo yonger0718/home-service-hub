@@ -21,6 +21,7 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Callable, Iterable, Mapping
 
+from app.services.reconciliation_hints import PEER_HINT
 from app.services.statements.merchant import normalise, tokens
 
 Q = Decimal("0.0001")
@@ -1198,7 +1199,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             result.cases.append(Case(line.id, None, "line_unmatched", (), bank_only))
             continue
         if line.line_kind in PEER_LINE_KINDS:  # R6b.3/R6b.4: transfers wait for R6c; the owner matches or dismisses
-            result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "needs_peer"}))
+            result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": PEER_HINT}))
             continue
         result.cases.append(Case(line.id, None, "line_unmatched", (), {}))
     unmatched: set[int] = set()

@@ -99,6 +99,11 @@ const ACTION_ERRORS: Record<string, string> = {
   reconcile_busy: '對帳進行中，請稍後再試',
   import_running: '匯入進行中，請稍後再試',
   note_required: '強制確認需要填寫備註',
+  retry: '帳戶正在更新，請再按一次',
+  action_busy: '其他作業進行中，請稍後再試',
+  settlement_busy: '其他作業進行中，請稍後再試',
+  auto_pay_busy: '其他作業進行中，請稍後再試',
+  peer_statement_busy: '其他作業進行中，請稍後再試',
 };
 
 const ROLE_LABELS: Record<string, string> = {

@@ -1,0 +1,238 @@
+# frontend-accounting-reports Specification
+
+## Purpose
+The 報表 pages of the accounting SPA: header figures with comparisons, 總覽, 趨勢與比較, 排行, 專案與預算 and saved custom reports (editor, pinned tabs, phone viewer).
+
+## Requirements
+
+### Requirement: Reports page and navigation
+
+The SPA SHALL provide `/accounting/reports` with tabs 總覽, 趨勢與比較, 排行 and 專案與預算 (`?tab=overview|trend|rank|plan`), followed by the pinned saved reports and 「＋ 自訂報表」. The 財務 group SHALL list 報表 between 帳戶 and 記帳設定. The header SHALL show the period control (月 / 年 / 自訂 with previous and next), a line stating the statistics rules and the excluded projects, and four figures: 支出 with its change against the previous period and the same period last year, 收入, 結餘 with the savings rate, and 日均支出.
+
+#### Scenario: October header
+- **WHEN** 2026-10 is selected with expense 41,890, September 39,608 and October 2025 44,050
+- **THEN** 支出 SHALL read `$41,890` with 「比 9 月 ▲ 2,282 · 比去年 10 月 ▼ 2,160」
+
+### Requirement: Overview tab
+
+總覽 SHALL show a donut and a category list (amount, count, share) for 支出 or 收入, a 退款 line when refunds exist, and for the selected category a detail card with its subcategories, change against the previous period, average per entry, share, and a link 在記帳記錄看這 N 筆 that opens the timeline with the same range and filters.
+
+#### Scenario: Drill into 餐飲
+- **WHEN** the owner selects 餐飲
+- **THEN** the detail card SHALL list 晚餐, 午餐, 咖啡, 早餐 and 宵夜 with amounts and counts
+
+### Requirement: Trend and comparison tab
+
+趨勢與比較 SHALL load twelve months ending at the selected month and show the bars from the first month whose 全部支出 total is not 0, at least the last 6 and never more than the loaded twelve, with a dashed average line, switchable between all expense and single categories, and a table per category with this period, the previous period and the same period last year, each change as ▲ / ▼ amount and percentage, and a total row.
+
+#### Scenario: Chart starts where the data starts
+- **GIVEN** 全部支出 is 0 until 2026-08 and the selected month is 2026-10
+- **THEN** the bars SHALL be the last 6 months (the minimum, 5 月 to 10 月, the first three empty), headed 近 6 個月
+
+#### Scenario: More than six months of data
+- **GIVEN** the first month with 全部支出 data is 2026-03 and the selected month is 2026-10
+- **THEN** the bars SHALL run 3 月 to 10 月, headed 近 8 個月, with no empty bar before 3 月, and picking a category chip SHALL keep that window
+
+#### Scenario: Unchanged category
+- **WHEN** 訂閱 is 1,078 in both September and October
+- **THEN** its month change SHALL read —
+
+### Requirement: Ranking tab
+
+排行 SHALL rank by 商家, 標籤, 對象 or 帳戶 with a bar, count and average per row; rows without the dimension SHALL be labelled （無商家） and so on and drawn muted; a note SHALL explain overlapping tag totals. Selecting a row SHALL show its total, count, average, median, maximum, minimum, average interval and six-month bars.
+
+#### Scenario: Merchant statistics
+- **WHEN** the owner selects 路易莎
+- **THEN** the panel SHALL show 12 筆, 平均 86, 中位數 85, 最大 120, 最小 65, 平均間隔 2.5 天
+
+### Requirement: Projects and budgets tab
+
+專案與預算 SHALL show each budget for the month as a bar with a marker at the month's time progress, the used and limit amounts, and 剩 N or 超出 N (in `--c-red-ink`); and each project as a card with its total, dates, budget use and category split, marking projects excluded from reports. 編輯預算 SHALL edit amounts from the selected month on.
+
+#### Scenario: Over budget bar
+- **WHEN** 購物 used 3,490 of 3,000
+- **THEN** its bar SHALL be full, red, and read 超出 490（116.3%）
+
+### Requirement: Spend comparison colours
+
+Comparisons of spending SHALL use ▲ / ▼ with `--app-spend-more` and `--app-spend-less` (new tokens in light and dark) and SHALL NOT use the gain/loss tokens, so the 紅漲綠跌 setting never changes them.
+
+#### Scenario: Convention switched
+- **GIVEN** the owner uses 綠漲紅跌
+- **WHEN** a category spent more than last month
+- **THEN** its change SHALL still render in `--app-spend-more`
+
+### Requirement: Saved report editor
+
+At ≥ 760 px `/accounting/reports/custom/new` and `/accounting/reports/custom/:id` SHALL offer a name, a period (presets or custom range), 看什麼, 依什麼分組, 再細分, filters (all must match), chart type, 比較, and 釘選到報表分頁, with a live preview of figures, chart and table, and 儲存 / 另存新報表 / 刪除. A new report SHALL start from an empty state with templates. Chart types that do not fit the grouping SHALL be disabled with a reason.
+
+#### Scenario: Donut disabled with a split
+- **WHEN** the report splits by subcategory
+- **THEN** 圓環 SHALL be disabled with the reason 有細分時不能用圓環
+
+#### Scenario: Relative period rolls forward
+- **GIVEN** 週末外食 is saved with 近 6 個月 on 2026-10-31
+- **WHEN** it is opened on 2026-12-02
+- **THEN** it SHALL cover July to December 2026
+
+### Requirement: Single-series saved report table
+
+A saved report whose split yields exactly one series SHALL NOT render the total column (合計, or 本月至今 / 本期至今 while the period runs), because it repeats the series column; this holds for finished and running periods alike.
+
+#### Scenario: One split series has no total column
+- **GIVEN** a saved report split into exactly one series
+- **THEN** the table's 合計 / 本月至今 column SHALL be absent from the head, the rows and the total row, while the comparison columns and 筆數 stay; with no split or two or more series it SHALL stay
+
+### Requirement: Saved reports on phones
+
+Below 760 px the reports page SHALL list saved reports as chips under the tabs; opening one SHALL show its figures, chart and table, with 編輯條件 opening a bottom sheet of its conditions and 套用. Creating a report SHALL be desktop only.
+
+#### Scenario: Edit conditions on a phone
+- **WHEN** the owner taps 編輯條件 on 週末外食
+- **THEN** a sheet SHALL list 期間, 看什麼, 依什麼分組, 再細分, 篩選 and 比較
+
+### Requirement: Running period comparisons
+
+A report period (`to` being its inclusive last day) SHALL be *running* while `from ≤ today < to`. For a running period:
+
+- **The amounts, the charts and the comparisons** SHALL all use the range from the period's start through today. Changes SHALL be marked 「截至 M/D」.
+- **The current column** SHALL read 「本月至今（M/D–M/D）」 (「本期至今」 for other periods), hidden in a saved report that splits into exactly one series; the comparison columns are 上月同期 (上期同期) and 去年同期.
+
+#### Scenario: Header on the 7th
+- **GIVEN** today is 2026-11-07, November's expense so far is 4,233, October 1–7 is 6,910 and November 1–7 2025 is 5,120
+- **WHEN** 2026-11 is selected
+- **THEN** 支出 SHALL read `$4,233` with 「比 10 月同期 ▼ 2,677 · 比去年同期 ▼ 887 · 截至 11/7」
+
+#### Scenario: A month that has not started
+- **WHEN** 2026-12 is selected on 2026-11-07
+- **THEN** the period SHALL not be running, and its comparisons SHALL cover the whole of December without 「截至」
+
+#### Scenario: A range ending today
+- **WHEN** the custom range 2026-11-01 to 2026-11-07 is selected on 2026-11-07
+- **THEN** the period SHALL not be running, its to-date range being the whole range, and its comparisons SHALL read without 「截至」
+
+#### Scenario: A finished month
+- **WHEN** 2026-10 is selected on 2026-11-07
+- **THEN** the comparisons SHALL cover the whole of October against the whole of September and October 2025, without 「截至」
+
+### Requirement: Rows after today in a running period
+
+When a running period holds rows dated after today, a muted line under the table SHALL read 「另有 M/D 之後已記的 N 筆 $X 未計入」, $X being their amount in the table's metric (「另有 M/D 之後已記的 N 筆未計入」 for the count metric). Pressing it SHALL switch to the whole-period view, which hides every comparison column and change; pressing it again SHALL return to the to-date view. Without such rows the line SHALL be absent.
+
+#### Scenario: Scheduled rows later in the month
+- **GIVEN** today is 2026-11-07 and November holds 2 expense rows totalling 13,420 dated after 11/7
+- **WHEN** 2026-11 is opened
+- **THEN** the figures SHALL leave those rows out, a muted line SHALL read 「另有 11/7 之後已記的 2 筆 $13,420 未計入」, and pressing it SHALL show the whole month without comparison columns
+
+#### Scenario: No rows after today
+- **GIVEN** today is 2026-11-07 and November holds no rows after 11/7
+- **WHEN** 2026-11 is opened
+- **THEN** no 「另有」 line SHALL appear
+
+### Requirement: Running bucket in multi-bucket reports
+
+In a report over time buckets, only the last bucket SHALL be running. Its row SHALL read its bucket label suffixed 「進行中（至 M/D）」 (「11 月 進行中（至 11/7）」, 「11/2 週 進行中（至 11/7）」) with its to-date amount. Its change SHALL compare with the same number of days of the bucket before it, clipped to that bucket's last day. The total row SHALL hold the to-date total and compare with the comparison window of the to-date range.
+
+#### Scenario: Previous bucket shorter than the elapsed days
+- **GIVEN** today is 2028-03-30 and a report by month ends with March 2028
+- **WHEN** it is opened
+- **THEN** March's row SHALL read 「3 月 進行中（至 3/30）」 and compare 2028-03-01..2028-03-30 with 2028-02-01..2028-02-29
+
+#### Scenario: November in 近 6 個月
+- **GIVEN** today is 2026-11-07 and a saved report 近 6 個月 by month with 和上期比較
+- **WHEN** it is opened
+- **THEN** November's row SHALL read 「11 月 進行中（至 11/7）」 with November 1–7's amount and a change against October 1–7, June to October SHALL show whole months, and the total row SHALL compare 2026-06-01..2026-11-07 with 2025-12-01..2026-05-07
+
+### Requirement: Comparisons without a base
+
+A comparison window SHALL be *empty* when its totals count no rows. A change against an empty window SHALL read 「上期無資料」 or 「去年無資料」 in the muted text colour, without an arrow. A table comparison column whose window is empty SHALL be left out, with a muted note under the table naming the hidden column.
+
+#### Scenario: Ledger younger than a year
+- **GIVEN** the ledger starts in 2026-08
+- **WHEN** 週末外食 (近 6 個月, 和去年同期比較) is opened
+- **THEN** the table SHALL have no 去年同期 or 增減 column, a note SHALL read 「去年同期沒有記錄，已隱藏比較欄」, and no row SHALL read 新增
+
+### Requirement: New and stopped keys in comparisons
+
+Against a non-empty comparison window:
+
+- a key absent from the comparison window SHALL read 新增 in the muted text colour;
+- a key absent from the current window SHALL read 「— 停止」 in the muted text colour;
+- neither case SHALL use the spend-more or spend-less colours.
+
+#### Scenario: New category this month
+- **GIVEN** September holds rows but none in 寵物, and October holds 寵物 1,200
+- **WHEN** 2026-10 is compared with the previous month
+- **THEN** 寵物's change SHALL read 新增 in the muted colour
+
+### Requirement: Month trend average
+
+The 趨勢與比較 chart's average line SHALL be the mean of the monthly values:
+
+- from the first month with a non-zero value in the series;
+- through the last completed month, leaving out a running month.
+
+It SHALL be labelled 「N 個月平均」. With no completed month holding data, the chart SHALL show no average line.
+
+#### Scenario: Ledger started in August
+- **GIVEN** today is 2026-11-07, the series holds 0 from 2025-12 to 2026-07, then 31,200, 39,608 and 41,890 for August to October, and November so far
+- **THEN** the average SHALL be 37,566 and its label SHALL read 「3 個月平均 37,566」
+
+### Requirement: Category detail without subcategories
+
+When the selected category in 總覽 has no subcategory amounts, the detail card SHALL list 常去商家 in place of subcategories:
+
+- the category's top five merchants for the period, with amount and count;
+- a 「（無商家）」 row for rows without a merchant.
+
+If they cannot be read, the card SHALL show its figures and the drill-through link only.
+
+#### Scenario: 居家 without subcategories
+- **GIVEN** 居家 has no subcategories and October holds 房租 12,000 to 房東 and 電費 1,420 to 台電
+- **WHEN** 居家 is selected
+- **THEN** the card SHALL list 常去商家 with 房東 12,000 and 台電 1,420, and SHALL NOT list 居家 under itself
+
+### Requirement: Single-entry statistics
+
+When a ranking row counts one entry, the 排行 statistics panel SHALL show 只有 1 筆 with that entry's amount and, when the API returns it, its date, in place of 平均, 中位數, 最大, 最小 and 平均間隔. For more entries, 平均間隔 SHALL be hidden when the first and last dates are the same day.
+
+#### Scenario: One visit
+- **GIVEN** 饗食天堂 has one 1,250 entry on 2026-10-03
+- **WHEN** it is selected in 排行
+- **THEN** the panel SHALL read 「只有 1 筆 · 10/3 · $1,250」 and show no median, maximum, minimum or interval
+
+### Requirement: Bucket labels
+
+Wherever a time-dimension key is shown as text (figures, table rows, chart axes, accessible names), it SHALL be formatted as follows:
+
+- **month:** 9 月;
+- **week:** 10/5 週;
+- **day:** 10/5.
+
+The year SHALL be prefixed (2025 年 9 月, 2025/10/5) when the report spans more than one calendar year. A running bucket SHALL be suffixed 「進行中（至 M/D）」, and excluded from 平均每月 and 平均每組.
+
+#### Scenario: Highest month in a saved report
+- **GIVEN** 週末外食 by month, September 2026 being the highest at 367
+- **THEN** the 最高 figure SHALL read 「9 月」 with `$367` beneath, not 「2026-09」
+
+#### Scenario: Running bucket
+- **GIVEN** a saved report 近 6 個月 by month opened on 2026-11-07
+- **THEN** November's row SHALL read 「11 月 進行中（至 11/7）」 and 平均每月 SHALL average June to October
+
+### Requirement: Reports header and button clearance
+
+From 1024 px the reports page header SHALL be one row: the title with the statistics rules line on the left, and the period control on the right. Below 1024 px the period control SHALL stay under the title; from 760 px the period control wraps to its own row, and below 760 px the title, a one-line subtitle and the gear SHALL share one row.
+
+The reports page and the saved-report page SHALL keep the shell's floating-button clearance at their end, though no 記一筆 button shows on them.
+
+#### Scenario: Desktop header
+- **WHEN** `/accounting/reports` opens at 1440 px
+- **THEN** the period stepper SHALL be on the title's row and no separate period row SHALL appear
+
+#### Scenario: Phone header on one row
+- **WHEN** `/accounting/reports` opens at 390 px
+- **THEN** the title, the one-line subtitle and the gear SHALL sit on one row, with the period control beneath
+
+#### Scenario: Last column visible
+- **WHEN** a saved report's table is scrolled to its end at 1440 px
+- **THEN** no floating button SHALL cover the 增減 column of the total row, and the bottom clearance SHALL remain

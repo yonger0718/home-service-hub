@@ -5,12 +5,14 @@ import { provideLocationMocks } from '@angular/common/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, RouterLink, convertToParamMap, provideRouter } from '@angular/router';
 import { By } from '@angular/platform-browser';
-import { BehaviorSubject } from 'rxjs';
+import { BehaviorSubject, Subject, startWith } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { EntryDetailComponent } from './entry-detail';
+import { CalendarCommands, CalendarPaneService } from '../calendar-month/calendar-pane.service';
+import { AccountingOverviewService } from '../month-overview/overview.service';
+import { EntryDetailComponent, settledValue } from './entry-detail';
 
 function entry(fields: Record<string, unknown>): LedgerEntry {
   return {
@@ -48,9 +50,14 @@ const RECEIVABLE = detail({
 describe('EntryDetailComponent', () => {
   let http: HttpTestingController;
   let params: BehaviorSubject<ParamMap>;
+  let query: ParamMap;
+  /** A later query of the same route (the grid picking another day while the detail stays open). */
+  let queryChanges: Subject<ParamMap>;
 
   beforeEach(async () => {
     params = new BehaviorSubject(convertToParamMap({ id: '42' }));
+    query = convertToParamMap({});
+    queryChanges = new Subject();
     await TestBed.configureTestingModule({
       imports: [EntryDetailComponent],
       providers: [
@@ -58,7 +65,14 @@ describe('EntryDetailComponent', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         provideLocationMocks(),
-        { provide: ActivatedRoute, useValue: { paramMap: params } },
+        {
+          provide: ActivatedRoute,
+          useValue: {
+            paramMap: params,
+            get queryParamMap() { return queryChanges.pipe(startWith(query)); },
+            snapshot: { get queryParamMap() { return query; } },
+          },
+        },
       ],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
@@ -100,72 +114,122 @@ describe('EntryDetailComponent', () => {
     }
   });
 
-  it('lists accruals with state labels', () => {
-    const accrual = (id: number, state: string, amount: string) => ({
-      id, rule_id: 100 + id, rule_name: `測試規則${id}`, estimate: amount, amount, state, post_on: null, ledger_entry_id: null,
-      ledger_amount: null, reward_account_id: 3, reward_account_name: '玉山 UNI',
-    });
+  const accrual = (fields: Record<string, unknown>) => ({
+    id: 1, rule_id: 101, rule_name: '測試規則', estimate: '10.0000', amount: '10.0000', state: 'estimated', post_on: null,
+    ledger_entry_id: null, ledger_amount: null, reward_account_id: 3, reward_account_name: '玉山 UNI', ...fields,
+  });
+  const text = (node: Element | null | undefined) => node?.textContent?.replace(/\s+/g, ' ').trim();
+  const pointsAccount = (extra: Record<string, unknown> = {}) =>
+    [...ACCOUNTS, { id: 11, name: '亞洲萬里通', currency: 'TWD', is_archived: false, is_credit: false, ...extra } as unknown as LedgerAccount];
+  const pointsDetail = () => detail({
+    id: 42, amount: '-500.0000', name: '外套',
+    rewards: [entry({ id: 60, kind: 'reward', amount: '120.0000', name: '點數回饋', account_id: 11, account_name: '亞洲萬里通' })],
+    accruals: [accrual({
+      estimate: '120.0000', amount: '120.0000', state: 'posted', post_on: '2026-11-24', ledger_entry_id: 60,
+      ledger_amount: '120.0000', reward_account_id: 11, reward_account_name: '亞洲萬里通',
+    })],
+  });
+
+  it('shows one 回饋 section with a tagged card per accrual', () => {
     const fixture = render(detail({
       id: 42, amount: '-500.0000', name: '外套',
       accruals: [
-        accrual(1, 'estimated', '10.0000'), accrual(2, 'posted', '20.0000'),
-        accrual(3, 'bank_confirmed', '30.0000'), accrual(4, 'forfeited', '0.0000'),
+        accrual({ id: 1, rule_name: '全聯回饋', estimate: '13.0000', amount: '13.0000', post_on: '2026-12-15', reward_account_name: '玉山 Pi 卡' }),
+        accrual({ id: 2, rule_name: '上限規則', estimate: '64.0000', amount: '20.0000' }),
       ],
     }));
-    const lines = Array.from(el(fixture).querySelectorAll('.accrual-line')).map(l => l.textContent?.replace(/\s+/g, ' ').trim());
-    expect(lines).toEqual([
-      '測試規則1 $10 · 預估', '測試規則2 $20 · 已入帳', '測試規則3 $30 · 銀行確認', '測試規則4 $0 · 未獲得',
-    ]);
-    expect(el(fixture).textContent).toContain('預估回饋');
+    const root = el(fixture);
+    const section = root.querySelector('app-entry-reward-section')!;
+    expect(Array.from(section.querySelectorAll('.dsec')).map(h => text(h))).toEqual(['回饋']);
+    const cards = Array.from(section.querySelectorAll('.reward-card'));
+    expect(cards.length).toBe(2);
+    for (const card of cards) {
+      expect(text(card.querySelector('app-reward-state-tag'))).toBe('預估');
+    }
+    expect(text(cards[0])).toContain('+$13');
+    expect(text(cards[0])).toContain('預計 12/15 入帳到 玉山 Pi 卡');
+    expect(text(cards[1])).toContain('+$20');
+    expect(text(cards[1].querySelector('.reward-was'))).toBe('$64');
+    expect(text(cards[1])).toContain('算出 $64，本期上限只剩 $20');
+    expect(root.textContent).not.toContain('紅利回饋');
+    expect(root.textContent).not.toContain('預估回饋');
   });
 
-  it('shows the bank figure for a confirmed accrual (#294)', () => {
+  it('links posted cards to their reward rows without a second list', () => {
     const fixture = render(detail({
       id: 42, amount: '-500.0000', name: '外套',
-      accruals: [{
-        id: 1, rule_id: 101, rule_name: '測試規則', estimate: '10.0000', amount: '10.0000', state: 'bank_confirmed',
-        post_on: '2026-11-24', ledger_entry_id: 60, ledger_amount: '9.0000', reward_account_id: 3, reward_account_name: '玉山 UNI',
-      }],
+      rewards: [
+        entry({ id: 501, kind: 'reward', amount: '10.0000', name: '回饋甲' }),
+        entry({ id: 502, kind: 'reward', amount: '20.0000', name: '回饋乙' }),
+      ],
+      accruals: [
+        accrual({ id: 1, state: 'posted', ledger_entry_id: 501, ledger_amount: '10.0000' }),
+        accrual({ id: 2, estimate: '20.0000', amount: '20.0000', state: 'posted', ledger_entry_id: 502, ledger_amount: '20.0000' }),
+      ],
     }));
-    expect(el(fixture).querySelector('.accrual-line')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('測試規則 $9 · 銀行確認');
+    const root = el(fixture);
+    expect(root.querySelectorAll('.reward-card').length).toBe(2);
+    const links = Array.from(root.querySelectorAll<HTMLAnchorElement>('.reward-link'));
+    expect(links.length).toBe(2);
+    expect(links[0].getAttribute('href')).toMatch(/\/accounting\/entries\/501$/);
+    expect(links[1].getAttribute('href')).toMatch(/\/accounting\/entries\/502$/);
+    expect(root.textContent).not.toContain('紅利回饋');
   });
 
-  it('keeps the old figure when an older API sends no reward-row fields (#294)', () => {
+  it('links a bank_confirmed card to its reward row', () => {
     const fixture = render(detail({
       id: 42, amount: '-500.0000', name: '外套',
-      accruals: [{ id: 1, rule_id: 101, rule_name: '測試規則', estimate: '10.0000', amount: '10.0000', state: 'bank_confirmed',
-        post_on: '2026-11-24', ledger_entry_id: 60 }],
+      rewards: [entry({ id: 501, kind: 'reward', amount: '10.0000', name: '回饋甲' })],
+      accruals: [accrual({ id: 1, state: 'bank_confirmed', ledger_entry_id: 501, ledger_amount: '10.0000' })],
     }));
-    expect(el(fixture).querySelector('.accrual-line')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('測試規則 $10 · 銀行確認');
+    const link = el(fixture).querySelector<HTMLAnchorElement>('.reward-card .reward-link')!;
+    expect(link.getAttribute('href')).toMatch(/\/accounting\/entries\/501$/);
   });
 
-  it('prints points and miles with the reward account name, not $ (#294)', () => {
+  it('prints points with the reward account name, never $', () => {
+    const fixture = render(pointsDetail(), pointsAccount());
+    const card = text(el(fixture).querySelector('.reward-card'))!;
+    expect(card).toContain('120 亞洲萬里通');
+    expect(card).not.toContain('$120');
+  });
+
+  it('prints a cash-equivalent points reward as money', () => {
+    const fixture = render(pointsDetail(), pointsAccount({ cash_equivalent: true }));
+    const card = text(el(fixture).querySelector('.reward-card'))!;
+    expect(card).toContain('+$120');
+    expect(card).not.toContain('120 亞洲萬里通');
+  });
+
+  it('keeps points when the API sends no cash_equivalent', () => {
+    const fixture = render(pointsDetail(), pointsAccount());
+    expect(text(el(fixture).querySelector('.reward-amount'))).toBe('+120 亞洲萬里通');
+  });
+
+  it('shows an imported reward row as a posted card', () => {
     const fixture = render(detail({
       id: 42, amount: '-500.0000', name: '外套',
-      rewards: [entry({ id: 60, kind: 'reward', amount: '35.0000', name: '測試哩程回饋', account_id: 11, account_name: '測試哩程' })],
-      accruals: [{
-        id: 1, rule_id: 101, rule_name: '測試規則', estimate: '35.0000', amount: '35.0000', state: 'posted',
-        post_on: '2026-11-24', ledger_entry_id: 60, ledger_amount: '35.0000', reward_account_id: 11, reward_account_name: '測試哩程',
-      }],
-    }), [...ACCOUNTS, { id: 11, name: '測試哩程', currency: 'TWD', is_archived: false, is_credit: false } as unknown as LedgerAccount]);
-    const text = (selector: string) => el(fixture).querySelector(selector)?.textContent?.replace(/\s+/g, ' ').trim();
-    expect(text('.accrual-line')).toBe('測試規則 35 測試哩程 · 已入帳');
-    expect(text('.reward-line .pos')).toBe('+35 測試哩程');
+      rewards: [entry({ id: 60, kind: 'reward', amount: '35.0000', name: '匯入回饋', posted_date: '2020-01-05' })],
+    }));
+    const cards = el(fixture).querySelectorAll('.reward-card');
+    expect(cards.length).toBe(1);
+    expect(text(cards[0].querySelector('app-reward-state-tag'))).toBe('已入帳');
+    expect(text(cards[0])).toContain('+$35');
+    expect(text(cards[0])).toContain('01/05');
   });
 
-  it('shows the reprice card for a reward_posted purchase, in the reward account unit, and reloads after 重算 (#306)', () => {
+  it('keeps the reprice card as the section\'s last item and reloads after 重算 (#306)', () => {
     const fixture = render(detail({
       id: 42, amount: '-2000.0000', name: '外套', needs_review: true, review_reason: 'reward_posted',
-      accruals: [{
-        id: 1, rule_id: 101, rule_name: '測試規則', estimate: '10.0000', amount: '10.0000', state: 'posted',
-        post_on: '2026-11-24', ledger_entry_id: 60, ledger_amount: '10.0000', reward_account_id: 11, reward_account_name: '測試點數',
-      }],
+      accruals: [accrual({ state: 'posted', post_on: '2026-11-24', ledger_entry_id: 60, ledger_amount: '10.0000', reward_account_id: 11, reward_account_name: '測試點數' })],
     }), [...ACCOUNTS, { id: 11, name: '測試點數', currency: 'TWD', is_archived: false, is_credit: false } as unknown as LedgerAccount]);
     http.expectOne('/api/accounting/entries/42/reward-reprice').flush({
       entry_id: 42, flagged: true, applied: [],
       items: [{ accrual_id: 1, rule_id: 101, rule_name: '測試規則', reward_entry_id: 60, booked: '10.0000', new: '20.0000', status: 'reprice' }],
     });
     fixture.detectChanges();
+    const section = el(fixture).querySelector('app-entry-reward-section')!;
+    const last = section.lastElementChild!;
+    expect(last.matches('app-entry-reward-reprice-card') || last.querySelector('app-entry-reward-reprice-card') !== null).toBe(true);
     const card = el(fixture).querySelector('app-entry-reward-reprice-card')!;
     expect(card.textContent?.replace(/\s+/g, ' ')).toContain('已入帳 10 測試點數 → 新算 20 測試點數');
     (card.querySelector('.reprice-apply') as HTMLButtonElement).click();
@@ -176,9 +240,47 @@ describe('EntryDetailComponent', () => {
     expect(el(fixture).querySelector('.reprice-card')).toBeNull();
   });
 
-  it('hides 預估回饋 when there are no accruals', () => {
-    const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套', accruals: [] }));
-    expect(el(fixture).textContent).not.toContain('預估回饋');
+  it('keeps the reprice card for a reward_posted entry without accruals or rows', () => {
+    const fixture = render(detail({ id: 42, amount: '-2000.0000', name: '外套', needs_review: true, review_reason: 'reward_posted' }));
+    http.expectOne('/api/accounting/entries/42/reward-reprice').flush({
+      entry_id: 42, flagged: true, applied: [],
+      items: [{ accrual_id: 1, rule_id: 101, rule_name: '測試規則', reward_entry_id: 60, booked: '10.0000', new: '20.0000', status: 'reprice' }],
+    });
+    fixture.detectChanges();
+    const section = el(fixture).querySelector('app-entry-reward-section')!;
+    expect(section.querySelector('app-entry-reward-reprice-card')).not.toBeNull();
+    expect(section.querySelectorAll('.reward-card').length).toBe(0);
+  });
+
+  it('strikes the expected figure on a forfeited card', () => {
+    const fixture = render(detail({
+      id: 42, amount: '-500.0000', name: '外套',
+      accruals: [accrual({ state: 'forfeited', estimate: '13.0000', amount: '13.0000' })],
+    }));
+    const amount = el(fixture).querySelector('.reward-card .reward-amount')!;
+    expect(amount.tagName).toBe('S');
+    expect(text(amount)).toBe('$13');
+    expect(text(el(fixture).querySelector('.reward-card'))).toContain('回饋記錄已刪除，不會入帳');
+  });
+
+  it('has no 回饋 section without accruals, reward rows or a reward_posted review', () => {
+    const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套' }));
+    const section = el(fixture).querySelector('app-entry-reward-section')!;
+    expect(section.querySelector('.dsec')).toBeNull();
+    expect(section.querySelector('.reward-card')).toBeNull();
+  });
+
+  it('places the section after the debt state and before the e-invoice card', () => {
+    const fixture = render(detail({
+      ...RECEIVABLE, accruals: [accrual({})],
+      einvoice: { id: 1, number: 'AB12345678', issue_date: '2026-10-01', seller_name: '測試商店', total_amount: '500', linked_by: 'owner', linked_to: 'entry', items: [] },
+    }));
+    const root = el(fixture);
+    const debt = root.querySelector('.open-state')!;
+    const section = root.querySelector('app-entry-reward-section')!;
+    const invoice = root.querySelector('app-entry-einvoice-card')!;
+    expect(debt.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(section.compareDocumentPosition(invoice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('shows the open amount, the collection and an enabled 新增收款 on a receivable', () => {
@@ -209,6 +311,26 @@ describe('EntryDetailComponent', () => {
     expect(el(payable).querySelector('.breakdown')?.textContent?.trim()).toBe('原始 $300 · 已還 $200 · 剩餘 $100');
   });
 
+  it('sums a cross-currency collection as its original amount in the debt currency (#382)', () => {
+    const fixture = render(detail({
+      ...RECEIVABLE, currency: 'USD', amount: '-20.0000', open_amount: '0.0000', is_settled: true,
+      settled_by: [entry({
+        id: 60, kind: 'receivable', amount: '640.0000', currency: 'TWD', original_amount: '20.0000',
+        original_currency: 'USD', name: '收款', account_name: '錢包',
+      })],
+    }));
+    expect(el(fixture).querySelector('.breakdown')?.textContent?.trim()).toBe('原始 US$20 · 已收 US$20 · 剩餘 US$0');
+    expect(el(fixture).querySelector('.settled')?.textContent?.trim()).toBe('已結清');
+  });
+
+  it('does not count a legacy other-currency settlement without an original amount (#382)', () => {
+    const fixture = render(detail({
+      ...RECEIVABLE, amount: '-100.0000', is_closed: true, open_amount: '100.0000', is_settled: false,
+      settled_by: [entry({ id: 61, kind: 'receivable', amount: '100.0000', currency: 'JPY', name: '收款' })],
+    }));
+    expect(el(fixture).querySelector('.breakdown')?.textContent?.trim()).toBe('原始 $100 · 已收 $0 · 已結清');
+  });
+
   it('shows no breakdown before anything was collected', () => {
     const fixture = render({ ...RECEIVABLE, open_amount: '420.0000', settled_by: [] });
     expect(el(fixture).querySelector('.breakdown')).toBeNull();
@@ -233,7 +355,7 @@ describe('EntryDetailComponent', () => {
     fixture.detectChanges();
 
     const options = Array.from(el(fixture).querySelectorAll('.form-account option')).map(o => o.textContent?.trim());
-    expect(options).toEqual(['玉山 UNI', '錢包']);
+    expect(options).toEqual(['玉山 UNI', '錢包', '日幣現金 (JPY)']);
     const account = el(fixture).querySelector<HTMLSelectElement>('.form-account')!;
     account.value = '7';
     account.dispatchEvent(new Event('change'));
@@ -286,6 +408,63 @@ describe('EntryDetailComponent', () => {
     req.flush(null, { status: 204, statusText: 'No Content' });
     // Opened directly (no in-app history): back to the timeline.
     expect(navigate).toHaveBeenCalledWith('/accounting');
+  });
+
+  it('names the account of a child on another account and confirms its cascade (#390)', () => {
+    vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render(detail({
+      id: 42, kind: 'income', amount: '600.0000', account_id: 7, account_name: '錢包',
+      children: [entry({ id: 43, kind: 'fee', amount: '-30.0000', parent_entry_id: 42 })],
+    }));
+    el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
+    fixture.detectChanges();
+
+    const confirm = el(fixture).querySelector('.delete-confirm')!;
+    expect(Array.from(confirm.querySelectorAll('li')).map(li => li.textContent?.trim())).toEqual(['手續費 −$30（在 玉山 UNI）']);
+
+    confirm.querySelector<HTMLButtonElement>('.delete-entry')!.click();
+    const req = http.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/42');
+    expect(req.request.params.get('cascade')).toBe('true');
+    req.flush({ deleted: [] });
+  });
+
+  it('a child on the entry\'s own account is listed without an account and deleted without cascade (#390)', () => {
+    vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render(detail({
+      id: 42, children: [entry({ id: 43, kind: 'fee', amount: '-30.0000', parent_entry_id: 42 })],
+    }));
+    el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
+    fixture.detectChanges();
+
+    const confirm = el(fixture).querySelector('.delete-confirm')!;
+    expect(Array.from(confirm.querySelectorAll('li')).map(li => li.textContent?.trim())).toEqual(['手續費 −$30']);
+
+    confirm.querySelector<HTMLButtonElement>('.delete-entry')!.click();
+    const req = http.expectOne('/api/accounting/entries/42');
+    expect(req.request.method).toBe('DELETE');
+    req.flush({ deleted: [] });
+  });
+
+  it('keeps the delete dialog open and says why when the API finds a child the dialog did not list (#390)', () => {
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render(detail({ id: 42 }));
+    el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
+    fixture.detectChanges();
+
+    el(fixture).querySelector<HTMLButtonElement>('.delete-confirm .delete-entry')!.click();
+    const req = http.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/42');
+    expect(req.request.params.has('cascade')).toBe(false);
+    req.flush(
+      { code: 'conflict', message: 'cascade_unconfirmed: child 44 is on another account', trace_id: 't-1' },
+      { status: 409, statusText: 'Conflict' },
+    );
+    fixture.detectChanges();
+
+    const confirm = el(fixture).querySelector('.delete-confirm')!;
+    expect(confirm).not.toBeNull();
+    expect(confirm.querySelector('.form-error')?.textContent?.trim()).toBe('附帶的手續費或折扣記在別的帳戶；請重新載入後再刪，或先刪那筆附帶記錄');
+    expect(confirm.querySelector<HTMLButtonElement>('.delete-entry')!.disabled).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it('shows the FX line and the fee inside the total', () => {
@@ -456,6 +635,81 @@ describe('EntryDetailComponent', () => {
     expect(navigate).toHaveBeenCalledTimes(2);
     expect(navigate).toHaveBeenLastCalledWith('/accounting');
     expect(back).not.toHaveBeenCalled();
+  });
+
+  it('closes to the selected calendar day with no history', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    TestBed.inject(Location).go('/accounting/entries/42', '', { closeTo: 'list' });
+    const fixture = render(RECEIVABLE);
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(navigate).toHaveBeenLastCalledWith('/accounting?month=2026-10&day=2026-10-21');
+  });
+
+  it('keeps the query on 編輯', () => {
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const fixture = render(RECEIVABLE);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    fixture.componentInstance.editOne();
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit'], { queryParamsHandling: 'preserve' });
+  });
+
+  it('✕ on the calendar goes back (history not grown), then the list it lands on shows the day in the URL', async () => {
+    const router = TestBed.inject(Router);
+    router.resetConfig([{ path: '**', children: [] }]);
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    // The grid moved the day while the detail was open: the route's query is the day now shown.
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-22' });
+    const fixture = render(RECEIVABLE);
+    const navigate = vi.spyOn(router, 'navigateByUrl');
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+
+    // The browser lands on the day the detail was opened from; the day shown now replaces it in place.
+    await router.navigateByUrl('/accounting?month=2026-10&day=2026-10-21');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-22'));
+  });
+
+  it('✕ on a detail reached from 清單 with only ?month goes back as before', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    query = convertToParamMap({ month: '2026-10' });
+    const fixture = render(RECEIVABLE);
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('✕ off the calendar still goes back in history', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    query = convertToParamMap({ q: '晚餐' });
+    const fixture = render(RECEIVABLE);
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('複製 keeps the calendar month and day', () => {
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const fixture = render(RECEIVABLE);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    el(fixture).querySelector<HTMLButtonElement>('.action-copy')!.click();
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entry'], { queryParams: { copy: 42, month: '2026-10', day: '2026-10-21' } });
+  });
+
+  it('複製 off the calendar opens the form with the copy only', () => {
+    const fixture = render(RECEIVABLE);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    el(fixture).querySelector<HTMLButtonElement>('.action-copy')!.click();
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entry'], { queryParams: { copy: 42 } });
   });
 
   it('closes to the passbook when opened from it with closeTo: list', () => {
@@ -641,7 +895,7 @@ describe('EntryDetailComponent', () => {
     expect(el(fixture).querySelector('.related')?.textContent ?? '').not.toContain('拆帳');
     const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
     fixture.componentInstance.edit();
-    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit']);
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit'], { queryParamsHandling: 'preserve' });
   });
 
   it('draws a slim 「← 多類別 $合計」 link that replaces the child with its group view, carrying the group state', () => {
@@ -655,6 +909,47 @@ describe('EntryDetailComponent', () => {
     expect(link.state).toEqual({ groupDepth: 2, viaGroup: true });
     // Above the coloured head.
     expect(back.compareDocumentPosition(el(fixture).querySelector('.dhead')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('keeps the calendar month and day on the 「← 多類別」 link and the related lines, and follows a day picked later', () => {
+    openedWith({ groupDepth: 2, viaGroup: true });
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const fixture = render(splitChild({
+      kind: 'expense', amount: '-60', refunded_amount: '0',
+      refunded_by: [entry({ id: 7, kind: 'income', amount: '-100', group: SPLIT })],
+      settled_by: [],
+      children: [entry({ id: 90, kind: 'fee', amount: '-5' })],
+    }));
+    const hrefs = () => [
+      el(fixture).querySelector('.group-back')?.getAttribute('href'),
+      ...Array.from(el(fixture).querySelectorAll('.related a.dline')).map(line => line.getAttribute('href')),
+    ];
+    expect(hrefs()).toEqual([
+      '/accounting/entries/42/group?month=2026-10&day=2026-10-21',
+      '/accounting/entries/90?month=2026-10&day=2026-10-21',
+      '/accounting/entries/7?month=2026-10&day=2026-10-21',
+    ]);
+
+    // The grid moves the day while the detail stays open (the route's query changes, the page is reused).
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-23' });
+    queryChanges.next(query);
+    fixture.detectChanges();
+    expect(hrefs()).toEqual([
+      '/accounting/entries/42/group?month=2026-10&day=2026-10-23',
+      '/accounting/entries/90?month=2026-10&day=2026-10-23',
+      '/accounting/entries/7?month=2026-10&day=2026-10-23',
+    ]);
+  });
+
+  it('leaves the 「← 多類別」 link and the related lines without a query off the calendar', () => {
+    openedWith({ groupDepth: 2, viaGroup: true });
+    const fixture = render(splitChild({
+      kind: 'expense', amount: '-60', refunded_amount: '0',
+      refunded_by: [entry({ id: 7, kind: 'income', amount: '-100', group: SPLIT })],
+      settled_by: [],
+    }));
+    expect(el(fixture).querySelector('.group-back')?.getAttribute('href')).toBe('/accounting/entries/42/group');
+    expect(Array.from(el(fixture).querySelectorAll('.related a.dline')).map(line => line.getAttribute('href'))).toEqual(['/accounting/entries/7']);
   });
 
   it('keeps the passbook in the 「← 多類別」 link of a child opened from a passbook', () => {
@@ -714,6 +1009,22 @@ describe('EntryDetailComponent', () => {
     expect(go).not.toHaveBeenCalled();
   });
 
+  it('✕ on a child on the calendar goes back past the group view (history not grown), not to the day by a new entry', () => {
+    openedWith({ groupDepth: 2, viaGroup: true });
+    const router = TestBed.inject(Router);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    const location = TestBed.inject(Location);
+    const go = vi.spyOn(location, 'historyGo').mockImplementation(() => undefined);
+    const back = vi.spyOn(location, 'back');
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-22' });
+    const fixture = render(splitChild());
+    el(fixture).querySelector<HTMLButtonElement>('.dhead .close')!.click();
+    expect(go).toHaveBeenCalledExactlyOnceWith(-2);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(back).not.toHaveBeenCalled();
+  });
+
   it('✕ on a child of a group view opened from the reminder centre returns there', () => {
     openedWith({ closeTo: 'reminders', groupDepth: 2, viaGroup: true });
     const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
@@ -738,5 +1049,713 @@ describe('EntryDetailComponent', () => {
     unlink.click();
     http.expectOne('/api/accounting/einvoices/7/unlink').flush({ id: 7, state: 'unmatched' });
     http.expectOne((r) => r.url === '/api/accounting/entries/42').flush(detail({ id: 42 }));
+  });
+
+  describe('settling across currencies', () => {
+    const ACCOUNTS_X = [
+      { id: 3, name: '玉山 UNI', currency: 'TWD', is_archived: false },
+      { id: 21, name: 'Wise 美元', currency: 'USD', is_archived: false },
+      { id: 7, name: '錢包', currency: 'TWD', is_archived: false },
+      { id: 22, name: '舊美元', currency: 'USD', is_archived: true },
+    ] as unknown as LedgerAccount[];
+    const USD_DEBT = detail({
+      id: 42, kind: 'receivable', amount: '-20.0000', currency: 'USD', name: '代墊 機票', counterparty: 'Alan',
+      open_amount: '20.0000', is_settled: false, account_id: 21,
+    });
+    const TWD_DEBT = detail({
+      id: 42, kind: 'receivable', amount: '-640.0000', currency: 'TWD', name: '代墊 晚餐', counterparty: 'Alan',
+      open_amount: '640.0000', is_settled: false,
+    });
+
+    function field(fixture: ComponentFixture<EntryDetailComponent>, selector: string, value: string): void {
+      const input = el(fixture).querySelector<HTMLInputElement>(selector)!;
+      input.value = value;
+      input.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+    }
+
+    function pick(fixture: ComponentFixture<EntryDetailComponent>, id: number): void {
+      const select = el(fixture).querySelector<HTMLSelectElement>('.form-account')!;
+      select.value = String(id);
+      select.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+    }
+
+    function open(body: EntryDetail, accountId?: number): ComponentFixture<EntryDetailComponent> {
+      const fixture = render(body, ACCOUNTS_X);
+      el(fixture).querySelector<HTMLButtonElement>('.action-settle')!.click();
+      fixture.detectChanges();
+      if (accountId !== undefined) {
+        pick(fixture, accountId);
+      }
+      return fixture;
+    }
+
+    function submit(fixture: ComponentFixture<EntryDetailComponent>): void {
+      el(fixture).querySelector<HTMLButtonElement>('.form-submit')!.click();
+      fixture.detectChanges();
+    }
+
+    function posted(): Record<string, unknown> {
+      const req = http.expectOne('/api/accounting/entries/42/settle');
+      const body = req.request.body as Record<string, unknown>;
+      req.flush({});
+      http.expectOne('/api/accounting/entries/42').flush({});
+      return body;
+    }
+
+    function error(fixture: ComponentFixture<EntryDetailComponent>): string | undefined {
+      return el(fixture).querySelector('.form-error')?.textContent?.trim();
+    }
+
+    function value(fixture: ComponentFixture<EntryDetailComponent>, selector: string): string {
+      return el(fixture).querySelector<HTMLInputElement>(selector)!.value;
+    }
+
+    it('opens cross-currency when the debt account is archived and only foreign accounts remain', () => {
+      const accounts = [
+        { id: 21, name: 'Wise 美元', currency: 'USD', is_archived: true },
+        { id: 3, name: '玉山 UNI', currency: 'TWD', is_archived: false },
+      ] as unknown as LedgerAccount[];
+      const fixture = render(USD_DEBT, accounts);
+      el(fixture).querySelector<HTMLButtonElement>('.action-settle')!.click();
+      fixture.detectChanges();
+      expect(value(fixture, '.form-original')).toBe('20');
+      expect(value(fixture, '.form-amount')).toBe('');
+    });
+
+    it('keeps a typed 金額 when switching between same-currency accounts on settle', () => {
+      const fixture = open(TWD_DEBT);
+      field(fixture, '.form-amount', '123');
+      pick(fixture, 7);
+      expect(value(fixture, '.form-amount')).toBe('123');
+    });
+
+    it('keeps a typed 金額 when switching accounts on the refund panel', () => {
+      const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套' }), ACCOUNTS_X);
+      el(fixture).querySelector<HTMLButtonElement>('.action-refund')!.click();
+      fixture.detectChanges();
+      field(fixture, '.form-amount', '123');
+      pick(fixture, 7);
+      expect(value(fixture, '.form-amount')).toBe('123');
+    });
+
+    it('keeps 抵銷 but clears 金額 when switching foreign to foreign', () => {
+      const accounts = [
+        ...ACCOUNTS_X,
+        { id: 23, name: '日幣現金', currency: 'JPY', is_archived: false },
+      ] as unknown as LedgerAccount[];
+      const fixture = render(TWD_DEBT, accounts);
+      el(fixture).querySelector<HTMLButtonElement>('.action-settle')!.click();
+      fixture.detectChanges();
+      pick(fixture, 21);
+      field(fixture, '.form-amount', '20');
+      field(fixture, '.form-original', '300');
+      pick(fixture, 23);
+      expect(value(fixture, '.form-amount')).toBe('');
+      expect(value(fixture, '.form-original')).toBe('300');
+    });
+
+    it('lists the entry currency first, then the other accounts with their code', () => {
+      const fixture = open(USD_DEBT);
+      const options = Array.from(el(fixture).querySelectorAll('.form-account option')).map(o => o.textContent?.trim());
+      expect(options).toEqual(['Wise 美元', '玉山 UNI (TWD)', '錢包 (TWD)']);
+    });
+
+    it('lists TWD accounts first for a TWD debt', () => {
+      const fixture = open(TWD_DEBT);
+      expect(Array.from(el(fixture).querySelectorAll('.form-account option')).map(o => o.textContent?.trim())).toEqual(['玉山 UNI', '錢包', 'Wise 美元 (USD)']);
+    });
+
+    it('keeps the refund panel on same-currency accounts, without original_amount', () => {
+      const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套' }), ACCOUNTS_X);
+      el(fixture).querySelector<HTMLButtonElement>('.action-refund')!.click();
+      fixture.detectChanges();
+      expect(Array.from(el(fixture).querySelectorAll('.form-account option')).map(o => o.textContent?.trim())).toEqual(['玉山 UNI', '錢包']);
+      field(fixture, '.form-amount', '300');
+      submit(fixture);
+      const req = http.expectOne('/api/accounting/entries/42/refund');
+      expect('original_amount' in (req.request.body as object)).toBe(false);
+      req.flush({});
+      http.expectOne('/api/accounting/entries/42').flush({});
+    });
+
+    it('collects a USD debt into a TWD account: 抵銷 prefilled, conversion line, original_amount sent', () => {
+      const fixture = open(USD_DEBT, 3);
+      expect(value(fixture, '.form-original')).toBe('20');
+      expect(value(fixture, '.form-amount')).toBe('');
+      expect(el(fixture).querySelector('.inline-form')!.textContent).toContain('收到金額');
+      expect(el(fixture).querySelector('.inline-form')!.textContent).toContain('抵銷 USD');
+      field(fixture, '.form-amount', '640');
+      expect(el(fixture).querySelector('.form-conversion')?.textContent?.trim()).toBe('US$20 × 32 = $640');
+      submit(fixture);
+      expect(posted()).toMatchObject({ account_id: 3, amount: '640', original_amount: '20' });
+    });
+
+    it('labels the first amount 付出金額 on a payable', () => {
+      const fixture = open({ ...USD_DEBT, kind: 'payable' } as EntryDetail, 3);
+      expect(el(fixture).querySelector('.inline-form')!.textContent).toContain('付出金額');
+    });
+
+    it('refuses 抵銷 above the open amount and an empty 金額', () => {
+      const fixture = open(USD_DEBT, 3);
+      field(fixture, '.form-amount', '640');
+      field(fixture, '.form-original', '21');
+      submit(fixture);
+      expect(error(fixture)).toBe('金額不可超過 US$20');
+      field(fixture, '.form-original', '20');
+      field(fixture, '.form-amount', '');
+      submit(fixture);
+      expect(error(fixture)).toBe('請輸入金額');
+      http.expectNone('/api/accounting/entries/42/settle');
+    });
+
+    it('clears 金額 when switching to a foreign account and restores it (without 抵銷) when switching back', () => {
+      const fixture = open(TWD_DEBT);
+      expect(value(fixture, '.form-amount')).toBe('640');
+      expect(el(fixture).querySelector('.form-original')).toBeNull();
+      pick(fixture, 21);
+      expect(value(fixture, '.form-amount')).toBe('');
+      expect(value(fixture, '.form-original')).toBe('640');
+      field(fixture, '.form-original', '300');
+      pick(fixture, 7);
+      expect(el(fixture).querySelector('.form-original')).toBeNull();
+      expect(value(fixture, '.form-amount')).toBe('640');
+      submit(fixture);
+      const body = posted();
+      expect(body).toMatchObject({ account_id: 7, amount: '640' });
+      expect('original_amount' in body).toBe(false);
+    });
+
+    it('serializes 金額 in the account currency (USD keeps cents) for a TWD debt', () => {
+      const fixture = open(TWD_DEBT, 21);
+      field(fixture, '.form-amount', '20.5');
+      submit(fixture);
+      expect(posted()).toMatchObject({ account_id: 21, amount: '20.5', original_amount: '640' });
+    });
+
+    it('keeps the ledger precision of 抵銷', () => {
+      const body = { ...USD_DEBT, amount: '-20.0001', open_amount: '20.0001' } as EntryDetail;
+      const fixture = open(body, 3);
+      expect(value(fixture, '.form-original')).toBe('20.0001');
+      field(fixture, '.form-amount', '640');
+      field(fixture, '.form-original', '20.0002');
+      submit(fixture);
+      expect(error(fixture)).toContain('金額不可超過');
+      http.expectNone('/api/accounting/entries/42/settle');
+      field(fixture, '.form-original', '20.0001');
+      submit(fixture);
+      expect(posted()).toMatchObject({ amount: '640', original_amount: '20.0001' });
+    });
+
+    it('sends a partial 抵銷 as typed', () => {
+      const fixture = open({ ...USD_DEBT, amount: '-20.0001', open_amount: '20.0001' } as EntryDetail, 3);
+      field(fixture, '.form-amount', '320');
+      field(fixture, '.form-original', '10');
+      submit(fixture);
+      expect(posted()).toMatchObject({ amount: '320', original_amount: '10' });
+    });
+
+    it('handles a remainder below one display unit and bad 抵銷 input', () => {
+      const fixture = open({ ...USD_DEBT, amount: '-0.0001', open_amount: '0.0001' } as EntryDetail, 3);
+      expect(value(fixture, '.form-original')).toBe('0.0001');
+      field(fixture, '.form-amount', '1');
+      field(fixture, '.form-original', '');
+      submit(fixture);
+      expect(error(fixture)).toBe('請輸入金額');
+      field(fixture, '.form-original', 'abc');
+      submit(fixture);
+      expect(error(fixture)).toBe('請輸入金額');
+      http.expectNone('/api/accounting/entries/42/settle');
+      field(fixture, '.form-original', '0.0001');
+      submit(fixture);
+      expect(posted()).toMatchObject({ amount: '1', original_amount: '0.0001' });
+    });
+
+    it('settles a 4-decimal debt above float precision exactly by default, and caps exactly', () => {
+      const big = (open_amount: string) => ({ ...USD_DEBT, amount: `-${open_amount}`, open_amount }) as EntryDetail;
+      let fixture = open(big('100000000000.0001'), 3);
+      expect(value(fixture, '.form-original')).toBe('100000000000.0001');
+      field(fixture, '.form-amount', '100000000000');
+      submit(fixture);
+      expect(posted()).toMatchObject({ original_amount: '100000000000.0001' });
+      fixture.destroy();
+      fixture = open(big('100000000000.0006'), 3);
+      field(fixture, '.form-amount', '100000000000');
+      submit(fixture);
+      expect(posted()).toMatchObject({ original_amount: '100000000000.0006' });
+      fixture.destroy();
+      fixture = open(big('100000000000.0006'), 3);
+      field(fixture, '.form-amount', '100000000000');
+      field(fixture, '.form-original', '100000000000.0007');
+      submit(fixture);
+      expect(error(fixture)).toBe('金額不可超過 US$100000000000.0006');
+      http.expectNone('/api/accounting/entries/42/settle');
+    });
+
+    it('rounds the previewed rate to the stored 10 decimals', () => {
+      const body = { ...USD_DEBT, amount: '-1000', open_amount: '1000' } as EntryDetail;
+      const fixture = open(body, 3);
+      field(fixture, '.form-amount', '1000');
+      field(fixture, '.form-original', '30');
+      const line = el(fixture).querySelector('.form-conversion')?.textContent ?? '';
+      expect(line).toContain('33.3333333333');
+      expect(line).not.toContain('33.333333333333336');
+    });
+
+    it('shows a sub-cent remainder in the 抵銷 limit hint and error', () => {
+      const fixture = open({ ...USD_DEBT, amount: '-0.0001', open_amount: '0.0001' } as EntryDetail, 3);
+      expect(el(fixture).querySelector('.inline-form')!.textContent).toContain('上限 US$0.0001');
+      field(fixture, '.form-amount', '1');
+      field(fixture, '.form-original', '0.0002');
+      submit(fixture);
+      expect(error(fixture)).toBe('金額不可超過 US$0.0001');
+    });
+
+    it('keeps the 抵銷 limit hint plain for a whole remainder', () => {
+      const fixture = open(USD_DEBT, 3);
+      expect(el(fixture).querySelector('.inline-form')!.textContent).toContain('上限 US$20');
+    });
+
+    it('prefills a TWD remainder below one unit', () => {
+      const fixture = open({ ...TWD_DEBT, amount: '-0.1', open_amount: '0.1' } as EntryDetail, 21);
+      expect(value(fixture, '.form-original')).toBe('0.1');
+      field(fixture, '.form-amount', '1');
+      submit(fixture);
+      expect(posted()).toMatchObject({ amount: '1', original_amount: '0.1' });
+    });
+
+    it('submits on ⏎ from the 抵銷 field', () => {
+      const fixture = open(USD_DEBT, 3);
+      field(fixture, '.form-amount', '640');
+      const enter = key(el(fixture).querySelector('.form-original')!, { key: 'Enter' });
+      expect(enter.defaultPrevented).toBe(true);
+      expect(posted()).toMatchObject({ original_amount: '20' });
+    });
+
+    it('closes only the inline form on Esc from the 抵銷 field', () => {
+      const fixture = open(USD_DEBT, 3);
+      const esc = key(el(fixture).querySelector('.form-original')!, { key: 'Escape' });
+      fixture.detectChanges();
+      expect(esc.defaultPrevented).toBe(true);
+      expect(el(fixture).querySelector('.inline-form')).toBeNull();
+    });
+  });
+
+  describe('the record of closing and reopening a debt (#401)', () => {
+    const EVENTS = [
+      { id: 1, action: 'close', actor: 'hermes', open_amount: '220.0000', currency: 'TWD', event_date: '2026-11-18', needs_review: false },
+      { id: 2, action: 'reopen', actor: 'spa', open_amount: '220.0000', currency: 'TWD', event_date: '2026-11-19', needs_review: false },
+      { id: 3, action: 'close', actor: 'hermes', open_amount: '220.0000', currency: 'TWD', event_date: '2026-11-20', needs_review: true },
+    ];
+
+    function lines(fixture: ComponentFixture<EntryDetailComponent>): (string | undefined)[] {
+      return Array.from(el(fixture).querySelectorAll('.debt-events .debt-event')).map(node => node.textContent?.trim());
+    }
+
+    it('lists the events of the debt, oldest first, under the state line', () => {
+      const fixture = render(detail({ ...RECEIVABLE, is_closed: true, open_amount: '0.0000', is_settled: true, debt_events: EVENTS }));
+
+      expect(lines(fixture)).toEqual([
+        '2026/11/18 標記結清 · Hermes · 當時剩餘 $220',
+        '2026/11/19 重新開啟 · 網頁 · 回到剩餘 $220',
+        '2026/11/20 標記結清 · Hermes · 當時剩餘 $220 · 待確認',
+      ]);
+      expect(el(fixture).querySelector('.open-state + .debt-events')).not.toBeNull();
+    });
+
+    it('keeps the record on a row that is no longer a debt (the reminders list still links to it)', () => {
+      const fixture = render(detail({ id: 42, amount: '-420.0000', name: '外套', debt_events: [EVENTS[2]] }));
+
+      expect(el(fixture).querySelector('.open-state')).toBeNull();
+      expect(lines(fixture)).toEqual(['2026/11/20 標記結清 · Hermes · 當時剩餘 $220 · 待確認']);
+    });
+
+    it('shows no block for a debt without events or an answer without the field', () => {
+      expect(el(render(detail({ ...RECEIVABLE, debt_events: [] }))).querySelector('.debt-events')).toBeNull();
+      expect(el(render(RECEIVABLE)).querySelector('.debt-events')).toBeNull();
+    });
+  });
+
+  describe('reopening and closing a debt (#391)', () => {
+    const CLOSED = detail({ ...RECEIVABLE, is_closed: true, open_amount: '0.0000', is_settled: true });
+    const LOAN = {
+      definition_id: 3, name: '信貸 每月還款', status: 'active', posting_mode: 'auto', posted_count: 2, times: 36,
+      next_due_date: null, next_amount: [], remaining: '220.0000', repaid: '200.0000', needs_check: false,
+    };
+
+    function buttons(fixture: ComponentFixture<EntryDetailComponent>): (string | undefined)[] {
+      return Array.from(el(fixture).querySelectorAll('.debt-toggle')).map(b => b.textContent?.trim());
+    }
+
+    function openConfirm(fixture: ComponentFixture<EntryDetailComponent>, action: 'reopen' | 'close'): HTMLElement {
+      el(fixture).querySelector<HTMLButtonElement>(`.debt-${action}`)!.click();
+      fixture.detectChanges();
+      return el(fixture).querySelector<HTMLElement>('.debt-confirm')!;
+    }
+
+    it('offers 重新開啟 on a closed debt and 標記結清 on an open one', () => {
+      expect(buttons(render(CLOSED))).toEqual(['重新開啟']);
+      expect(buttons(render(RECEIVABLE))).toEqual(['標記結清']);
+    });
+
+    it('offers neither on a debt its settlements cleared, a locked debt, a settlement row or a plain entry', () => {
+      const settlement = detail({
+        id: 42, kind: 'receivable', amount: '200.0000', is_settlement: true, settles: entry({ id: 40, kind: 'receivable' }),
+      });
+      const others = [
+        detail({ ...RECEIVABLE, open_amount: '0.0000', is_settled: true }),
+        detail({ ...CLOSED, locked: true }),
+        detail({ ...RECEIVABLE, locked: true }),
+        settlement,
+        detail({ id: 42, amount: '-500.0000', name: '外套' }),
+      ];
+      for (const body of others) {
+        expect(buttons(render(body)), JSON.stringify(body).slice(0, 80)).toEqual([]);
+      }
+    });
+
+    it('does not offer 標記結清 while a live schedule repays the loan, and does once it is ended', () => {
+      expect(buttons(render(detail({ ...RECEIVABLE, loan_schedule: LOAN })))).toEqual([]);
+      expect(buttons(render(detail({ ...RECEIVABLE, loan_schedule: { ...LOAN, status: 'ended' } })))).toEqual(['標記結清']);
+      // Reopening is never held back by a schedule.
+      expect(buttons(render(detail({ ...CLOSED, loan_schedule: LOAN })))).toEqual(['重新開啟']);
+    });
+
+    it('says what reopening brings back, posts it and reloads the entry', () => {
+      const fixture = render(CLOSED);
+      const confirm = openConfirm(fixture, 'reopen');
+
+      expect(confirm.getAttribute('role')).toBe('alertdialog');
+      expect(confirm.textContent).toContain('重新開啟後，這筆會回到未結清：剩餘 $220。');
+      confirm.querySelector<HTMLButtonElement>('.debt-confirm-go')!.click();
+
+      const req = http.expectOne('/api/accounting/entries/42/reopen');
+      expect(req.request.method).toBe('POST');
+      req.flush({});
+      http.expectOne('/api/accounting/entries/42').flush(RECEIVABLE);
+      fixture.detectChanges();
+
+      expect(el(fixture).querySelector('.debt-confirm')).toBeNull();
+      expect(el(fixture).querySelector('.open-amount')?.textContent?.trim()).toBe('剩餘 $220');
+      expect(buttons(fixture)).toEqual(['標記結清']);
+    });
+
+    it('says a fully collected debt stays settled after reopening', () => {
+      const collected = detail({
+        ...CLOSED,
+        settled_by: [entry({ id: 50, kind: 'receivable', amount: '420.0000', name: '收款', account_name: '錢包' })],
+      });
+
+      const confirm = openConfirm(render(collected), 'reopen');
+
+      expect(confirm.textContent).toContain('收款已收滿，重新開啟後仍是已結清；刪除收款後才會出現剩餘金額。');
+      expect(confirm.textContent).not.toContain('回到未結清');
+    });
+
+    it('counts a closed debt without any collection as wholly open again', () => {
+      const confirm = openConfirm(render(detail({ ...CLOSED, settled_by: [] })), 'reopen');
+
+      expect(confirm.textContent).toContain('重新開啟後，這筆會回到未結清：剩餘 $420。');
+    });
+
+    it('says what closing takes out, posts it and reloads the entry', () => {
+      const fixture = render(RECEIVABLE);
+      const confirm = openConfirm(fixture, 'close');
+
+      expect(confirm.textContent).toContain('剩餘 $220 不再列入未結清，會留下結清記錄；之後可以重新開啟。');
+      confirm.querySelector<HTMLButtonElement>('.debt-confirm-go')!.click();
+
+      const req = http.expectOne('/api/accounting/entries/42/close');
+      expect(req.request.method).toBe('POST');
+      req.flush({});
+      http.expectOne('/api/accounting/entries/42').flush(CLOSED);
+      fixture.detectChanges();
+
+      expect(el(fixture).querySelector('.debt-confirm')).toBeNull();
+      expect(el(fixture).querySelector('.settled')?.textContent?.trim()).toBe('已結清');
+      expect(buttons(fixture)).toEqual(['重新開啟']);
+    });
+
+    it('keeps the confirm open and shows the refusal when the API refuses', () => {
+      const fixture = render(RECEIVABLE);
+      openConfirm(fixture, 'close').querySelector<HTMLButtonElement>('.debt-confirm-go')!.click();
+
+      http.expectOne('/api/accounting/entries/42/close').flush(
+        { detail: [{ loc: ['body', 'loan_schedule'], msg: '排程「信貸」還在還款: end the schedule before closing the debt' }] },
+        { status: 422, statusText: 'Unprocessable Entity' },
+      );
+      fixture.detectChanges();
+
+      const confirm = el(fixture).querySelector('.debt-confirm')!;
+      expect(confirm.querySelector('.form-error')?.textContent).toContain('排程「信貸」還在還款');
+      expect(confirm.querySelector<HTMLButtonElement>('.debt-confirm-go')!.disabled).toBe(false);
+    });
+
+    it('uses 還款 wording on a payable its repayments cleared', () => {
+      const payable = detail({
+        ...CLOSED, kind: 'payable', amount: '420.0000',
+        settled_by: [entry({ id: 50, kind: 'payable', amount: '-420.0000', name: '還款', account_name: '錢包' })],
+      });
+
+      const confirm = openConfirm(render(payable), 'reopen');
+
+      expect(confirm.textContent).toContain('還款已還清，重新開啟後仍是已結清；刪除還款後才會出現剩餘金額。');
+      expect(confirm.textContent).not.toContain('收款');
+    });
+
+    it('moves focus into the confirm, and Esc closes it and returns focus to its button', async () => {
+      const fixture = render(CLOSED);
+      const opener = el(fixture).querySelector<HTMLButtonElement>('.debt-reopen')!;
+      opener.focus();
+      const confirm = openConfirm(fixture, 'reopen');
+      await fixture.whenStable();
+
+      // The panel sits below the related rows: focus brings it into view and keeps ⏎ off the opener.
+      expect(document.activeElement).toBe(confirm.querySelector('.debt-cancel'));
+
+      const esc = key(document.activeElement!, { key: 'Escape' });
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      expect(esc.defaultPrevented).toBe(true);
+      expect(el(fixture).querySelector('.debt-confirm')).toBeNull();
+      expect(document.activeElement).toBe(el(fixture).querySelector('.debt-reopen'));
+    });
+
+    it('取消 closes the confirm without a request', () => {
+      const fixture = render(CLOSED);
+      const confirm = openConfirm(fixture, 'reopen');
+
+      confirm.querySelector<HTMLButtonElement>('.debt-cancel')!.click();
+      fixture.detectChanges();
+
+      expect(el(fixture).querySelector('.debt-confirm')).toBeNull();
+      http.expectNone('/api/accounting/entries/42/reopen');
+    });
+  });
+  describe('the calendar drawer presentation (owner item 5)', () => {
+    const MEAL = () => detail({
+      id: 42, amount: '-180.0000', name: '午餐便當', merchant: '範例餐館', category: '餐飲/午餐', category_icon: '🍱',
+      category_color: '#84dccf', entry_date: '2026-11-05', entry_time: '12:30:00',
+    });
+    const cells = (fixture: ComponentFixture<EntryDetailComponent>) =>
+      Array.from(el(fixture).querySelectorAll('dl.dtable > div')).map(cell => [
+        cell.querySelector('dt')?.textContent?.trim(), cell.querySelector('dd')?.textContent?.trim(),
+      ]);
+
+    /** `render`, then answers the invoice hint's picker read (the drawer asks once for an unlinked expense). */
+    function renderDrawer(body: EntryDetail): ComponentFixture<EntryDetailComponent> {
+      const fixture = render(body);
+      http.match(r => r.url === '/api/accounting/einvoices/picker').forEach(req =>
+        req.flush({ entry_eligible: true, group_id: null, group_eligible: false, invoices: [] }));
+      fixture.detectChanges();
+      return fixture;
+    }
+
+    function drawerOn(): CalendarPaneService {
+      TestBed.inject(LayoutModeService).set('panes');
+      TestBed.inject(AccountingOverviewService).calendar.set(true);
+      const pane = TestBed.inject(CalendarPaneService);
+      pane.commands.set({ stepEntry: vi.fn() } as unknown as CalendarCommands);
+      return pane;
+    }
+
+    it('replaces the coloured head with a bar: step buttons, the hint and ✕', () => {
+      const pane = drawerOn();
+      const fixture = renderDrawer(MEAL());
+      const root = el(fixture);
+      expect(root.querySelector('.dhead')).toBeNull();
+      expect(root.classList.contains('entry-detail--drawer')).toBe(true);
+      const bar = root.querySelector('.drawer-bar')!;
+      expect(bar.textContent).toContain('↑↓ 切換');
+      bar.querySelector<HTMLButtonElement>('button[aria-label="上一筆"]')!.click();
+      bar.querySelector<HTMLButtonElement>('button[aria-label="下一筆"]')!.click();
+      const step = pane.commands()!.stepEntry as ReturnType<typeof vi.fn>;
+      expect(step.mock.calls).toEqual([[-1], [1]]);
+      const close = vi.spyOn(fixture.componentInstance, 'close').mockImplementation(() => undefined);
+      bar.querySelector<HTMLButtonElement>('button[aria-label="關閉（Esc）"]')!.click();
+      expect(close).toHaveBeenCalled();
+    });
+
+    it('marks its host compact (entry-detail--drawer) only once the entry has loaded: not while loading, not after a failed read', () => {
+      drawerOn();
+      const fixture = TestBed.createComponent(EntryDetailComponent);
+      fixture.detectChanges();
+      const root = el(fixture);
+      expect(root.classList.contains('entry-detail--drawer')).toBe(false);
+      expect(root.querySelector('.drawer-bar')).toBeNull();
+      http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+      http.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
+      fixture.detectChanges();
+      expect(root.querySelector('.load-error')).not.toBeNull();
+      expect(root.classList.contains('entry-detail--drawer')).toBe(false);
+      expect(root.querySelector('.drawer-bar')).toBeNull();
+    });
+
+    it('keeps the bar and its focused step button mounted while the next entry loads; a failed read drops the bar', () => {
+      drawerOn();
+      const fixture = renderDrawer(MEAL());
+      const root = el(fixture);
+      const next = root.querySelector<HTMLButtonElement>('.drawer-bar .step-next')!;
+      next.focus();
+      params.next(convertToParamMap({ id: '43' }));
+      fixture.detectChanges();
+      // Loading 43: no entry shown, but the same bar (and the same focused button) stays.
+      expect(root.querySelector('.dcompact')).toBeNull();
+      expect(root.querySelector('.drawer-foot')).toBeNull();
+      expect(root.querySelector('.drawer-bar .step-next')).toBe(next);
+      expect(document.activeElement).toBe(next);
+      expect(root.classList.contains('entry-detail--drawer')).toBe(true);
+      // A second step while 43 still loads keeps it too.
+      params.next(convertToParamMap({ id: '44' }));
+      fixture.detectChanges();
+      expect(root.querySelector('.drawer-bar .step-next')).toBe(next);
+      const stale = http.expectOne('/api/accounting/entries/43');
+      http.expectOne('/api/accounting/entries/44').flush(detail({ ...MEAL(), id: 44 }));
+      stale.flush(detail({ ...MEAL(), id: 43 }));
+      fixture.detectChanges();
+      http.match(r => r.url === '/api/accounting/einvoices/picker').forEach(req =>
+        req.flush({ entry_eligible: true, group_id: null, group_eligible: false, invoices: [] }));
+      fixture.detectChanges();
+      expect(root.querySelector('.dcompact')).not.toBeNull();
+      expect(document.activeElement).toBe(next);
+
+      params.next(convertToParamMap({ id: '45' }));
+      fixture.detectChanges();
+      http.expectOne('/api/accounting/entries/45').flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(root.querySelector('.drawer-bar')).toBeNull();
+      expect(root.querySelector('.load-error')).not.toBeNull();
+      expect(root.classList.contains('entry-detail--drawer')).toBe(false);
+    });
+
+    it('brings the 刪除 confirm into view and focuses its 取消 when it opens in the drawer', async () => {
+      drawerOn();
+      const fixture = renderDrawer(MEAL());
+      const scrolled: Element[] = [];
+      const original = HTMLElement.prototype.scrollIntoView;
+      HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
+        scrolled.push(this);
+      };
+      try {
+        el(fixture).querySelector<HTMLButtonElement>('.drawer-foot .action-delete')!.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        const confirm = el(fixture).querySelector<HTMLElement>('.drawer-body .delete-confirm')!;
+        expect(confirm).not.toBeNull();
+        expect(document.activeElement).toBe(confirm.querySelector('.btnrow button'));
+        expect(document.activeElement!.textContent!.trim()).toBe('取消');
+        expect(scrolled).toContain(confirm);
+      } finally {
+        HTMLElement.prototype.scrollIntoView = original;
+      }
+    });
+
+    it('shows one compact row: icon, name, kind · category path, total', () => {
+      drawerOn();
+      const fixture = renderDrawer(MEAL());
+      const row = el(fixture).querySelector('.dcompact')!;
+      expect(row.querySelector<HTMLElement>('.ico')!.style.background).not.toBe('');
+      expect(text(row.querySelector('.detail-name'))).toBe('午餐便當');
+      expect(text(row.querySelector('.dkind'))).toBe('支出 · 餐飲 › 午餐');
+      expect(text(row.querySelector('.detail-total'))).toBe('−$180');
+    });
+
+    it('shows just the kind label when the entry has no category', () => {
+      drawerOn();
+      const fixture = renderDrawer(detail({ id: 42, amount: '-5.0000', name: '雜項', category: null }));
+      expect(text(el(fixture).querySelector('.dkind'))).toBe('支出');
+    });
+
+    it('lists 帳戶, 商家, 日期 (M/D 週X, unpadded), 時間 and hides defaults', () => {
+      drawerOn();
+      const fixture = renderDrawer(MEAL());
+      expect(cells(fixture)).toEqual([['帳戶', '玉山 UNI'], ['商家', '範例餐館'], ['日期', '11/5 週四'], ['時間', '12:30']]);
+    });
+
+    it('labels the second cell 對象 for a debt and adds 專案 / 交易類型 / 事件類型 only when set', () => {
+      drawerOn();
+      const fixture = renderDrawer(detail({ ...RECEIVABLE, id: 42, project: '旅行', entry_date: '2026-11-05' }));
+      const rows = cells(fixture);
+      expect(rows.map(([label]) => label)).toEqual(['帳戶', '對象', '日期', '時間', '專案', '交易類型']);
+      expect(rows).toContainEqual(['專案', '旅行']);
+      expect(rows).toContainEqual(['交易類型', '應收款項']);
+    });
+
+    it('never shrinks the drawer body\'s children, so long content scrolls instead of clipping the table (scss source)', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { resolve } = await import('node:path');
+      const scss = readFileSync(resolve(process.cwd(), 'src/app/components/accounting/entry-detail/entry-detail.scss'), 'utf8');
+      const body = scss.slice(scss.indexOf('.drawer-body {'), scss.indexOf('.dcompact {'));
+      expect(body).toMatch(/>\s*\*\s*\{\s*flex-shrink:\s*0;/);
+    });
+
+    it('pins .actions in .drawer-foot after the scrolling .drawer-body', () => {
+      drawerOn();
+      const fixture = renderDrawer(MEAL());
+      const foot = el(fixture).querySelector('.drawer-foot')!;
+      const body = el(fixture).querySelector('.drawer-body')!;
+      expect(foot.querySelector('.actions')).not.toBeNull();
+      expect(body.querySelector('.actions')).toBeNull();
+      expect(body.nextElementSibling).toBe(foot);
+    });
+
+    it('renders every inline panel inside .drawer-body', () => {
+      drawerOn();
+      const fixture = renderDrawer(detail({ ...RECEIVABLE, id: 42, schedule: { definition_id: 3, instance_id: 1, kind: 'recurring', seq: 2, times: 12, name: '房租', posted_entry_ids: [42], is_partial: false, acted_by: 'auto' } }));
+      const selectors: Record<string, string> = {
+        settle: '.inline-form', refund: '.inline-form', delete: '.delete-confirm', reopen: '.debt-confirm', close: '.debt-confirm',
+        scope: '.scope-choice', repost: '.repost-form',
+      };
+      for (const [panel, selector] of Object.entries(selectors)) {
+        fixture.componentInstance.panel.set(panel as never);
+        fixture.detectChanges();
+        expect(el(fixture).querySelector(`.drawer-body ${selector}`), panel).not.toBeNull();
+        expect(el(fixture).querySelector(`.drawer-foot ${selector}`), panel).toBeNull();
+      }
+    });
+
+    it('keeps the group-back link, fee note, 入帳日 and 結清記錄 in the body', () => {
+      drawerOn();
+      const fixture = renderDrawer(splitChild({
+        kind: 'expense', amount: '-60', posted_date: '2026-10-09', entry_date: '2026-10-01',
+        children: [entry({ id: 44, kind: 'fee', amount: '-5' })],
+        debt_events: [{ id: 1, action: 'close', actor: 'hermes', open_amount: '220.0000', currency: 'TWD', event_date: '2026-11-18', needs_review: false }],
+      }));
+      for (const selector of ['.group-back', '.fee-note', '.posted', '.debt-events']) {
+        expect(el(fixture).querySelector(`.drawer-body ${selector}`), selector).not.toBeNull();
+      }
+    });
+
+    it.each([
+      ['sheet', false],
+      ['phone', false],
+      ['panes', false],
+    ])('keeps the full detail in %s mode without the calendar (calendar=%s)', (mode, calendar) => {
+      TestBed.inject(LayoutModeService).set(mode as 'sheet' | 'phone' | 'panes');
+      TestBed.inject(AccountingOverviewService).calendar.set(calendar);
+      const fixture = renderDrawer(MEAL());
+      const root = el(fixture);
+      expect(root.querySelector('.dhead')).not.toBeNull();
+      expect(root.querySelector('.drawer-bar')).toBeNull();
+      expect(root.querySelector('.drawer-body')).toBeNull();
+      expect(root.classList.contains('entry-detail--drawer')).toBe(false);
+      expect(root.querySelectorAll('.dgrid > div')).toHaveLength(7);
+    });
+
+    it('does not use the drawer presentation in the calendar below 1024 px', () => {
+      TestBed.inject(LayoutModeService).set('sheet');
+      TestBed.inject(AccountingOverviewService).calendar.set(true);
+      const fixture = renderDrawer(MEAL());
+      expect(el(fixture).querySelector('.dhead')).not.toBeNull();
+    });
+  });
+
+});
+
+describe('settledValue', () => {
+  it('counts the amount of a same-currency row even when it carries original_amount', () => {
+    expect(settledValue({ amount: '10', currency: 'USD', original_amount: '320', original_currency: 'TWD' }, 'USD')).toBe(10);
   });
 });

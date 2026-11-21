@@ -1,0 +1,113 @@
+.look { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+/* The phone sheet: one column, full width; the preview stays centred. */
+:host.stacked .look { align-items: stretch; flex-direction: column; }
+:host.stacked .look-body { min-width: 0; }
+
+.look-preview {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  small { color: var(--app-text-muted); font-size: 0.75rem; }
+}
+
+.look-tile {
+  --ico-size: 64px;
+  align-items: center;
+  background: var(--app-surface-soft);
+  border-radius: 19px;
+  display: flex;
+  font-size: 1.6rem;
+  height: 64px;
+  justify-content: center;
+  overflow: hidden;
+  width: 64px;
+
+  .ico { border-radius: inherit; }
+  &.tinted { color: #fff; }
+}
+
+.look-body { flex: 1; min-width: 240px; display: flex; flex-direction: column; gap: 12px; }
+.look-current { margin: 0; color: var(--app-text-muted); font-size: 0.85rem; }
+
+.drop {
+  align-items: center;
+  border: 1px dashed var(--app-border);
+  border-radius: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px;
+
+  &.over { border-color: var(--app-primary); }
+  &.disabled { opacity: 0.6; }
+}
+
+.drop-arrow { color: var(--app-text-muted); flex: none; }
+.look-limits, .logo-hint { color: var(--app-text-muted); font-size: 0.75rem; }
+
+.logo-upload, .logo-remove {
+  background: var(--app-surface-soft);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--app-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 4px 10px;
+
+  &:disabled { cursor: not-allowed; opacity: 0.5; }
+}
+
+.logo-remove { align-self: flex-start; }
+
+/* Before the checked rings below, so a focused checked logo keeps its outline. */
+.logo-opt, .swatch, .logo-upload, .logo-remove, .icon-input {
+  &:focus-visible { outline: none; box-shadow: 0 0 0 4px var(--app-focus-ring); }
+}
+
+.ico-sm { --ico-size: 1.5rem; border-radius: 50%; display: inline-flex; height: var(--ico-size); vertical-align: middle; width: var(--ico-size); }
+.logo-grid { display: grid; gap: 0.5rem; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); padding: 0.5rem 0; }
+.logo-opt {
+  align-items: center;
+  background: var(--app-surface-soft);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  justify-content: center;
+  min-height: 44px;
+  padding: 6px 2px;
+
+  small { color: var(--app-text-muted); font-size: 0.7rem; }
+  &[aria-checked='true'] { outline: 2px solid var(--app-primary); }
+}
+
+.text-fields { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; }
+.text-label { align-items: center; display: inline-flex; gap: 8px; }
+.icon-input {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  color: var(--app-text);
+  font: inherit;
+  padding: 4px 8px;
+  width: 8rem;
+}
+
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+.swatch {
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  height: 30px;
+  padding: 0;
+  width: 30px;
+
+  &[aria-checked='true'], &.active { border-color: var(--app-text); }
+}
+.swatch.custom { background: conic-gradient(#f56565, #ecc94b, #48bb78, #4299e1, #9f7aea, #f56565); }

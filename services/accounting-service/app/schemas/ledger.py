@@ -68,11 +68,31 @@ class RewardRuleOverviewRuleOut(RewardRuleOut):
     stats: RewardRuleStatsOut
 
 
+class RewardUsageOut(BaseModel):
+    rule_ids: list[int]
+    shared_cap_id: UUID | None
+    name: str
+    window_start: date
+    window_end: date
+    used: Decimal
+    estimated: Decimal
+    cap: Decimal | None
+    remaining: Decimal | None
+    reward_account_id: int
+    reward_account_name: str
+    reward_is_money: bool
+
+
 class RewardRuleOverviewAccountOut(BaseModel):
     account_id: int
     account_name: str
     is_credit: bool
     is_archived: bool
+    icon: str | None
+    logo: str | None
+    logo_hash: str | None
+    closing_day: int | None  # the closing day reward windows use: own, else the combined parent's, else None
+    usage: list[RewardUsageOut]
     rules: list[RewardRuleOverviewRuleOut]
 
 
@@ -128,6 +148,7 @@ class AccountOut(BaseModel):
     fx_fee_pct: Decimal | None
     fx_fee_rounding: RoundingMode | None
     fx_fee_refundable: bool
+    cash_equivalent: bool
     sort_order: int
     settings_locally_edited: bool
     moze_id: str | None
@@ -210,18 +231,6 @@ class AccrualOut(BaseModel):
     ledger_amount: Decimal | None  # the reward row's amount (the bank's figure once bank_confirmed); null without one
     reward_account_id: int  # the rule's reward account (its card when unset)
     reward_account_name: str
-
-
-class RewardUsageOut(BaseModel):
-    rule_ids: list[int]
-    shared_cap_id: UUID | None
-    name: str
-    window_start: date
-    window_end: date
-    used: Decimal
-    estimated: Decimal
-    cap: Decimal | None
-    remaining: Decimal | None
 
 
 class EntryEinvoiceOut(BaseModel):
@@ -316,6 +325,45 @@ class GroupMemberOut(EntryOut):
     protected_reason: ProtectedReason | None
 
 
+class DebtEventOut(BaseModel):
+    """One close / reopen of a debt (#401). `open_amount`: the remainder the close took out or the reopen brought
+    back. `needs_review`: the entry's latest event is this close, it left a remainder and the owner has not confirmed
+    it."""
+
+    id: int
+    action: Literal["close", "reopen"]
+    actor: str | None
+    open_amount: Decimal
+    currency: str
+    event_date: date
+    needs_review: bool
+
+
+class DebtReviewItem(BaseModel):
+    """A close that waits for the owner (`GET /debt-events/to-review`). `deleted`: the entry is gone and the name,
+    counterparty, date and amount are the snapshot taken at the close. `open_amount` is the remainder at the close;
+    `current_open_amount` (#403) the debt's remainder now, null for a deleted debt."""
+
+    event_id: int
+    entry_id: int
+    deleted: bool
+    kind: Literal["receivable", "payable"]
+    name: str | None
+    counterparty: str | None
+    entry_date: date
+    amount: Decimal
+    currency: str
+    open_amount: Decimal
+    current_open_amount: Decimal | None = None
+    actor: str | None
+    event_date: date
+
+
+class DebtReviewPage(BaseModel):
+    items: list[DebtReviewItem]
+    total: int
+
+
 class EntryDetailOut(EntryOut):
     invoice_random: str | None
     children: list[EntryOut]
@@ -331,6 +379,27 @@ class EntryDetailOut(EntryOut):
     refunded_amount: Decimal
     loan_schedule: LoanScheduleOut | None = None
     einvoice: EntryEinvoiceOut | None = None
+    debt_events: list[DebtEventOut] = []  # #401: closes / reopens of a receivable / payable, oldest first
+
+
+class DeletedEntryOut(BaseModel):
+    """A row `DELETE /entries/{id}` removed (#390): the entry itself, another leg of its transfer, or a fee /
+    discount child of either."""
+
+    id: int
+    role: Literal["entry", "transfer_leg", "child"]
+    parent_entry_id: int | None
+    kind: EntryKind
+    name: str | None
+    amount: Decimal
+    currency: str
+    account_id: int
+    account_name: str
+    entry_date: date
+
+
+class EntryDeleteOut(BaseModel):
+    deleted: list[DeletedEntryOut]
 
 
 class CategoryExpenseOut(BaseModel):

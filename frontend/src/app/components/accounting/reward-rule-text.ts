@@ -1,14 +1,16 @@
-import { RewardRule, RewardRuleInput, RewardRuleState, RewardWindow, RoundingMode } from '../../models/accounting.model';
+import {
+  RewardRule, RewardRuleInput, RewardRuleState, RewardUsage, RewardWindow, RoundingMode,
+} from '../../models/accounting.model';
 import { slashDate } from './dates';
-import { decimalText } from './format';
+import { decimalText, formatMoney, formatNumber } from './format';
 
 export { ruleLabel } from './entry-form/entry-draft';
 
 export const RULE_STATE_LABELS: Record<RewardRuleState, string> = {
-  active: '啟用中',
+  active: '生效中',
   disabled: '已停用',
-  expired: '已到期',
-  upcoming: '尚未開始',
+  expired: '已過期',
+  upcoming: '未開始',
 };
 
 export const REWARD_ROUNDING_LABELS: Record<RoundingMode, string> = {
@@ -54,11 +56,13 @@ export function postingSummary(
 ): string {
   switch (rule.posting) {
     case 'after_window':
-      return `帳單結帳後第 ${rule.post_month_offset} 月 ${rule.post_day} 日`;
+      return rule.post_month_offset === 0
+        ? `結帳當月 ${rule.post_day} 號入帳`
+        : `${rule.post_month_offset === 1 ? '下期' : '下下期'} ${rule.post_day} 號入帳`;
     case 'after_transaction':
-      return `交易後 ${rule.delay_days} 天`;
+      return `交易後 ${rule.delay_days} 天入帳`;
     default:
-      return '手動';
+      return '手動入帳';
   }
 }
 
@@ -74,6 +78,72 @@ export function periodText(rule: Pick<RewardRule, 'starts_on' | 'ends_on'>): str
     return `至 ${slashDate(end)}`;
   }
   return '無期限';
+}
+
+/** A reward's unit (D1a): money, or the points account it pays into. Decided by the server on each usage row. */
+export type RewardUnit = { money: true } | { money: false; name: string };
+
+export function usageUnit(usage: Pick<RewardUsage, 'reward_is_money' | 'reward_account_name'>): RewardUnit {
+  return usage.reward_is_money ? { money: true } : { money: false, name: usage.reward_account_name };
+}
+
+/** `$1,236` for money (TWD: the usage payload carries no currency), `120 測試里程` for points. */
+export function rewardFigure(value: string | number, unit: RewardUnit): string {
+  return unit.money ? formatMoney(value, 'TWD') : `${formatNumber(value, 'TWD')} ${unit.name}`;
+}
+
+/** The rate chip beside a rule's label: `3%`, `固定 $50`, `每 NT$100 一單位`. */
+export function rateChip(rule: Pick<RewardRule, 'method' | 'rate' | 'fixed_amount' | 'unit_spend'>): string {
+  return methodSummary(rule);
+}
+
+/** The rule's name without a trailing copy of its rate (`玩數位 3%` → `玩數位`), so the chip never repeats it. */
+export function ruleTitle(rule: Pick<RewardRule, 'name' | 'method' | 'rate' | 'fixed_amount' | 'unit_spend'>): string {
+  const chip = rateChip(rule);
+  const name = rule.name.trim();
+  for (const suffix of [` ${chip}`, ` (${chip})`, `(${chip})`, `（${chip}）`]) {
+    if (name.endsWith(suffix) && name.length > suffix.length) {
+      return name.slice(0, -suffix.length).trim();
+    }
+  }
+  return name;
+}
+
+/** `2026-11-06` → `11/6`. */
+export function monthDay(iso: string): string {
+  return `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}`;
+}
+
+/** `2027-01-01` → `2027/1/1` (unlike `slashDate`, no zero padding). */
+export function fullDate(iso: string): string {
+  return `${iso.slice(0, 4)}/${monthDay(iso)}`;
+}
+
+/** The muted line in place of the cap bar on a non-active rule; null on an active one. */
+export function mutedLine(rule: { state: RewardRuleState; starts_on: string | null }): string | null {
+  switch (rule.state) {
+    case 'disabled':
+      return '停用中，不估算回饋';
+    case 'expired':
+      return '已結束，不再估算';
+    case 'upcoming':
+      return rule.starts_on ? `${fullDate(rule.starts_on)} 起才估算` : '尚未開始';
+    default:
+      return null;
+  }
+}
+
+/** `至 12/31` on an active rule that has an end date (`至 2027/3/31` when it ends in another year); null otherwise. */
+export function untilText(rule: { state: RewardRuleState; ends_on: string | null }, today: string): string | null {
+  if (rule.state !== 'active' || rule.ends_on === null) {
+    return null;
+  }
+  return `至 ${rule.ends_on.slice(0, 4) === today.slice(0, 4) ? monthDay(rule.ends_on) : fullDate(rule.ends_on)}`;
+}
+
+/** A usage row's window: `10/26–11/25`. */
+export function windowText(usage: Pick<RewardUsage, 'window_start' | 'window_end'>): string {
+  return `${monthDay(usage.window_start)}–${monthDay(usage.window_end)}`;
 }
 
 /** The writable fields of a loaded rule (drops id, account, moze_id, shared cap and ordering). */

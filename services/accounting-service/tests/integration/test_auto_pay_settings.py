@@ -109,3 +109,17 @@ def test_archiving_the_bank_clears_the_links(client, db_session, seed):
     assert res.status_code == 200
     db_session.expire_all()
     assert db_session.get(Account, card.id).auto_pay_account_id is None and db_session.get(Account, card.id).settings_locally_edited
+
+
+@pytest.mark.parametrize("kind", ["income", "expense", "missing", "null"])
+def test_the_dividend_category_is_checked_at_put(client, seed, db_session, kind):
+    """#267: `settlement.dividend_category_id` must name an existing income category (or be null) when it is saved,
+    instead of surfacing later as a `no_category` booking."""
+    category_id = {"missing": 999999, "null": None}[kind] if kind in ("missing", "null") else seed.category("股利", kind).id
+    db_session.commit()
+    res = client.put("/settings/reconciliation", json=_body(client, settlement={"dividend_category_id": category_id}))
+    if kind in ("income", "null"):
+        assert res.status_code == 200, res.text
+        assert res.json()["settlement"]["dividend_category_id"] == category_id
+    else:
+        assert res.status_code == 422 and "dividend_category_id" in str(res.json()["detail"])

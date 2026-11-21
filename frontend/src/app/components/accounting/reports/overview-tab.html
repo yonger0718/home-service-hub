@@ -43,15 +43,26 @@
     } @else {
       <p class="ov-empty">{{ kind() === 'expense' ? '本期沒有支出' : '本期沒有收入' }}</p>
     }
+    @if (afterToday(); as after) {
+      <button type="button" class="ov-after" (click)="toggleWhole.emit()">{{ after }}</button>
+    }
   </section>
 
   @if (selected(); as row) {
     <section class="ov-card ov-detail" aria-label="類別細項">
       <div class="ov-head ov-head--baseline">
-        <h2>{{ row.label }} · 細項</h2>
+        <h2>{{ row.label }} · {{ merchantMode() ? '常去商家' : '細項' }}</h2>
         <span class="ov-foot">{{ selectedLine()?.amountText }} · {{ row.count }} 筆</span>
       </div>
-      @if (splits().length) {
+      @if (merchantMode()) {
+        @if (merchants(); as list) {
+          <div class="ov-merchants">
+            @for (merchant of list; track $index) {
+              <div class="ov-merchant-line"><span class="ov-merchant"><span class="ov-merchant-name">{{ merchant.label }}</span><small>{{ merchant.count }} 筆</small></span><b class="ov-merchant-amount">{{ merchant.amountText }}</b></div>
+            }
+          </div>
+        }
+      } @else if (splits().length) {
         <div class="ov-splits">
           @for (split of splits(); track split.label) {
             <div class="ov-split">
@@ -65,7 +76,7 @@
       }
       <div class="ov-stats">
         @for (stat of stats(); track stat.label) {
-          <span class="ov-stat"><small>{{ stat.label }}</small>&ngsp;<b [class]="stat.direction ?? ''">{{ stat.value }}</b></span>
+          <span class="ov-stat"><small>{{ stat.label }}</small>&ngsp;<b [class]="stat.muted ? 'muted' : (stat.direction ?? '')">{{ stat.value }}</b></span>
         }
       </div>
       @if (drillParams(); as params) {

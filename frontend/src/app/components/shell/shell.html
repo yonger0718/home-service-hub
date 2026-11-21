@@ -18,8 +18,8 @@
       class="hub-fab"
       appHideOnScroll
       [style.--fab-right]="paneState.fabRight()"
-      [attr.href]="entryFormHref"
-      (click)="openEntryForm($event)"
+      [attr.href]="entryForm.href()"
+      (click)="entryForm.open($event)"
       aria-label="記一筆（快捷鍵 N）"
     >
       <span class="fab-plus" aria-hidden="true">+</span>

@@ -23,6 +23,7 @@ import { amountString, parseAmountText } from '../amount-text';
 import { TransferCommon, TransferEdit, buildTransferInput, transferRateLabel } from '../entry-form/transfer-math';
 import { focusSheetField, isHandledKey, sheetKeyAction, trapFocus, restoreOverlayFocus } from '../accounting-ui';
 import { currencyDecimals, formatMoney } from '../format';
+import { SheetPullDirective } from '../sheet-pull.directive';
 
 export type TransferSide = 'out' | 'in';
 
@@ -36,6 +37,13 @@ interface SideChildren {
 const EMPTY_CHILDREN: SideChildren = { fee: '', discount: '' };
 const CATEGORIES_FAILED = '轉帳類別讀取失敗，請重新整理';
 
+type ChildKind = keyof SideChildren;
+const NO_KINDS: Record<TransferSide, readonly ChildKind[]> = { out: [], in: [] };
+
+function kindsOf(children: LedgerEntry[] | undefined): ChildKind[] {
+  return (['fee', 'discount'] as const).filter(kind => (children ?? []).some(child => child.kind === kind));
+}
+
 function childrenFrom(children: LedgerEntry[] | undefined): SideChildren {
   const sum = (kind: string) =>
     (children ?? []).filter(child => child.kind === kind).reduce((total, child) => total + Math.abs(Number(child.amount)), 0);
@@ -47,7 +55,7 @@ function childrenFrom(children: LedgerEntry[] | undefined): SideChildren {
 @Component({
   selector: 'app-transfer-panel',
   standalone: true,
-  imports: [AmountKeypadComponent, AccountPickerComponent],
+  imports: [AmountKeypadComponent, AccountPickerComponent, SheetPullDirective],
   templateUrl: './transfer-panel.html',
   styleUrls: ['../sheet.scss', './transfer-panel.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -78,6 +86,8 @@ export class TransferPanelComponent implements OnInit {
   readonly outText = signal('');
   readonly inText = signal('');
   readonly children = signal<Record<TransferSide, SideChildren>>({ out: EMPTY_CHILDREN, in: EMPTY_CHILDREN });
+  /** The fee / discount kinds each stored leg had when the edit was loaded (#396); empty for a new transfer. */
+  private loadedKinds: Record<TransferSide, readonly ChildKind[]> = NO_KINDS;
   readonly sheet = signal<TransferSide | null>(null);
   readonly activeSide = signal<TransferSide | null>(null);
   readonly error = signal<string | null>(null);
@@ -303,6 +313,7 @@ export class TransferPanelComponent implements OnInit {
     this.outText.set('');
     this.inText.set('');
     this.children.set({ out: EMPTY_CHILDREN, in: EMPTY_CHILDREN });
+    this.loadedKinds = NO_KINDS;
     this.closeSheet();
     this.activeSide.set(null);
     this.error.set(null);
@@ -334,6 +345,17 @@ export class TransferPanelComponent implements OnInit {
       this.error.set('請輸入轉入金額');
       return null;
     }
+    // A fee / discount text that is not an amount (a typo, a zero) is not "cleared": sent as null it would drop the
+    // stored child, and on an edit this panel would confirm that drop itself (#396).
+    for (const [side, account, sideName] of [['out', from, '轉出'], ['in', to, '轉入']] as const) {
+      for (const [field, fieldName] of [['fee', '手續費'], ['discount', '折扣']] as const) {
+        const text = this.children()[side][field];
+        if (text.trim() && parseAmountText(text, account.currency) === null) {
+          this.error.set(`${sideName}${fieldName}不是有效金額；要移除請清空欄位`);
+          return null;
+        }
+      }
+    }
     this.error.set(null);
     return buildTransferInput(
       {
@@ -357,7 +379,13 @@ export class TransferPanelComponent implements OnInit {
     if (!body) {
       return null;
     }
-    return groupId ? this.service.updateTransfer(groupId, body) : this.service.createTransfer(body);
+    if (!groupId) {
+      return this.service.createTransfer(body);
+    }
+    // #396: confirm the drop only of a fee / discount this panel loaded on that leg and the owner cleared.
+    const sent = { out: { fee: body.out_fee, discount: body.out_discount }, in: { fee: body.in_fee, discount: body.in_discount } };
+    const drops = (['out', 'in'] as const).some(side => this.loadedKinds[side].some(kind => !sent[side][kind]));
+    return this.service.updateTransfer(groupId, body, drops);
   }
 
   private applyEdit(edit: TransferEdit): void {
@@ -373,5 +401,6 @@ export class TransferPanelComponent implements OnInit {
     this.outText.set(String(Math.abs(Number(edit.out.amount))));
     this.inText.set(String(Math.abs(Number(edit.in.amount))));
     this.children.set({ out: childrenFrom(edit.out.children), in: childrenFrom(edit.in.children) });
+    this.loadedKinds = { out: kindsOf(edit.out.children), in: kindsOf(edit.in.children) };
   }
 }

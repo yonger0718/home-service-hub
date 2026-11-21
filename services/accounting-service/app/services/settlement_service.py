@@ -1,18 +1,21 @@
 """Collections, repayments and refunds linked to the entry they settle or refund (design D16, spec).
 
-Only accounts in the target entry's currency may receive them (cross-currency settlement is a later phase).
+A settlement may come from an account in another currency when it states the `original_amount` it settles in the
+target's currency (design D3); refunds still need an account in the original's currency (a later phase).
 """
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..models import Account, LedgerEntry
 from ..schemas.writes import RefundIn, SettleIn
-from . import reward_engine
+from . import debt_events, reward_engine
+from .fx_rate_service import RATE_QUANTUM
 from .entry_write_service import assert_entry_editable, locked_entry
 from .errors import ValidationError
+from .settled_value import settled_value
 
 SETTLE_NAMES = {"receivable": "收款", "payable": "還款"}
 SETTLE_SIGNS = {"receivable": 1, "payable": -1}
@@ -20,10 +23,12 @@ REFUNDABLE_KINDS = ("expense",)
 
 
 def open_amount(db: Session, entry: LedgerEntry) -> Decimal:
-    """|amount + Σ amounts of the entries settling it in its own currency| (another currency never nets)."""
+    """|amount + Σ settled values of the entries settling it| (see `settled_value`: another currency counts its
+    `original_amount` only when it is stated in this entry's currency)."""
+    settlement = aliased(LedgerEntry)
     settled = db.scalar(
-        select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(
-            LedgerEntry.settles_entry_id == entry.id, LedgerEntry.currency == entry.currency
+        select(func.coalesce(func.sum(settled_value(settlement, entry.currency)), 0)).where(
+            settlement.settles_entry_id == entry.id
         )
     )
     return abs(Decimal(entry.amount) + Decimal(settled))
@@ -68,15 +73,45 @@ def settle(
         raise ValidationError("kind", "only receivable and payable entries can be settled")
     if target.is_closed:
         raise ValidationError("is_closed", "已結清: the debt is closed")
-    account = _same_currency_account(db, payload.account_id, target.currency)
+    account = db.get(Account, payload.account_id)
+    if account is None:
+        raise ValidationError("account_id", f"account {payload.account_id} not found")
+    sign = SETTLE_SIGNS[target.kind]
+    fx_fields: dict = {}
+    if account.currency == target.currency:
+        if payload.original_amount is not None:
+            raise ValidationError(
+                "original_amount", f"account {account.name} uses {account.currency} like the entry; omit original_amount"
+            )
+        settled = payload.amount
+    else:
+        if payload.original_amount is None:
+            raise ValidationError(
+                "original_amount",
+                f"account {account.name} uses {account.currency}; the entry is in {target.currency}: "
+                "state original_amount",
+            )
+        with localcontext() as ctx:
+            ctx.prec = 60
+            rate = (payload.amount / payload.original_amount).quantize(RATE_QUANTUM, rounding=ROUND_HALF_UP)
+        if rate == 0 or rate >= Decimal("1E10"):
+            raise ValidationError("original_amount", "the implied exchange rate is out of range")
+        settled = payload.original_amount
+        fx_fields = {
+            "original_amount": payload.original_amount * sign,
+            "original_currency": target.currency,
+            "fx_rate": rate,
+            "fx_source": "manual",
+        }
     remaining = open_amount(db, target)
-    if payload.amount > remaining:
+    if settled > remaining:
         raise ValidationError("amount", f"exceeds the open amount {remaining}")
     entry = LedgerEntry(
         account_id=account.id,
         currency=account.currency,
         kind=target.kind,
-        amount=payload.amount * SETTLE_SIGNS[target.kind],
+        amount=payload.amount * sign,
+        **fx_fields,
         entry_date=payload.entry_date,
         entry_time=payload.entry_time,
         posted_date=payload.entry_date,
@@ -90,6 +125,44 @@ def settle(
     db.add(entry)
     db.flush()
     return entry.id
+
+
+def set_closed(
+    db: Session, entry_id: int, closed: bool, *, actor: str | None = None, by_owner: bool = True
+) -> None:
+    """Close (`closed=True`) or reopen a receivable / payable original (#391). The flag only: amounts, settlements
+    and links stay as they are, so `open_amount` follows from the flag and the settlements as before.
+
+    Until this, only the MOZE import set `is_closed`, and a closed debt could never be settled again. Idempotent.
+    A debt with nothing left cannot be closed (#403); a repeated close of a closed one stays a no-op.
+    A loan a live schedule repays cannot be closed: `schedule_posting` reads a closed loan as repaid and would end
+    the schedule on its next period.
+
+    A call that really changes the flag writes one `debt_state_event` (#401) with the caller's label (`actor`) and the
+    remainder it takes out or brings back; `by_owner=False` (a caller without the owner's scope) leaves a close
+    with a remainder waiting for the owner's confirmation. Nothing is written to the description.
+    """
+    target = locked_entry(db, entry_id)
+    assert_entry_editable(db, target)
+    if target.kind not in SETTLE_SIGNS or target.is_settlement or target.settles_entry_id is not None:
+        raise ValidationError("kind", "only receivable and payable originals can be closed or reopened")
+    if closed and not target.is_closed:
+        # #403: a debt its settlements cleared is out of the open views already. Closed at zero it would stay closed
+        # when a settlement is later deleted, and hide the remainder that comes back.
+        if open_amount(db, target) == 0:
+            raise ValidationError("open_amount", "nothing is left to close: the settlements already cleared this debt")
+        from .schedule_read import loan_schedule_for  # schedule_read imports this module: no module-level import
+
+        schedule = loan_schedule_for(db, target.id)
+        if schedule is not None and schedule["status"] != "ended":
+            raise ValidationError(
+                "loan_schedule", f"排程「{schedule['name']}」還在還款: end the schedule before closing the debt")
+    if target.is_closed != closed:
+        debt_events.record(
+            db, target, debt_events.CLOSE if closed else debt_events.REOPEN, actor, open_amount(db, target),
+            by_owner=by_owner)
+    target.is_closed = closed
+    db.flush()
 
 
 def refund(db: Session, entry_id: int, payload: RefundIn, *, source: str = "manual") -> int:

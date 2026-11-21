@@ -251,3 +251,22 @@ def test_backup_seeded_settings_are_kept_by_a_csv_import(db_session, moze, backu
     _import(db_session, moze.csv(moze.opening("錢包", "TWD", "0")))
     assert db_session.scalar(select(func.count()).select_from(Counterparty)) == 1
     assert db_session.scalar(select(Account.moze_id)) == "A-1"
+
+
+def test_moze_imports_keep_cash_equivalent(db_session, moze, backup):
+    """PR A2: `cash_equivalent` is not a MOZE field; neither import path writes it, locally edited or not."""
+    doc = parse_backup_doc(backup.doc(accounts=[backup.account("A-1", "測試現金點")]))
+    _import_backup(db_session, doc)
+    account = db_session.scalar(select(Account).where(Account.name == "測試現金點"))
+    account.cash_equivalent = True
+    db_session.commit()
+    assert account.settings_locally_edited is False
+
+    def stored():
+        db_session.expire_all()
+        return db_session.scalar(select(Account.cash_equivalent).where(Account.id == account.id))
+
+    _import_backup(db_session, doc)
+    assert stored() is True
+    _import(db_session, moze.csv(moze.opening("測試現金點", "TWD", "0")))
+    assert stored() is True

@@ -185,10 +185,25 @@ function bucket(cards: InboxCards, question: InboxQuestion): InboxCard[] {
   }
 }
 
+/** #392: 「title $amount」(等 N 筆) for the settlement entries the line may be part of; null when there are none
+ *  (or an older API omits the field). */
+function partOfText(item: InboxItem, currency: string): string | null {
+  const partOf = item.part_of ?? [];
+  if (!partOf.length) return null;
+  const first = partOf[0];
+  const more = partOf.length > 1 ? `等 ${partOf.length} 筆` : '';
+  return `「${first.title} ${formatMoney(Math.abs(Number(first.amount)), currency)}」${more}`;
+}
+
 export function questionText(item: InboxItem, currency: string): string {
   switch (item.question) {
-    case 'bank_only':
-      return '銀行有、你沒記';
+    case 'bank_only': {
+      const partOf = partOfText(item, currency);
+      if (partOf === null) return '銀行有、你沒記';
+      // #392: recording the line would book it twice; the owner re-records the entry per transfer instead.
+      const as = Number(item.line?.amount ?? 0) < 0 ? '支出' : '收入';
+      return `可能是${partOf}的一部分 — 先把那筆改成分筆，別直接記為${as}`;
+    }
     case 'transfer':
       return '轉帳／繳費，你沒記 — 在時間軸記一筆轉帳，或對到已記的';
     case 'ledger_only':
@@ -213,8 +228,11 @@ export function questionText(item: InboxItem, currency: string): string {
       return '交割款，等證券連動';
     case 'dividend':
       return dividendText(item.kind);
-    case 'proposed':
-      return `系統有提議：${proposalLabel(item.proposal?.action)}`;
+    case 'proposed': {
+      const text = `系統有提議：${proposalLabel(item.proposal?.action)}`;
+      const partOf = partOfText(item, currency); // the server sends it only for a proposal that records the line
+      return partOf === null ? text : `${text} — 可能是${partOf}的一部分，套用會重複記`;
+    }
   }
 }
 

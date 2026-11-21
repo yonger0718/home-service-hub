@@ -244,6 +244,21 @@ def require(*scopes: str):
     return dependency
 
 
+def holds_admin(request: Request) -> bool:
+    """Whether the caller would pass `require("admin")`: the owner's scope (`admin` or `legacy`), or scopes not
+    configured. A debt close by such a caller needs no confirmation (#401)."""
+    held = _label_scopes(request)
+    return held is None or "legacy" in held or "admin" in held
+
+
+def require_admin_to_confirm(request: Request, confirmed: bool) -> None:
+    """A confirming query parameter (`?drop_children=true` #396, `?cascade=true` #390) is the owner's to give: a
+    request that sets one needs `admin` (or `legacy`, or unconfigured scopes), else 403 before anything runs. A
+    caller holding only `write` gets the route's own 409 and cannot turn it into a yes by repeating the request."""
+    if confirmed:
+        require("admin")(request)
+
+
 def method_scope(read: str = "read", write: str = "write"):
     def dependency(request: Request) -> None:
         needed = read if request.method in PUBLIC_METHODS else write

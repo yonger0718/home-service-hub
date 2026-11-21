@@ -31,7 +31,7 @@
   @include rc.pill-radios;
 }
 
-/* The viewBox sets the aspect ratio (960 × 260 desktop, 358 × 200 phone); the card's width sets the size. */
+/* The viewBox sets the aspect ratio (960 × 274 desktop, 358 × 212 phone); the card's width sets the size. */
 .tr-chart {
   display: block;
   height: auto;
@@ -39,6 +39,7 @@
 
   &.compact {
     .tr-label { font-size: 10px; }
+    .tr-year { font-size: 9px; }
     .tr-average-label { font-size: 11px; }
   }
 }
@@ -50,7 +51,60 @@
   fill: var(--app-border);
 
   &.last { fill: var(--app-primary); }
+  /* The month still running without a forecast: the bar colour, lighter, with stripe <line>s over it (.tr-hatch). No
+     fragment-URL paint: WebKit resolves it against <base href> and falls back to solid. */
+  &.hatched { fill-opacity: 0.55; }
 }
+
+/* The running month's 預估: a dashed box from the solid bar's top up to the forecast (stroke only, no url() paint). */
+.tr-forecast {
+  fill: none;
+  pointer-events: none;
+  stroke: var(--app-primary);
+  stroke-dasharray: 4 3;
+  stroke-width: 1.5;
+}
+
+/* The chart and its tap tip: the tip is placed in % of the drawing, which scales with the card. */
+.tr-plot { position: relative; }
+
+/* One transparent tap target per month column; the picked column is tinted. */
+.tr-hit {
+  cursor: pointer;
+  fill: transparent;
+
+  &.picked { fill: var(--app-text); fill-opacity: 0.06; }
+  &:focus-visible { outline: none; stroke: var(--app-primary); stroke-width: 2; }
+}
+
+.tr-tip {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 14%);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--fs-sm);
+  gap: 2px;
+  /* tipHeight() in report-math mirrors these: 18px lines, 2px gaps, 6px vertical padding, 1px border. */
+  line-height: 18px;
+  padding: 6px 10px;
+  pointer-events: none;
+  position: absolute;
+  transform: translate(var(--tip-x, -50%), var(--tip-y, calc(-100% - 6px)));
+  white-space: nowrap;
+  z-index: 1;
+
+  &.start { --tip-x: -12px; }
+  &.end { --tip-x: calc(-100% + 12px); }
+  /* Too close to the top of the chart for the lines: hang below the anchor so the card does not clip it. */
+  &.below { --tip-y: 6px; }
+}
+
+.tr-tip-title { color: var(--app-text); font-weight: 700; }
+.tr-tip-key { color: var(--app-text-muted); }
+
+.tr-hatch line { stroke: var(--app-surface); stroke-width: 2; pointer-events: none; }
 
 .tr-label {
   fill: var(--app-text-muted);
@@ -60,6 +114,11 @@
     fill: var(--app-text);
     font-weight: 800;
   }
+}
+
+.tr-year {
+  font-size: 10px;
+  font-weight: 400;
 }
 
 .tr-average {
@@ -113,6 +172,9 @@
 
   @include rc.change-colours;
 
+  /* 新增, — 停止 and the 無資料 texts are not spend colours. */
+  .tr-quiet { color: var(--app-text-muted); }
+
   /* Phones (ReportsPhone): two lines per category — name and figure, then `比 9 月 ▲ … · 比去年 ▼ …`; the base
      columns and the header row go. */
   @media (max-width: 759.98px) {
@@ -161,4 +223,22 @@
 .tr-note {
   color: var(--app-text-muted);
   font-size: var(--fs-label);
+}
+
+.tr-after {
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm);
+  padding: 4px 0;
+  text-align: left;
+  text-decoration: underline;
+
+  &:focus-visible {
+    box-shadow: 0 0 0 3px var(--app-focus-ring);
+    outline: none;
+  }
 }

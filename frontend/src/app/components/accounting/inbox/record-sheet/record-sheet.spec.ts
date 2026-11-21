@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CategoryNode, Project } from '../../../../models/accounting.model';
 import { makeCategory } from '../../testing/fixtures';
+import { pullGrab } from '../../sheet-pull.testing';
 import { InboxCard } from '../inbox-view';
 import { InboxItem } from '../inbox.model';
 import { button, categoryTile, makeCard, makeItem, text } from '../testing';
@@ -232,5 +233,13 @@ describe('AppInboxRecordSheetComponent', () => {
     expect(single.confirmed).toHaveBeenCalledWith(
       expect.objectContaining({ category_id: 2, learn: { amount_exact: false } }),
     );
+  });
+
+  it('a pull on the grab bar closes the sheet', () => {
+    const { fixture, el, confirmed, closed } = render(makeCard([makeItem()]));
+    pullGrab(el.querySelector<HTMLElement>('.sheet .grab')!);
+    fixture.detectChanges();
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(confirmed).not.toHaveBeenCalled();
   });
 });

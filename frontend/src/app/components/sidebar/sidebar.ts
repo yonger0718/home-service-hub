@@ -3,6 +3,7 @@ import { RouterLink } from '@angular/router';
 
 import { LayoutModeService } from '../../services/layout-mode.service';
 import { LogoLockupComponent } from './logo-lockup';
+import { EntryFormLauncher } from '../shell/entry-form-launcher';
 import { NavigationStateService } from '../shell/navigation-state.service';
 import { GroupBadgeSummary, NavBadge, NavGroup, NavItem, summarizeGroupBadges } from '../shell/navigation';
 
@@ -25,6 +26,7 @@ const RAIL_WIDTH = '72px';
 export class SidebarComponent {
   protected readonly nav = inject(NavigationStateService);
   protected readonly layout = inject(LayoutModeService);
+  protected readonly entryForm = inject(EntryFormLauncher);
   protected readonly expandedWidth = EXPANDED_WIDTH;
   protected readonly railWidth = RAIL_WIDTH;
 
@@ -55,7 +57,7 @@ export class SidebarComponent {
     if (this.expanded() || !(event.target instanceof Element)) {
       return;
     }
-    const item = event.target.closest<HTMLElement>('a.side-item');
+    const item = event.target.closest<HTMLElement>('a.side-item, a.sidebar-new-entry');
     if (item) {
       const rect = item.getBoundingClientRect();
       item.style.setProperty('--tip-y', `${rect.top + rect.height / 2}px`);

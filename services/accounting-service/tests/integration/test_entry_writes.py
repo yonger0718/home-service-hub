@@ -17,6 +17,7 @@ from app.services import entry_write_service as ews
 from app.services.edit_lock import EditLockedError, assert_editable
 from app.services.errors import ConflictError, NotFoundError, ValidationError
 from tests.helpers import make_entry, race
+from tests.integration.statement_fixtures import _card, _line, _submit, run  # noqa: F401
 
 DAY = date(2026, 9, 1)
 
@@ -254,7 +255,7 @@ def test_update_replaces_fields_and_children(client, db_session, seed):
     wallet_id, card_id = wallet.id, card.id
 
     response = client.put(
-        f"/entries/{entry_id}",
+        f"/entries/{entry_id}?drop_children=true",  # #396: the stored discount is dropped on purpose
         json=_payload(card, amount="250", entry_date="2026-09-03", name="晚餐", fee={"amount": "7", "name": "運費"}),
     )
 
@@ -318,7 +319,7 @@ def test_update_refuses_unlinked_settlement(client, db_session, seed):
     wallet, alan, loan, collection = _loan_with_collection(seed)
     db_session.commit()
     loan_id, collection_id = loan.id, collection.id
-    assert client.delete(f"/entries/{loan_id}").status_code == 204
+    assert client.delete(f"/entries/{loan_id}").status_code == 200
     db_session.expire_all()
     assert db_session.get(LedgerEntry, collection_id).settles_entry_id is None
 
@@ -469,11 +470,160 @@ def test_delete_removes_children_and_the_other_transfer_leg(client, db_session, 
     db_session.commit()
     a_id, b_id, in_id = a.id, b.id, in_leg.id
 
-    assert client.delete(f"/entries/{in_id}").status_code == 204
+    assert client.delete(f"/entries/{in_id}").status_code == 200
 
     db_session.expire_all()
     assert db_session.scalars(select(LedgerEntry)).all() == []
     assert (_balance(db_session, a_id), _balance(db_session, b_id)) == (Decimal("500"), Decimal("0"))
+
+
+def _deleted(response) -> list[tuple]:
+    return [(row["id"], row["role"], row["parent_entry_id"]) for row in response.json()["deleted"]]
+
+
+def test_delete_reports_the_entry_alone(client, db_session, seed):
+    # #390: the answer lists every row the delete removed
+    wallet = seed.account("錢包")
+    entry = seed.entry(wallet, "-100", name="午餐")
+    db_session.commit()
+    entry_id, wallet_id = entry.id, wallet.id
+
+    response = client.delete(f"/entries/{entry_id}")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"deleted": [{
+        "id": entry_id, "role": "entry", "parent_entry_id": None, "kind": "expense", "name": "午餐",
+        "amount": "-100.0000", "currency": "TWD", "account_id": wallet_id, "account_name": "錢包",
+        "entry_date": "2026-09-01",
+    }]}
+
+
+def test_delete_reports_children_on_the_same_account(client, db_session, seed):
+    wallet = seed.account()
+    entry = seed.entry(wallet, "-100")
+    fee = seed.entry(wallet, "-15", kind="fee", parent_entry_id=entry.id)
+    discount = seed.entry(wallet, "5", kind="discount", parent_entry_id=entry.id)
+    db_session.commit()
+    entry_id, fee_id, discount_id = entry.id, fee.id, discount.id
+
+    response = client.delete(f"/entries/{entry_id}")  # no ?cascade: its own fee and discount go as before
+
+    assert response.status_code == 200, response.text
+    assert _deleted(response) == [(entry_id, "entry", None), (fee_id, "child", entry_id), (discount_id, "child", entry_id)]
+    db_session.expire_all()
+    assert db_session.scalars(select(LedgerEntry)).all() == []
+
+
+def test_delete_reports_the_other_leg_and_its_child(client, db_session, seed):
+    a, b = seed.account("A", opening="500"), seed.account("B")
+    group = uuid.uuid4()
+    out_leg = seed.entry(a, "-100", kind="transfer_out", transfer_group_id=group)
+    fee = seed.entry(a, "-15", kind="fee", parent_entry_id=out_leg.id)
+    in_leg = seed.entry(b, "100", kind="transfer_in", transfer_group_id=group)
+    db_session.commit()
+    out_id, fee_id, in_id = out_leg.id, fee.id, in_leg.id
+
+    response = client.delete(f"/entries/{in_id}")
+
+    assert response.status_code == 200, response.text
+    assert _deleted(response) == [(in_id, "entry", None), (out_id, "transfer_leg", None), (fee_id, "child", out_id)]
+
+
+def test_delete_of_a_child_itself_reports_it_as_the_entry(client, db_session, seed):
+    # final review: the row named in the URL is `entry` whatever its parent; a fee deleted on its own, also one on
+    # another account than its parent (the repair of the #390 shape), needs no cascade and leaves the parent
+    bank, card = seed.account("銀行"), seed.account("卡", is_credit=True)
+    receipt = seed.entry(bank, "600", kind="income")
+    own = seed.entry(bank, "-5", kind="fee", parent_entry_id=receipt.id)
+    stray = seed.entry(card, "-9", kind="fee", parent_entry_id=receipt.id)
+    db_session.commit()
+    receipt_id, own_id, stray_id = receipt.id, own.id, stray.id
+
+    first = client.delete(f"/entries/{own_id}")
+    second = client.delete(f"/entries/{stray_id}")
+
+    assert (first.status_code, second.status_code) == (200, 200), (first.text, second.text)
+    assert _deleted(first) == [(own_id, "entry", receipt_id)]
+    assert _deleted(second) == [(stray_id, "entry", receipt_id)]
+    db_session.expire_all()
+    assert [row.id for row in db_session.scalars(select(LedgerEntry))] == [receipt_id]
+
+
+def test_delete_refuses_a_child_on_another_account_until_confirmed(client, db_session, seed):
+    # #390: a fee on another account than its parent (a MOZE import shape) is not the parent's own fee
+    bank, card = seed.account("銀行"), seed.account("卡", is_credit=True)
+    receipt = seed.entry(bank, "600", kind="income")
+    fee = seed.entry(card, "-9", kind="fee", parent_entry_id=receipt.id)
+    db_session.commit()
+    receipt_id, fee_id, card_id = receipt.id, fee.id, card.id
+
+    refused = client.delete(f"/entries/{receipt_id}")
+
+    assert refused.status_code == 409, refused.text
+    message = refused.json()["message"]
+    assert message.startswith("cascade_unconfirmed: ") and f"entry {fee_id} (fee, account {card_id})" in message
+    assert "the owner confirms this delete in the app" in message and "=true" not in message  # #396: no how-to
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, receipt_id) is not None and db_session.get(LedgerEntry, fee_id) is not None
+
+    confirmed = client.delete(f"/entries/{receipt_id}", params={"cascade": "true"})
+
+    assert confirmed.status_code == 200, confirmed.text
+    assert _deleted(confirmed) == [(receipt_id, "entry", None), (fee_id, "child", receipt_id)]
+    assert confirmed.json()["deleted"][1]["account_name"] == "卡"
+    db_session.expire_all()
+    assert db_session.scalars(select(LedgerEntry)).all() == []
+
+
+def test_delete_refuses_a_foreign_child_of_the_other_leg(client, db_session, seed):
+    a, b, c = seed.account("A", opening="500"), seed.account("B"), seed.account("C")
+    group = uuid.uuid4()
+    out_leg = seed.entry(a, "-100", kind="transfer_out", transfer_group_id=group)
+    fee = seed.entry(c, "-15", kind="fee", parent_entry_id=out_leg.id)
+    in_leg = seed.entry(b, "100", kind="transfer_in", transfer_group_id=group)
+    db_session.commit()
+    ids, c_id = [out_leg.id, fee.id, in_leg.id], c.id
+
+    refused = client.delete(f"/entries/{in_leg.id}")
+
+    assert refused.status_code == 409, refused.text
+    message = refused.json()["message"]
+    assert message.startswith("cascade_unconfirmed: ") and f"entry {ids[1]} (fee, account {c_id})" in message
+    db_session.expire_all()
+    assert all(db_session.get(LedgerEntry, entry_id) is not None for entry_id in ids)
+
+
+def test_delete_takes_a_covered_child_without_cascade(client, db_session, seed, run, matcher_off):
+    # #390: a card purchase and its fee on one statement is the normal shape; coverage alone never holds the delete
+    from app.models import StatementCoverage
+
+    card = _card(seed, db_session)
+    purchase = seed.entry(card, "-100")
+    fee = seed.entry(card, "-15", kind="fee", parent_entry_id=purchase.id)
+    db_session.commit()
+    purchase_id, fee_id = purchase.id, fee.id
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "國外手續費", 15, "fee")])
+    db_session.add(StatementCoverage(statement_id=stmt.id, line_id=line.id, event_id=line.event_id, entry_id=fee_id,
+                                     role="principal", match_rule="owner", match_kind="manual", status="active",
+                                     snapshot={"flow": "-15.0000"}))
+    db_session.commit()
+
+    response = client.delete(f"/entries/{purchase_id}")
+
+    assert response.status_code == 200, response.text
+    assert _deleted(response) == [(purchase_id, "entry", None), (fee_id, "child", purchase_id)]
+
+
+def test_delete_of_a_reward_row_keeps_its_refusal_beside_a_foreign_child(client, db_session, seed):
+    wallet, other = seed.account("A"), seed.account("B")
+    reward = seed.entry(wallet, "30", kind="reward")
+    seed.entry(other, "-1", kind="fee", parent_entry_id=reward.id)
+    db_session.commit()
+
+    response = client.delete(f"/entries/{reward.id}")
+
+    assert response.status_code == 409
+    assert "reward" in response.json()["message"] and "cascade_unconfirmed" not in response.json()["message"]
 
 
 def test_reward_entries_cannot_be_deleted(client, db_session, seed):
@@ -537,7 +687,7 @@ def test_imported_entry_locked_until_cutover(client, db_session, seed, monkeypat
     assert edited.status_code == 200 and edited.json()["amount"] == "-80.0000"
     db_session.expire_all()
     assert db_session.get(LedgerEntry, entry_id).source == "manual"
-    assert client.delete(f"/entries/{entry_id}").status_code == 204
+    assert client.delete(f"/entries/{entry_id}").status_code == 200
 
 
 def test_assert_editable_checks_groups_through_their_members(db_session, seed, monkeypatch):

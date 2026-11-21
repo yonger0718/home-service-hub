@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, TestRequest, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Provider, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { Location } from '@angular/common';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -12,7 +15,11 @@ import { AccountingLayoutComponent } from '../accounting-layout/accounting-layou
 import { currentMonth } from '../dates';
 import { AccountingOverviewService } from '../month-overview/overview.service';
 import { makeInbox } from '../inbox/testing';
-import { makeAccount, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
+import { EMPTY_CALENDAR_DATA, CalendarDataService, CalendarMonthData } from '../calendar-month/calendar-data.service';
+import { makeAccount, makeCategory, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
+import { FALLBACK_COLOR } from './category-distribution';
+import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
+import { EinvoiceTarget, InboxEinvoice } from '../inbox/einvoice.model';
 import { LedgerTimelineComponent, buildDays, schedulePills } from './timeline';
 
 const VIEW_KEY = 'hh.accounting.timelineView';
@@ -21,10 +28,16 @@ const ACCOUNTS = [makeAccount({ id: 1, name: '玉山 UNI' }), makeAccount({ id: 
 
 describe('LedgerTimelineComponent', () => {
   let httpMock: HttpTestingController | null = null;
+  // The calendar's breakdown/inbox reads are CalendarDataService's own concern; the timeline tests drive its `data`.
+  /** What `render` answers the 今天 read with. */
+  let todayItems: LedgerEntry[] = [];
+  let fakeCalendarData = { month: signal<string | null>(null), wide: signal(false), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
 
   beforeEach(() => {
+    todayItems = [];
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 2, 12, 0, 0));
+    fakeCalendarData = { month: signal<string | null>(null), wide: signal(false), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
   });
 
   afterEach(() => {
@@ -33,6 +46,14 @@ describe('LedgerTimelineComponent', () => {
     for (const request of httpMock?.match(r => r.url === '/api/accounting/calendar/business-days') ?? []) {
       request.flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
     }
+    // 日曆 reads the category colours once; tests that do not care leave them.
+    for (const request of httpMock?.match(r => r.url === '/api/accounting/categories') ?? []) {
+      request.flush([]);
+    }
+    for (const request of httpMock?.match(r => r.url === '/api/accounting/projects') ?? []) {
+      request.flush([]);
+    }
+    flushTodayRead();
     httpMock?.verify();
     httpMock = null;
     vi.useRealTimers();
@@ -50,7 +71,13 @@ describe('LedgerTimelineComponent', () => {
   ) {
     TestBed.configureTestingModule({
       imports: [LedgerTimelineComponent],
-      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([]), ...providers],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: CalendarDataService, useValue: fakeCalendarData },
+        ...providers,
+      ],
     });
     httpMock = TestBed.inject(HttpTestingController);
     TestBed.inject(LayoutModeService).set(mode);
@@ -60,7 +87,22 @@ describe('LedgerTimelineComponent', () => {
     httpMock.expectOne('/api/accounting/accounts').flush(accounts);
     flushCounterparties(counterparties, queue, inboxAsk, einvoiceAsk);
     fixture.detectChanges();
+    flushTodayRead(todayItems);
     return { fixture, el: fixture.nativeElement as HTMLElement };
+  }
+
+  /** The 今天 card's read (every 日曆 of the current month — panes, sheet and phone): up to three of one day's entries. */
+  function isTodayRead(r: { url: string; params: { get(name: string): string | null } }): boolean {
+    return r.url === '/api/accounting/entries' && r.params.get('limit') === '3' && r.params.get('date_from') === r.params.get('date_to');
+  }
+
+  /** Answer the pending 今天 reads (any number) with these entries; tests that do not care leave them empty. */
+  function flushTodayRead(items: LedgerEntry[] = []): number {
+    const requests = httpMock?.match(isTodayRead) ?? [];
+    for (const request of requests) {
+      request.flush({ items, total: items.length, limit: 3, offset: 0 });
+    }
+    return requests.length;
   }
 
   /**
@@ -84,7 +126,7 @@ describe('LedgerTimelineComponent', () => {
   }
 
   function flushEntries(items: LedgerEntry[], total = items.length): TestRequest {
-    const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+    const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
     req.flush({ items, total, limit: 50, offset: Number(req.request.params.get('offset')) });
     return req;
   }
@@ -97,7 +139,7 @@ describe('LedgerTimelineComponent', () => {
   }
 
   function expectNoEntryPage(): void {
-    httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+    httpMock!.expectNone(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
   }
 
   function viewButton(el: HTMLElement, label: string): HTMLButtonElement {
@@ -343,7 +385,7 @@ describe('LedgerTimelineComponent', () => {
     expect(rows.map(row => row.getAttribute('aria-current'))).toEqual([null, 'true']);
     rows[0].click();
 
-    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 1]);
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 1], {});
   });
 
   it('opens the 多類別 group view from a split row (the list noted as its origin); installment and reward rows open the detail', () => {
@@ -375,9 +417,9 @@ describe('LedgerTimelineComponent', () => {
       expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 40, 'group'], {});
     }
     rows[1].click();
-    expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 50]);
+    expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 50], {});
     rows[2].click();
-    expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 60]);
+    expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 60], {});
   });
 
   it('marks the first row once its entry is opened, and moves the mark with the routed entry', () => {
@@ -579,7 +621,7 @@ describe('LedgerTimelineComponent', () => {
     (el.querySelector('.month-next') as HTMLButtonElement).click();
     fixture.detectChanges();
     flushSummary('2026-11');
-    httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+    httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
 
     expect(el.querySelectorAll('.entry-row').length).toBe(0);
@@ -633,10 +675,10 @@ describe('LedgerTimelineComponent', () => {
 
     fixture.componentInstance.setKind('income');
     fixture.detectChanges();
-    const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+    const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
     fixture.componentInstance.setKind('expense');
     fixture.detectChanges();
-    const current = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+    const current = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
     expect(current.request.params.get('kind')).toBe('expense');
 
     stale.flush({ items: [], total: 0, limit: 50, offset: 0 });
@@ -656,7 +698,7 @@ describe('LedgerTimelineComponent', () => {
     fixture.componentInstance.setKind('expense'); fixture.detectChanges();
     flushEntries([makeEntry({ id: 1 })], 100); fixture.detectChanges();
     fixture.componentInstance.loadMore();
-    httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+    httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
     expect(text(el.querySelector('.match-count'))).toBe('符合條件 — 筆');
     expect(el.querySelector('.entry-row')).toBeNull();
@@ -692,7 +734,7 @@ describe('LedgerTimelineComponent', () => {
 
       fixture.componentInstance.setQuery('午餐');
       fixture.detectChanges();
-      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush('boom', { status: 500, statusText: 'Server Error' });
       fixture.detectChanges();
       expect(text(el.querySelector('.match-count'))).toBe('符合條件 — 筆');
     });
@@ -1107,7 +1149,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10', OCT);
       fixture.detectChanges();
       expect(el.querySelector('.daily-error')).toBeNull();
-      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .exp'))).toBe('1,234');
+      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .net'))).toBe('−734');
     });
 
     it('shows busy daily placeholders and drops previous month figures while ignoring late summary responses', () => {
@@ -1119,7 +1161,8 @@ describe('LedgerTimelineComponent', () => {
       fixture.componentInstance.moveMonth(1); fixture.detectChanges();
       const oldSummary = httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary');
       const oldDaily = httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary/daily');
-      expect(el.querySelector('.exp')).toBeNull();
+      // the net is hidden on future days, so previous-month figures are checked through the accessible names
+      expect(Array.from(el.querySelectorAll('button.cell')).some(c => c.getAttribute('aria-label')!.includes('支出'))).toBe(false);
       expect(el.querySelectorAll('.daily-placeholder').length).toBeGreaterThan(0);
       fixture.componentInstance.moveMonth(1); fixture.detectChanges();
       flushSummary('2026-12', { expense: '-900' });
@@ -1128,7 +1171,7 @@ describe('LedgerTimelineComponent', () => {
       oldDaily.flush('boom', { status: 500, statusText: 'Server Error' });
       fixture.detectChanges();
       expect(text(el.querySelector('.sum-expense'))).toBe('−$900');
-      expect(text(el.querySelector('button.cell[data-date="2026-12-02"] .exp'))).toBe('900');
+      expect(el.querySelector('button.cell[data-date="2026-12-02"]')!.getAttribute('aria-label')).toContain('支出 $900');
       expect(el.querySelector('.daily-error')).toBeNull();
       expect(el.querySelector('.sum-error')).toBeNull();
       expect(el.querySelector('.daily-placeholder')).toBeNull();
@@ -1139,7 +1182,7 @@ describe('LedgerTimelineComponent', () => {
       TestBed.inject(AccountingService).deleteEntry(99).subscribe();
       httpMock!.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/99').flush(null);
       fixture.detectChanges(); flushCounterparties();
-      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .exp'))).toBe('1,234');
+      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .net'))).toBe('−734');
       expect(text(el.querySelector('.daily-updating'))).toBe('更新中');
       expect(el.querySelector('app-calendar-month')!.getAttribute('aria-busy')).toBe('true');
       expect(el.querySelector('.daily-placeholder')).toBeNull();
@@ -1150,35 +1193,35 @@ describe('LedgerTimelineComponent', () => {
 
     it('shows the day skeleton, then 這天沒有記錄 or 這天沒有符合條件的記錄', () => {
       const { fixture, el } = renderCalendar();
-      (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();
+      (el.querySelector('button.cell[data-date="2026-10-01"]') as HTMLButtonElement).click();
       fixture.detectChanges();
-      expect(el.querySelector('.day-entries app-skeleton')).not.toBeNull();
+      expect(el.querySelector('app-calendar-day-panel app-skeleton')).not.toBeNull();
       flushEntries([]);
       fixture.detectChanges();
-      expect(text(el.querySelector('.day-entries .empty'))).toBe('這天沒有記錄');
+      expect(text(el.querySelector('app-calendar-day-panel .dp-empty'))).toBe('這天沒有記錄');
 
       fixture.componentInstance.setKind('expense');
       fixture.detectChanges();
       flushEntries([]);
       fixture.detectChanges();
-      expect(text(el.querySelector('.day-entries .empty'))).toBe('這天沒有符合條件的記錄');
+      expect(text(el.querySelector('app-calendar-day-panel .dp-empty'))).toBe('這天沒有符合條件的記錄');
     });
 
     it('shows 記錄讀取失敗 with 重試 for a failed day and reloads that day', () => {
       const { fixture, el } = renderCalendar();
       (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();
       fixture.detectChanges();
-      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush('boom', { status: 500, statusText: 'Server Error' });
       fixture.detectChanges();
-      expect(text(el.querySelector('.day-entries .load-error'))).toBe('記錄讀取失敗');
-      expect(el.querySelector('.day-entries .empty')).toBeNull();
+      expect(text(el.querySelector('app-calendar-day-panel .dp-error'))).toBe('記錄讀取失敗');
+      expect(el.querySelector('app-calendar-day-panel .dp-empty')).toBeNull();
 
-      (el.querySelector('.day-retry') as HTMLButtonElement).click();
+      (el.querySelector('app-calendar-day-panel .dp-retry') as HTMLButtonElement).click();
       fixture.detectChanges();
       const req = flushEntries([makeEntry({ id: 9, entry_date: '2026-10-05' })]);
       fixture.detectChanges();
       expect(req.request.params.get('date_from')).toBe('2026-10-05');
-      expect(el.querySelectorAll('.day-entries .entry-row').length).toBe(1);
+      expect(el.querySelectorAll('app-calendar-day-panel .dp-row').length).toBe(1);
     });
 
     const OCT: Partial<DailySummary> = {
@@ -1197,6 +1240,70 @@ describe('LedgerTimelineComponent', () => {
       rendered.fixture.detectChanges();
       return rendered;
     }
+
+    describe('calendar data', () => {
+      it('tells CalendarDataService the month in 日曆 and null in 清單 or on destroy', () => {
+        const { fixture, el } = renderCalendar();
+        expect(fakeCalendarData.month()).toBe('2026-10');
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        flushEntries([]);
+        expect(fakeCalendarData.month()).toBeNull();
+        viewButton(el, '日曆').click();
+        fixture.detectChanges();
+        flushDaily('2026-10');
+        expect(fakeCalendarData.month()).toBe('2026-10');
+        fixture.destroy();
+        expect(fakeCalendarData.month()).toBeNull();
+      });
+
+      it('colours the dots from the category list and falls back for an unknown key', () => {
+        const { fixture, el } = renderCalendar();
+        const kinds = httpMock!.match(r => r.url === '/api/accounting/categories');
+        expect(kinds.length).toBe(2);
+        for (const req of kinds) {
+          req.flush(req.request.params.get('kind') === 'expense' ? [makeCategory({ id: 3, color: '#abc' })] : []);
+        }
+        httpMock!.expectOne('/api/accounting/projects').flush([]);
+        fakeCalendarData.data.set({
+          ...EMPTY_CALENDAR_DATA,
+          dots: new Map([['2026-10-02', [{ key: '3' }, { key: '99' }] as never]]),
+          dotsState: 'ready',
+        });
+        fixture.detectChanges();
+        const dots = [...el.querySelectorAll<HTMLElement>('button.cell[data-date="2026-10-02"] .dot')];
+        expect(dots.length).toBe(2);
+        expect(dots[0].style.background).toBe('rgb(170, 187, 204)');
+        expect(dots[1].style.background).toBe(FALLBACK_COLOR);
+      });
+
+      it('passes invoice days to the grid', () => {
+        const { fixture, el } = renderCalendar();
+        fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, invoiceDays: new Map([['2026-10-22', 1]]), invoiceState: 'ready' });
+        fixture.detectChanges();
+        expect(el.querySelector('button.cell[data-date="2026-10-22"] .inv-dot')).not.toBeNull();
+        expect(el.querySelector('button.cell[data-date="2026-10-23"] .inv-dot')).toBeNull();
+      });
+
+      it('shows 發票待對帳 in the two-pane layout', () => {
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const { fixture, el } = render('panes');
+        flushSummary('2026-10');
+        flushDaily('2026-10');
+        fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, invoiceDays: new Map([['2026-10-22', 1]]), invoiceState: 'ready' });
+        fixture.detectChanges();
+        expect(el.querySelector('button.cell[data-date="2026-10-22"] .inv-mark')).not.toBeNull();
+      });
+
+      it('renders the grid without dots when the breakdown failed', () => {
+        const { fixture, el } = renderCalendar();
+        fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, dotsState: 'error' });
+        fixture.detectChanges();
+        expect(el.querySelectorAll('button.cell').length).toBe(31);
+        expect(el.querySelector('.dot')).toBeNull();
+        expect(el.querySelector('.load-error')).toBeNull();
+      });
+    });
 
     it('switches to 日曆 from the radio toggle and remembers it', () => {
       const { fixture, el } = render();
@@ -1224,8 +1331,8 @@ describe('LedgerTimelineComponent', () => {
     it('restores 日曆 on init and loads the daily summary instead of an entry page', () => {
       const { el } = renderCalendar();
       expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
-      expect(el.querySelectorAll('app-calendar-month button.cell').length).toBe(42);
-      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .exp'))).toBe('1,234');
+      expect(el.querySelectorAll('app-calendar-month button.cell').length).toBe(31);
+      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .net'))).toBe('−734');
       expect(el.querySelector('.sentinel')).toBeNull();
       expect(el.querySelector('button.more')).toBeNull();
     });
@@ -1280,7 +1387,7 @@ describe('LedgerTimelineComponent', () => {
 
       (el.querySelector('button.cell[data-date="2026-10-02"]') as HTMLButtonElement).click();
       fixture.detectChanges();
-      const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+      const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
       expect(req.request.params.get('date_from')).toBe('2026-10-02');
       expect(req.request.params.get('date_to')).toBe('2026-10-02');
       expect(req.request.params.get('limit')).toBe('500');
@@ -1298,20 +1405,18 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
 
       expect(el.querySelector('button.cell[data-date="2026-10-02"]')!.getAttribute('aria-pressed')).toBe('true');
-      const net = el.querySelector('.day-net b')!;
-      expect(text(net)).toBe('−$734');
-      expect(el.querySelector('.day-net .net-hint')).toBeNull();
-      expect(net.classList).toContain('neg');
-      const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.day-entries .entry-row'));
+      expect(text(el.querySelector('app-calendar-day-panel .dp-sub'))).toBe('2 筆 · −$734');
+      expect(el.querySelector('app-calendar-day-panel .net-hint')).toBeNull();
+      const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('app-calendar-day-panel .dp-row'));
       expect(rows.map(row => row.getAttribute('data-entry-id'))).toEqual(['11', '12']);
       expect(text(rows[0].querySelector('.amt'))).toBe('−$1,234');
       expect(rows[0].querySelector('.amt')!.classList).toContain('neg');
       rows[1].click();
-      expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 12]);
+      expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 12], { queryParams: {} });
 
       (el.querySelector('button.cell[data-date="2026-10-02"]') as HTMLButtonElement).click();
       fixture.detectChanges();
-      expect(el.querySelector('.day-entries')).toBeNull();
+      expect(el.querySelector('app-calendar-day-panel')).toBeNull();
       expect(el.querySelector('button.cell[data-date="2026-10-02"]')!.getAttribute('aria-pressed')).toBe('false');
     });
 
@@ -1341,7 +1446,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-11');
       expectNoEntryPage();
       fixture.detectChanges();
-      expect(el.querySelector('.day-entries')).toBeNull();
+      expect(el.querySelector('app-calendar-day-panel')).toBeNull();
       expect(el.querySelector('button.cell.sel')).toBeNull();
     });
 
@@ -1404,25 +1509,24 @@ describe('LedgerTimelineComponent', () => {
 
       expect(req.request.params.get('kind')).toBe('expense');
       // The summary says −1,234 / +500 for the day; the filtered TWD rows sum to −280.
-      expect(text(el.querySelector('.day-net b'))).toBe('−$280');
-      expect(el.querySelector('.day-net b')!.classList).toContain('neg');
-      expect(text(el.querySelector('.day-net .net-hint'))).toBe('僅計主幣種');
+      expect(text(el.querySelector('app-calendar-day-panel .dp-sub'))).toContain('−$280');
+      expect(text(el.querySelector('app-calendar-day-panel .net-hint'))).toBe('僅計主幣種');
     });
 
     it('drops a late response for a previously tapped day', () => {
       const { fixture, el } = renderCalendar();
       (el.querySelector('button.cell[data-date="2026-10-02"]') as HTMLButtonElement).click();
       fixture.detectChanges();
-      const first = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
-      (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();
+      const first = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
+      (el.querySelector('button.cell[data-date="2026-10-03"]') as HTMLButtonElement).click();
       fixture.detectChanges();
-      const second = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
-      expect(second.request.params.get('date_from')).toBe('2026-10-05');
+      const second = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
+      expect(second.request.params.get('date_from')).toBe('2026-10-03');
 
-      second.flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-05', name: '薪水' })], total: 1, limit: 500, offset: 0 });
+      second.flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-03', name: '薪水' })], total: 1, limit: 500, offset: 0 });
       first.flush({ items: [makeEntry({ id: 2, entry_date: '2026-10-02', name: '午餐' })], total: 1, limit: 500, offset: 0 });
       fixture.detectChanges();
-      expect(Array.from(el.querySelectorAll('.day-entries .entry-row .name')).map(text)).toEqual(['薪水']);
+      expect(Array.from(el.querySelectorAll('app-calendar-day-panel .dp-row .name')).map(text)).toEqual(['薪水']);
     });
 
     it('re-requests the daily summary after a preference save', () => {
@@ -1486,6 +1590,825 @@ describe('LedgerTimelineComponent', () => {
     expect(options).toEqual(['全部帳戶', '玉山 UNI', '富邦 J卡', '新卡']);
   });
 
+  describe('day in the URL', () => {
+    async function openAt(url: string, stored: string | null = null) {
+      if (stored) {
+        localStorage.setItem(VIEW_KEY, stored);
+      }
+      TestBed.configureTestingModule({
+        imports: [LedgerTimelineComponent],
+        providers: [
+          provideHttpClient(),
+          provideHttpClientTesting(),
+          provideRouter([{ path: '**', children: [] }]),
+          { provide: CalendarDataService, useValue: fakeCalendarData },
+        ],
+      });
+      httpMock = TestBed.inject(HttpTestingController);
+      TestBed.inject(LayoutModeService).set('phone');
+      const router = TestBed.inject(Router);
+      await router.navigateByUrl(url);
+      const fixture = TestBed.createComponent(LedgerTimelineComponent);
+      fixture.detectChanges();
+      httpMock.expectOne('/api/accounting/preference').flush(makePreference());
+      httpMock.expectOne('/api/accounting/accounts').flush(ACCOUNTS);
+      flushCounterparties();
+      fixture.detectChanges();
+      return { fixture, el: fixture.nativeElement as HTMLElement, router };
+    }
+
+    /** Answer whatever month / day / list requests are pending with empty bodies. */
+    function drain(): void {
+      for (const req of httpMock!.match(r => r.url === '/api/accounting/entries/summary')) {
+        req.flush({ month: req.request.params.get('month'), currency: 'TWD', expense: '0', income: '0', net: '0', missing_rates: [] });
+      }
+      for (const req of httpMock!.match(r => r.url === '/api/accounting/entries/summary/daily')) {
+        req.flush({ month: req.request.params.get('month'), currency: 'TWD', days: [], missing_rates: [] });
+      }
+      for (const req of httpMock!.match(r => r.url === '/api/accounting/entries')) {
+        req.flush({ items: [], total: 0, limit: 50, offset: 0 });
+      }
+      for (const req of httpMock!.match(r => ['/api/accounting/categories', '/api/accounting/projects'].includes(r.url))) {
+        req.flush([]);
+      }
+    }
+
+    async function settle(fixture: { detectChanges(): void; whenStable(): Promise<unknown> }): Promise<void> {
+      fixture.detectChanges();
+      await fixture.whenStable();
+      drain();
+      fixture.detectChanges();
+    }
+
+    const cellAt = (el: HTMLElement, date: string) => el.querySelector<HTMLButtonElement>(`button.cell[data-date="${date}"]`)!;
+
+    it('opens a row from the calendar with month and day in the query', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10&day=2026-10-21');
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush({ items: [makeEntry({ id: 1, name: '午餐' })], total: 1, limit: 500, offset: 0 });
+      fixture.detectChanges();
+      const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+      el.querySelector<HTMLButtonElement>('.entry-row')!.click();
+      expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 1], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+    });
+
+    it('keeps the selected day while a pane route without calendar params is open, and drops it on the list URL', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10&day=2026-10-21');
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush({ items: [], total: 0, limit: 500, offset: 0 });
+      fixture.detectChanges();
+      expect(cellAt(el, '2026-10-21').classList).toContain('sel');
+      await router.navigateByUrl('/accounting/entry');
+      await settle(fixture);
+      expect(fixture.componentInstance.selectedDay()).toBe('2026-10-21');
+      expect(cellAt(el, '2026-10-21').classList).toContain('sel');
+      await router.navigateByUrl('/accounting');
+      await settle(fixture);
+      expect(fixture.componentInstance.selectedDay()).toBeNull();
+    });
+
+    it('setView(list) with no day in the URL writes nothing', async () => {
+      const { fixture, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      const navigate = vi.spyOn(router, 'navigate');
+      fixture.componentInstance.setView('list');
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('selects the day named in the URL and forces 日曆 without storing it', async () => {
+      const { fixture, el } = await openAt('/accounting?month=2026-10&day=2026-10-21');
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      const day = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
+      expect(day.request.params.get('date_from')).toBe('2026-10-21');
+      expect(day.request.params.get('date_to')).toBe('2026-10-21');
+      day.flush({ items: [], total: 0, limit: 500, offset: 0 });
+      fixture.detectChanges();
+      expect(cellAt(el, '2026-10-21').classList).toContain('sel');
+      expect(localStorage.getItem(VIEW_KEY)).toBeNull();
+    });
+
+    it('a day outside month wins', async () => {
+      const { fixture, el } = await openAt('/accounting?month=2026-09&day=2026-10-21');
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      drain();
+      fixture.detectChanges();
+      expect(text(el.querySelector('.month-label'))).toBe('2026 年 10 月');
+    });
+
+    it('writes month and day with replaceUrl, merged into the drill-through query', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10&category_id=12', 'calendar');
+      const navigate = vi.spyOn(router, 'navigate');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-10&category_id=12&day=2026-10-21');
+      expect(navigate).toHaveBeenCalledWith([], expect.objectContaining({ queryParamsHandling: 'merge', replaceUrl: true }));
+    });
+
+    it('clears day when the selected day is tapped again and when the month navigator moves', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21');
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-10');
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      el.querySelector<HTMLButtonElement>('.month-next')!.click();
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-11');
+    });
+
+    it('stepDay crosses the month edge', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-31').click();
+      await settle(fixture);
+      fixture.componentInstance.stepDay(1);
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-11&day=2026-11-01');
+      expect(fixture.componentInstance.selectedDay()).toBe('2026-11-01');
+    });
+
+    it('[ and ] on the grid step the day in the URL', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      const press = async (key: string) => {
+        el.querySelector('.cal')!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+        await settle(fixture);
+      };
+      await press(']');
+      expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-22');
+      await press('[');
+      await press('[');
+      expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-20');
+    });
+
+    it('follows Back to a URL without day', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      expect(el.querySelector('button.cell.sel')).not.toBeNull();
+      await router.navigateByUrl('/accounting?month=2026-10');
+      await settle(fixture);
+      expect(el.querySelector('button.cell.sel')).toBeNull();
+      expect(el.querySelector('app-calendar-day-panel')).toBeNull();
+      expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
+    });
+
+    it('a day link does not overwrite a stored 清單: the list returns when day leaves the URL', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10&day=2026-10-21', 'list');
+      drain();
+      fixture.detectChanges();
+      expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
+      expect(localStorage.getItem(VIEW_KEY)).toBe('list');
+      await router.navigateByUrl('/accounting?month=2026-10');
+      await settle(fixture);
+      expect(viewButton(el, '清單').getAttribute('aria-checked')).toBe('true');
+    });
+
+    it('清單 removes day and stores 清單', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      viewButton(el, '清單').click();
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-10');
+      expect(localStorage.getItem(VIEW_KEY)).toBe('list');
+      expect(viewButton(el, '清單').getAttribute('aria-checked')).toBe('true');
+    });
+
+    it('openUpcoming writes month and day and stores 日曆', async () => {
+      const { fixture, router } = await openAt('/accounting?month=2026-10', 'list');
+      drain();
+      fixture.detectChanges();
+      Object.defineProperty(fixture.componentInstance, 'upcomingBills', { value: () => [{ date: '2026-11-04' }] });
+      fixture.componentInstance.openUpcoming();
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-11&day=2026-11-04');
+      expect(localStorage.getItem(VIEW_KEY)).toBe('calendar');
+    });
+  });
+
+  describe('narrow calendar (#318 D6)', () => {
+    const TODAY = '2026-10-02';
+
+    /** Opens 日曆 at `url` (phone unless told) with the month's summary and daily figures answered. */
+    async function openNarrow(url: string, mode: LayoutMode = 'phone', daily: Partial<DailySummary> = {}) {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      TestBed.configureTestingModule({
+        imports: [LedgerTimelineComponent],
+        providers: [
+          provideHttpClient(),
+          provideHttpClientTesting(),
+          provideRouter([{ path: '**', children: [] }]),
+          { provide: CalendarDataService, useValue: fakeCalendarData },
+        ],
+      });
+      httpMock = TestBed.inject(HttpTestingController);
+      TestBed.inject(LayoutModeService).set(mode);
+      const router = TestBed.inject(Router);
+      await router.navigateByUrl(url);
+      const fixture = TestBed.createComponent(LedgerTimelineComponent);
+      fixture.detectChanges();
+      httpMock.expectOne('/api/accounting/preference').flush(makePreference());
+      httpMock.expectOne('/api/accounting/accounts').flush(ACCOUNTS);
+      flushCounterparties();
+      fixture.detectChanges();
+      flushTodayRead(todayItems);
+      const month = url.match(/month=(\d{4}-\d{2})/)?.[1] ?? '2026-10';
+      flushSummary(month, { expense: '-1250.0000', income: '1000.0000', net: '-250.0000' });
+      flushDaily(month, daily);
+      fixture.detectChanges();
+      const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+      return { fixture, el: fixture.nativeElement as HTMLElement, router, navigate };
+    }
+
+    const cells = (el: HTMLElement) => el.querySelectorAll('button.cell');
+    const cell = (el: HTMLElement, date: string) => el.querySelector<HTMLButtonElement>(`button.cell[data-date="${date}"]`)!;
+
+    it('narrow 日曆 shows one line of figures under the navigator and no summary card', async () => {
+      const { el } = await openNarrow('/accounting?month=2026-10');
+      const figures = el.querySelector('.cal-figures')!;
+      expect(figures.getAttribute('aria-label')).toBe('本月摘要');
+      expect(text(figures)).toContain('支出−$1,250');
+      expect(text(figures)).toContain('收入+$1,000');
+      expect(text(figures)).toContain('結餘−$250');
+      expect(el.querySelector('.sum')).toBeNull();
+      expect(el.querySelector('.monthbar-figures')).toBeNull();
+    });
+
+    it('narrow 日曆 puts the figures right under the navigator, above the filter bar; 清單 keeps .sum there (F1)', async () => {
+      const { el } = await openNarrow('/accounting?month=2026-10');
+      const before = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const row = el.querySelector('.cal-figures-row')!;
+      expect(row.previousElementSibling).toBe(el.querySelector('.monthbar'));
+      expect(before(row, el.querySelector('app-filter-bar')!)).toBe(true);
+      expect(before(row, el.querySelector('app-calendar-month')!)).toBe(true);
+    });
+
+    it('清單 below 1024 has .sum directly after the navigator (F1)', () => {
+      const { fixture, el } = render('phone');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(el.querySelector('.sum')!.previousElementSibling).toBe(el.querySelector('.monthbar'));
+    });
+
+    it('narrow 日曆 figures show the error line with 重試', async () => {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const { fixture, el } = render('phone');
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary').flush('boom', { status: 500, statusText: 'Server Error' });
+      flushDaily('2026-10');
+      fixture.detectChanges();
+      expect(text(el.querySelector('.cal-figures'))).toContain('摘要讀取失敗');
+      el.querySelector<HTMLButtonElement>('.cal-figures .sum-retry')!.click();
+      fixture.detectChanges();
+      flushSummary('2026-10');
+    });
+
+    it('narrow 日曆 keeps the 全月 · 未套篩選 hint when filters are active (Review Focus 5)', async () => {
+      const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+      expect(el.querySelector('.cal-figures-row .sum-scope')).toBeNull();
+      fixture.componentInstance.setKind('expense');
+      fixture.detectChanges();
+      expect(text(el.querySelector('.cal-figures-row .sum-scope'))).toBe('全月 · 未套篩選');
+    });
+
+    it('清單 below 1024 still shows the summary card', () => {
+      const { fixture, el } = render('phone');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(el.querySelector('.sum')).not.toBeNull();
+      expect(el.querySelector('.cal-figures')).toBeNull();
+    });
+
+    it('phone default: 31 cells with dots and a 「今天 · 3 筆 … −$250」 bar, no rows (spec Phone default)', async () => {
+      todayItems = [makeEntry({ id: 1, name: '早餐' }), makeEntry({ id: 2, name: '捷運' }), makeEntry({ id: 3, name: '咖啡' })];
+      fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, dots: new Map([['2026-10-01', [{ key: '3' }, { key: '99' }] as never]]), dotsState: 'ready' });
+      const { el } = await openNarrow('/accounting?month=2026-10', 'phone', {
+        days: [{ date: TODAY, expense: '-1250.0000', income: '1000.0000', count: 3 }],
+      });
+      expect(cells(el).length).toBe(31);
+      expect(el.querySelectorAll('button.cell[data-date="2026-10-01"] .dot').length).toBe(2);
+      const bar = text(el.querySelector('app-calendar-today-bar'));
+      expect(bar).toContain('今天 · 3 筆');
+      expect(bar).toContain('早餐、捷運、咖啡');
+      expect(bar).toContain('−$250');
+      expect(el.querySelector('.dp-row')).toBeNull();
+      expect(el.querySelector('app-calendar-day-panel')).toBeNull();
+    });
+
+    it('tapping the 今天 bar selects today', async () => {
+      const { el, navigate } = await openNarrow('/accounting?month=2026-10');
+      el.querySelector<HTMLButtonElement>('app-calendar-today-bar .today-bar')!.click();
+      expect(navigate).toHaveBeenCalledWith([], expect.objectContaining({ queryParams: { month: '2026-10', day: TODAY }, replaceUrl: true }));
+    });
+
+    it('in another month the bar reads 回到今天 and writes month and day to today (spec 回到今天; Review Focus 4)', async () => {
+      const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-09');
+      expect(text(el.querySelector('app-calendar-today-bar'))).toContain('回到今天');
+      el.querySelector<HTMLButtonElement>('app-calendar-today-bar .today-bar')!.click();
+      fixture.detectChanges();
+      expect(navigate).toHaveBeenCalledWith([], expect.objectContaining({ queryParams: { month: '2026-10', day: TODAY }, replaceUrl: true }));
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      fixture.detectChanges();
+      expect(cells(el).length).toBe(7);
+      expect(cell(el, TODAY).classList).toContain('sel');
+      flushTodayRead(todayItems);
+      flushEntries([makeEntry({ id: 5, name: '午餐', entry_date: TODAY })]);
+      fixture.detectChanges();
+      expect(Array.from(el.querySelectorAll('app-calendar-day-panel .dp-row .name')).map(text)).toEqual(['午餐']);
+    });
+
+    it('picking a day collapses the grid to its week without dots and shows 展開整月', async () => {
+      fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, dots: new Map([['2026-10-01', [{ key: '3' }] as never]]), dotsState: 'ready' });
+      const { fixture, el } = await openNarrow('/accounting?month=2026-10', 'phone', {
+        days: [{ date: '2026-10-21', expense: '-100.0000', income: '0.0000', count: 1 }],
+      });
+      expect(el.querySelectorAll('button.cell[data-date="2026-10-01"] .dot').length).toBe(1);
+      cell(el, '2026-10-21').click();
+      fixture.detectChanges();
+      flushEntries([]);
+      fixture.detectChanges();
+      expect([...cells(el)].map(c => c.getAttribute('data-date'))).toEqual([
+        '2026-10-18', '2026-10-19', '2026-10-20', '2026-10-21', '2026-10-22', '2026-10-23', '2026-10-24',
+      ]);
+      expect(el.querySelector('.dot')).toBeNull();
+      const expand = el.querySelector<HTMLButtonElement>('button.expand-month')!;
+      expect(expand.getAttribute('aria-label')).toBe('展開整月，回到整月日曆');
+      expect(text(expand)).toBe('展開整月');
+      expect(el.querySelector('app-calendar-today-bar')).toBeNull();
+    });
+
+    it('展開整月 clears the day and restores the month grid', async () => {
+      const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-21');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(cells(el).length).toBe(7);
+      el.querySelector<HTMLButtonElement>('button.expand-month')!.click();
+      fixture.detectChanges();
+      expect(cells(el).length).toBe(31);
+      expect(el.querySelector('button.expand-month')).toBeNull();
+      expect(el.querySelector('app-calendar-today-bar')).not.toBeNull();
+    });
+
+    describe('keyboard focus (F2)', () => {
+      const focusedDate = () => (document.activeElement as HTMLElement | null)?.getAttribute('data-date');
+
+      it('展開整月 focuses the cell of the day that was open', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-21');
+        flushEntries([]);
+        fixture.detectChanges();
+        const expand = el.querySelector<HTMLButtonElement>('button.expand-month')!;
+        expand.focus();
+        expand.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(cells(el).length).toBe(31);
+        expect(document.activeElement).toBe(cell(el, '2026-10-21'));
+      });
+
+      it('activating the 今天 bar focuses today in the strip', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        const bar = el.querySelector<HTMLButtonElement>('app-calendar-today-bar .today-bar')!;
+        bar.focus();
+        bar.click();
+        fixture.detectChanges();
+        flushEntries([]);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(cells(el).length).toBe(7);
+        expect(document.activeElement).toBe(cell(el, TODAY));
+      });
+
+      it('] across a week boundary keeps focus on the newly selected cell, and a second ] keeps working', async () => {
+        const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-10&day=2026-10-24');
+        flushEntries([]);
+        fixture.detectChanges();
+        const saturday = cell(el, '2026-10-24');
+        saturday.focus();
+        saturday.dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true, cancelable: true }));
+        fixture.detectChanges();
+        flushEntries([]);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(navigate).toHaveBeenLastCalledWith([], dayWrite('2026-10', '2026-10-25'));
+        expect(focusedDate()).toBe('2026-10-25');
+        (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true, cancelable: true }));
+        fixture.detectChanges();
+        flushEntries([]);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(navigate).toHaveBeenLastCalledWith([], dayWrite('2026-10', '2026-10-26'));
+        expect(focusedDate()).toBe('2026-10-26');
+      });
+
+      it('a swipe on the day area does not pull focus into the grid', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-24');
+        flushEntries([]);
+        fixture.detectChanges();
+        (document.activeElement as HTMLElement | null)?.blur();
+        swipe(el.querySelector('.day-area')!, [200, 300], [120, 305]);
+        fixture.detectChanges();
+        flushEntries([]);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(document.activeElement === document.body || !el.querySelector('app-calendar-month')!.contains(document.activeElement)).toBe(true);
+      });
+    });
+
+    it('tapping a neighbour-month day in the strip selects it and month follows (Review Focus 1)', async () => {
+      const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-10&day=2026-10-01');
+      flushEntries([]);
+      fixture.detectChanges();
+      cell(el, '2026-09-28').click();
+      expect(navigate).toHaveBeenCalledWith([], expect.objectContaining({ queryParams: { month: '2026-09', day: '2026-09-28' }, replaceUrl: true }));
+    });
+
+    it('sheet mode (760–1023) gets the same narrow calendar', async () => {
+      const { el } = await openNarrow('/accounting?month=2026-10', 'sheet');
+      expect(el.querySelector('.cal-figures')).not.toBeNull();
+      expect(el.querySelector('app-calendar-today-bar')).not.toBeNull();
+      expect(el.querySelector('.sum')).toBeNull();
+    });
+
+    /** A pointer gesture the way the swipe directive reads it: pointerdown on `el`, pointerup on `el` (events bubble to the host). */
+    function swipe(el: Element, from: [number, number], to: [number, number]): void {
+      const ptr = (type: string, x: number, y: number) => {
+        const ev = new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true });
+        Object.defineProperty(ev, 'pointerId', { value: 1 });
+        Object.defineProperty(ev, 'isPrimary', { value: true });
+        el.dispatchEvent(ev);
+      };
+      ptr('pointerdown', from[0], from[1]);
+      ptr('pointerup', to[0], to[1]);
+    }
+
+    const panel = (el: HTMLElement) => el.querySelector('app-calendar-day-panel')!;
+    const dayWrite = (month: string, day: string) => expect.objectContaining({ queryParams: { month, day }, replaceUrl: true });
+
+    it('picking 10/21 lists its rows under 「10/21 週三」 with the count and net (spec Picking a day on a phone)', async () => {
+      const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-21');
+      flushEntries([
+        makeEntry({ id: 1, name: '午餐', amount: '-1000.0000', entry_date: '2026-10-21' }),
+        makeEntry({ id: 2, name: '咖啡', amount: '-96.0000', entry_date: '2026-10-21' }),
+        makeEntry({ id: 3, name: '晚餐', amount: '-2000.0000', entry_date: '2026-10-21' }),
+      ]);
+      fixture.detectChanges();
+      expect(text(panel(el).querySelector('.dp-label'))).toBe('10/21 週三');
+      expect(text(panel(el).querySelector('.dp-sub'))).toBe('3 筆 · −$3,096');
+      expect(panel(el).querySelectorAll('.dp-row').length).toBe(3);
+      expect(panel(el).querySelector('.dp-summary')).toBeNull();
+    });
+
+    it('the day panel shows the skeleton, the empty / future / filtered copy (bill lines: the billing hints describes)', async () => {
+      const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-01');
+      expect(panel(el).querySelector('app-skeleton')).not.toBeNull();
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(text(panel(el).querySelector('.dp-empty'))).toBe('這天沒有記錄');
+      fixture.componentInstance.setKind('expense');
+      fixture.detectChanges();
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(text(panel(el).querySelector('.dp-empty'))).toBe('這天沒有符合條件的記錄');
+    });
+
+    it('a future day reads 還沒到這天 (new on narrow screens)', async () => {
+      const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-21');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(text(panel(el).querySelector('.dp-empty'))).toBe('還沒到這天');
+    });
+
+    it('a failed day shows 記錄讀取失敗 with 重試, which reads that day again', async () => {
+      const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-01');
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(text(panel(el).querySelector('.dp-error'))).toBe('記錄讀取失敗');
+      panel(el).querySelector<HTMLButtonElement>('.dp-retry')!.click();
+      fixture.detectChanges();
+      const req = flushEntries([makeEntry({ id: 4, entry_date: '2026-10-01' })]);
+      fixture.detectChanges();
+      expect(req.request.params.get('date_from')).toBe('2026-10-01');
+      expect(panel(el).querySelectorAll('.dp-row').length).toBe(1);
+    });
+
+    it('a row opens the entry route with month and day', async () => {
+      const { fixture, el, router } = await openNarrow('/accounting?month=2026-10&day=2026-10-21');
+      flushEntries([makeEntry({ id: 7, name: '午餐', entry_date: '2026-10-21' })]);
+      fixture.detectChanges();
+      const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+      panel(el).querySelector<HTMLButtonElement>('.dp-row')!.click();
+      expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 7], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+    });
+
+    it('a swipe that ends on a row navigates once (Review Focus 6)', async () => {
+      const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-10&day=2026-10-21');
+      flushEntries([makeEntry({ id: 7, name: '午餐', entry_date: '2026-10-21' })]);
+      fixture.detectChanges();
+      const row = panel(el).querySelector<HTMLButtonElement>('.dp-row')!;
+      swipe(row, [200, 300], [120, 305]);
+      row.click();
+      expect(navigate).toHaveBeenCalledTimes(1);
+      expect(navigate).toHaveBeenCalledWith([], dayWrite('2026-10', '2026-10-22'));
+    });
+
+    it('＋ 在這天記一筆 opens the form dated that day with month and day', async () => {
+      const { fixture, el, router } = await openNarrow('/accounting?month=2026-10&day=2026-10-21');
+      flushEntries([]);
+      fixture.detectChanges();
+      const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+      panel(el).querySelector<HTMLButtonElement>('.dp-add')!.click();
+      expect(navigate).toHaveBeenCalledWith(['/accounting/entry'], { queryParams: { date: '2026-10-21', month: '2026-10', day: '2026-10-21' } });
+    });
+
+    it('swiping the day area right to left selects the next day (spec Swiping to the next day)', async () => {
+      const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-10&day=2026-10-21');
+      flushEntries([]);
+      fixture.detectChanges();
+      swipe(el.querySelector('.day-area')!, [200, 300], [120, 305]);
+      expect(navigate).toHaveBeenCalledTimes(1);
+      expect(navigate).toHaveBeenCalledWith([], dayWrite('2026-10', '2026-10-22'));
+      fixture.detectChanges();
+      flushEntries([makeEntry({ id: 9, name: '早餐', entry_date: '2026-10-22' })]);
+      fixture.detectChanges();
+      expect(text(panel(el).querySelector('.dp-label'))).toBe('10/22 週四');
+      expect(Array.from(panel(el).querySelectorAll('.dp-row .name')).map(text)).toEqual(['早餐']);
+    });
+
+    it('swiping the day area left to right selects the previous day', async () => {
+      const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-10&day=2026-10-21');
+      flushEntries([]);
+      fixture.detectChanges();
+      swipe(el.querySelector('.day-area')!, [120, 300], [200, 296]);
+      expect(navigate).toHaveBeenCalledWith([], dayWrite('2026-10', '2026-10-20'));
+    });
+
+    it('a vertical drag on the day area does not change the day (Review Focus 2)', async () => {
+      const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-10&day=2026-10-21');
+      flushEntries([]);
+      fixture.detectChanges();
+      const area = el.querySelector<HTMLElement>('.day-area')!;
+      swipe(area, [200, 300], [205, 180]);
+      expect(navigate).not.toHaveBeenCalled();
+      expect(area.style.touchAction).toBe('pan-y');
+    });
+
+    it('swiping the week strip moves seven days and keeps the weekday; month follows at the edge (Review Focus 3)', async () => {
+      const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-10&day=2026-10-28');
+      flushEntries([]);
+      fixture.detectChanges();
+      swipe(el.querySelector('.strip-area')!, [200, 30], [120, 34]);
+      expect(navigate).toHaveBeenCalledWith([], dayWrite('2026-11', '2026-11-04'));
+
+    });
+
+    it('swiping the day area on 10/31 selects 11/01 and month follows (Review Focus 3)', async () => {
+      const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-10&day=2026-10-31');
+      flushEntries([]);
+      fixture.detectChanges();
+      swipe(el.querySelector('.day-area')!, [200, 300], [120, 305]);
+      expect(navigate).toHaveBeenCalledWith([], dayWrite('2026-11', '2026-11-01'));
+    });
+
+    it('a swipe on the month grid with no day selected does nothing', async () => {
+      const { el, navigate } = await openNarrow('/accounting?month=2026-10');
+      expect(el.querySelector<HTMLElement>('.strip-area')!.style.touchAction || '').toBe('');
+      expect(el.querySelector('.day-area')).toBeNull();
+      swipe(cell(el, '2026-10-14'), [200, 30], [120, 34]);
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('[ and ] from the day panel step the day', async () => {
+      const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-10&day=2026-10-21');
+      flushEntries([]);
+      fixture.detectChanges();
+      panel(el).dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true }));
+      expect(navigate).toHaveBeenCalledWith([], dayWrite('2026-10', '2026-10-22'));
+    });
+
+    it('wide 日曆 is unchanged: no .cal-figures, no today bar, no weekOf', async () => {
+      const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-21', 'panes');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(cells(el).length).toBe(31);
+      expect(el.querySelector('.monthbar-figures')).not.toBeNull();
+      expect(el.querySelector('.cal-figures')).toBeNull();
+      expect(el.querySelector('app-calendar-today-bar')).toBeNull();
+      expect(el.querySelector('button.expand-month')).toBeNull();
+    });
+
+    it('wide 日曆 has an inert .strip-area wrapper: no .day-area, no touch-action, a swipe does nothing', async () => {
+      const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-10&day=2026-10-21', 'panes');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(el.querySelector('.day-area, app-calendar-day-panel')).toBeNull();
+      const strip = el.querySelector<HTMLElement>('.strip-area')!;
+      expect(strip.style.touchAction || '').toBe('');
+      swipe(cell(el, '2026-10-21'), [200, 30], [120, 34]);
+      expect(navigate).not.toHaveBeenCalled();
+      expect(strip.querySelectorAll('button.cell').length).toBe(31);
+    });
+
+    it('the calendar grid instance survives a day pick and 展開整月, keeping focus on a cell', async () => {
+      const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+      const grid = el.querySelector('app-calendar-month')!;
+      const target = cell(el, '2026-10-21');
+      target.focus();
+      target.click();
+      fixture.detectChanges();
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(grid.isConnected).toBe(true);
+      expect(el.querySelector('app-calendar-month')).toBe(grid);
+      expect(cell(el, '2026-10-21')).toBe(target);
+      expect(document.activeElement).toBe(target);
+      expect(document.activeElement!.matches('button.cell')).toBe(true);
+
+      el.querySelector<HTMLButtonElement>('button.expand-month')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('app-calendar-month')).toBe(grid);
+      expect(grid.isConnected).toBe(true);
+    });
+
+    describe('< 1024 px search and filter behind a title-row button (Task 5)', () => {
+      const toggle = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('app-page-header .cal-filters-toggle');
+      const row = (el: HTMLElement) => el.querySelector<HTMLElement>('.filter-bar-row')!;
+      const rowShown = (el: HTMLElement) => !row(el).hasAttribute('hidden');
+      const dropOptionReads = () => httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+
+      it('phone 日曆: the header has the toggle (collapsed) and the row is hidden; clicking opens it with .filter-q focused, again hides it', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        document.body.appendChild(el);
+        try {
+          const button = toggle(el)!;
+          expect(button.getAttribute('aria-label')).toBe('搜尋與篩選');
+          expect(button.getAttribute('aria-expanded')).toBe('false');
+          expect(button.classList.contains('has-active')).toBe(false);
+          expect(rowShown(el)).toBe(false);
+          button.click();
+          fixture.detectChanges();
+          await fixture.whenStable();
+          fixture.detectChanges();
+          expect(button.getAttribute('aria-expanded')).toBe('true');
+          expect(rowShown(el)).toBe(true);
+          expect(document.activeElement).toBe(el.querySelector('.filter-q'));
+          button.click();
+          fixture.detectChanges();
+          expect(button.getAttribute('aria-expanded')).toBe('false');
+          expect(rowShown(el)).toBe(false);
+        } finally {
+          el.remove();
+        }
+      });
+
+      it('the toggle sits inside .page-actions, before the gear slot', async () => {
+        const { el } = await openNarrow('/accounting?month=2026-10');
+        expect(el.querySelector('app-page-header .page-actions .cal-filters-toggle')).not.toBeNull();
+      });
+
+      it('a search text marks the toggle has-active', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        fixture.componentInstance.setQuery('全聯');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(toggle(el)!.classList.contains('has-active')).toBe(true);
+      });
+
+      it('entering 日曆 with a filter active starts expanded', async () => {
+        localStorage.setItem(VIEW_KEY, 'list');
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10&merchant=%E5%85%A8%E8%81%AF');
+        // openNarrow sets the stored view first; the URL carries the filter, so 日曆 opens with it active.
+        expect(fixture.componentInstance.filtersActive()).toBe(true);
+        expect(toggle(el)!.getAttribute('aria-expanded')).toBe('true');
+        expect(rowShown(el)).toBe(true);
+      });
+
+      it('with the row collapsed and a filter active the chips stay and × removes the filter', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10&merchant=%E5%85%A8%E8%81%AF');
+        toggle(el)!.click();
+        fixture.detectChanges();
+        expect(rowShown(el)).toBe(false);
+        expect(el.querySelector('.filter-chips')).not.toBeNull();
+        (el.querySelector('.chip-remove[aria-label="移除 商家：全聯"]') as HTMLButtonElement).click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(fixture.componentInstance.merchantFilter()).toBe('');
+      });
+
+      it('清單 has no toggle and always shows the row', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(toggle(el)).toBeNull();
+        expect(rowShown(el)).toBe(true);
+      });
+
+      it('panes → phone with a search text active: the row is expanded and .filter-q holds the text', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10', 'panes');
+        fixture.componentInstance.setQuery('全聯');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(rowShown(el)).toBe(false);
+        TestBed.inject(LayoutModeService).set('phone');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(TestBed.inject(AccountingOverviewService).calendarFiltersOpen()).toBe(true);
+        expect(rowShown(el)).toBe(true);
+        expect(el.querySelector<HTMLInputElement>('.filter-q')!.value).toBe('全聯');
+      });
+
+      it('panes → phone with the anchored panel open: the panel is closed', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10', 'panes');
+        TestBed.inject(CalendarPaneService).commands()!.toggleFilters(document.body);
+        fixture.detectChanges();
+        dropOptionReads();
+        expect(el.querySelector('.filter-panel')).not.toBeNull();
+        TestBed.inject(LayoutModeService).set('phone');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(el.querySelector('.filter-panel')).toBeNull();
+      });
+
+      it('phone → panes with the row open: no row is shown and the pane box holds the text', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        fixture.componentInstance.setQuery('全聯');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        toggle(el)!.click();
+        fixture.detectChanges();
+        expect(rowShown(el)).toBe(true);
+        TestBed.inject(LayoutModeService).set('panes');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(rowShown(el)).toBe(false);
+        expect(TestBed.inject(CalendarPaneService).search()).toBe('全聯');
+      });
+
+      it('collapsing the row with the panel open closes the panel', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        toggle(el)!.click();
+        fixture.detectChanges();
+        TestBed.inject(CalendarPaneService).commands()!.toggleFilters(document.body);
+        fixture.detectChanges();
+        dropOptionReads();
+        expect(el.querySelector('.filter-panel')).not.toBeNull();
+        toggle(el)!.click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(rowShown(el)).toBe(false);
+        expect(el.querySelector('.filter-panel')).toBeNull();
+      });
+
+      it('leaving 日曆 closes the row state; coming back with nothing active starts collapsed', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        toggle(el)!.click();
+        fixture.detectChanges();
+        expect(TestBed.inject(AccountingOverviewService).calendarFiltersOpen()).toBe(true);
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(TestBed.inject(AccountingOverviewService).calendarFiltersOpen()).toBe(false);
+        viewButton(el, '日曆').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(toggle(el)!.getAttribute('aria-expanded')).toBe('false');
+      });
+
+      it('a 5-week month renders 5 .week rows and the today bar directly follows .strip-area (no filter row between month bar and grid)', async () => {
+        const { el } = await openNarrow('/accounting?month=2026-11');
+        expect(el.querySelectorAll('.week').length).toBe(5);
+        expect(el.querySelector('.strip-area')!.nextElementSibling!.tagName.toLowerCase()).toBe('app-calendar-today-bar');
+        expect(rowShown(el)).toBe(false);
+        expect(el.querySelector('.filter-chips')).toBeNull();
+      });
+    });
+  });
+
   describe('billing hints', () => {
     // Closing day 15, due 20 days later: the 08/16 – 09/15 statement is due on 10/05, the 10/15 one on 11/04.
     const CARD = makeAccount({
@@ -1543,13 +2466,13 @@ describe('LedgerTimelineComponent', () => {
     }
 
     function flushDayEntries(): void {
-      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush({ items: [], total: 0, limit: 500, offset: 0 });
     }
 
-    function renderCalendarWith(accounts = [...ACCOUNTS, CARD]) {
+    function renderCalendarWith(accounts = [...ACCOUNTS, CARD], mode: LayoutMode = 'panes', summary?: Partial<MonthSummary>) {
       localStorage.setItem(VIEW_KEY, 'calendar');
-      const rendered = render('phone', makePreference(), [], accounts);
-      flushSummary('2026-10');
+      const rendered = render(mode, makePreference(), [], accounts);
+      flushSummary('2026-10', summary);
       flushDaily('2026-10');
       rendered.fixture.detectChanges();
       return rendered;
@@ -1570,29 +2493,104 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
     }
 
+    /** At panes the day's rows are published to the right pane; the narrow day panel needs the narrow layout. */
+    function showDayRowsInList(fixture: { detectChanges(): void }): void {
+      TestBed.inject(LayoutModeService).set('phone');
+      fixture.detectChanges();
+    }
+
     const cell = (el: HTMLElement, date: string) => el.querySelector(`button.cell[data-date="${date}"]`)!;
+
+    it('renders the monthbar figures and no .sum / day panel in 日曆 at panes', () => {
+      const { fixture, el } = renderCalendarWith(ACCOUNTS);
+      selectDay(fixture, el, '2026-10-05');
+      const figures = el.querySelector('.monthbar .monthbar-figures')!;
+      expect(figures.getAttribute('aria-label')).toBe('本月摘要');
+      expect(text(figures)).toContain('支出');
+      expect(text(figures)).toContain('收入');
+      expect(text(figures)).toContain('結餘');
+      expect(el.querySelector('.sum')).toBeNull();
+      expect(el.querySelector('.day-area')).toBeNull();
+    });
+
+    it('renders each monthbar amount as a full span plus an aria-hidden abbreviated twin, with the full text as title', () => {
+      const { fixture, el } = renderCalendarWith(ACCOUNTS, 'panes', { expense: '-29626', income: '72000', net: '42374' });
+      selectDay(fixture, el, '2026-10-05');
+      const figures = el.querySelector('.monthbar .monthbar-figures')!;
+      const read = (cls: string) => {
+        const dd = figures.querySelector(cls)!;
+        return [
+          text(dd.querySelector('.fig-full')),
+          text(dd.querySelector('.fig-short')),
+          dd.getAttribute('title'),
+          dd.querySelector('.fig-short')!.getAttribute('aria-hidden'),
+          dd.querySelector('.fig-full')!.getAttribute('aria-hidden'),
+        ];
+      };
+      expect(read('.sum-expense')).toEqual(['−$29,626', '−$29.6k', '−$29,626', 'true', null]);
+      expect(read('.sum-income')).toEqual(['+$72,000', '+$72k', '+$72,000', 'true', null]);
+      expect(read('.sum-net')).toEqual(['+$42,374', '+$42.4k', '+$42,374', 'true', null]);
+    });
+
+    it('keeps the — placeholder in both spans while the summary has not arrived', () => {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const { fixture, el } = render('panes', makePreference(), [], ACCOUNTS);
+      flushDaily('2026-10');
+      fixture.detectChanges();
+      const dd = el.querySelector('.monthbar-figures .sum-expense')!;
+      expect([text(dd.querySelector('.fig-full')), text(dd.querySelector('.fig-short'))]).toEqual(['—', '—']);
+      expect(dd.hasAttribute('title')).toBe(false);
+      flushSummary('2026-10');
+    });
+
+    it('abbreviates large month figures in the short twin only', () => {
+      const { fixture, el } = renderCalendarWith(ACCOUNTS, 'panes', { expense: '-1234567', income: '999900', net: '-234667' });
+      selectDay(fixture, el, '2026-10-05');
+      const pair = (cls: string) => [text(el.querySelector(`.monthbar-figures ${cls} .fig-full`)), text(el.querySelector(`.monthbar-figures ${cls} .fig-short`))];
+      expect(pair('.sum-expense')).toEqual(['−$1,234,567', '−$1.23M']);
+      expect(pair('.sum-income')).toEqual(['+$999,900', '+$999.9k']);
+      expect(pair('.sum-net')).toEqual(['−$234,667', '−$234.7k']);
+      expect(el.querySelector('.monthbar-figures .sum-expense')!.getAttribute('title')).toBe('−$1,234,567');
+    });
+
+    it('keeps .cal-figures and the day panel in 日曆 at phone width', () => {
+      const { fixture, el } = renderCalendarWith(ACCOUNTS, 'phone');
+      selectDay(fixture, el, '2026-10-05');
+      expect(el.querySelector('.monthbar-figures')).toBeNull();
+      expect(el.querySelector('.cal-figures')).not.toBeNull();
+      expect(el.querySelector('.sum')).toBeNull();
+      expect(el.querySelector('.day-area app-calendar-day-panel')).not.toBeNull();
+    });
 
     it('badges an unpaid statement only once it is resolved and shows its line on the due day', () => {
       const { fixture, el } = renderCalendarWith();
       const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
       const requests = billRequests();
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')).toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid')).toBeNull();
       expect(cell(el, '2026-10-15').classList).toContain('closing');
 
       answerBill(requests, '-12345.0000');
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('');
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')!.querySelector('i.pi-credit-card')).not.toBeNull();
-      expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
+      expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10 月 5 日 週一，1 張卡繳費到期');
 
       selectDay(fixture, el, '2026-10-05');
+      showDayRowsInList(fixture);
       expectNoBillRequest();
-      const line = el.querySelector<HTMLButtonElement>('.day-entries .bill')!;
+      const line = el.querySelector<HTMLButtonElement>('app-calendar-day-panel .bill')!;
       expect(text(line)).toBe('玉山 UNI 帳單 $12,345 · 到期');
       expect(line.querySelector('i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
-      expect(line.compareDocumentPosition(el.querySelector('.day-entries .empty')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(line.compareDocumentPosition(el.querySelector('app-calendar-day-panel .dp-empty')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       line.click();
       expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 9]);
+    });
+
+    it('draws the compact bill dot (not the 帳單 word) on a due day on a phone', () => {
+      const { fixture, el } = renderCalendarWith([...ACCOUNTS, CARD], 'phone');
+      answerBill(billRequests(), '-12345.0000');
+      fixture.detectChanges();
+      expect(cell(el, '2026-10-05').querySelector('.bill-dot')).not.toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid')).toBeNull();
     });
 
     it('hides a zero statement everywhere and keeps it resolved across a view switch', () => {
@@ -1606,20 +2604,85 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       expectNoBillRequest();
       fixture.detectChanges();
-      expect(el.querySelectorAll('.due-badge').length).toBe(0);
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid, .bill-dot').length).toBe(0);
       expect(cell(el, '2026-10-15').classList).toContain('closing');
 
       selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
     });
 
-    it('hides a fully paid statement', () => {
+    it('marks a fully paid statement 已繳 and lists no line', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('-800.0000', ['500.0000', '300.0000']);
       fixture.detectChanges();
-      expect(el.querySelectorAll('.due-badge').length).toBe(0);
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('已繳');
       selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
+    });
+
+    it('passes paid due days: a fully paid statement reads 已繳, a day with one open card reads 帳單', () => {
+      const CARD2 = makeAccount({ id: 10, name: '富邦 J卡', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
+      const CARD3 = makeAccount({ id: 11, name: '國泰', is_credit: true, closing_day: 22, due_rule: 'days_after_closing', due_value: 20 });
+      const { fixture, el } = renderCalendarWith([...ACCOUNTS, CARD, CARD2, CARD3]);
+      const answer = (id: number, spend: string, paid: string[], start = SEPT.start, end = SEPT.end, to = SEPT.paidTo) => {
+        const summary = httpMock!.expectOne(r => r.url === `/api/accounting/accounts/${id}/summary` && r.params.get('date_to') === end);
+        const payments = httpMock!.expectOne(r => r.url === `/api/accounting/accounts/${id}/entries` && r.params.get('date_from') === end);
+        expect(summary.request.params.get('date_from')).toBe(start);
+        expect(payments.request.params.get('date_to')).toBe(to);
+        answerBill({ summary, payments }, spend, paid);
+      };
+      answer(9, '-800.0000', ['800.0000']);
+      answer(10, '-500.0000', []);
+      // CARD3 closes on the 22nd: its 09/22 statement is due 10/12.
+      answer(11, '-300.0000', ['300.0000'], '2026-08-23', '2026-09-22', '2026-10-02');
+      fixture.detectChanges();
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-12').querySelector('.tag-bill, .tag-paid'))).toBe('已繳');
+    });
+
+    it('never reads 已繳 while a same-day card is unresolved or failed (a paid sibling does not settle it)', () => {
+      const CARD2 = makeAccount({ id: 10, name: '富邦 J卡', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
+      const { fixture, el } = renderCalendarWith([...ACCOUNTS, CARD, CARD2]);
+      const requests = (id: number) => ({
+        summary: httpMock!.expectOne(r => r.url === `/api/accounting/accounts/${id}/summary`),
+        payments: httpMock!.expectOne(r => r.url === `/api/accounting/accounts/${id}/entries`),
+      });
+      const paid = requests(9);
+      const pending = requests(10);
+      answerBill(paid, '-800.0000', ['800.0000']);
+      fixture.detectChanges();
+      // CARD2 is still in flight: the day is a 帳單 day, not 已繳.
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
+      pending.summary.flush('boom', { status: 500, statusText: 'Server Error' });
+      pending.payments.flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      // CARD2 failed: unknown is never 已繳.
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
+    });
+
+    it('draws no mark for a zero or refund-heavy statement, and a zero beside a paid card reads 已繳', () => {
+      const CARD2 = makeAccount({ id: 10, name: '富邦 J卡', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
+      const CARD3 = makeAccount({ id: 11, name: '國泰', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
+      const { fixture, el } = renderCalendarWith([...ACCOUNTS, CARD, CARD2, CARD3]);
+      const answer = (id: number, spend: string, paid: string[]) => {
+        const summary = httpMock!.expectOne(r => r.url === `/api/accounting/accounts/${id}/summary`);
+        const payments = httpMock!.expectOne(r => r.url === `/api/accounting/accounts/${id}/entries`);
+        answerBill({ summary, payments }, spend, paid);
+      };
+      answer(9, '0.0000', []);
+      answer(10, '500.0000', []);
+      answer(11, '-800.0000', ['800.0000']);
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.bill-dot').length).toBe(0);
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid').length).toBe(1);
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('已繳');
+    });
+
+    it('draws nothing for a lone refund-heavy statement', () => {
+      const { fixture, el } = renderCalendarWith();
+      flushBill('500.0000');
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid, .bill-dot').length).toBe(0);
     });
 
     it('hides a statement that cannot be read', () => {
@@ -1628,18 +2691,18 @@ describe('LedgerTimelineComponent', () => {
       requests.summary.flush('boom', { status: 500, statusText: 'Server Error' });
       requests.payments.flush({ items: [], total: 0, limit: 100, offset: 0 });
       fixture.detectChanges();
-      expect(el.querySelectorAll('.due-badge').length).toBe(0);
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid').length).toBe(0);
     });
 
     it('shows what was paid and what remains on a partly paid statement', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('-12345.0000', ['5000.0000']);
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('');
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')!.querySelector('i.pi-credit-card')).not.toBeNull();
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
 
       selectDay(fixture, el, '2026-10-05');
-      const line = el.querySelector('.day-entries .bill')!;
+      showDayRowsInList(fixture);
+      const line = el.querySelector('app-calendar-day-panel .bill')!;
       expect(text(line)).toBe('玉山 UNI 帳單 $12,345 · 到期 已繳 $5,000 · 剩餘 $7,345');
       expect(line.querySelector('i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
       expect(line.classList).toContain('partial');
@@ -1658,11 +2721,11 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       const requests = billRequests();
       fixture.detectChanges();
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')).not.toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid')).not.toBeNull();
 
       answerBill(requests, '-12345.0000', ['12345.0000']);
       fixture.detectChanges();
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')).toBeNull();
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('已繳');
     });
 
     it('resolves each statement once while moving between months', () => {
@@ -1676,7 +2739,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-11');
       flushBill('-200.0000', [], OCT_CYCLE);
       fixture.detectChanges();
-      expect(cell(el, '2026-11-04').querySelector('.due-badge')).not.toBeNull();
+      expect(cell(el, '2026-11-04').querySelector('.tag-bill, .tag-paid')).not.toBeNull();
 
       (el.querySelector('.month-prev') as HTMLButtonElement).click();
       fixture.detectChanges();
@@ -1684,7 +2747,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       expectNoBillRequest();
       fixture.detectChanges();
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')).not.toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid')).not.toBeNull();
     });
 
     it('announces the unpaid due days of the next 7 days in the list and opens the first in the calendar', () => {
@@ -1703,8 +2766,8 @@ describe('LedgerTimelineComponent', () => {
 
       expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
       expect(cell(el, '2026-10-05').getAttribute('aria-pressed')).toBe('true');
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('玉山 UNI 帳單 $12,345 · 到期');
-      expect(el.querySelector('.day-entries .bill i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
+      expect(text(el.querySelector('app-calendar-day-panel .bill'))).toBe('玉山 UNI 帳單 $12,345 · 到期');
+      expect(el.querySelector('app-calendar-day-panel .bill i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
       expect(el.querySelector('.bill-banner')).toBeNull();
     });
 
@@ -1726,8 +2789,8 @@ describe('LedgerTimelineComponent', () => {
 
       expect(text(el.querySelector('.month-label'))).toBe('2026 年 11 月');
       expect(cell(el, '2026-11-04').getAttribute('aria-pressed')).toBe('true');
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('玉山 UNI 帳單 $200 · 到期');
-      expect(el.querySelector('.day-entries .bill i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
+      expect(text(el.querySelector('app-calendar-day-panel .bill'))).toBe('玉山 UNI 帳單 $200 · 到期');
+      expect(el.querySelector('app-calendar-day-panel .bill i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
     });
 
     const ALAN: Counterparty = { id: 1, name: 'Alan', open_amounts: [{ currency: 'TWD', amount: '220.0000' }], open_count: 2 };
@@ -1882,8 +2945,7 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith([...ACCOUNTS, monthly]);
       flushBill('-500.0000', [], { start: '2026-09-01', end: '2026-09-30', due: '2026-10-05', paidTo: '2026-10-02' });
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('');
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')!.querySelector('i.pi-credit-card')).not.toBeNull();
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
       expect(cell(el, '2026-10-31').classList).toContain('closing');
     });
 
@@ -1902,11 +2964,12 @@ describe('LedgerTimelineComponent', () => {
       });
       fixture.detectChanges();
 
-      expect(el.querySelectorAll('.due-badge').length).toBe(1);
-      expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid').length).toBe(1);
+      expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10 月 5 日 週一，1 張卡繳費到期');
       selectDay(fixture, el, '2026-10-05');
-      expect(Array.from(el.querySelectorAll('.day-entries .bill')).map(text)).toEqual(['玉山 UNI 帳單 $1,234 · 到期']);
-      expect(el.querySelectorAll('.day-entries .bill i.pi-credit-card').length).toBe(1);
+      showDayRowsInList(fixture);
+      expect(Array.from(el.querySelectorAll('app-calendar-day-panel .bill')).map(text)).toEqual(['玉山 UNI 帳單 $1,234 · 到期']);
+      expect(el.querySelectorAll('app-calendar-day-panel .bill i.pi-credit-card').length).toBe(1);
     });
 
     it('renders nothing and asks for no statement without credit cards', () => {
@@ -1918,7 +2981,7 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
       flushDaily('2026-10');
       fixture.detectChanges();
-      expect(el.querySelectorAll('.due-badge, .cell.closing').length).toBe(0);
+      expect(el.querySelectorAll('.week .tag, .cell.closing').length).toBe(0);
       selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
     });
@@ -2035,10 +3098,11 @@ describe('LedgerTimelineComponent', () => {
       expect(getComputedStyle(el.querySelector('.dist-bar')!).height).toBe('8px');
     });
 
-    it('shows the legend at the panes layout (calendar view by default there)', () => {
+    it('shows the legend in the 清單 at the panes layout', () => {
+      localStorage.setItem(VIEW_KEY, 'list');
       const { fixture, el } = render('panes');
       flushSummary('2026-10', CANVAS_SUMMARY);
-      flushDaily('2026-10');
+      flushEntries([]);
       fixture.detectChanges();
       expect(segments(el)).toHaveLength(6);
       expect(el.querySelectorAll('.dist-list .dist-row')).toHaveLength(6);
@@ -2279,10 +3343,903 @@ describe('LedgerTimelineComponent', () => {
     expect(members.map(member => text(member.querySelector('.name')))).toEqual(['回饋 1', '回饋 2']);
     expect(navigate).not.toHaveBeenCalled();
     members[1].click();
-    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 2]);
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 2], {});
     head.click();
     fixture.detectChanges();
     expect(el.querySelectorAll('.entry-row.batch-member').length).toBe(0);
+  });
+  describe('calendar pane publishing', () => {
+    const CARD = makeAccount({ id: 9, name: '玉山 UNI', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
+
+    const pane = () => TestBed.inject(CalendarPaneService);
+
+    function renderPanes(accounts = ACCOUNTS) {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const rendered = render('panes', makePreference(), [], accounts);
+      flushSummary('2026-10');
+      flushDaily('2026-10', { days: [{ date: '2026-10-02', expense: '-734.0000', income: '0.0000', count: 2 }] });
+      rendered.fixture.detectChanges();
+      return rendered;
+    }
+
+    function pickDay(fixture: { detectChanges(): void }, el: HTMLElement, date: string, items: LedgerEntry[] = []): void {
+      el.querySelector<HTMLButtonElement>(`button.cell[data-date="${date}"]`)!.click();
+      fixture.detectChanges();
+      flushEntries(items);
+      fixture.detectChanges();
+    }
+
+    it("publishes the month's invoices and sets CalendarDataService.wide from the layout mode", () => {
+      const { fixture } = renderPanes();
+      expect(fakeCalendarData.wide()).toBe(true);
+      expect(pane().invoices()).toEqual([]);
+      fakeCalendarData.data.set({
+        ...EMPTY_CALENDAR_DATA,
+        invoices: [{ id: 1, issue_date: '2026-10-03' }, { id: 2, issue_date: '2026-10-22' }] as never,
+        invoiceState: 'ready',
+      });
+      fixture.detectChanges();
+      expect(pane().invoices().length).toBe(2);
+    });
+
+    it('hides the filter row, chips and 清除篩選 row in 日曆 with filters active; 清單 still shows them', () => {
+      const { fixture, el } = renderPanes();
+      el.querySelector<HTMLButtonElement>('.filter-toggle')!.click();
+      fixture.detectChanges();
+      httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+      const select = el.querySelector<HTMLSelectElement>('.filter-account')!;
+      select.value = '7';
+      select.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+      httpMock!.match(() => true).forEach(r => !r.cancelled && r.flush(r.request.url.includes('daily') ? { days: [] } : []));
+      fixture.detectChanges();
+      expect(pane().chips().length).toBe(1);
+      expect(el.querySelector('.filter-bar-row')!.hasAttribute('hidden')).toBe(true);
+      expect(el.querySelector('.filter-chips')).toBeNull();
+      expect(el.querySelector('.match-row')).toBeNull();
+      viewButton(el, '清單').click();
+      fixture.detectChanges();
+      flushEntries([]);
+      httpMock!.match(() => true);
+      fixture.detectChanges();
+      expect(el.querySelector('.filter-bar-row')!.hasAttribute('hidden')).toBe(false);
+      expect(el.querySelector('.match-row')).not.toBeNull();
+    });
+
+    describe('account filter in 日曆', () => {
+      const openPanelNow = (fixture: { detectChanges(): void }, el: HTMLElement) => {
+        el.querySelector<HTMLButtonElement>('.filter-toggle')!.click();
+        fixture.detectChanges();
+        httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+      };
+      const chooseAccount = (fixture: { detectChanges(): void }, el: HTMLElement, id: string) => {
+        const select = el.querySelector<HTMLSelectElement>('.filter-account')!;
+        select.value = id;
+        select.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+        httpMock!.match(() => true).forEach(r => !r.cancelled && r.flush(r.request.url.includes('daily') ? { days: [] } : []));
+        fixture.detectChanges();
+      };
+      const chipTexts = (el: HTMLElement) => Array.from(el.querySelectorAll('.filter-chip')).map(c => text(c).replace(/\s*[×✕x]$/, '').trim());
+
+      it('puts the account select first in the opened panel, not in the primary slot', () => {
+        const { fixture, el } = renderPanes();
+        expect(el.querySelector('.slot-primary .filter-account')).toBeNull();
+        expect(el.querySelector('.filter-account')).toBeNull();
+        openPanelNow(fixture, el);
+        const first = el.querySelector('.filter-panel .slot-secondary .hub-filter-field');
+        expect(first?.querySelector('.filter-account')).not.toBeNull();
+        expect(text(first!.querySelector('.field-label'))).toBe('帳戶');
+      });
+
+      it('adds the 帳戶 chip and 篩選 1 when an account is chosen; 重設 clears it; the pane gets the chip', () => {
+        const { fixture, el } = renderPanes();
+        openPanelNow(fixture, el);
+        chooseAccount(fixture, el, '7');
+        expect(chipTexts(el)).toEqual([]);
+        expect(text(el.querySelector('.filter-toggle'))).toBe('篩選 1');
+        expect(pane().chips().map(c => c.label)).toEqual(['帳戶：富邦 J卡']);
+        el.querySelector<HTMLButtonElement>('.panel-reset')!.click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(pane().chips()).toEqual([]);
+      });
+
+      it('pane commands.removeFilter("account") clears the account', () => {
+        const { fixture, el } = renderPanes();
+        openPanelNow(fixture, el);
+        chooseAccount(fixture, el, '7');
+        pane().commands()!.removeFilter('account');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(pane().chips()).toEqual([]);
+      });
+
+      it('commands.toggleFilters opens the panel anchored to the given button, reading the filter bar at call time', () => {
+        const { fixture, el } = renderPanes();
+        const anchor = document.createElement('button');
+        document.body.appendChild(anchor);
+        pane().commands()!.toggleFilters(anchor);
+        fixture.detectChanges();
+        httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+        expect(el.querySelector('.filter-panel.popover')).not.toBeNull();
+        anchor.remove();
+      });
+
+      it("publishes the open filter panel's id (null while closed) for the right pane's 篩選 button", () => {
+        const { fixture, el } = renderPanes();
+        expect(pane().filterPanel()).toBeNull();
+        const anchor = document.createElement('button');
+        document.body.appendChild(anchor);
+        pane().commands()!.toggleFilters(anchor);
+        fixture.detectChanges();
+        httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+        const panel = el.querySelector('.filter-panel.popover')!;
+        expect(panel.id).not.toBe('');
+        expect(pane().filterPanel()).toBe(panel.id);
+        pane().commands()!.toggleFilters(anchor);
+        fixture.detectChanges();
+        expect(pane().filterPanel()).toBeNull();
+        anchor.remove();
+      });
+
+      it('a view change (日曆 → 清單) closes an anchored panel without focusing its anchor', () => {
+        const { fixture, el } = renderPanes();
+        const anchor = document.createElement('button');
+        document.body.appendChild(anchor);
+        const focus = vi.spyOn(anchor, 'focus');
+        pane().commands()!.toggleFilters(anchor);
+        fixture.detectChanges();
+        httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+        expect(el.querySelector('.filter-panel')).not.toBeNull();
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(el.querySelector('.filter-panel')).toBeNull();
+        expect(focus).not.toHaveBeenCalled();
+        expect(pane().filterPanel()).toBeNull();
+        anchor.remove();
+      });
+
+      it('keeps the account in 清單 inline without a chip, and keeps the filter across 日曆 to 清單 to 日曆', () => {
+        const { fixture, el } = renderPanes();
+        openPanelNow(fixture, el);
+        chooseAccount(fixture, el, '7');
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        flushEntries([]);
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(el.querySelector('.slot-primary .filter-account')).not.toBeNull();
+        expect((el.querySelector('.filter-account') as HTMLSelectElement).value).toBe('7');
+        expect(el.querySelector('.filter-chip')).toBeNull();
+        viewButton(el, '日曆').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(pane().chips().map(c => c.label)).toEqual(['帳戶：富邦 J卡']);
+        if (!el.querySelector('.filter-panel')) openPanelNow(fixture, el);
+        expect(el.querySelector<HTMLSelectElement>('.filter-panel .filter-account')!.value).toBe('7');
+      });
+    });
+
+    it('publishes the 日曆 view and the month to the pane services', () => {
+      const { fixture, el } = renderPanes();
+      expect(TestBed.inject(AccountingOverviewService).calendar()).toBe(true);
+      expect(pane().month()).toBe('2026-10');
+      expect(pane().today()).toBe('2026-10-02');
+      viewButton(el, '清單').click();
+      fixture.detectChanges();
+      flushEntries([]);
+      expect(TestBed.inject(AccountingOverviewService).calendar()).toBe(false);
+    });
+
+    it('publishes the selected day, its rows with time, net and bill lines', () => {
+      const { fixture, el } = renderPanes();
+      el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+      fixture.detectChanges();
+      expect(pane().selectedDay()).toBe('2026-10-21');
+      expect(pane().dayState()).toBe('loading');
+      flushEntries([makeEntry({ id: 5, entry_date: '2026-10-21', entry_time: '12:30:00', amount: '-120.0000' })]);
+      fixture.detectChanges();
+      expect(pane().dayRows().length).toBe(1);
+      expect(pane().dayRows()[0].time).toBe('12:30');
+      expect(pane().dayNet()!.text).toBe('−$120');
+      expect(pane().dayState()).toBe('ready');
+      expect(pane().billLines()).toEqual([]);
+
+      el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-22"]')!.click();
+      fixture.detectChanges();
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(pane().dayState()).toBe('error');
+    });
+
+    it('gives a row without a time a null time', () => {
+      const { fixture, el } = renderPanes();
+      pickDay(fixture, el, '2026-10-21', [makeEntry({ id: 5, entry_date: '2026-10-21', entry_time: null })]);
+      expect(pane().dayRows()[0].time).toBeNull();
+    });
+
+    it('publishes the month dues', () => {
+      const { fixture } = renderPanes([...ACCOUNTS, CARD]);
+      // Closing day 15 + 20 days: the 08/16 - 09/15 statement is due 10/05.
+      const summary = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary' && r.params.get('date_to') === '2026-09-15');
+      const payments = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries' && r.params.get('date_from') === '2026-09-15');
+      summary.flush({ account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-12345.0000', income: '0', rewards: '0', net: '-12345.0000', end_balance: '-12345.0000', count: 4 });
+      payments.flush({ items: [], total: 0, limit: 100, offset: 0 });
+      fixture.detectChanges();
+      expect(pane().monthDues()).toEqual([{ key: expect.any(String), accountId: 9, name: '玉山 UNI', date: '2026-10-05', amountText: '$12,345' }]);
+    });
+
+    it('publishes no month due for a fully paid statement', () => {
+      const { fixture } = renderPanes([...ACCOUNTS, CARD]);
+      const summary = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary' && r.params.get('date_to') === '2026-09-15');
+      const payments = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries' && r.params.get('date_from') === '2026-09-15');
+      summary.flush({ account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-500.0000', income: '0', rewards: '0', net: '-500.0000', end_balance: '-500.0000', count: 1 });
+      payments.flush({ items: [makeEntry({ id: 40, kind: 'transfer_in', account_id: 9, amount: '500.0000' })], total: 1, limit: 100, offset: 0 });
+      fixture.detectChanges();
+      expect(pane().monthDues()).toEqual([]);
+    });
+
+    describe('near the end of the month', () => {
+      // Closing day 15, due 20 days later: the 10/15 statement is due 11/04 — inside today + 6 when today is 10/29.
+      beforeEach(() => vi.setSystemTime(new Date(2026, 9, 29, 12, 0, 0)));
+
+      function answerCycle(end: string, start: string, paidTo: string, spend: string): void {
+        httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary' && r.params.get('date_to') === end)
+          .flush({ account_id: 9, currency: 'TWD', date_from: start, date_to: end, spend, income: '0', rewards: '0', net: spend, end_balance: spend, count: 2 });
+        httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries' && r.params.get('date_from') === end && r.params.get('date_to') === paidTo)
+          .flush({ items: [], total: 0, limit: 100, offset: 0 });
+      }
+
+      it('adds near-term dues from next month in the current month only', () => {
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const { fixture } = render('panes', makePreference(), [], [...ACCOUNTS, CARD]);
+        flushSummary('2026-10');
+        flushDaily('2026-10');
+        answerCycle('2026-10-15', '2026-09-16', '2026-10-29', '-800.0000');
+        fixture.detectChanges();
+        expect(pane().monthDues().map(due => due.date)).toContain('2026-11-04');
+
+        fixture.componentInstance.moveMonth(-1);
+        fixture.detectChanges();
+        flushSummary('2026-09');
+        flushDaily('2026-09');
+        for (const request of httpMock!.match(r => r.url.startsWith('/api/accounting/accounts/9/'))) {
+          request.flush(request.request.url.endsWith('/summary')
+            ? { account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '0', income: '0', rewards: '0', net: '0', end_balance: '0', count: 0 }
+            : { items: [], total: 0, limit: 100, offset: 0 });
+        }
+        fixture.detectChanges();
+        expect(pane().monthDues().map(due => due.date)).not.toContain('2026-11-04');
+      });
+
+      it('never adds a due outside today + 6', () => {
+        const card = makeAccount({ id: 9, name: '玉山 UNI', is_credit: true, closing_day: 21, due_rule: 'days_after_closing', due_value: 20 });
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const { fixture } = render('panes', makePreference(), [], [...ACCOUNTS, card]);
+        flushSummary('2026-10');
+        flushDaily('2026-10');
+        // closing 10/21 + 20 days = 11/10, beyond 11/04: no statement is read for the near-term window.
+        for (const request of httpMock!.match(r => r.url.startsWith('/api/accounting/accounts/9/'))) {
+          request.flush(request.request.url.endsWith('/summary')
+            ? { account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-900.0000', income: '0', rewards: '0', net: '-900.0000', end_balance: '-900.0000', count: 1 }
+            : { items: [], total: 0, limit: 100, offset: 0 });
+        }
+        fixture.detectChanges();
+        expect(pane().monthDues().map(due => due.date)).not.toContain('2026-11-10');
+      });
+    });
+
+    it('publishes a 今天 card for the current month only', () => {
+      todayItems = [makeEntry({ id: 1, name: '早餐' }), makeEntry({ id: 2, name: '捷運' })];
+      const { fixture } = renderPanes();
+      expect(pane().todayCard()).toEqual({ date: '2026-10-02', count: 2, names: '早餐、捷運', netText: '−$734', net: -734 });
+
+      fixture.componentInstance.moveMonth(-1);
+      fixture.detectChanges();
+      flushSummary('2026-09');
+      flushDaily('2026-09');
+      expect(pane().todayCard()).toBeNull();
+      expect(flushTodayRead()).toBe(0);
+    });
+
+    it('publishes the main currency and whether a search or list filter is active', () => {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const { fixture } = render('panes', makePreference({ main_currency: 'USD' }));
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      fixture.detectChanges();
+      expect(pane().mainCurrency()).toBe('USD');
+      expect(pane().filtered()).toBe(false);
+      fixture.componentInstance.setKind('expense');
+      fixture.detectChanges();
+      expect(pane().filtered()).toBe(true);
+      fixture.componentInstance.clearFilters();
+      fixture.detectChanges();
+      expect(pane().filtered()).toBe(false);
+    });
+
+    it('registers retryDay, which reads the selected day again after a failure', () => {
+      const { fixture, el } = renderPanes();
+      el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+      fixture.detectChanges();
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(pane().dayState()).toBe('error');
+      pane().commands()!.retryDay();
+      const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
+      expect(req.request.params.get('date_from')).toBe('2026-10-21');
+      req.flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-21' })], total: 1, limit: 500, offset: 0 });
+      fixture.detectChanges();
+      expect(pane().dayState()).toBe('ready');
+      expect(pane().dayRows().length).toBe(1);
+    });
+
+    it('registers setQuery, which sets the filter-bar query like the debounce does', () => {
+      const { fixture } = renderPanes();
+      pane().commands()!.setQuery('  咖啡 ');
+      expect(fixture.componentInstance.query()).toBe('咖啡');
+      fixture.detectChanges();
+      flushEntries([]); // 日曆 + a search reads the month's matches
+      expect(pane().search()).toBe('咖啡');
+    });
+
+    describe('本月摘要 search', () => {
+      const search = (el: HTMLElement) => el.querySelector<HTMLInputElement>('input.filter-q')!;
+
+      it('a 本月摘要 search loads the month list with q and publishes the result days', () => {
+        const { fixture } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        expect(pane().search()).toBe('全聯');
+        expect(pane().searchState()).toBe('loading');
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
+        expect(req.request.params.get('q')).toBe('全聯');
+        expect(req.request.params.get('date_from')).toBe('2026-10-01');
+        expect(req.request.params.get('date_to')).toBe('2026-10-31');
+        req.flush({
+          items: [makeEntry({ id: 1, name: '全聯', entry_date: '2026-10-05' }), makeEntry({ id: 2, name: '全聯福利中心', entry_date: '2026-10-05' })],
+          total: 2, limit: 50, offset: 0,
+        });
+        fixture.detectChanges();
+        expect(pane().searchDays().length).toBe(1);
+        expect(pane().searchDays()[0].rows.length).toBe(2);
+        expect(pane().searchState()).toBe('ready');
+      });
+
+      it('publishes whether the month has more matches; loadMore reads the next page and the result days grow', () => {
+        const { fixture } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        const first = Array.from({ length: 50 }, (_, i) => makeEntry({ id: i + 1, name: '全聯', entry_date: '2026-10-05' }));
+        flushEntries(first, 60);
+        fixture.detectChanges();
+        expect(pane().searchHasMore()).toBe(true);
+        expect(pane().searchDays().flatMap(day => day.rows).length).toBe(50);
+
+        pane().commands()!.loadMore();
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
+        expect(req.request.params.get('offset')).toBe('50');
+        expect(req.request.params.get('q')).toBe('全聯');
+        expect(pane().searchState()).toBe('ready');
+        const rest = Array.from({ length: 10 }, (_, i) => makeEntry({ id: 51 + i, name: '全聯', entry_date: '2026-10-04' }));
+        req.flush({ items: rest, total: 60, limit: 50, offset: 50 });
+        fixture.detectChanges();
+        expect(pane().searchHasMore()).toBe(false);
+        expect(pane().searchDays().map(day => [day.date, day.rows.length])).toEqual([['2026-10-05', 50], ['2026-10-04', 10]]);
+      });
+
+      it('registers retrySearch, which reads the month matches again after a failure', () => {
+        const { fixture } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush('boom', { status: 500, statusText: 'Server Error' });
+        fixture.detectChanges();
+        expect(pane().searchState()).toBe('error');
+        expect(pane().searchHasMore()).toBe(false);
+        pane().commands()!.retrySearch();
+        fixture.detectChanges();
+        expect(pane().searchState()).toBe('loading');
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
+        expect([req.request.params.get('q'), req.request.params.get('offset')]).toEqual(['全聯', '0']);
+        req.flush({ items: [makeEntry({ id: 1, name: '全聯', entry_date: '2026-10-05' })], total: 1, limit: 50, offset: 0 });
+        fixture.detectChanges();
+        expect(pane().searchState()).toBe('ready');
+      });
+
+      it('clearing the search drops the result list and empties both boxes', () => {
+        const { fixture, el } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        flushEntries([makeEntry({ id: 1, name: '全聯', entry_date: '2026-10-05' })]);
+        fixture.detectChanges();
+        expect(search(el).value).toBe('全聯');
+        pane().commands()!.setQuery('');
+        fixture.detectChanges();
+        expect(pane().searchDays()).toEqual([]);
+        expect(pane().searchState()).toBe('ready');
+        expect(pane().search()).toBe('');
+        expect(search(el).value).toBe('');
+        expectNoEntryPage();
+      });
+
+      it('typing in the 本月摘要 box updates the filter-bar input (and not while the filter bar is focused)', () => {
+        const { fixture, el } = renderPanes();
+        document.body.appendChild(el);
+        try {
+          pane().commands()!.setQuery('全聯');
+          fixture.detectChanges();
+          flushEntries([]);
+          expect(search(el).value).toBe('全聯');
+          search(el).focus();
+          expect(document.activeElement).toBe(search(el));
+          pane().commands()!.setQuery('x');
+          fixture.detectChanges();
+          flushEntries([]);
+          expect(fixture.componentInstance.query()).toBe('x');
+          expect(search(el).value).toBe('全聯');
+        } finally {
+          el.remove();
+        }
+      });
+
+      it("a selected day's rows use the 本月摘要 search as q (Review Focus 2)", () => {
+        const { fixture, el } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        flushEntries([makeEntry({ id: 1, name: '全聯', entry_date: '2026-10-21' })]);
+        fixture.detectChanges();
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+        fixture.detectChanges();
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
+        expect(req.request.params.get('q')).toBe('全聯');
+        expect(req.request.params.get('date_from')).toBe('2026-10-21');
+        req.flush({ items: [], total: 0, limit: 500, offset: 0 });
+      });
+    });
+
+    it('publishes the day rows with reward batches unfolded (one row per entry)', () => {
+      const { fixture, el } = renderPanes();
+      pickDay(fixture, el, '2026-10-21', [batchReward(1, '2.0000'), batchReward(2, '3.0000')]);
+      expect(pane().dayRows().map(row => [row.entryId, row.batch ?? null])).toEqual([[1, null], [2, null]]);
+    });
+
+    describe('openInvoice', () => {
+      const target = (kind: 'entry' | 'group', id: number): EinvoiceTarget => ({
+        kind, id, account_name: '測試卡', date: '2026-10-21', amount: '-120.0000', currency: 'TWD', category: null, name: null,
+      });
+      const invoice = (candidates: EinvoiceTarget[]): InboxEinvoice => ({
+        id: 3, number: 'AB00000001', issue_date: '2026-10-21', seller_name: '測試商店', seller_tax_id: '00000000',
+        total_amount: '120', status_raw: '', state: 'ambiguous', items: [], candidates, offer_mute: false,
+      });
+      const split = { id: 40, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-300.0000', currency: 'TWD' };
+
+      /** Opens the invoice, waits for the day write, then answers the day read with `items`. */
+      async function openWith(candidates: EinvoiceTarget[], items: LedgerEntry[]) {
+        const { fixture } = renderPanes();
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        pane().commands()!.openInvoice(invoice(candidates));
+        await fixture.whenStable();
+        expect(pane().selectedDay()).toBe('2026-10-21');
+        expect(navigate).toHaveBeenCalledTimes(1);
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        flushEntries(items);
+        fixture.detectChanges();
+        return navigate;
+      }
+
+      it('openInvoice selects the invoice day and opens its single entry candidate', async () => {
+        const navigate = await openWith([target('entry', 5)], [makeEntry({ id: 5, entry_date: '2026-10-21' })]);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
+      it('openInvoice opens the group of a split candidate through a member row', async () => {
+        const navigate = await openWith([target('group', 40)], [
+          makeEntry({ id: 8, entry_date: '2026-10-21' }),
+          makeEntry({ id: 41, entry_date: '2026-10-21', group: split }),
+          makeEntry({ id: 42, entry_date: '2026-10-21', group: split }),
+        ]);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 41, 'group'], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
+      it('openInvoice only selects the day when the group has no member row on that day (Review Focus 3)', async () => {
+        const navigate = await openWith([target('group', 40)], [makeEntry({ id: 8, entry_date: '2026-10-21' })]);
+        expect(navigate).not.toHaveBeenCalled();
+        expect(pane().selectedDay()).toBe('2026-10-21');
+      });
+
+      it('openInvoice retries a failed read of the already selected day and opens the candidate once it answers', async () => {
+        const { fixture, el } = renderPanes();
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush('boom', { status: 500, statusText: 'Server Error' });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(pane().dayState()).toBe('error');
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        pane().commands()!.openInvoice(invoice([target('entry', 5)]));
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        const retry = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
+        expect(retry.request.params.get('date_from')).toBe('2026-10-21');
+        expect(navigate).not.toHaveBeenCalled();
+        retry.flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-21' })], total: 1, limit: 500, offset: 0 });
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
+      it("an old day's read resolving after openInvoice wrote the invoice day does not cancel the pending invoice (M12)", async () => {
+        const { fixture, el } = renderPanes();
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-19"]')!.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        // 10/19's read is still in flight when the invoice line of 10/21 is picked.
+        const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19');
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        pane().commands()!.openInvoice(invoice([target('entry', 5)]));
+        expect(fixture.componentInstance.selectedDay()).toBe('2026-10-21');
+        stale.flush({ items: [makeEntry({ id: 8, entry_date: '2026-10-19' })], total: 1, limit: 500, offset: 0 });
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-21')
+          .flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-21' })], total: 1, limit: 500, offset: 0 });
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
+      it("an old day's read failing after openInvoice wrote the invoice day keeps the pending invoice and shows no error for the invoice day", async () => {
+        const { fixture, el } = renderPanes();
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-19"]')!.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19');
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        pane().commands()!.openInvoice(invoice([target('entry', 5)]));
+        expect(fixture.componentInstance.selectedDay()).toBe('2026-10-21');
+        // 10/19's read fails before the effects start 10/21's: that failure is not 10/21's.
+        stale.flush('boom', { status: 500, statusText: 'Server Error' });
+        expect(fixture.componentInstance.dayError()).toBe(false);
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-21')
+          .flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-21' })], total: 1, limit: 500, offset: 0 });
+        fixture.detectChanges();
+        expect(fixture.componentInstance.dayError()).toBe(false);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
+      it('openInvoice only selects the day with two candidates', async () => {
+        const navigate = await openWith([target('entry', 5), target('entry', 6)], [
+          makeEntry({ id: 5, entry_date: '2026-10-21' }),
+          makeEntry({ id: 6, entry_date: '2026-10-21' }),
+        ]);
+        expect(navigate).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('stepEntry', () => {
+      // The daily summary counts spend / income only: 10/20 (a card payment, a transfer) is 0 there but has rows.
+      const DAYS = [
+        { date: '2026-10-21', expense: '-300.0000', income: '0.0000', count: 3 },
+        { date: '2026-10-20', expense: '0.0000', income: '0.0000', count: 0 },
+        { date: '2026-10-19', expense: '-200.0000', income: '0.0000', count: 2 },
+      ];
+      const entry = (id: number, date: string, extra: Partial<LedgerEntry> = {}) => makeEntry({ id, entry_date: date, ...extra });
+      const page = (items: LedgerEntry[], limit = 500) => ({ items, total: items.length, limit, offset: 0 });
+      /** The drawer's neighbour-day read: the rest of the month on one side of the day, newest first. */
+      const isProbe = (r: { url: string; params: { get(name: string): string | null } }) =>
+        r.url === '/api/accounting/entries' && r.params.get('date_from') !== r.params.get('date_to');
+
+      /** Calendar at panes width with `date` selected (rows 5, 4, 3 unless `rows`) and entry `selected` open in the drawer. */
+      async function stepSetup(selected: number, date = '2026-10-21', preference = makePreference(), rows?: LedgerEntry[]) {
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const layout = { selectedEntryId: signal<number | null>(selected) };
+        const rendered = render('panes', preference, [{ provide: AccountingLayoutComponent, useValue: layout }], ACCOUNTS);
+        flushSummary('2026-10');
+        flushDaily('2026-10', { days: DAYS });
+        rendered.fixture.detectChanges();
+        rendered.el.querySelector<HTMLButtonElement>(`button.cell[data-date="${date}"]`)!.click();
+        rendered.fixture.detectChanges();
+        await rendered.fixture.whenStable();
+        flushEntries(rows ?? [entry(5, date), entry(4, date), entry(3, date)]);
+        rendered.fixture.detectChanges();
+        // Calls through, so the day write lands in the URL; callers mock the entry navigation once the day write is done.
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        return { ...rendered, navigate };
+      }
+      /** A step opens in place of the drawer's page (history unchanged), with the state `stepState` derives from it. */
+      const withDay = (day: string, state: object = {}) => ({ queryParams: { month: '2026-10', day }, state, replaceUrl: true });
+      /** The drawer's page state as history holds it (a child of a group view opened from the list). */
+      const CHILD = { groupDepth: 2, viaGroup: true };
+
+      it('stepEntry(1) opens the next row of the day', async () => {
+        const { navigate } = await stepSetup(5);
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4], withDay('2026-10-21'));
+      });
+
+      it('stepEntry(1) onto a split row opens its group view in place, one entry above the list', async () => {
+        const split = { id: 9, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-400.0000', currency: 'TWD' };
+        const day = '2026-10-21';
+        const { navigate } = await stepSetup(5, day, makePreference(), [
+          entry(5, day), entry(4, day, { group: split }), entry(6, day, { group: split }), entry(3, day),
+        ]);
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4, 'group'], withDay(day, { groupDepth: 1 }));
+      });
+
+      it('a step from a child of a group view keeps its depth, so ✕ on the stepped page still goes back to the list', async () => {
+        const { navigate } = await stepSetup(5);
+        vi.spyOn(TestBed.inject(Location), 'getState').mockReturnValue({ navigationId: 4, ...CHILD });
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4], withDay('2026-10-21', CHILD));
+      });
+
+      it("a step across days keeps the depth read before the day write (that write drops the history entry's state)", async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        const getState = vi.spyOn(TestBed.inject(Location), 'getState').mockReturnValue({ navigationId: 4, ...CHILD });
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        await fixture.whenStable();
+        getState.mockReturnValue({ navigationId: 5 });
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19', CHILD));
+      });
+
+      it('stepEntry(-1) opens the previous row of the day', async () => {
+        const { navigate } = await stepSetup(3);
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(-1);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4], withDay('2026-10-21'));
+      });
+
+      it("stepEntry(1) at the day's last row reads the nearest earlier entry, moves to its day and opens that day's newest row", async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        pane().commands()!.stepEntry(1);
+        const probe = httpMock!.expectOne(isProbe);
+        expect(probe.request.params.get('date_from')).toBe('2026-10-01');
+        expect(probe.request.params.get('date_to')).toBe('2026-10-20');
+        expect(probe.request.params.get('limit')).toBe('1');
+        expect(navigate).not.toHaveBeenCalled();
+        probe.flush(page([entry(2, '2026-10-19')], 1));
+        await fixture.whenStable();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith([], expect.objectContaining({
+          queryParams: { month: '2026-10', day: '2026-10-19' }, queryParamsHandling: 'merge', replaceUrl: true,
+        }));
+        expect(pane().selectedDay()).toBe('2026-10-19');
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r));
+        expect(req.request.params.get('date_from')).toBe('2026-10-19');
+        expect(navigate).not.toHaveBeenCalled();
+        req.flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19'));
+      });
+
+      it('stepEntry(-1) at the first row reads the rest of the month and opens the last row of the earliest later day', async () => {
+        const { fixture, navigate } = await stepSetup(5);
+        pane().commands()!.stepEntry(-1);
+        const probe = httpMock!.expectOne(isProbe);
+        expect(probe.request.params.get('date_from')).toBe('2026-10-22');
+        expect(probe.request.params.get('date_to')).toBe('2026-10-31');
+        // The API has no ascending order: the newest-first page's last item is the earliest later entry.
+        expect(probe.request.params.get('limit')).toBe('500');
+        probe.flush(page([entry(9, '2026-10-25'), entry(8, '2026-10-23')]));
+        await fixture.whenStable();
+        expect(pane().selectedDay()).toBe('2026-10-23');
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush(page([entry(8, '2026-10-23'), entry(7, '2026-10-23')]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 7], withDay('2026-10-23'));
+      });
+
+      it('stepEntry reaches a transfer-only day the daily summary counts as 0', async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        pane().commands()!.stepEntry(1);
+        const payment = entry(11, '2026-10-20', { kind: 'transfer_out', amount: '-5000.0000', transfer_group_id: 'pay-1' });
+        httpMock!.expectOne(isProbe).flush(page([payment], 1));
+        await fixture.whenStable();
+        expect(pane().selectedDay()).toBe('2026-10-20');
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush(page([
+          payment, entry(12, '2026-10-20', { kind: 'transfer_in', amount: '5000.0000', account_id: 7, transfer_group_id: 'pay-1' }),
+        ]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 11], withDay('2026-10-20'));
+      });
+
+      it('stepEntry reads the neighbour day with the list filters, so a day whose rows the filters hide is skipped', async () => {
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const layout = { selectedEntryId: signal<number | null>(3) };
+        const { fixture, el } = render('panes', makePreference({ hide_rewards_on_timeline: true }), [{ provide: AccountingLayoutComponent, useValue: layout }], ACCOUNTS);
+        flushSummary('2026-10');
+        flushDaily('2026-10', { days: DAYS });
+        fixture.detectChanges();
+        const timeline = fixture.componentInstance;
+        timeline.setAccount('1');
+        timeline.setKind('expense');
+        timeline.setTag('旅行');
+        timeline.setQuery('咖啡');
+        fixture.detectChanges();
+        // 日曆 + a search reads the month's matches for the right pane's results.
+        flushEntries([]);
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        flushEntries([entry(3, '2026-10-21')]);
+        fixture.detectChanges();
+
+        pane().commands()!.stepEntry(1);
+        const probe = httpMock!.expectOne(isProbe);
+        const params = probe.request.params;
+        expect([params.get('date_from'), params.get('date_to'), params.get('limit')]).toEqual(['2026-10-01', '2026-10-20', '1']);
+        expect(params.getAll('account_id')).toEqual(['1']);
+        expect(params.get('kind')).toBe('expense');
+        expect(params.get('q')).toBe('咖啡');
+        expect(params.getAll('tag')).toEqual(['旅行']);
+        expect(params.get('hide_rewards')).toBe('true');
+        // The server skips 10/20 and 10/19 (nothing there passes the filters): the nearest kept entry is on 10/12.
+        probe.flush(page([entry(1, '2026-10-12')], 1));
+        await fixture.whenStable();
+        expect(pane().selectedDay()).toBe('2026-10-12');
+        fixture.detectChanges();
+        flushEntries([]);
+      });
+
+      it('stepEntry does nothing when no entry is left on that side of the month (Review Focus 4)', async () => {
+        const { fixture, navigate } = await stepSetup(5);
+        pane().commands()!.stepEntry(-1);
+        httpMock!.expectOne(isProbe).flush(page([]));
+        await fixture.whenStable();
+        expect(navigate).not.toHaveBeenCalled();
+        expect(pane().selectedDay()).toBe('2026-10-21');
+        httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+      });
+
+      it("stepEntry does nothing past the month's first or last day, without a read", async () => {
+        const first = await stepSetup(3, '2026-10-01');
+        first.navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        await first.fixture.whenStable();
+        expect(first.navigate).not.toHaveBeenCalled();
+        httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+        TestBed.resetTestingModule();
+
+        const last = await stepSetup(5, '2026-10-31');
+        pane().commands()!.stepEntry(-1);
+        await last.fixture.whenStable();
+        expect(last.navigate).not.toHaveBeenCalled();
+        expect(pane().selectedDay()).toBe('2026-10-31');
+        httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+      });
+
+      it('stepEntry does nothing when the open entry is not on the day panel', async () => {
+        const { navigate } = await stepSetup(99);
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        expect(navigate).not.toHaveBeenCalled();
+        httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+      });
+
+      it('stepEntry drops the pending open when the day read fails', async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush('boom', { status: 500, statusText: 'Server Error' });
+        fixture.detectChanges();
+        expect(pane().dayState()).toBe('error');
+        pane().commands()!.openInvoice({ id: 1, issue_date: '2026-10-19', candidates: [] } as unknown as InboxEinvoice);
+        await fixture.whenStable();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush(page([entry(2, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate.mock.calls.filter(call => call[0][0] === '/accounting/entries')).toEqual([]);
+      });
+
+      it("an old day's read resolving after stepEntry wrote the new day does not cancel the pending open (M12)", async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        // A refresh of 10/21 is in flight when ↓ crosses the day edge.
+        fixture.componentInstance.retryDay();
+        const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-21');
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        expect(fixture.componentInstance.selectedDay()).toBe('2026-10-19');
+        // Zoneless: the old day's answer lands before the effects start the new day's read.
+        stale.flush(page([entry(5, '2026-10-21'), entry(4, '2026-10-21'), entry(3, '2026-10-21')]));
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19')
+          .flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19'));
+      });
+
+      it("an old day's read failing after stepEntry wrote the new day keeps the pending open and shows no error for the new day", async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        // A refresh of 10/21 is in flight when ↓ crosses the day edge.
+        fixture.componentInstance.retryDay();
+        const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-21');
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        expect(fixture.componentInstance.selectedDay()).toBe('2026-10-19');
+        // Zoneless: the old day's failure lands before the effects start the new day's read.
+        stale.flush('boom', { status: 500, statusText: 'Server Error' });
+        expect(fixture.componentInstance.dayError()).toBe(false);
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19')
+          .flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(fixture.componentInstance.dayError()).toBe(false);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19'));
+      });
+
+      it('a pending open is dropped once another day is picked before it settles', async () => {
+        const { fixture, el, navigate } = await stepSetup(3);
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        await fixture.whenStable();
+        fixture.detectChanges();
+        const step = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19');
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-25"]')!.click();
+        // 10/19's answer lands after the owner picked 10/25 (before 10/25's read starts): nothing opens.
+        step.flush(page([entry(2, '2026-10-19')]));
+        await fixture.whenStable();
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-25').flush(page([]));
+        fixture.detectChanges();
+        // Back on 10/19 later: nothing opens by itself either.
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-19"]')!.click();
+        await fixture.whenStable();
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19')
+          .flush(page([entry(2, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate.mock.calls.filter(call => call[0][0] === '/accounting/entries')).toEqual([]);
+      });
+    });
+
+    it('clears the pane services when destroyed', () => {
+      const { fixture, el } = renderPanes();
+      pickDay(fixture, el, '2026-10-21', [makeEntry({ id: 5, entry_date: '2026-10-21' })]);
+      expect(pane().selectedDay()).toBe('2026-10-21');
+      fixture.destroy();
+      expect(pane().selectedDay()).toBeNull();
+      expect(pane().dayRows()).toEqual([]);
+      expect(pane().commands()).toBeNull();
+      expect(TestBed.inject(AccountingOverviewService).calendar()).toBe(false);
+    });
   });
 });
 
@@ -2418,5 +4375,44 @@ describe('buildDays', () => {
       expect(buildDays([reward(1, '2.0000'), reward(2, '3.0000')], 'TWD', true)).toEqual([]);
     });
 
+  });
+  describe('month bar styles (#370)', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/timeline/timeline.scss'), 'utf8');
+
+    it('never wraps the month label', () => {
+      const block = css.match(/\.monthbar \{[\s\S]*?\n  b \{([^}]*)\}/)?.[1] ?? '';
+      expect(block).toContain('white-space: nowrap');
+    });
+
+    it('moves the figures as a whole onto their own row when the bar itself is narrow', () => {
+      expect(css).toMatch(/\.monthbar \{[^}]*container: monthbar \/ inline-size/);
+      const query = css.match(/@container monthbar \(max-width: 603\.98px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
+      expect(query).toContain('.monthbar-figures');
+      expect(query).toContain('flex-basis: 100%');
+      expect(query).toContain('order: 3');
+      expect(css.match(/\.monthbar-figures \{([^}]*)\}/)?.[1]).toContain('flex-wrap: nowrap');
+    });
+
+    it('shows the full amounts by default and hides only the abbreviated twin (tier 1)', () => {
+      const figures = css.match(/\.monthbar-figures \{[\s\S]*?\n\}/)?.[0] ?? '';
+      expect(figures).toMatch(/\.fig-short \{\s*display: none;/);
+      expect(figures).not.toMatch(/\.fig-full \{/);
+    });
+
+    it('abbreviates on the same row between 604 and 699px and keeps the full text visually hidden (tier 2)', () => {
+      const query = css.match(/@container monthbar \(min-width: 604px\) and \(max-width: 699\.98px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
+      expect(query).toMatch(/\.fig-short \{\s*display: inline;/);
+      const full = query.match(/\.fig-full \{([^}]*)\}/)?.[1] ?? '';
+      expect(full).toContain('clip: rect(0 0 0 0)');
+      expect(full).toContain('position: absolute');
+      expect(full).toContain('width: 1px');
+      expect(full).not.toContain('display: none');
+      expect(query).not.toContain('flex-basis');
+    });
+
+    it('does not abbreviate below 604px; the tier 3 query leaves both spans at their tier 1 state', () => {
+      const query = css.match(/@container monthbar \(max-width: 603\.98px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
+      expect(query).not.toContain('.fig-');
+    });
   });
 });

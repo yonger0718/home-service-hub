@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { dueDate, periodLabel, shiftPeriod, statementPeriod } from './cycle';
+import { cycleText, dueDate, periodLabel, shiftPeriod, statementPeriod } from './cycle';
 
 describe('statement cycle', () => {
   it('computes 09/16 – 10/15 for closing day 15 on 2026-10-02', () => {
     const period = statementPeriod(15, '2026-10-02');
     expect(period).toEqual({ start: '2026-09-16', end: '2026-10-15' });
     expect(periodLabel(period)).toBe('09/16 – 10/15');
+    expect(cycleText(period)).toBe('09/16–10/15');
   });
 
   it('moves to the next cycle after the closing day', () => {

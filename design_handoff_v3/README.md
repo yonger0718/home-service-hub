@@ -4,6 +4,8 @@ Design reference for two OpenSpec changes:
 
 - `openspec/changes/add-notification-center/` — one site-wide 通知 page, a quieter count, a one-case-at-a-time reconciliation flow, one toast and one banner style; e-invoice flow, page, entry card and settings added 2026-11-07 (D10–D12).
 - `openspec/changes/add-accounting-reports/` — 財務 › 報表 (總覽, 趨勢與比較, 排行, 專案與預算) and saved custom reports.
+- `openspec/changes/polish-reward-and-account-settings/` — 回饋規則總覽 cards with cap bars, sectioned 帳戶設定, one 回饋 section in entry detail (added 2026-11-07).
+- `openspec/changes/archive/2026-11-10-add-ledger-calendar-view/` — the timeline's 日曆 view, calendar first: richer day cells, 本月摘要 or the picked day beside the grid, the entry as a drawer (added 2026-11-07).
 
 Read each change's `design.md` for the decisions and `specs/` for the requirements. Drawn on the design canvas on 2026-10-24 (notifications) and 2026-10-30 (reports, custom reports); the owner asked for this handoff on 2026-10-31. **Nothing in this folder is production code.**
 
@@ -28,6 +30,14 @@ The visual system is the one in `frontend/src/styles.scss` (v2 handoff plus the 
 | `ReportsPhone.dc.html` | 報表 | `/accounting/reports` | 390 | tabs, category expand, ranking dimension |
 | `ReportBuilder.dc.html` | 自訂報表 editor with three saved reports and the empty state | `/accounting/reports/custom/:id`, `/accounting/reports/custom/new` | 1440 fluid | saved report chips, 新報表, chart type, 比較, 釘選 |
 | `ReportSavedPhone.dc.html` | One saved report, 編輯條件 sheet | `/accounting/reports/custom/:id` | 390 | 編輯條件 |
+| `RewardRulesDesktop.dc.html` | 回饋規則總覽: card grid, cap bars, rules-less chips, expired banner | `/accounting/reward-rules` | 1440 fluid | state chips, 只看已過期 |
+| `AccountSettingsDesktop.dc.html` | 帳戶設定 in sections beside the accounts list | `/accounting/accounts/:id/settings` | 1440 fluid | section chips, 外觀 source, 信用帳戶 switch, 結帳日 ± |
+| `AccountSettingsPhone.dc.html` | 帳戶設定 as grouped lists with the 放棄 / 儲存 bar | `/accounting/accounts/:id/settings` | 390 | — |
+| `RewardStatesSpec.dc.html` | Reward state tags and the entry detail 回饋 section over time | `/accounting/entries/:id` | 1280 | — |
+| `CalendarDesktop.dc.html` | 記帳 日曆 view: grid on the left, 本月摘要 or the picked day on the right, entry drawer | `/accounting?month=&day=`, `/accounting/entries/:id?month=&day=` | 1440 fluid | day, 本月摘要, ‹ › day, entry → drawer, ↑ ↓, 今天, 這個月要處理 rows |
+| `CalendarPhone.dc.html` | 記帳 日曆 view on a phone: month grid + 今天 bar, week strip + day rows | `/accounting?month=&day=` | 390 | day, 展開整月, ‹ › day, 今天; entry detail drawn inline (implementation keeps the existing route, see the change's D6) |
+| `CalendarFixDesktop.dc.html` | 日曆 adjustments (2026-11-20), supersedes `CalendarDesktop.dc.html` for: only the needed weeks, quieter day cells with 帳單 / 結帳 tags and an in-cell spend bar, search and 篩選 in the right pane, compact entry drawer | `/accounting?month=&day=`, `/accounting/entries/:id?month=&day=` | 1440 fluid | day, 搜尋整月, 篩選, entry → drawer, 這個月要處理 rows |
+| `CalendarFixPhone.dc.html` | 日曆 adjustments on a phone (2026-11-20), supersedes `CalendarPhone.dc.html` for: only the needed weeks, corner dots, 搜尋與篩選 button on the title row | `/accounting?month=&day=` | 390 | 搜尋與篩選 toggle, day, 展開整月 |
 
 Not clickable on the canvas (drawn only): the period controls, the field pickers in the builder, ⋯ menus, 稍後提醒, every link into other pages.
 
@@ -51,7 +61,7 @@ Not clickable on the canvas (drawn only): the period controls, the field pickers
 | `#6b6596` / `#aba6d0` dividend amount | `--app-dividend`; at ≤ 13 px add an ink variant (`#6b6596` is 5.2:1 on `--app-surface`; the token is 4.0:1) |
 | `#b5323a` / `#ff8a8e` 多花 | new `--app-spend-more` |
 | `#2f6f9f` / `#7fb5e0` 少花 | new `--app-spend-less` |
-| `#8a6327` / `#d0a06a` warning banner | new `--app-banner-warn` (+ `-soft`); `--app-warning` is a blue-grey and reads as info |
+| `#8a6327` / `#d0a06a` warning banner (light shipped as `#7d5920`: the artboard value is 4.20:1 on a past day and 4.00:1 on a selected day) | new `--app-banner-warn` (+ `-soft`); `--app-warning` is a blue-grey and reads as info |
 | dark solid primary button with dark text | follow the existing rule: `--app-primary-ink-bg` with white text |
 | category / series palette | the dashboard's five-colour stock series, then the owner's category colours where a category is shown |
 
@@ -62,5 +72,6 @@ All numbers are invented and internally consistent so reviewers can check sums:
 - Notifications: 7 tasks (3 overdue), 10 open cases on a 17 / 28 matched statement, 2 pending dividends = 14,600.
 - Reports, October 2026: gross expense 42,380, refund 490, expense 41,890; income 68,126; September 39,608; October 2025 44,050. Accounts, payees and categories each sum to the month's expense. The 東京旅行 project (24,860) is excluded from the month and appears only in 專案與預算 and the 日本旅行比較 saved report.
 - Saved reports: 週末外食 17,960 over May–Oct (last year 17,880); 訂閱月費 10,780 for Jan–Oct; 日本旅行比較 72,860 across three projects.
+- Calendar: October 2026 with today 10/22, 40 rows; expense 29,626 (rent 12,000 on 10/19 is the heaviest day), income 72,000, net +42,374. One unmatched invoice (路易莎 $85, 10/22) and bills on 10/15 (paid) and 10/25.
 
 Budgets, saved reports and the project 不計入報表 flag do not exist in the app yet; all three are specified in `add-accounting-reports`. The canvas's period controls are drawn, not wired.

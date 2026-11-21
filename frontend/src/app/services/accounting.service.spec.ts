@@ -147,6 +147,7 @@ const CASES: Case[] = [
   { name: 'createEntry', call: s => s.createEntry(ENTRY_INPUT), method: 'POST', url: `${API}/entries`, body: ENTRY_INPUT },
   { name: 'updateEntry', call: s => s.updateEntry(9, ENTRY_INPUT), method: 'PUT', url: `${API}/entries/9`, body: ENTRY_INPUT },
   { name: 'deleteEntry', call: s => s.deleteEntry(9), method: 'DELETE', url: `${API}/entries/9` },
+  { name: 'deleteEntry confirming the cascade (#390)', call: s => s.deleteEntry(9, true), method: 'DELETE', url: `${API}/entries/9`, params: { cascade: 'true' } },
   { name: 'createTransfer', call: s => s.createTransfer(TRANSFER_INPUT), method: 'POST', url: `${API}/transfers`, body: TRANSFER_INPUT },
   {
     name: 'updateTransfer',
@@ -164,6 +165,10 @@ const CASES: Case[] = [
   { name: 'deleteSplit', call: s => s.deleteSplit(4), method: 'DELETE', url: `${API}/splits/4` },
   { name: 'settleEntry', call: s => s.settleEntry(9, SETTLE_INPUT), method: 'POST', url: `${API}/entries/9/settle`, body: SETTLE_INPUT },
   { name: 'refundEntry', call: s => s.refundEntry(9, REFUND_INPUT), method: 'POST', url: `${API}/entries/9/refund`, body: REFUND_INPUT },
+  { name: 'reopenDebt', call: s => s.reopenDebt(9), method: 'POST', url: `${API}/entries/9/reopen`, body: {} },
+  { name: 'closeDebt', call: s => s.closeDebt(9), method: 'POST', url: `${API}/entries/9/close`, body: {} },
+  { name: 'getDebtReviews', call: s => s.getDebtReviews(), method: 'GET', url: `${API}/debt-events/to-review`, params: { limit: '50' } },
+  { name: 'reviewDebtEvent', call: s => s.reviewDebtEvent(7), method: 'POST', url: `${API}/debt-events/7/review`, body: {} },
   { name: 'createBalanceAdjustment', call: s => s.createBalanceAdjustment(ADJUST_INPUT), method: 'POST', url: `${API}/balance-adjustments`, body: ADJUST_INPUT },
   { name: 'createAccount', call: s => s.createAccount(ACCOUNT_INPUT), method: 'POST', url: `${API}/accounts`, body: ACCOUNT_INPUT },
   { name: 'updateAccount', call: s => s.updateAccount(3, ACCOUNT_INPUT), method: 'PUT', url: `${API}/accounts/3`, body: ACCOUNT_INPUT },
@@ -314,6 +319,25 @@ describe('AccountingService', () => {
       }
     }
     req.flush(method === 'DELETE' ? null : {});
+  });
+
+  // #396 / #390: a confirming parameter goes out only when the caller asked for it (the API then needs `admin`).
+  it.each([
+    ['updateEntry', (s: AccountingService, on?: boolean) => s.updateEntry(9, ENTRY_INPUT, on), `${API}/entries/9`, 'drop_children'],
+    ['updateTransfer', (s: AccountingService, on?: boolean) => s.updateTransfer('g-1', TRANSFER_INPUT, on), `${API}/transfers/g-1`, 'drop_children'],
+    ['updateSplit', (s: AccountingService, on?: boolean) => s.updateSplit(4, SPLIT_INPUT, on), `${API}/splits/4`, 'drop_children'],
+    ['convertEntryToSplit', (s: AccountingService, on?: boolean) => s.convertEntryToSplit(7, SPLIT_INPUT, on), `${API}/entries/7/split`, 'drop_children'],
+    ['deleteEntry', (s: AccountingService, on?: boolean) => s.deleteEntry(9, on), `${API}/entries/9`, 'cascade'],
+  ] as const)('%s sends its confirming parameter only when asked', (_name, call, url, key) => {
+    for (const [asked, keys] of [[undefined, []], [false, []], [true, [key]]] as const) {
+      call(service, asked).subscribe();
+      const req = httpMock.expectOne(r => r.url === url);
+      expect(req.request.params.keys()).toEqual([...keys]);
+      if (asked) {
+        expect(req.request.params.get(key)).toBe('true');
+      }
+      req.flush(null);
+    }
   });
 
   it('posts the backup zip as multipart form data with the run options as query parameters', () => {

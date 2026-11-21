@@ -4,6 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LedgerAccount, Project, RewardRule } from '../../../models/accounting.model';
+import { pullGrab } from '../sheet-pull.testing';
 import { RewardRuleSheetComponent } from './reward-rule-sheet';
 
 const BASE = '/api/accounting/accounts/11/reward-rules';
@@ -41,7 +42,7 @@ describe('RewardRuleSheetComponent', () => {
     document.body.innerHTML = '';
   });
 
-  function render(current: RewardRule | null, siblings: RewardRule[] = []) {
+  function render(current: RewardRule | null, siblings: RewardRule[] = [], startDelete = false) {
     TestBed.configureTestingModule({
       imports: [RewardRuleSheetComponent],
       providers: [provideHttpClient(), provideHttpClientTesting()],
@@ -51,6 +52,9 @@ describe('RewardRuleSheetComponent', () => {
     fixture.componentRef.setInput('accountId', 11);
     fixture.componentRef.setInput('currency', 'TWD');
     fixture.componentRef.setInput('rule', current);
+    if (startDelete) {
+      fixture.componentRef.setInput('startDelete', true);
+    }
     fixture.componentRef.setInput('siblings', siblings);
     fixture.componentRef.setInput('accounts', ACCOUNTS);
     fixture.componentRef.setInput('projects', PROJECTS);
@@ -330,6 +334,47 @@ describe('RewardRuleSheetComponent', () => {
     expect(deleted).toHaveBeenCalledWith(1);
   });
 
+  it('startDelete opens with the delete confirmation showing and focuses it', () => {
+    const { q, click, deleted } = render(BASIC, [DINING], true);
+
+    const del = q<HTMLButtonElement>('.rule-delete')!;
+    expect(del.classList).toContain('armed');
+    expect(del.textContent?.trim()).toBe('確定刪除？');
+    expect(document.activeElement).toBe(del);
+
+    // One more press deletes, as after the 刪除 button's first press.
+    click('.rule-delete');
+    const req = http.expectOne(`${BASE}/1`);
+    expect(req.request.method).toBe('DELETE');
+    req.flush(null, { status: 204, statusText: 'No Content' });
+    expect(deleted).toHaveBeenCalledWith(1);
+  });
+
+  it('startDelete with rule === null is ignored', () => {
+    const { q, fixture } = render(null, [DINING], true);
+
+    expect(q('.rule-delete')).toBeNull();
+    expect(fixture.componentInstance.confirmingDelete()).toBe(false);
+    expect(document.activeElement).toBe(q('.rule-name'));
+  });
+
+  it('after a rule_referenced error the delete button is not re-armed', () => {
+    const { fixture, q, click } = render(BASIC, [DINING], true);
+
+    click('.rule-delete');
+    http.expectOne(`${BASE}/1`).flush(
+      { code: 409, message: 'rule_referenced: {"entries": 3, "rewards": 2}', trace_id: 't' },
+      { status: 409, statusText: 'Conflict' },
+    );
+    fixture.detectChanges();
+
+    const del = q<HTMLButtonElement>('.rule-delete')!;
+    expect(del.classList).not.toContain('armed');
+    expect(del.textContent?.trim()).toBe('刪除');
+    expect(q('.rule-message span')?.textContent?.trim()).toBe('此規則已有 3 筆交易 / 2 筆回饋引用，改為停用？');
+    expect(q('.rule-disable')?.textContent?.trim()).toBe('停用');
+  });
+
   it('(g) Esc on a dirty form asks first; 放棄 emits closed', () => {
     const { fixture, el, q, type, closed } = render(BASIC, [DINING]);
     const esc = () => {
@@ -378,6 +423,35 @@ describe('RewardRuleSheetComponent', () => {
     req.flush(created);
     expect(saved).toHaveBeenCalledWith(created);
     expect(closed).not.toHaveBeenCalled();
+  });
+
+  it('a pull on the grab bar closes the clean sheet', () => {
+    const { fixture, q, closed } = render(BASIC, [DINING]);
+    pullGrab(q('.sheet .grab')!);
+    fixture.detectChanges();
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  it('a pull while busy does not close', () => {
+    const { fixture, q, type, click, closed } = render(null);
+    type('.rule-name', '一般');
+    type('.rule-rate', '1');
+    click('.sheet-confirm');
+    const req = http.expectOne(BASE);
+    pullGrab(q('.sheet .grab')!);
+    fixture.detectChanges();
+    expect(q('.discard')).toBeNull();
+    expect(closed).not.toHaveBeenCalled();
+    req.flush(rule({ id: 9, name: '一般', rate: '1.0000' }));
+  });
+
+  it('a pull with unsaved input shows 放棄未儲存的內容？ instead of closing', () => {
+    const { fixture, q, type, closed } = render(BASIC, [DINING]);
+    type('.rule-name', '一般回饋');
+    pullGrab(q('.sheet .grab')!);
+    fixture.detectChanges();
+    expect(closed).not.toHaveBeenCalled();
+    expect(q('.discard')?.textContent).toContain('放棄未儲存的內容？');
   });
 
   it('keeps Tab inside the sheet', () => {

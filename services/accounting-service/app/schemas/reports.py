@@ -150,6 +150,7 @@ def _decimal_text(value: str) -> str:
 
 DecimalText = Annotated[str, Field(max_length=40), AfterValidator(_decimal_text)]
 MAX_FILTER_ITEMS = 100
+AMOUNT_RANGE_MESSAGE = "amount_min must not exceed amount_max"  # the live GET says the same (routers/reports.py)
 
 
 class ReportFiltersIn(BaseModel):
@@ -168,6 +169,13 @@ class ReportFiltersIn(BaseModel):
     amount_max: DecimalText | None = None
     q: str | None = Field(default=None, max_length=100)
     weekday: list[Annotated[int, Field(ge=1, le=7)]] = Field(default=[], max_length=MAX_FILTER_ITEMS)
+
+    @model_validator(mode="after")
+    def _amount_range(self):
+        if self.amount_min is not None and self.amount_max is not None \
+                and Decimal(self.amount_min) > Decimal(self.amount_max):
+            raise ValueError(AMOUNT_RANGE_MESSAGE)
+        return self
 
 
 class ReportConfigIn(BaseModel):

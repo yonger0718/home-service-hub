@@ -89,7 +89,7 @@
         @for (button of view.buttons; track button.action) {
           <button
             type="button"
-            [class.primary]="$first"
+            [class.primary]="$first && view.highlight"
             [disabled]="view.busy"
             (click)="tap(view.card, button.action)"
           >

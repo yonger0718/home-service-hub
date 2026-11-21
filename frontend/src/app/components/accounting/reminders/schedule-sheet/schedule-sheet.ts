@@ -31,6 +31,7 @@ import { parseAmountFields } from '../../amount-text';
 import { shortDate, todayIso } from '../../dates';
 import { formatMoney, formatSigned } from '../../format';
 import { ruleSummary } from '../../schedule-math';
+import { SheetPullDirective } from '../../sheet-pull.directive';
 
 type SheetConfirm = 'resume' | 'end' | 'delete' | null;
 
@@ -66,6 +67,7 @@ function loanConflictMessage(error: unknown): string | null {
   selector: 'app-schedule-sheet',
   standalone: true,
   templateUrl: './schedule-sheet.html',
+  imports: [SheetPullDirective],
   styleUrls: ['../../sheet.scss', './schedule-sheet.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(keydown)': 'onKeydown($event)' },

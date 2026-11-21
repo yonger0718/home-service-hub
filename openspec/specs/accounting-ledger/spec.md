@@ -34,6 +34,8 @@ The system SHALL persist accounts in an `account` table with these columns:
 
 An account's balance SHALL be `opening_balance + Σ ledger_entry.amount` over its entries whose `posted_date` is not after today. `currency` SHALL NOT change while the account has any entry, by edit or by import. The credit-only fields `due_rule`, `due_value`, `credit_limit`, `combined_account_id`, `credit_sharing_id` and `auto_pay_account_id` SHALL be NULL unless `is_credit` is TRUE; `closing_day` and the `fx_fee_*` fields are allowed on any account. `combined_account_id` SHALL NOT point at the account itself and SHALL NOT form a cycle.
 
+An uploaded logo image SHALL live in a side table `account_logo_image` (`account_id` PK and FK with `ON DELETE CASCADE`, `png`, `sha256`, `source_media_type`, `source_bytes`, `created_at`, `updated_at`), never as a column of `account`.
+
 #### Scenario: Balance includes opening balance and all entries
 - **GIVEN** an account with `opening_balance = 2000`
 - **AND** entries with amounts `-120`, `-80.5` and `+500`
@@ -62,6 +64,11 @@ An account's balance SHALL be `opening_balance + Σ ledger_entry.amount` over it
 #### Scenario: Logo slug shape
 - **WHEN** an account is created or updated with `logo` `"Cathay"`, `"cathay_united"` or 33 characters
 - **THEN** the API SHALL answer 422; `"cathay-united"` SHALL be stored and returned on every account read
+
+#### Scenario: Uploaded logo cascades with the account
+- **GIVEN** an account with an uploaded logo image
+- **WHEN** the account is deleted
+- **THEN** its `account_logo_image` row SHALL be removed with it
 
 ### Requirement: Category and project model
 
@@ -198,8 +205,8 @@ The migration SHALL drop the tables `transactions`, `categories`, `credit_cards`
 
 The service SHALL expose these read endpoints:
 
-- `GET /api/accounting/accounts?as_of=YYYY-MM-DD` (default today; `balance`, `balance_main` and `available_credit` count entries with `posted_date ≤ as_of`): every account with `id`, `name`, `currency`, `opening_balance`, `balance`, `balance_main` (the balance converted to the preference's main currency with the latest cached rate; equal to `balance` for main-currency accounts), `entry_count`, `group_id`, `group_name`, `icon`, `logo`, `color`, `is_archived`, `include_in_total`, `is_credit`, `closing_day`, `due_rule`, `due_value`, `credit_limit`, `combined_account_id`, `credit_sharing_id`, `auto_pay_account_id`, `fx_fee_pct`, `sort_order` and `moze_id`, sorted by group order, then `sort_order`, then name. `?include_archived=false` (default) SHALL omit archived accounts.
-- `GET /api/accounting/accounts/{id}?as_of=`: one account with the same fields plus `note` and `reward_rules` (the account's rules, read-only in 2a).
+- `GET /api/accounting/accounts?as_of=YYYY-MM-DD` (default today; `balance`, `balance_main` and `available_credit` count entries with `posted_date ≤ as_of`): every account with `id`, `name`, `currency`, `opening_balance`, `balance`, `balance_main` (the balance converted to the preference's main currency with the latest cached rate; equal to `balance` for main-currency accounts), `entry_count`, `group_id`, `group_name`, `icon`, `logo`, `logo_hash`, `color`, `is_archived`, `include_in_total`, `is_credit`, `closing_day`, `due_rule`, `due_value`, `credit_limit`, `combined_account_id`, `credit_sharing_id`, `auto_pay_account_id`, `fx_fee_pct`, `sort_order` and `moze_id`, sorted by group order, then `sort_order`, then name. `?include_archived=false` (default) SHALL omit archived accounts.
+- `GET /api/accounting/accounts/{id}?as_of=`: one account with the same fields (including `logo_hash`) plus `note` and `reward_rules` (the account's rules, read-only in 2a).
 - `GET /api/accounting/accounts/{id}/entries`: that account's entries, newest first (the reverse of the canonical order). It SHALL be paginated with `limit` (default 50, max 500) and `offset`, filterable by `kind`, `date_from`, `date_to` and `q` (case-insensitive match on name, merchant, description), and SHALL include each entry's category path (`main/sub`), category icon and colour, project name, counterparty name, group summary, attached rule names and a running balance.
 - `GET /api/accounting/entries`: entries across accounts, newest first by canonical order, with the same pagination and filters plus `account_id` (repeatable) and `hide_rewards`. Each item SHALL carry the account name and currency. A month summary endpoint `GET /api/accounting/entries/summary?month=YYYY-MM` SHALL return expense, income and net totals in the main currency, converting foreign-currency accounts with the latest cached rate.
 - `GET /api/accounting/entries/{id}`: the entry with its children (fee, discount), its group and sibling children, its transfer counterpart, the entry it settles or refunds and the entries that settle or refund it, attached rules, and reward entries generated from it.
@@ -227,6 +234,11 @@ The service SHALL expose these read endpoints:
 - **WHEN** `GET /api/accounting/entries/{id}` is called
 - **THEN** the response SHALL include the fee child, both rule names and the reward entry
 
+#### Scenario: logo_hash is the sha256 prefix or null
+- **GIVEN** one account with an uploaded logo image and one without
+- **WHEN** a client reads both accounts
+- **THEN** the first SHALL carry `logo_hash` equal to the first 16 hex characters of the stored image's sha256 and the second SHALL carry `logo_hash: null`
+
 ### Requirement: Account group model
 
 The system SHALL persist account groups in `account_group (id, name UNIQUE NOT NULL, sort_order INTEGER, moze_id UNIQUE nullable)`. Deleting a group SHALL be refused while any account references it.
@@ -238,7 +250,7 @@ The system SHALL persist account groups in `account_group (id, name UNIQUE NOT N
 
 ### Requirement: Counterparty model
 
-The system SHALL persist counterparties in `counterparty (id, name UNIQUE NOT NULL, moze_id UNIQUE nullable)`. `GET /api/accounting/counterparties` SHALL return each counterparty with `open_amounts`: one item per currency, each `−Σ amount` over that counterparty's `receivable` and `payable` entries in that currency (settling entries are `receivable` / `payable` entries too, so they are included). A positive value means others owe the owner; a negative value means the owner owes.
+The system SHALL persist counterparties in `counterparty (id, name UNIQUE NOT NULL, moze_id UNIQUE nullable)`. `GET /api/accounting/counterparties` SHALL return each counterparty with `open_amounts`: one item per currency, each `−Σ amount` over that counterparty's `receivable` and `payable` entries in that currency (settling entries are `receivable` / `payable` entries too, so they are included). A settlement linked to an entry in another currency SHALL instead count in that entry's currency with its settled value (requirement "Settlement endpoint"), and not at all when it has none. A positive value means others owe the owner; a negative value means the owner owes.
 
 #### Scenario: Open amount per counterparty
 - **GIVEN** a receivable of `-420 TWD` (代付 for Alan) and a collection of `+200 TWD` from Alan
@@ -249,6 +261,16 @@ The system SHALL persist counterparties in `counterparty (id, name UNIQUE NOT NU
 - **GIVEN** Alan also has a payable of `+1000 JPY`
 - **WHEN** counterparties are listed
 - **THEN** Alan's `open_amounts` SHALL contain `TWD 220` and `JPY -1000` as separate items
+
+#### Scenario: Collection in another currency nets in the debt's currency
+- **GIVEN** a receivable of `-20 USD` for Bea and its collection of `+640 TWD` with `original_amount = 20` (`USD`)
+- **WHEN** counterparties are listed
+- **THEN** Bea's `open_amounts` SHALL be empty
+
+#### Scenario: Imported link across currencies without an original amount
+- **GIVEN** a receivable of `-100 TWD` for Cai and a linked collection of `+100 JPY` without `original_amount`
+- **WHEN** counterparties are listed
+- **THEN** Cai's `open_amounts` SHALL be `[{currency: TWD, amount: 100}]`
 
 ### Requirement: Entry group model
 
@@ -345,7 +367,11 @@ Every write SHALL set `source = 'manual'`, SHALL update `category.default_accoun
 
 ### Requirement: Settlement endpoint
 
-`POST /api/accounting/entries/{id}/settle` SHALL take `account_id` (the account receiving or paying; its currency MUST equal the target entry's currency, else HTTP 422), `amount` (unsigned, at most the open amount of the target entry), `entry_date`, `entry_time`, `description` and create an entry on that account with `settles_entry_id = {id}` and `is_settlement = true`: a `receivable` entry of `+amount` when the target is a `receivable` (收款), a `payable` entry of `-amount` when the target is a `payable` (還款), copying the target's `counterparty_id`. The target's open amount is `|amount + Σ amounts of entries settling it|`, in the target's currency. A request exceeding the open amount SHALL be refused. The target entry SHALL be locked (`SELECT … FOR UPDATE`) while the open amount is computed and the settlement inserted, so concurrent settlements cannot exceed it; refunds SHALL lock the original the same way. The detail of a `receivable` or `payable` SHALL report `open_amount` and `is_settled`.
+`POST /api/accounting/entries/{id}/settle` SHALL take `account_id` (the account receiving or paying), `amount` (unsigned, in that account's currency), optional `original_amount` (unsigned, in the target entry's currency), `entry_date`, `entry_time`, `description` and create an entry on that account with `settles_entry_id = {id}` and `is_settlement = true`: a `receivable` entry of `+amount` when the target is a `receivable` (收款), a `payable` entry of `-amount` when the target is a `payable` (還款), copying the target's `counterparty_id`.
+
+An `original_amount` of JSON `null` SHALL be treated as absent. When the account's currency equals the target's, `original_amount` MUST be absent, else HTTP 422 naming `original_amount`. When it differs, `original_amount` MUST be given, else HTTP 422 naming `original_amount`; a pair whose rate rounded half-up to 10 decimals is `0` or not below `10^10` SHALL be refused with HTTP 422 naming `original_amount`. Otherwise the entry SHALL store `original_amount` (carrying the entry's sign), `original_currency` = the target's currency, `fx_rate = |amount| / |original_amount|` rounded half-up to 10 decimals, and `fx_source = 'manual'`.
+
+A settlement's settled value, in the target's currency, is its `amount` when its currency is the target's, otherwise its `original_amount` when its `original_currency` is the target's, and nothing otherwise (an imported link across currencies without an original amount stays linked but never nets). The target's open amount is `|amount + Σ settled values of the entries settling it|`, in the target's currency. A request whose settled value exceeds the open amount SHALL be refused. The target entry SHALL be locked (`SELECT … FOR UPDATE`) while the open amount is computed and the settlement inserted, so concurrent settlements cannot exceed it; refunds SHALL lock the original the same way. The detail of a `receivable` or `payable` SHALL report `open_amount` and `is_settled`.
 
 #### Scenario: Partial collection
 - **GIVEN** a receivable of `-420` for Alan on card C
@@ -359,8 +385,38 @@ Every write SHALL set `source = 'manual'`, SHALL update `category.default_accoun
 
 #### Scenario: Settlement in another currency refused
 - **GIVEN** a TWD receivable
-- **WHEN** a settlement is posted to a JPY account
-- **THEN** the response SHALL be HTTP 422 naming `currency`
+- **WHEN** a settlement is posted to a JPY account without `original_amount`
+- **THEN** the response SHALL be HTTP 422 naming `original_amount`
+
+#### Scenario: Collection in another currency
+- **GIVEN** a receivable of `-20` USD for Bea on a USD card
+- **WHEN** a settlement of `amount = 640`, `original_amount = 20` is posted to TWD account W
+- **THEN** W SHALL gain `+640`, the settlement SHALL carry `original_amount = 20`, `original_currency = USD`, `fx_rate = 32`, `fx_source = manual`, and the receivable's `open_amount` SHALL be `0` and `is_settled` true
+
+#### Scenario: Repayment in another currency
+- **GIVEN** a payable of `+50` USD to Bea
+- **WHEN** a settlement of `amount = 1600`, `original_amount = 30` is posted to TWD account W
+- **THEN** W SHALL lose `1600`, the settlement SHALL be `-1600` with `original_amount = -30`, and the payable's `open_amount` SHALL be `20`
+
+#### Scenario: Cross-currency over-settlement refused
+- **GIVEN** the receivable of `-20` USD with `20` open
+- **WHEN** a settlement of `amount = 800`, `original_amount = 25` is posted to TWD account W
+- **THEN** the response SHALL be HTTP 422 naming `amount`
+
+#### Scenario: Original amount refused in the same currency
+- **GIVEN** a TWD receivable
+- **WHEN** a settlement with `original_amount` is posted to a TWD account
+- **THEN** the response SHALL be HTTP 422 naming `original_amount`
+
+#### Scenario: Null original amount in the same currency
+- **GIVEN** a TWD receivable with `200` open
+- **WHEN** a settlement of `amount = 200` with `original_amount = null` is posted to a TWD account
+- **THEN** it SHALL be accepted as a same-currency settlement and the receivable SHALL be settled
+
+#### Scenario: Rate out of range refused
+- **GIVEN** a receivable of `-20` USD
+- **WHEN** a settlement of `amount = 1000000000000`, `original_amount = 20` is posted to TWD account W (rate `5 × 10^10`)
+- **THEN** the response SHALL be HTTP 422 naming `original_amount` and nothing SHALL be written
 
 ### Requirement: Refund endpoint
 
@@ -563,3 +619,132 @@ The system SHALL expose `GET /calendar/business-days?from=YYYY-MM-DD&to=YYYY-MM-
 
 - **WHEN** `to` precedes `from`, or the span exceeds 1100 days, or either is missing
 - **THEN** the endpoint SHALL answer 422
+
+### Requirement: Account logo upload
+
+`PUT /api/accounting/accounts/{id}/logo` (scope `write`) SHALL accept the raw image as the body; `Content-Type` is recorded, not trusted. A `Content-Length` above 5 MiB SHALL be refused before reading, and the body SHALL be streamed against a 5 MiB budget (413 `logo_too_large`). The image SHALL be fitted into 256×256 (shrunk when larger, enlarged when smaller), then padded onto a transparent canvas and stored as a 256×256 RGBA PNG; the response SHALL be the account detail with `logo_hash`.
+
+#### Scenario: Valid PNG is normalised
+- **GIVEN** an account and a valid 600×300 PNG
+- **WHEN** the client PUTs it to `/api/accounting/accounts/{id}/logo`
+- **THEN** the response SHALL be 200 with `logo_hash` set, and the stored image SHALL be a 256×256 RGBA PNG with the picture centred on transparent padding
+
+#### Scenario: Oversized body without Content-Length
+- **WHEN** a client streams a body larger than 5 MiB with no `Content-Length`
+- **THEN** the response SHALL be 413 `logo_too_large` in the shared `{code, message, trace_id}` envelope and reading SHALL stop at the budget
+
+#### Scenario: Declared length too large
+- **WHEN** a request declares a `Content-Length` above 5 MiB
+- **THEN** the response SHALL be 413 `logo_too_large` before the body is read
+
+#### Scenario: Unknown account on upload
+- **WHEN** a client PUTs a valid image to the logo of an account id that does not exist
+- **THEN** the response SHALL be 404 with `account not found` in the shared envelope
+
+### Requirement: Account logo upload validation
+
+The upload SHALL be validated in this order, each failure answering 422: empty body `logo_empty`; undecodable bytes (including SVG text) `logo_unreadable`; decoded format not PNG, JPEG or WEBP `logo_format`; a side outside 16–8192 px or over 25 million pixels `logo_dimensions`. A rejected upload SHALL leave the stored image unchanged.
+
+#### Scenario: Pixel budget exceeded
+- **WHEN** a client uploads a valid 6000×6000 PNG
+- **THEN** the response SHALL be 422 `logo_dimensions`
+
+#### Scenario: SVG text is not an image
+- **WHEN** a client uploads SVG markup, even with `Content-Type: image/png`
+- **THEN** the response SHALL be 422 `logo_unreadable`
+
+#### Scenario: Empty body
+- **WHEN** a client PUTs an empty body
+- **THEN** the response SHALL be 422 `logo_empty`
+
+#### Scenario: Format not allowed
+- **WHEN** a client uploads a valid GIF
+- **THEN** the response SHALL be 422 `logo_format`
+
+#### Scenario: Rejected upload keeps the old image
+- **GIVEN** an account with an uploaded logo
+- **WHEN** a later upload fails validation
+- **THEN** the account's `logo_hash` SHALL be unchanged
+
+### Requirement: Account logo image endpoint
+
+`GET /api/accounting/accounts/{id}/logo.png` (scope `read`) SHALL return the stored image as `image/png` with `ETag: "<sha256>"`, `X-Content-Type-Options: nosniff` and `Content-Disposition: inline; filename="logo.png"`. It SHALL send `Cache-Control: private, max-age=31536000, immutable` only when the query `v` equals the account's current `logo_hash`, otherwise `no-store`. A matching `If-None-Match` SHALL answer 304. An unknown account, or an account without an image, SHALL be 404.
+
+#### Scenario: Matching v is cached immutably
+- **GIVEN** an account with an uploaded logo
+- **WHEN** a client requests `logo.png?v=<current logo_hash>`
+- **THEN** the response SHALL be 200 with `Cache-Control: private, max-age=31536000, immutable`
+
+#### Scenario: Stale v is not cached
+- **GIVEN** an account whose logo was replaced
+- **WHEN** a client requests `logo.png?v=<old hash>`
+- **THEN** the response SHALL carry the current bytes with `Cache-Control: no-store`
+
+#### Scenario: Conditional request
+- **WHEN** a client repeats the request with `If-None-Match` equal to the current ETag
+- **THEN** the response SHALL be 304
+
+#### Scenario: No image
+- **WHEN** a client requests `logo.png` for an account without an uploaded image
+- **THEN** the response SHALL be 404
+
+### Requirement: Account logo removal
+
+`DELETE /api/accounting/accounts/{id}/logo` (scope `write`) SHALL remove the account's uploaded image and answer 204, including when none exists. An unknown account SHALL be 404. The `logo` slug SHALL be unaffected.
+
+#### Scenario: Delete twice
+- **GIVEN** an account with an uploaded logo
+- **WHEN** a client sends `DELETE` twice
+- **THEN** both responses SHALL be 204 and `logo_hash` SHALL be null afterwards
+
+#### Scenario: Unknown account
+- **WHEN** a client sends `DELETE` for an account id that does not exist
+- **THEN** the response SHALL be 404
+
+### Requirement: Reward overview usage
+
+`GET /reward-rules` SHALL include `usage` on every account: the rows `GET /accounts/{id}/reward-usage` returns for the window containing today (`rule_ids`, `shared_cap_id`, `name`, `window_start`, `window_end`, `used`, `estimated`, `cap`, `remaining`). Rules sharing a cap SHALL share one row. `usage` SHALL describe the account's active rules whatever the `state` and `account_id` filters select. An account without active rules SHALL have `usage: []`.
+
+#### Scenario: One request for the overview
+- **GIVEN** 玉山 Pi 卡 has 一般消費 1% (cap $500, $236 posted, $64 estimated this period)
+- **WHEN** `GET /reward-rules` is read
+- **THEN** 玉山 Pi 卡's `usage` SHALL contain a row with that rule's id in `rule_ids`, `used` 236, `estimated` 64, `cap` 500 and `remaining` 200, equal to `GET /accounts/{id}/reward-usage`
+
+#### Scenario: Filter does not hide usage
+- **WHEN** `GET /reward-rules?state=expired` is read
+- **THEN** each listed account's `usage` SHALL still describe its active rules
+
+### Requirement: Reward overview account header fields
+
+Each account in `GET /reward-rules` SHALL also carry `icon`, `logo` and `logo_hash` (as `GET /accounts` returns them) and `closing_day`: the closing day its reward windows use, which is the account's own, else its combined parent's, else null (calendar months).
+
+#### Scenario: Combined card inherits the closing day
+- **GIVEN** a card without its own closing day whose combined parent closes on the 25th
+- **WHEN** `GET /reward-rules` is read
+- **THEN** that card's `closing_day` SHALL be 25
+
+#### Scenario: Header fields match the accounts list
+- **GIVEN** a card with an uploaded logo, the slug `esun` and the icon 💳
+- **WHEN** `GET /reward-rules` is read
+- **THEN** its `icon`, `logo` and `logo_hash` SHALL equal that account's values in `GET /accounts`
+
+### Requirement: Reward usage unit
+
+Each usage row (`GET /accounts/{id}/reward-usage` and the overview's `usage`) SHALL carry `reward_account_id`, `reward_account_name` and `reward_is_money` for the reward account of the row's first rule in rule order. `reward_is_money` SHALL be true when that account is the card itself or unset, is a credit account, or is marked `cash_equivalent` — archived or not.
+
+#### Scenario: Points account
+- **GIVEN** a rule paying into the archived non-credit account 亞洲萬里通
+- **THEN** its usage row SHALL have `reward_account_name` 亞洲萬里通 and `reward_is_money` false
+
+#### Scenario: Cash-equivalent points account
+- **GIVEN** a rule paying into the non-credit account 測試現金點, marked `cash_equivalent`
+- **THEN** its usage row SHALL have `reward_account_name` 測試現金點 and `reward_is_money` true
+
+### Requirement: Cash-equivalent accounts
+
+An account SHALL carry `cash_equivalent` (1 點 = 1 元; default false) on every account read (`GET /accounts`, `GET /accounts/{id}`). `POST /accounts` and `PUT /accounts/{id}` SHALL accept it; a `PUT` that omits it SHALL keep the stored value. MOZE imports SHALL NOT change it.
+
+#### Scenario: PUT without the field
+- **GIVEN** an account with `cash_equivalent` true
+- **WHEN** it is saved with a body that omits `cash_equivalent`
+- **THEN** `cash_equivalent` SHALL still be true

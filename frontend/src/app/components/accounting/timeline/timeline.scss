@@ -42,7 +42,9 @@ app-split-folder {
 
 .monthbar {
   align-items: center;
+  container: monthbar / inline-size;
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   justify-content: space-between;
   padding: 4px 0;
@@ -52,6 +54,7 @@ app-split-folder {
     font-size: 1.05rem;
     letter-spacing: -0.01em;
     text-align: center;
+    white-space: nowrap;
   }
 
   button {
@@ -62,6 +65,97 @@ app-split-folder {
     cursor: pointer;
     font-size: 1.1rem;
     padding: 4px 10px;
+  }
+}
+
+.monthbar-figures {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: nowrap;
+  font-size: var(--fs-sm);
+  gap: 0 6px;
+  margin: 0;
+  margin-inline: auto 8px;
+  white-space: nowrap;
+
+  dt {
+    color: var(--app-text-muted);
+    display: inline;
+    font-weight: 700;
+    margin-inline-end: 6px;
+  }
+
+  dd {
+    display: inline;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    margin: 0;
+    position: relative;
+  }
+
+  /* Tier 1: the full amount; the abbreviated twin is for tier 2 only (and is aria-hidden always). */
+  .fig-short {
+    display: none;
+  }
+
+  /* dt + dd pairs sit side by side; flex puts each on its own item, so group them by sibling margin */
+  dd:not(:last-child) {
+    margin-inline-end: 12px;
+  }
+
+  .monthbar-error {
+    color: var(--app-text-muted);
+    font-weight: 400;
+  }
+}
+
+/*
+ * Three tiers, decided by the bar's own width (the list pane shrinks with the sidebar), not the viewport.
+ * The .98px upper bounds leave no fractional-width gap between tiers.
+ * Thresholds measured in Chromium with 7-digit amounts:
+ *  1. >= 700px: full amounts on the bar's row (three -$1,234,567 need 696px).
+ *  2. 604-699px: still one row, abbreviated amounts (-$29.6k), spacing tightened. The widest abbreviation of a
+ *     7-digit amount (-$999.9k, three of them) needs 603px. The full text stays in the DOM, visually hidden,
+ *     so assistive tech reads the exact figure; a mouse hover shows it through the dd's title.
+ *  3. < 604px: the figures drop to their own row with the full amounts again.
+ */
+@container monthbar (min-width: 604px) and (max-width: 699.98px) {
+  .monthbar-figures {
+    gap: 0;
+    margin-inline-end: 4px;
+
+    dt {
+      margin-inline-end: 5px;
+    }
+
+    dd:not(:last-child) {
+      margin-inline-end: 12px;
+    }
+
+    .fig-full {
+      border: 0;
+      clip: rect(0 0 0 0);
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      padding: 0;
+      position: absolute;
+      white-space: nowrap;
+      width: 1px;
+    }
+
+    .fig-short {
+      display: inline;
+    }
+  }
+}
+
+@container monthbar (max-width: 603.98px) {
+  .monthbar-figures {
+    flex-basis: 100%;
+    margin-inline: 0;
+    order: 3;
+    padding-inline: 10px;
   }
 }
 
@@ -288,6 +382,74 @@ app-split-folder {
   .sum {
     margin: 2px 0 6px;
     padding: 6px 10px;
+  }
+}
+
+.cal-figures-row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin: 2px 0 6px;
+
+  .cal-figures {
+    margin: 0;
+  }
+
+  .sum-scope {
+    flex: 0 1 auto;
+  }
+}
+
+.cal-figures {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  gap: 4px 16px;
+  margin: 2px 0 6px;
+
+  dt {
+    color: var(--app-text-muted);
+    display: inline;
+    font-size: var(--fs-micro);
+    font-weight: 700;
+    margin-inline-end: 4px;
+  }
+
+  dd {
+    display: inline;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    margin: 0;
+  }
+
+  .cal-figures-error {
+    color: var(--app-text-muted);
+    font-weight: 400;
+  }
+}
+
+.expand-month {
+  background: none;
+  border: 0;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  font-size: var(--fs-label);
+  padding: 6px 0 8px;
+  text-align: center;
+  width: 100%;
+
+  .expand-handle {
+    background: var(--app-border, currentColor);
+    border-radius: 2px;
+    display: block;
+    height: 4px;
+    margin: 0 auto 4px;
+    opacity: 0.6;
+    width: 36px;
   }
 }
 

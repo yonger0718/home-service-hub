@@ -116,6 +116,41 @@ def test_loan_detail_after_three_periods(db_session, seed, today):
     assert read.loan_schedule_for(db_session, payable.id + 1000) is None
 
 
+def _usd_loan(seed, today):
+    today(date(2027, 1, 20))
+    usd, bank = seed.account("美元戶", currency="USD"), seed.account("薪轉")
+    lender = seed.counterparty("範例銀行")
+    payable = seed.entry(usd, "1000", kind="payable", counterparty_id=lender.id)
+    seed.definition(
+        [seed.line("repayment", usd, "100", loan_entry_id=payable.id)], kind="installment", name="美元貸款", anchor=date(2026, 11, 9), times=10,
+        total_amount=Decimal("1000"),
+    )
+    common = dict(kind="payable", counterparty_id=lender.id, settles_entry_id=payable.id, is_settlement=True)
+    seed.entry(usd, "-100", day=date(2026, 11, 9), **common)
+    return payable, bank, usd, common
+
+
+def test_hand_repayment_in_another_currency_counts_its_original_amount(db_session, seed, today):
+    payable, bank, usd, common = _usd_loan(seed, today)
+    seed.entry(usd, "-100", day=date(2026, 12, 9), **common)
+    seed.entry(bank, "-3200", day=date(2027, 1, 5), original_amount=Decimal("-100"), original_currency="USD", **common)
+    db_session.flush()
+
+    summary = read.loan_schedule_for(db_session, payable.id)
+
+    assert (summary["remaining"], summary["repaid"]) == (Decimal("700"), Decimal("300"))
+
+
+def test_legacy_link_across_currencies_does_not_count_as_repaid(db_session, seed, today):
+    payable, bank, usd, common = _usd_loan(seed, today)
+    seed.entry(bank, "-3200", day=date(2027, 1, 5), **common)
+    db_session.flush()
+
+    summary = read.loan_schedule_for(db_session, payable.id)
+
+    assert (summary["remaining"], summary["repaid"]) == (Decimal("900"), Decimal("100"))
+
+
 def test_card_installment_remaining_from_posted_entries(db_session, seed, card, today):
     # Spec "Card installment remaining from posted entries".
     today(date(2026, 10, 20))

@@ -463,13 +463,14 @@ def get_case(db: Session, case_id: int) -> dict:
 
 def _owner_twins(db: Session, item: ReconciliationCase, row: StatementLine) -> list[int]:
     """Read model (2026-10-17): the owner entries `stand_ins.owner_twins` finds for the case's line — the reason the
-    policy left it open (exact, near, child or split twins) and the counterpart to look at; computed on read."""
+    policy left it open (exact, near, child or split twins, or a larger settlement entry the line may be one part
+    of, #389) and the counterpart to look at; computed on read."""
     from app.services import reconciliation_service as rec
     from app.services import stand_ins
     statement = db.get(AccountStatement, item.statement_id)
     rules = rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end)
     accounts = coverage_service.participating_accounts(db, statement.account_id)
-    return stand_ins.owner_twins(db, statement, row, accounts, rules)
+    return stand_ins.owner_twins(db, statement, row, accounts, rules, settlement_parts=True)
 
 
 def list_actions(db: Session, *, statement_id: int | None = None, case_id: int | None = None,

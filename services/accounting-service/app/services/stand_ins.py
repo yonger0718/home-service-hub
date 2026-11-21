@@ -316,17 +316,61 @@ def _split_twins(db: Session, statement: AccountStatement, line: StatementLine, 
     return sorted(set(out))
 
 
-def owner_twins(db: Session, statement: AccountStatement, line: StatementLine, accounts: list[int], rules) -> list[int]:
+def _partial_settlement_twins(statement: AccountStatement, line: StatementLine, population: list[LedgerEntry],
+                              rules) -> list[int]:
+    """Ids of the owner settlement entries the line may be one part of (#389): an unclaimed settlement entry of a
+    class eligible for the line (`matching.eligible_kinds`: a receipt for a bank deposit, a repayment for a bank
+    withdrawal or payment; no card line is eligible), strictly larger than the line and within the drift window —
+    a repayment that arrived as several transfers and that the owner recorded as one entry for the sum. No line
+    equals such an entry, so the matcher offers nothing and the policy would book every transfer beside it. The
+    transfers need not all be on this statement or add up to the entry (a later period, a partial repayment): the
+    guard errs towards not booking, like `_near`."""
+    from app.services import reconciliation_service  # local: reconciliation_service imports this module
+    ml = reconciliation_service._as_line(line)
+    gate = matching.eligible_kinds(statement.kind, line.line_kind)
+    out: list[int] = []
+    for e in population:
+        if not e.is_settlement:
+            continue
+        me = reconciliation_service.entry_view(e)
+        if matching._entry_class(me) in gate and abs(me.flow) > abs(ml.flow) \
+                and matching._date_distance(ml, me) <= rules.drift_window_days:
+            out.append(e.id)
+    return out
+
+
+def settlement_part_twins(db: Session, statement: AccountStatement, line: StatementLine, rules, cache: dict) -> list[int]:
+    """Read model (#392, the inbox): the ids, ascending, of the settlement entries the line may be one part of
+    (`_partial_settlement_twins`). `cache` is the caller's per-build dict: it keeps one claimed-entry snapshot under
+    `("part", "claimed")` and one `owner_population` per statement under `("part", statement.id)`, so a build reads
+    each once however many lines it lists."""
+    if not matching.eligible_kinds(statement.kind, line.line_kind) & {"settlement_in", "settlement_out"}:
+        return []  # no settlement class is eligible for the line (every card line, fee / interest / transfer lines)
+    key = ("part", statement.id)
+    if key not in cache:
+        if ("part", "claimed") not in cache:
+            cache[("part", "claimed")] = coverage_service.claimed_entry_ids(db)
+        accounts = coverage_service.participating_accounts(db, statement.account_id)
+        cache[key] = owner_population(db, statement, accounts, rules, claimed=cache[("part", "claimed")])
+    return sorted(_partial_settlement_twins(statement, line, cache[key], rules))
+
+
+def owner_twins(db: Session, statement: AccountStatement, line: StatementLine, accounts: list[int], rules, *,
+                settlement_parts: bool = False) -> list[int]:
     """Ids of the owner entries that may record the line, so the policy must not book it (final production finding
     2026-10-17, widened 2026-10-17 after three double bookings on one card): an entry of `owner_population` (split
     members included — the matcher never claims one alone) or an unclaimed child (`owner_children`) that alone takes
-    the line exactly (`_conserves`) or at a near amount (`_near`), and the members of a group subset that together
-    take it, exactly or at a near amount (`_split_twins`)."""
+    the line exactly (`_conserves`) or at a near amount (`_near`), the members of a group subset that together
+    take it, exactly or at a near amount (`_split_twins`). `settlement_parts=True` (the plain backfill, owner record
+    rules and the case read model, #389) adds a larger settlement entry the line may be one part of
+    (`_partial_settlement_twins`): a line no other evidence explains. The bookings that have such evidence (a
+    portfolio fact, a peer line, a bank-only kind) keep the default."""
     claimed = coverage_service.claimed_entry_ids(db)  # one snapshot for both populations (review S2)
     population = owner_population(db, statement, accounts, rules, claimed=claimed)
     candidates = population + owner_children(db, statement, accounts, rules, claimed=claimed)
     alone = [e.id for e in candidates if _conserves(statement, line, e, rules) or _near(statement, line, e, rules)]
-    return sorted(set(alone) | set(_split_twins(db, statement, line, population, rules)))
+    parts = _partial_settlement_twins(statement, line, population, rules) if settlement_parts else []
+    return sorted(set(alone) | set(_split_twins(db, statement, line, population, rules)) | set(parts))
 
 
 def replaced_event(db: Session, statement: AccountStatement, event_id: int | None) -> bool:
@@ -343,13 +387,15 @@ def replaced_event(db: Session, statement: AccountStatement, event_id: int | Non
         .limit(1)).first() is not None
 
 
-def owner_may_record(db: Session, statement: AccountStatement, event_id: int | None, line: StatementLine, rules) -> bool:
+def owner_may_record(db: Session, statement: AccountStatement, event_id: int | None, line: StatementLine, rules, *,
+                     settlement_parts: bool = False) -> bool:
     """An owner entry may already record the line: the event has an applied replacement (`replaced_event`) or an
-    owner twin takes it alone (`owner_twins`). The policy and the policy's own proposals never book such a line;
-    under the writer barrier (`BackfillEntryAction` / `CreateSystemEntryAction`) the answer cannot change before the
-    booking commits."""
+    owner twin may record it (`owner_twins`; `settlement_parts` as there). The policy and the policy's own proposals
+    never book such a line; under the writer barrier (`BackfillEntryAction` / `CreateSystemEntryAction`) the answer
+    cannot change before the booking commits."""
     accounts = coverage_service.participating_accounts(db, statement.account_id)
-    return replaced_event(db, statement, event_id) or bool(owner_twins(db, statement, line, accounts, rules))
+    return replaced_event(db, statement, event_id) \
+        or bool(owner_twins(db, statement, line, accounts, rules, settlement_parts=settlement_parts))
 
 
 def shadows(db: Session, statement: AccountStatement, accounts: list[int], rules) -> list[dict]:

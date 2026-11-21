@@ -34,6 +34,7 @@ from ..models import (
 from . import report_rules, valuation_service
 from .account_logo_service import HASH_PREFIX
 from .moze_import_service import import_locked
+from .settled_value import settled_value
 
 LEDGER_TZ = ZoneInfo("Asia/Taipei")  # ledger dates are naive Taipei dates (D8)
 DEFAULT_MAIN_CURRENCY = "TWD"
@@ -54,7 +55,7 @@ REWARD_RULE_FIELDS = (
 ACCOUNT_FIELDS = (
     "id", "name", "currency", "opening_balance", "group_id", "icon", "logo", "color", "is_archived", "include_in_total",
     "is_credit", "closing_day", "due_rule", "due_value", "credit_limit", "combined_account_id", "credit_sharing_id",
-    "auto_pay_account_id", "fx_fee_pct", "fx_fee_rounding", "fx_fee_refundable", "sort_order",
+    "auto_pay_account_id", "fx_fee_pct", "fx_fee_rounding", "fx_fee_refundable", "cash_equivalent", "sort_order",
     "settings_locally_edited", "moze_id", "settlement_source", "valuation_source",
 )
 
@@ -314,12 +315,13 @@ def _text_filter(q: str, *, include_invoice_items: bool = False):
 
 
 def _settled_sum():
-    """Σ amount of the settlements linked to the outer `LedgerEntry` row in its own currency (correlated scalar
-    subquery); a settlement in another currency stays linked but never nets."""
+    """Σ settled value of the settlements linked to the outer `LedgerEntry` row, in its currency (correlated scalar
+    subquery): a same-currency settlement counts its amount, one in another currency its original amount when that
+    is in this row's currency, else nothing."""
     settlement = aliased(LedgerEntry)
     return (
-        select(func.coalesce(func.sum(settlement.amount), 0))
-        .where(settlement.settles_entry_id == LedgerEntry.id, settlement.currency == LedgerEntry.currency)
+        select(func.coalesce(func.sum(settled_value(settlement, LedgerEntry.currency)), 0))
+        .where(settlement.settles_entry_id == LedgerEntry.id)
         .correlate(LedgerEntry)
         .scalar_subquery()
     )
@@ -330,7 +332,7 @@ def _is_debt_original(entry: LedgerEntry) -> bool:
 
 
 def open_debt_filter():
-    """Unsettled receivable/payable originals: not a settlement, not closed (MOZE isSettle), and
+    """Unsettled receivable/payable originals: not a settlement, not closed (`is_closed`), and
     amount + Σ linked settlements != 0."""
     settled = _settled_sum()
     return and_(
@@ -949,4 +951,9 @@ def get_entry_detail(db: Session, entry_id: int) -> dict | None:
     from .einvoice_read import entry_einvoice  # lazy: einvoice_read imports this module
 
     detail["einvoice"] = entry_einvoice(db, entry)
+    from .debt_events import events_of  # lazy: debt_events imports this module
+
+    # Whatever the row is now: a debt closed and then turned into another kind keeps its record (the list of closes
+    # that wait for the owner still links here).
+    detail["debt_events"] = events_of(db, entry.id)
     return detail

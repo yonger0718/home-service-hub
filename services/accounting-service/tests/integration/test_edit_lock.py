@@ -43,19 +43,21 @@ def _entry_body(books: dict, **fields) -> dict:
 
 CASES = {
     "put_entry": lambda b: ("PUT", f"/entries/{b['expense']}", _entry_body(b), 200),
-    "delete_entry": lambda b: ("DELETE", f"/entries/{b['expense']}", None, 204),
+    "delete_entry": lambda b: ("DELETE", f"/entries/{b['expense']}", None, 200),
     "reward_reprice": lambda b: ("POST", f"/entries/{b['expense']}/reward-reprice", {"keep": True}, 200),
     "put_group_member": lambda b: ("PUT", f"/entries/{b['member']}", _entry_body(b), 200),
     "settle": lambda b: (
         "POST", f"/entries/{b['receivable']}/settle", {"account_id": b["wallet"], "amount": "100", "entry_date": DAY}, 201,
     ),
+    "reopen_debt": lambda b: ("POST", f"/entries/{b['receivable']}/reopen", None, 200),
+    "close_debt": lambda b: ("POST", f"/entries/{b['receivable']}/close", None, 200),
     "refund": lambda b: ("POST", f"/entries/{b['expense']}/refund", {"amount": "50", "entry_date": DAY}, 201),
     "refund_group_member": lambda b: ("POST", f"/entries/{b['member']}/refund", {"amount": "10", "entry_date": DAY}, 201),
     "put_transfer": lambda b: (
         "PUT", f"/transfers/{b['transfer']}",
         {"from_account_id": b["wallet"], "to_account_id": b["bank"], "out_amount": "250", "entry_date": DAY}, 200,
     ),
-    "delete_transfer_leg": lambda b: ("DELETE", f"/entries/{b['out_leg']}", None, 204),
+    "delete_transfer_leg": lambda b: ("DELETE", f"/entries/{b['out_leg']}", None, 200),
     "put_split": lambda b: (
         "PUT", f"/splits/{b['split']}",
         {"entry_date": DAY, "members": [_entry_body(b, amount="40"), _entry_body(b, amount="20")]}, 200,
@@ -147,7 +149,7 @@ def test_manual_rows_stay_writable_while_unlocked(client, db_session, books):
 
     assert created.status_code == 201
     assert edited.status_code == 200 and edited.json()["amount"] == "-12.0000"
-    assert deleted.status_code == 204
+    assert deleted.status_code == 200
 
 
 EXPECTED_WRITES = {
@@ -155,6 +157,9 @@ EXPECTED_WRITES = {
     ("/entries/{entry_id}/split", "PUT"), ("/entries/{entry_id}/reward-rules", "PUT"),
     ("/entries/{entry_id}/reward-reprice", "POST"),
     ("/entries/{entry_id}/settle", "POST"), ("/entries/{entry_id}/refund", "POST"),
+    ("/entries/{entry_id}/reopen", "POST"), ("/entries/{entry_id}/close", "POST"),
+    # Not a ledger write: the owner's confirmation of a close event (#401); the cutover lock does not apply.
+    ("/debt-events/{event_id}/review", "POST"),
     ("/transfers", "POST"), ("/transfers/{group_id}", "PUT"),
     ("/splits", "POST"), ("/splits/{group_id}", "PUT"), ("/splits/{group_id}", "DELETE"),
     ("/balance-adjustments", "POST"),

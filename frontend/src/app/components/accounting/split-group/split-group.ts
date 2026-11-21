@@ -11,8 +11,9 @@ import {
   inject,
   signal,
 } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { map } from 'rxjs';
 
 import { ENTRY_KIND_LABELS, EntryDetail } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -21,6 +22,7 @@ import { AccountingToastService, scheduleActionError } from '../accounting-toast
 import { colorOf, iconOf, isHandledKey } from '../accounting-ui';
 import { slashDate } from '../dates';
 import { storedGroupNet } from '../entry-detail/split-card';
+import { calendarParams, readCalendarQuery } from '../timeline/calendar-url';
 import { formatMoney } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { SplitFolderComponent } from '../split-folder/split-folder';
@@ -28,7 +30,7 @@ import {
   GroupNavState,
   carriedState,
   childState,
-  closeGroupPage,
+  closeKeepingDay,
   entryCommands,
   groupParentUrl,
   readGroupNavState,
@@ -53,6 +55,13 @@ export class SplitGroupComponent implements OnInit {
   private service = inject(AccountingService);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
+  /**
+   * The calendar month / day this page's URL carries (`{}` off the calendar), kept current while the page stays open:
+   * ✕, 編輯, the dissolved-split handover and the child links carry it.
+   */
+  protected readonly calendarQuery = toSignal(this.route.queryParamMap.pipe(map(calendarParams)), {
+    initialValue: calendarParams(this.route.snapshot.queryParamMap),
+  });
   private location = inject(Location);
   private destroyRef = inject(DestroyRef);
   private layoutMode = inject(LayoutModeService);
@@ -130,7 +139,11 @@ export class SplitGroupComponent implements OnInit {
           }
           if (detail.group?.kind !== 'split') {
             // No longer a split (dissolved to one member): the entry's own detail takes this history entry.
-            void this.router.navigate(entryCommands(id, this.passbookId()), { replaceUrl: true, state: carriedState(this.navState()) });
+            void this.router.navigate(entryCommands(id, this.passbookId()), {
+              replaceUrl: true,
+              state: carriedState(this.navState()),
+              queryParams: this.calendarQuery(),
+            });
             return;
           }
           this.detail.set(detail);
@@ -159,20 +172,23 @@ export class SplitGroupComponent implements OnInit {
 
   /**
    * ✕ and after 刪除整組: opened from a list row, back to that list (nothing added to history); with `closeTo` that
-   * fixed page; else (deep link, ↑ ↓) the parent list.
+   * fixed page; else (deep link, ↑ ↓) the parent list. On the calendar (a `day` in the URL) the list it lands on then
+   * shows the day the URL shows now, in place: the grid may have moved the day since the page opened (`closeKeepingDay`).
    */
   close(): void {
     const state = this.navState();
-    closeGroupPage(this.router, this.location, state, groupParentUrl(state, this.passbookId()));
+    const query = this.route.snapshot.queryParamMap;
+    const parentUrl = groupParentUrl(this.router, state, this.passbookId(), query);
+    closeKeepingDay(this.router, this.location, state, parentUrl, readCalendarQuery(query), true);
   }
 
-  /** 編輯: the entry form for this split with the parent (多類別) bubble selected. */
+  /** 編輯: the entry form for this split with the parent (多類別) bubble selected, keeping the calendar month / day. */
   edit(): void {
     const detail = this.detail();
     if (!detail || !this.canEdit()) {
       return;
     }
-    void this.router.navigate(['/accounting/entries', detail.id, 'edit'], { queryParams: { select: 'parent' } });
+    void this.router.navigate(['/accounting/entries', detail.id, 'edit'], { queryParams: { select: 'parent', ...this.calendarQuery() } });
   }
 
   openDelete(): void {

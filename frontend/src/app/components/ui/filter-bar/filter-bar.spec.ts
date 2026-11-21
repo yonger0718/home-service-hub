@@ -1,16 +1,22 @@
-import { Component, signal } from '@angular/core';
+import { Component, signal, viewChild } from '@angular/core';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
+import { pullGrab } from '../../accounting/sheet-pull.testing';
 import { FilterBarComponent, FilterChip } from './filter-bar';
 
 @Component({
   standalone: true,
   imports: [FilterBarComponent],
   template: `
+    <button type="button" class="outside-anchor">篩選（外）</button>
     <app-filter-bar
       [chips]="chips()"
+      [rowHidden]="rowHidden()"
+      [chipsHidden]="chipsHidden()"
       (remove)="removed.push($event)"
       (clearAll)="cleared = cleared + 1"
       (reset)="resets = resets + 1"
@@ -26,7 +32,10 @@ import { FilterBarComponent, FilterChip } from './filter-bar';
   `,
 })
 class Host {
+  bar = viewChild.required(FilterBarComponent);
   chips = signal<FilterChip[]>([]);
+  rowHidden = signal(false);
+  chipsHidden = signal(false);
   removed: string[] = [];
   cleared = 0;
   resets = 0;
@@ -130,6 +139,15 @@ describe('FilterBarComponent', () => {
     q('.filter-overlay')!.click();
     await flush();
     expect(q('.filter-panel')).toBeNull();
+  });
+
+  it('phone: a pull on the grab bar closes the sheet', async () => {
+    TestBed.inject(LayoutModeService).set('phone');
+    await toggle();
+    pullGrab(q('.filter-panel.sheet .grab')!);
+    await flush();
+    expect(q('.filter-panel')).toBeNull();
+    expect(host.opens).toEqual([true, false]);
   });
 
   it('links the toggle to the open panel by a stable id (aria-controls only while open)', async () => {
@@ -256,5 +274,139 @@ describe('FilterBarComponent', () => {
     } finally {
       stand.remove();
     }
+  });
+
+  describe('rowHidden / chipsHidden / anchored toggle', () => {
+    const anchor = () => q<HTMLButtonElement>('.outside-anchor')!;
+
+    it('rowHidden hides only the row; chips still render', async () => {
+      host.chips.set(TWO);
+      host.rowHidden.set(true);
+      await flush();
+      expect(q('.filter-bar-row')!.hasAttribute('hidden')).toBe(true);
+      expect(q('.filter-chips')).not.toBeNull();
+    });
+
+    it('chipsHidden hides only the chips; the row renders', async () => {
+      host.chips.set(TWO);
+      host.chipsHidden.set(true);
+      await flush();
+      expect(q('.filter-chips')).toBeNull();
+      expect(q('.filter-bar-row')!.hasAttribute('hidden')).toBe(false);
+    });
+
+    it('toggle(anchor) opens a fixed popover; a pointerdown on the anchor keeps it open; close focuses the anchor', async () => {
+      host.rowHidden.set(true);
+      await flush();
+      host.bar().toggle(anchor());
+      await flush();
+      const panel = q('.filter-panel.popover')!;
+      expect(panel).not.toBeNull();
+      expect(panel.style.position).toBe('fixed');
+      expect(panel.style.top).not.toBe('');
+      anchor().dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      await flush();
+      expect(q('.filter-panel.popover')).not.toBeNull();
+      host.bar().close();
+      await flush();
+      expect(q('.filter-panel')).toBeNull();
+      expect(document.activeElement).toBe(anchor());
+    });
+
+    it('re-places an anchored panel on resize and scroll while open, and stops after close', async () => {
+      let bottom = 100;
+      vi.spyOn(anchor(), 'getBoundingClientRect').mockImplementation(
+        () => ({ bottom, right: 900, top: bottom - 30, left: 800, width: 100, height: 30, x: 800, y: bottom - 30 }) as DOMRect,
+      );
+      host.bar().toggle(anchor());
+      await flush();
+      expect(q('.filter-panel.popover')!.style.top).toBe('106px');
+      bottom = 200;
+      window.dispatchEvent(new Event('resize'));
+      await flush();
+      expect(q('.filter-panel.popover')!.style.top).toBe('206px');
+      bottom = 300;
+      document.body.dispatchEvent(new Event('scroll'));
+      await flush();
+      expect(q('.filter-panel.popover')!.style.top).toBe('306px');
+      host.bar().close();
+      await flush();
+      const top = host.bar().anchorTop();
+      bottom = 400;
+      window.dispatchEvent(new Event('resize'));
+      expect(host.bar().anchorTop()).toBe(top);
+    });
+
+    it('a pointerdown elsewhere closes an anchored panel', async () => {
+      host.bar().toggle(anchor());
+      await flush();
+      document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      await flush();
+      expect(q('.filter-panel')).toBeNull();
+    });
+
+    it('close(false) closes an anchored panel without focusing the anchor', async () => {
+      const focus = vi.spyOn(anchor(), 'focus');
+      host.bar().toggle(anchor());
+      await flush();
+      host.bar().close(false);
+      await flush();
+      expect(q('.filter-panel')).toBeNull();
+      expect(focus).not.toHaveBeenCalled();
+    });
+
+    it('renders no app-filter-chips host while there are no chips or they are hidden (no flex gap under the row)', async () => {
+      expect(q('app-filter-chips')).toBeNull();
+      host.chips.set(TWO);
+      await flush();
+      expect(q('app-filter-chips')).not.toBeNull();
+      host.chipsHidden.set(true);
+      await flush();
+      expect(q('app-filter-chips')).toBeNull();
+    });
+
+    it('takes no space when neither the row nor a chip is visible; an anchored panel still opens', async () => {
+      const css = readFileSync(join(process.cwd(), 'src/app/components/ui/filter-bar/filter-bar.scss'), 'utf8');
+      expect(css.match(/\n\.filter-bar--empty \{([^}]*)\}/)?.[1] ?? '').toContain('margin-bottom: 0');
+      const bar = () => q('.filter-bar')!;
+      expect(bar().classList.contains('filter-bar--empty')).toBe(false);
+      host.rowHidden.set(true);
+      await flush();
+      expect(bar().classList.contains('filter-bar--empty')).toBe(true);
+      host.chips.set(TWO);
+      await flush();
+      expect(bar().classList.contains('filter-bar--empty')).toBe(false);
+      host.chipsHidden.set(true);
+      await flush();
+      expect(bar().classList.contains('filter-bar--empty')).toBe(true);
+      host.bar().toggle(anchor());
+      await flush();
+      expect(q('.filter-panel.popover')!.style.position).toBe('fixed');
+      host.bar().close(false);
+      await flush();
+    });
+
+    it('close() never focuses an anchor that has left the document', async () => {
+      const focus = vi.spyOn(anchor(), 'focus');
+      host.bar().toggle(anchor());
+      await flush();
+      const detached = anchor();
+      detached.remove();
+      host.bar().close();
+      await flush();
+      expect(q('.filter-panel')).toBeNull();
+      expect(focus).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(detached);
+    });
+
+    it('a layout change while open closes the panel without moving focus', async () => {
+      const focus = vi.spyOn(anchor(), 'focus');
+      host.bar().toggle(anchor());
+      await flush();
+      TestBed.inject(LayoutModeService).set('phone');
+      await flush();
+      expect(q('.filter-panel')).toBeNull();
+      expect(focus).not.toHaveBeenCalled();
+    });
   });
 });

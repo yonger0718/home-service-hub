@@ -44,3 +44,25 @@ def test_previous_february_ends_on_january_31st():
 
 def test_previous_multi_month_range_ending_on_the_30th():
     assert compare_window(date(2026, 4, 1), date(2026, 9, 30), "previous") == (date(2025, 10, 1), date(2026, 3, 31))
+
+
+# polish-accounting-reports D2: a range starting on the 1st that ends mid-month compares the same days of the earlier
+# month(s), the end day clipped to the target month's length.
+def test_previous_running_month_compares_the_same_days():
+    assert compare_window(date(2026, 11, 1), date(2026, 11, 7), "previous") == (date(2026, 10, 1), date(2026, 10, 7))
+
+
+def test_previous_first_anchored_partial_range_clips_to_the_shorter_month():
+    assert compare_window(date(2026, 3, 1), date(2026, 3, 30), "previous") == (date(2026, 2, 1), date(2026, 2, 28))
+
+
+def test_previous_first_anchored_partial_range_clips_to_february_29th_in_a_leap_year():
+    assert compare_window(date(2028, 3, 1), date(2028, 3, 30), "previous") == (date(2028, 2, 1), date(2028, 2, 29))
+
+
+def test_previous_multi_month_running_range_moves_back_by_the_months_it_touches():
+    assert compare_window(date(2026, 6, 1), date(2026, 11, 7), "previous") == (date(2025, 12, 1), date(2026, 5, 7))
+
+
+def test_previous_range_not_starting_on_the_1st_keeps_the_day_count_rule():
+    assert compare_window(date(2026, 11, 2), date(2026, 11, 7), "previous") == (date(2026, 10, 27), date(2026, 11, 1))

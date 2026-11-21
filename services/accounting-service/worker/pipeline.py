@@ -5,6 +5,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -195,7 +196,7 @@ class Summary:
     live_revisions: int = 0
     ocr_trigger: int = 0   # R5: files whose pages the OCR child read because there was no usable text layer
     ocr_fallback: int = 0  # R5: files OCR'd after their text-layer parse failed (parse/schema/422)
-    ocr_merchant_repair: int = 0  # #206: text-layer parses with `(cid:` merchants whose file the OCR child re-read
+    ocr_merchant_repair: int = 0  # #206 / #387: text-layer parses with `(cid:` or missing merchants; one OCR re-read each
     merchant_lines_repaired: int = 0  # #206: lines whose merchant text came from the OCR parse
     composite_files: int = 0  # composite statements (spec §4): files that reached the section split
     sections_parsed: int = 0
@@ -414,8 +415,54 @@ PARSE_FAILED = "parse_failed"  # _parse_submit sentinel: the parser or the API r
 
 def garbled_merchant(merchant: str) -> bool:
     """#206: a merchant the text layer could not map — the font carries no Unicode for its glyphs (pdfminer renders
-    them `(cid:N)`); seen on AMEX BR's Chinese merchant names, below the file-level OCR trigger."""
+    them `(cid:N)`); seen on AMEX BR's Chinese merchant names, below the file-level OCR trigger. The other target
+    of the same repair is a merchant the text layer dropped without a trace: `missing_merchant` (#387)."""
     return pdf.GARBAGE_GLYPH in merchant
+
+
+MERCHANT_KINDS = ("purchase", "refund")  # #387: kinds whose row always prints a merchant
+_COUNTRY_CODE = re.compile(r"[A-Z]{2,3}")
+
+
+def missing_merchant(line: parse_schema.ParsedLine) -> bool:
+    """#387: a purchase/refund line whose merchant is empty or only a bare country code — the text layer dropped the
+    name (HSBC prints its CJK merchants in a font with no Unicode map, and pdfplumber drops them silently, leaving
+    the country code). Other kinds (payment, fee, bank rows) legitimately print no merchant. A real all-caps
+    two/three-letter merchant (`KFC`) is an accepted false positive: one OCR read, replaced only by a clean read."""
+    if line.line_kind not in MERCHANT_KINDS:
+        return False
+    merchant = line.merchant_raw.strip()
+    return not merchant or _COUNTRY_CODE.fullmatch(merchant) is not None
+
+
+def needs_merchant_repair(line: parse_schema.ParsedLine) -> bool:
+    """The #206 OCR merchant repair's target: a garbled (#206) or missing (#387) merchant."""
+    return garbled_merchant(line.merchant_raw) or missing_merchant(line)
+
+
+SAFE_REASONS = ("auth", "sandbox", "cli_version")
+
+
+def safe_reason(text: object) -> str | None:
+    """#385 D3: the latch reason as a code from a fixed vocabulary, by an exact match of its leading word (the text up
+    to the first space, colon or semicolon). Anything else is None: free text never reaches `summary.errors`."""
+    if not isinstance(text, str):
+        return None
+    word = re.split(r"[ :;]", text, maxsplit=1)[0]
+    return word if word in SAFE_REASONS else None
+
+
+def _add_reason(summary: Summary, reason: str | None) -> None:
+    if reason is not None and reason not in summary.errors:
+        summary.errors.append(reason)
+
+
+def _latched_reason(gate: parser_mod.Gate) -> str | None:
+    """The safe reason recorded in the latch file (`Gate.latch` writes {"reason", "at", "key"}); None when unreadable."""
+    try:
+        return safe_reason(json.loads(gate.latch_path.read_text(encoding="utf-8")).get("reason"))
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def _latch_host_fault(services: Services, exc: parser_mod.ParseError, summary: Summary) -> None:
@@ -423,6 +470,7 @@ def _latch_host_fault(services: Services, exc: parser_mod.ParseError, summary: S
     services.gate.latch(f"{exc.reason} on real input", services.gate.key(services.parser))
     if "parser_disabled" not in summary.errors:
         summary.errors.append("parser_disabled")
+    _add_reason(summary, safe_reason(exc.reason))
 
 
 def _line_key(line: parse_schema.ParsedLine) -> tuple:
@@ -432,13 +480,17 @@ def _line_key(line: parse_schema.ParsedLine) -> tuple:
 def _repair_merchants(services: Services, data: bytes, password: str | None, candidates: list[str],
                       closing_day: int | None, parsed: parse_schema.StatementParse,
                       summary: Summary) -> tuple[parse_schema.StatementParse, str, int]:
-    """#206: the text-layer parse succeeded but some merchants are `(cid:N)` garbage. One OCR read and one more
-    parser call; a garbled line takes the OCR parse's merchant only when exactly one OCR line and exactly one garbled
-    text line share its (txn_date, posted_date, printed_amount, line_kind) and that OCR merchant is clean. Amounts,
+    """#206: the text-layer parse succeeded but some merchants are `(cid:N)` garbage (#387: or missing — empty or a
+    bare country code on a purchase/refund line; `needs_merchant_repair`). One OCR read and one more
+    parser call; a target line takes the OCR parse's merchant only when exactly one OCR line and exactly one text
+    line (target or not) share its (txn_date, posted_date, printed_amount, line_kind) and that OCR merchant is usable:
+    not garbled, not empty and, on a purchase/refund line, not a bare 2-3 letter code. The last condition came with
+    #387 and holds for a #206 garbled line (AMEX) too: an OCR read of only `KFC` leaves the `(cid:N)` text in place
+    (accepted: the OCR line may have kept only the country column). Amounts,
     dates, kinds and every other field stay the text layer's, so the submission is never worse than the text parse
     alone; any OCR or parser failure keeps the text parse unchanged (a host fault still latches the parser).
     Returns (parse, provenance note, lines repaired)."""
-    garbled = [line for line in parsed.lines if garbled_merchant(line.merchant_raw)]
+    targets = [line for line in parsed.lines if needs_merchant_repair(line)]
     summary.ocr_merchant_repair += 1  # counted at the OCR start, whatever the outcome (the counters are the record)
     try:
         result = services.ocr.read(data, password)
@@ -465,23 +517,23 @@ def _repair_merchants(services: Services, data: bytes, password: str | None, can
         log.info("ocr merchant repair: parse %s", exc.reason)
         return parsed, f"ocr: merchant repair skipped (parse {exc.reason})", 0
     text_keys: dict[tuple, int] = {}
-    for line in parsed.lines:  # every text line, clean or garbled: a key shared with a clean line is ambiguous too
+    for line in parsed.lines:  # every text line, target or not: a key shared with a line that needs no repair is ambiguous too
         text_keys[_line_key(line)] = text_keys.get(_line_key(line), 0) + 1
     ocr_by_key: dict[tuple, list[parse_schema.ParsedLine]] = {}
     for line in ocr_parsed.lines:
         ocr_by_key.setdefault(_line_key(line), []).append(line)
     repaired, lines = 0, []
     for line in parsed.lines:
-        if garbled_merchant(line.merchant_raw):
+        if needs_merchant_repair(line):
             key = _line_key(line)
             found = ocr_by_key.get(key, [])
             if text_keys[key] == 1 and len(found) == 1 and not garbled_merchant(found[0].merchant_raw) \
-                    and found[0].merchant_raw.strip():
+                    and found[0].merchant_raw.strip() and not missing_merchant(found[0]):
                 line = line.model_copy(update={"merchant_raw": found[0].merchant_raw})
                 repaired += 1
         lines.append(line)
     summary.merchant_lines_repaired += repaired
-    note = (f"ocr: merchant repair {repaired}/{len(garbled)} lines mean_confidence={result.mean_confidence:.2f} "
+    note = (f"ocr: merchant repair {repaired}/{len(targets)} lines mean_confidence={result.mean_confidence:.2f} "
             f"boxes={result.boxes} scale={ocr_mod.SCALE}")
     return parsed.model_copy(update={"lines": lines}), note, repaired
 
@@ -510,8 +562,8 @@ def _parse_submit(services: Services, lease: Lease, file_row: dict, account_id: 
             return _fail(services, lease, file_row, "transient", summary)
         return PARSE_FAILED
     parser_label = "claude-cli+ocr" if ocr_note else "claude-cli"
-    # #206: `repair` (text-layer path only) re-reads a parse with garbled merchants through the OCR child
-    if repair is not None and ocr_note is None and any(garbled_merchant(l.merchant_raw) for l in parsed.lines):
+    # #206/#387: `repair` (text-layer path only) re-reads a parse with garbled or missing merchants through the OCR child
+    if repair is not None and ocr_note is None and any(needs_merchant_repair(l) for l in parsed.lines):
         parsed, ocr_note, repaired = repair(parsed)
         if repaired:
             parser_label = "claude-cli+ocr-merchants"
@@ -809,6 +861,11 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
         stale.unlink(missing_ok=True)
     summary.versions = {"parser_version": services.parser_version, "cli_version": services.cli_version,
                         "model": services.cfg.parser_model, "credential_version": services.credential_version}
+    if services.parser.token_mode:
+        try:
+            summary.versions["parser_token_age_days"] = parser_mod.token_age_days(services.cfg.parser_oauth_token_file)
+        except OSError:
+            pass
     status, interrupted = "failed", False
     try:
         with LeaseKeeper(services.api, lease) as keeper:
@@ -818,6 +875,7 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
             except parser_mod.ParserDisabled:
                 services.parser_disabled = True
                 summary.errors.append("parser_disabled")
+                _add_reason(summary, _latched_reason(services.gate))
             except parser_mod.GateUnavailable:  # transient canary failure: skip parsing, nothing latched, run done
                 services.parser_disabled = True
                 summary.errors.append("gate_unavailable")

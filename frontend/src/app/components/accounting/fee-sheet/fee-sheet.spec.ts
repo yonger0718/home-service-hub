@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ChildInput } from '../../../models/accounting.model';
+import { pullGrab } from '../sheet-pull.testing';
 import { FeeSheetComponent } from './fee-sheet';
 
 function render(fee: ChildInput | null = null) {
@@ -72,4 +73,12 @@ describe('FeeSheetComponent', () => {
     expect(closed).toHaveBeenCalledTimes(1);
   });
 
+  it('a pull on the grab bar closes the sheet', () => {
+    const { fixture, el, component } = render();
+    const closed = vi.fn();
+    component.closed.subscribe(closed);
+    pullGrab(el.querySelector<HTMLElement>('.sheet .grab')!);
+    fixture.detectChanges();
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
 });

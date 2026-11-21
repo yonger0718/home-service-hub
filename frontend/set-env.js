@@ -50,6 +50,8 @@ required.forEach(v => {
 
 // 選用: accounting API 的 bearer token（未設定時為空字串，不送 Authorization header）
 const accountingToken = JSON.stringify(envConfig.ACCOUNTING_SPA_TOKEN || '');
+// 選用: portfolio API 的 bearer token（#117；未設定時為空字串，不送 Authorization header）
+const portfolioToken = JSON.stringify(envConfig.PORTFOLIO_SPA_TOKEN || '');
 
 const envConfigFile = `export const environment = {
   production: false,
@@ -59,7 +61,8 @@ const envConfigFile = `export const environment = {
   accountingServiceHost: '${envConfig.ACCOUNTING_SERVICE_HOST}',
   accountingServicePort: '${envConfig.ACCOUNTING_SERVICE_PORT}',
   otelEndpoint: '${envConfig.OTEL_COLLECTOR_ENDPOINT_HTTP}',
-  accountingToken: ${accountingToken}
+  accountingToken: ${accountingToken},
+  portfolioToken: ${portfolioToken}
 };
 `;
 

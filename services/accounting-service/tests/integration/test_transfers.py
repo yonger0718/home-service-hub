@@ -207,7 +207,7 @@ def test_put_updates_both_legs_and_replaces_children(client, db_session, seed):
     before_ids = (before_out.id, before_in.id)
 
     response = client.put(
-        f"/transfers/{group_id}",
+        f"/transfers/{group_id}?drop_children=true",  # #396: the stored out fee is dropped on purpose
         json={
             "from_account_id": a_id, "to_account_id": c_id, "out_amount": "1200",
             "entry_date": "2026-09-04", "name": "還錢", "in_discount": {"amount": "2"},
@@ -258,7 +258,7 @@ def test_deleting_a_posted_transfer_leg_deletes_both(client, db_session, seed):
     db_session.commit()
     body = client.post("/transfers", json=_body(a, b, in_fee={"amount": "10"})).json()
 
-    assert client.delete(f"/entries/{body['out_entry_id']}").status_code == 204
+    assert client.delete(f"/entries/{body['out_entry_id']}").status_code == 200
 
     db_session.expire_all()
     assert db_session.scalars(select(LedgerEntry)).all() == []

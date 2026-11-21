@@ -1,4 +1,4 @@
-import { Location } from '@angular/common';
+import { Location, NgTemplateOutlet } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -11,9 +11,10 @@ import {
   inject,
   signal,
 } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { Observable } from 'rxjs';
+import { calendarParams, readCalendarQuery } from '../timeline/calendar-url';
+import { Observable, map } from 'rxjs';
 
 import {
   ENTRY_KIND_LABELS,
@@ -21,24 +22,57 @@ import {
   EntryKind,
   LedgerAccount,
   LedgerEntry,
-  RewardAccrual,
-  RewardAccrualState,
   ScheduleDefinitionDetail,
   ScheduleLineKind,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService, scheduleActionError } from '../accounting-toast';
-import { NO_ENTER_SAVE_TAGS, textOn, colorOf, fxConversionLine, iconOf, isHandledKey, leavePage } from '../accounting-ui';
-import { amountString, parseAmountFields, parseAmountText } from '../amount-text';
-import { shortDate, slashDate, todayIso } from '../dates';
-import { formatMoney, formatNumber } from '../format';
+import { NO_ENTER_SAVE_TAGS, textOn, colorOf, fxConversionLine, iconOf, isHandledKey } from '../accounting-ui';
+import {
+  amountString,
+  formatMoneyExact,
+  moneyUnits,
+  parseAmountFields,
+  parseAmountText,
+  parseMoneyExact,
+  parseMoneyText,
+} from '../amount-text';
+import { shortDate, slashDate, todayIso, weekdayLabel } from '../dates';
+import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
+import { AccountingOverviewService } from '../month-overview/overview.service';
+import { currencySymbol, formatMoney, formatNumber } from '../format';
+import { debtEventLine } from '../debt-events';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { alignedRepostAmounts, schedulePill } from '../schedule-math';
-import { GroupNavState, closeGroupPage, groupCommands, inPlaceState, readGroupNavState } from '../split-group/group-nav';
+import { GroupNavState, closeKeepingDay, groupCommands, inPlaceState, readGroupNavState } from '../split-group/group-nav';
 import { AppEntryEinvoiceCardComponent } from './einvoice-card';
 import { AppEntryRewardRepriceCardComponent } from './reward-reprice-card';
+import { RewardAmountText } from './reward-cards';
+import { AppEntryRewardSectionComponent } from './reward-section';
 import { storedGroupNet } from './split-card';
+
+/**
+ * What a settlement is worth in the debt's currency (design D3): its `amount` in the same currency, else its
+ * `original_amount` when that is stated in the debt's currency, else 0 (a legacy other-currency link).
+ */
+export function settledValue(
+  settlement: Pick<LedgerEntry, 'amount' | 'currency' | 'original_amount' | 'original_currency'>,
+  currency: string,
+): number {
+  if (settlement.currency === currency) {
+    return Number(settlement.amount);
+  }
+  if (settlement.original_currency === currency && settlement.original_amount !== null) {
+    return Number(settlement.original_amount);
+  }
+  return 0;
+}
+
+/** 已收 / 已還 of a debt: |Σ settled values of its settlements| in the debt's currency. */
+function settledBack(detail: EntryDetail): number {
+  return Math.abs(detail.settled_by.reduce((sum, settlement) => sum + settledValue(settlement, detail.currency), 0));
+}
 
 const FX_SOURCE_LABELS: Record<string, string> = {
   fx_api: '線上匯率',
@@ -46,7 +80,7 @@ const FX_SOURCE_LABELS: Record<string, string> = {
   manual: '手動',
 };
 
-export type DetailPanel = 'settle' | 'refund' | 'delete' | 'scope' | 'repost' | null;
+export type DetailPanel = 'settle' | 'refund' | 'delete' | 'scope' | 'repost' | 'reopen' | 'close' | null;
 
 const LINE_LABELS: Record<ScheduleLineKind, string> = {
   expense: '支出', income: '收入', receivable: '應收款項', payable: '應付款項', transfer: '轉帳', repayment: '還款',
@@ -69,16 +103,23 @@ interface Chip {
 @Component({
   selector: 'app-entry-detail',
   standalone: true,
-  imports: [RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent],
+  imports: [NgTemplateOutlet, RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent, AppEntryRewardSectionComponent],
   templateUrl: './entry-detail.html',
   styleUrl: './entry-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '(keydown)': 'onKeydown($event)' },
+  host: { '(keydown)': 'onKeydown($event)', '[class.entry-detail--drawer]': 'compact()' },
 })
 export class EntryDetailComponent implements OnInit {
   private service = inject(AccountingService);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
+  /**
+   * The calendar month / day this page's URL carries (`{}` off the calendar), kept current while the page stays open
+   * (a grid click with the drawer open moves the day): ✕, 複製, schedule edits and the in-page links carry it.
+   */
+  protected readonly calendarQuery = toSignal(this.route.queryParamMap.pipe(map(calendarParams)), {
+    initialValue: calendarParams(this.route.snapshot.queryParamMap),
+  });
   private location = inject(Location);
   private destroyRef = inject(DestroyRef);
   private layoutMode = inject(LayoutModeService);
@@ -91,7 +132,21 @@ export class EntryDetailComponent implements OnInit {
   readonly passbookId = signal<number | null>(null);
   /** In the layout's 760–1023 px sheet the sheet's own ✕ closes it: no second close control here. */
   readonly inSheet = computed(() => this.layoutMode.mode() === 'sheet');
+  /** The calendar drawer (≥ 1024 px, 日曆): a compact head and fields, the actions pinned at the bottom. */
+  private readonly overview = inject(AccountingOverviewService);
+  private readonly calendarPane = inject(CalendarPaneService);
+  readonly drawer = computed(() => this.layoutMode.mode() === 'panes' && this.overview.calendar());
   readonly detail = signal<EntryDetail | null>(null);
+  /**
+   * A drawer step (↑ ↓, 上一筆 / 下一筆) away from a shown entry: its bar stays mounted while the next entry loads, so
+   * focus on a step button or ✕ never leaves the modal drawer. Cleared once that read settles.
+   */
+  private readonly stepping = signal(false);
+  /**
+   * The drawer shows the compact page (bar, scrolling body, pinned foot): with an entry to show, or while a step loads
+   * the next one. A first load, or a failed read, sits in the layout's default drawer (padded, scrolling).
+   */
+  readonly compact = computed(() => this.drawer() && (this.detail() !== null || this.stepping()));
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly loadError = signal(false);
   /**
@@ -105,6 +160,8 @@ export class EntryDetailComponent implements OnInit {
   readonly panel = signal<DetailPanel>(null);
   readonly formAccountId = signal<number | null>(null);
   readonly formAmount = signal('');
+  /** 抵銷: the amount in the debt's currency when the chosen account is in another currency. */
+  readonly formOriginal = signal('');
   readonly formDate = signal(todayIso());
   readonly formNote = signal('');
   readonly formError = signal<string | null>(null);
@@ -186,21 +243,22 @@ export class EntryDetailComponent implements OnInit {
   readonly today = todayIso();
   readonly kindLabels = ENTRY_KIND_LABELS;
   readonly formatMoney = formatMoney;
-  readonly accrualStateLabels: Record<RewardAccrualState, string> = {
-    estimated: '預估', posted: '已入帳', bank_confirmed: '銀行確認', forfeited: '未獲得',
-  };
   readonly slashDate = slashDate;
 
   /** A reward figure in its unit (#294): money when it pays into this entry's account or a card, else the number
    * followed by the reward account's name (points / miles accounts carry TWD as currency but are no money). */
   rewardAmount(value: string, accountId: number, accountName: string, currency: string, sign = false): string {
     const account = this.accounts().find(candidate => candidate.id === accountId);
-    if (accountId === this.detail()?.account_id || account === undefined || account.is_credit) {
+    if (accountId === this.detail()?.account_id || account === undefined || account.is_credit || account.cash_equivalent === true) {
       return formatMoney(value, currency, { sign });
     }
     const body = formatNumber(value, currency);
     return `${sign && Number(value) > 0 && body !== '0' ? '+' : ''}${body} ${accountName}`;
   }
+
+  /** The 回饋 section's figure formatter; an arrow so it keeps `this` when passed as an input. */
+  readonly rewardText: RewardAmountText = (value, accountId, accountName, currency, sign) =>
+    this.rewardAmount(value, accountId, accountName, currency, sign);
 
   /** A reprice-card figure (#306) in the unit of the accrual's reward account. */
   readonly repriceAmount = (accrualId: number, value: string): string => {
@@ -210,11 +268,6 @@ export class EntryDetailComponent implements OnInit {
       ? this.rewardAmount(value, accrual.reward_account_id, accrual.reward_account_name, detail.currency)
       : formatMoney(value, detail?.currency ?? 'TWD');
   };
-
-  /** The bank's figure once confirmed (the reward row's amount), else the engine's allotted amount. */
-  accrualValue(accrual: RewardAccrual): string {
-    return accrual.state === 'bank_confirmed' && accrual.ledger_amount != null ? accrual.ledger_amount : accrual.amount;
-  }
 
   readonly locked = computed(() => this.detail()?.locked ?? false);
   readonly children = computed(() => this.detail()?.children ?? []);
@@ -292,6 +345,35 @@ export class EntryDetailComponent implements OnInit {
     const detail = this.detail();
     return this.isDebt() && !this.locked() && !detail?.is_settled && !detail?.is_closed && Number(detail?.open_amount ?? 0) > 0;
   });
+  /** #391: a closed debt (MOZE's flag, or 標記結清) can be opened again; its remainder then follows from its settlements. */
+  readonly canReopen = computed(() => this.isDebt() && !this.locked() && !!this.detail()?.is_closed);
+  /** #391: an open remainder can be closed; not a loan a live schedule repays (the API refuses: the schedule would end). */
+  readonly canClose = computed(() => {
+    const loan = this.detail()?.loan_schedule;
+    return this.canSettle() && (!loan || loan.status === 'ended');
+  });
+  /** #401: the closes / reopens of this row, oldest first; an answer from before #401 carries none. */
+  readonly debtEventLines = computed(() =>
+    (this.detail()?.debt_events ?? []).map(event => ({ id: event.id, text: debtEventLine(event), waiting: event.needs_review })),
+  );
+  /** What the open confirm (重新開啟 / 標記結清) does to the remainder, in the owner's words. */
+  readonly debtConfirmText = computed(() => {
+    const detail = this.detail();
+    if (!detail) {
+      return '';
+    }
+    if (this.panel() === 'close') {
+      return `剩餘 ${formatMoney(detail.open_amount, detail.currency)} 不再列入未結清，會留下結清記錄；之後可以重新開啟。`;
+    }
+    // The API's open amount of a debt that is not closed: |amount + Σ settled values|.
+    const remaining = Math.round(Math.abs(Math.abs(Number(detail.amount)) - settledBack(detail)) * 1e4) / 1e4;
+    if (remaining > 0) {
+      return `重新開啟後，這筆會回到未結清：剩餘 ${formatMoney(remaining, detail.currency)}。`;
+    }
+    return detail.kind === 'payable'
+      ? '還款已還清，重新開啟後仍是已結清；刪除還款後才會出現剩餘金額。'
+      : '收款已收滿，重新開啟後仍是已結清；刪除收款後才會出現剩餘金額。';
+  });
   readonly refundable = computed(() => {
     const detail = this.detail();
     if (!detail) {
@@ -307,6 +389,37 @@ export class EntryDetailComponent implements OnInit {
   readonly sameCurrencyAccounts = computed(() => {
     const detail = this.detail();
     return this.accounts().filter(account => !account.is_archived && account.currency === detail?.currency);
+  });
+  /** The settle panel's accounts: the entry's currency first (current order), then the others (current order). */
+  readonly settleAccounts = computed(() => {
+    const detail = this.detail();
+    const open = this.accounts().filter(account => !account.is_archived);
+    return [...open.filter(a => a.currency === detail?.currency), ...open.filter(a => a.currency !== detail?.currency)];
+  });
+  readonly formAccount = computed(() => this.accounts().find(account => account.id === this.formAccountId()) ?? null);
+  readonly crossCurrency = computed(() => {
+    const detail = this.detail();
+    const account = this.formAccount();
+    return this.panel() === 'settle' && !!detail && !!account && account.currency !== detail.currency;
+  });
+  readonly conversionLine = computed(() => {
+    const detail = this.detail();
+    const account = this.formAccount();
+    if (!this.crossCurrency() || !detail || !account) {
+      return null;
+    }
+    const amount = parseAmountText(this.formAmount(), account.currency);
+    const original = parseMoneyText(this.formOriginal());
+    if (amount === null || original === null) {
+      return null;
+    }
+    return fxConversionLine({
+      amount: String(amount),
+      currency: account.currency,
+      original_amount: String(original),
+      original_currency: detail.currency,
+      fx_rate: String(Number((amount / original).toFixed(10))),
+    });
   });
   readonly siblings = computed(() => {
     const detail = this.detail();
@@ -355,12 +468,20 @@ export class EntryDetailComponent implements OnInit {
     }
     return lines;
   });
+  /** Children on another account than the entry (a MOZE import shape): the API deletes them only when confirmed (#390). */
+  readonly foreignChildren = computed(() => {
+    const detail = this.detail();
+    return detail ? (detail.children ?? []).filter(child => child.account_id !== detail.account_id) : [];
+  });
   readonly deleteNotes = computed(() => {
     const detail = this.detail();
     if (!detail) {
       return [];
     }
-    const notes = (detail.children ?? []).map(child => `${this.kindLabels[child.kind]} ${formatMoney(child.amount, child.currency)}`);
+    const notes = (detail.children ?? []).map(child => {
+      const where = child.account_id !== detail.account_id ? `（在 ${child.account_name}）` : '';
+      return `${this.kindLabels[child.kind]} ${formatMoney(child.amount, child.currency)}${where}`;
+    });
     if (detail.transfer_counterpart) {
       const other = detail.transfer_counterpart;
       notes.push(`另一筆轉帳：${other.account_name} ${formatMoney(other.amount, other.currency)}`);
@@ -370,17 +491,22 @@ export class EntryDetailComponent implements OnInit {
   readonly formMax = computed(() =>
     this.panel() === 'settle' ? Number(this.detail()?.open_amount ?? 0) : this.refundable(),
   );
+  /** Cross-currency 抵銷 cap shown at ledger precision (`US$0.0001`), where formatMoney would round it to `US$0`. */
+  readonly crossLimitText = computed(() => {
+    const detail = this.detail();
+    return detail ? `${currencySymbol(detail.currency)}${formatMoneyExact(detail.open_amount ?? '0')}` : '';
+  });
   readonly settleLabel = computed(() => (this.detail()?.kind === 'payable' ? '新增還款' : '新增收款'));
   /**
    * A debt original once something came back (or MOZE closed it): `原始 $420 · 已收 $200 · 剩餘 $220` (已還 for a
-   * payable; 已結清 in place of 剩餘 when closed). 已收 / 已還 is Σ of the linked settlements.
+   * payable; 已結清 in place of 剩餘 when closed). 已收 / 已還 is Σ of their settled values in the debt's currency (`settledValue`).
    */
   readonly breakdown = computed(() => {
     const detail = this.detail();
     if (!detail || detail.open_amount === null || (detail.kind !== 'receivable' && detail.kind !== 'payable')) {
       return null;
     }
-    const back = Math.abs(detail.settled_by.reduce((sum, settlement) => sum + Number(settlement.amount), 0));
+    const back = settledBack(detail);
     if (back === 0 && !detail.is_closed) {
       return null;
     }
@@ -411,6 +537,7 @@ export class EntryDetailComponent implements OnInit {
       // Another entry: drop the shown one at once, so nothing acts on it while the new one loads. A reload of the
       // same entry keeps it (and keeps it when that reload fails).
       if (this.detail()?.id !== id) {
+        this.stepping.set(this.drawer() && (this.detail() !== null || this.stepping()));
         this.detail.set(null);
       }
       this.load(id);
@@ -430,31 +557,58 @@ export class EntryDetailComponent implements OnInit {
       return '/accounting/reminders';
     }
     const passbook = this.passbookId();
-    return passbook === null ? '/accounting' : `/accounting/accounts/${passbook}`;
+    if (passbook === null) {
+      return this.router.serializeUrl(this.router.createUrlTree(['/accounting'], { queryParams: this.calendarQuery() }));
+    }
+    return `/accounting/accounts/${passbook}`;
   }
 
   /**
    * ✕ and after a delete: back to where the owner came from (in-app history), else the parent list. Opened with
-   * `closeTo` it always goes to that page.
+   * `closeTo` it always goes to that page. A child of the group view goes back to the list the group view was opened
+   * from (history not grown), never to the group view; a deep-linked group view has no list behind it, so the parent
+   * list. On the calendar (a `day` in the URL) the list it lands on then shows the day the URL shows now, in place: the
+   * grid may have moved the day while the drawer was open (`closeKeepingDay`).
    */
   close(): void {
-    if (this.navState().viaGroup) {
-      // A child of the group view: back to the list the group view was opened from (history not grown), never to
-      // the group view; a deep-linked group view has no list behind it, so the parent list.
-      closeGroupPage(this.router, this.location, this.navState(), this.parentUrl());
-      return;
-    }
-    if (this.closeTo !== null) {
-      void this.router.navigateByUrl(this.parentUrl());
-      return;
-    }
-    leavePage(this.router, this.location, this.parentUrl());
+    const target = readCalendarQuery(this.route.snapshot.queryParamMap);
+    closeKeepingDay(this.router, this.location, this.navState(), this.parentUrl(), target, false);
   }
 
   /** A link to another member of the shown split (a sibling): it replaces this child in history. */
   isSibling(id: number): boolean {
     return this.siblingIds().has(id);
   }
+
+  /** ↑ / ↓ of the drawer's bar: the timeline steps to the neighbouring entry. */
+  stepEntry(delta: 1 | -1): void {
+    this.calendarPane.commands()?.stepEntry(delta);
+  }
+
+  /** The drawer's two-column table: the four always-on cells, then the ones that carry something non-default. */
+  readonly drawerFields = computed<{ label: string; value: string }[]>(() => {
+    const detail = this.detail();
+    if (!detail) {
+      return [];
+    }
+    const [, month, day] = detail.entry_date.split('-').map(Number);
+    const fields = [
+      { label: '帳戶', value: detail.account_name },
+      { label: this.debtKind() ? '對象' : '商家', value: (this.debtKind() ? detail.counterparty : detail.merchant) || '—' },
+      { label: '日期', value: `${month}/${day} ${weekdayLabel(detail.entry_date)}` },
+      { label: '時間', value: detail.entry_time ? detail.entry_time.slice(0, 5) : '—' },
+    ];
+    if (detail.project) {
+      fields.push({ label: '專案', value: detail.project });
+    }
+    if (detail.kind !== 'expense' && detail.kind !== 'income') {
+      fields.push({ label: '交易類型', value: this.kindLabel(detail.kind) });
+    }
+    if (this.eventKindLabel(detail) !== '單次') {
+      fields.push({ label: '事件類型', value: this.eventKindLabel(detail) });
+    }
+    return fields;
+  });
 
   /** The entry shown, only while it is also the one in the URL; writes act on nothing else. */
   private routedDetail(): EntryDetail | null {
@@ -501,11 +655,13 @@ export class EntryDetailComponent implements OnInit {
       .subscribe({
         next: detail => {
           if (seq === this.loadSeq) {
+            this.stepping.set(false);
             this.detail.set(detail);
           }
         },
         error: () => {
           if (seq === this.loadSeq) {
+            this.stepping.set(false);
             if (afterWrite || this.detail()?.id !== id) {
               this.detail.set(null);
             }
@@ -513,10 +669,6 @@ export class EntryDetailComponent implements OnInit {
           }
         },
       });
-  }
-
-  rewardWhen(reward: LedgerEntry): string {
-    return reward.posted_date > this.today ? `將於 ${shortDate(reward.posted_date)} 入帳` : `${shortDate(reward.posted_date)} 入帳`;
   }
 
   kindLabel(kind: EntryKind): string {
@@ -540,7 +692,7 @@ export class EntryDetailComponent implements OnInit {
       this.loadSchedule();
       return;
     }
-    this.router.navigate(['/accounting/entries', detail.id, 'edit']);
+    this.router.navigate(['/accounting/entries', detail.id, 'edit'], { queryParamsHandling: 'preserve' });
   }
 
   /** Opens the scope / repost panel and moves focus into it; the opener gets focus back when it closes. */
@@ -610,20 +762,23 @@ export class EntryDetailComponent implements OnInit {
       return;
     }
     if (this.formEditable()) {
-      this.router.navigate(['/accounting/entries', detail.id, 'edit']);
+      this.router.navigate(['/accounting/entries', detail.id, 'edit'], { queryParamsHandling: 'preserve' });
       return;
     }
     this.openSchedulePanel('repost', '.repost-amount');
   }
 
-  /** 編輯整個排程: the entry form in definition mode (not for an imported definition before cutover). */
+  /**
+   * 編輯整個排程: the entry form in definition mode (not for an imported definition before cutover), keeping the
+   * calendar month / day.
+   */
   editSchedule(): void {
     const link = this.scheduleLink();
     const definition = this.scheduleDefinition();
     if (!link || !definition || definition.locked || definition.status === 'ended') {
       return;
     }
-    this.router.navigate(['/accounting/entry'], { queryParams: { schedule: link.definition_id } });
+    this.router.navigate(['/accounting/entry'], { queryParams: { schedule: link.definition_id, ...this.calendarQuery() } });
   }
 
   setRepostAmount(index: number, value: string): void {
@@ -664,7 +819,7 @@ export class EntryDetailComponent implements OnInit {
           this.panelOpener = null;
           const next = instance.posted_entry_ids[position] ?? instance.posted_entry_ids[0];
           if (next !== undefined) {
-            this.router.navigate(['/accounting/entries', next], { replaceUrl: true });
+            this.router.navigate(['/accounting/entries', next], { replaceUrl: true, queryParamsHandling: 'preserve' });
           } else {
             this.load(id, true);
           }
@@ -701,14 +856,15 @@ export class EntryDetailComponent implements OnInit {
     this.runWrite(this.service.acceptPartialScheduleInstance(link.instance_id), id, () => this.load(id, true));
   }
 
+  /** 複製: a new entry prefilled from this one, keeping the calendar month / day. */
   copy(): void {
     const detail = this.detail();
     if (detail) {
-      this.router.navigate(['/accounting/entry'], { queryParams: { copy: detail.id } });
+      this.router.navigate(['/accounting/entry'], { queryParams: { copy: detail.id, ...this.calendarQuery() } });
     }
   }
 
-  openPanel(panel: 'settle' | 'refund' | 'delete'): void {
+  openPanel(panel: 'settle' | 'refund' | 'delete' | 'reopen' | 'close'): void {
     const detail = this.routedDetail();
     if (!detail || this.locked()) {
       return;
@@ -718,15 +874,32 @@ export class EntryDetailComponent implements OnInit {
     this.formError.set(null);
     this.formNote.set('');
     this.formDate.set(this.today);
-    if (panel !== 'delete') {
-      const accounts = this.sameCurrencyAccounts();
+    this.formOriginal.set('');
+    const form = panel === 'settle' || panel === 'refund'; // the others are confirms without fields
+    if (form) {
+      const accounts = panel === 'settle' ? this.settleAccounts() : this.sameCurrencyAccounts();
       const own = accounts.find(account => account.id === detail.account_id);
-      this.formAccountId.set(own?.id ?? accounts[0]?.id ?? null);
-      const max = panel === 'settle' ? Number(detail.open_amount ?? 0) : this.refundable();
-      this.formAmount.set(max > 0 ? amountString(max, detail.currency) : '');
+      const chosen = own ?? accounts[0] ?? null;
+      this.formAccountId.set(chosen?.id ?? null);
+      this.applyAccountDefault(detail, panel, panel === 'settle' && !!chosen && chosen.currency !== detail.currency);
     }
     this.panel.set(panel);
-    if (panel !== 'delete') {
+    if (panel === 'delete' && this.drawer()) {
+      // In the drawer the confirm renders at the end of the scrolling body: bring it into view, ⏎ lands on 取消.
+      afterNextRender(
+        () => {
+          const confirm = this.host.nativeElement.querySelector<HTMLElement>('.delete-confirm');
+          confirm?.scrollIntoView?.({ block: 'nearest' });
+          confirm?.querySelector<HTMLElement>('.delete-cancel')?.focus();
+        },
+        { injector: this.injector },
+      );
+    }
+    if (panel === 'reopen' || panel === 'close') {
+      // The confirm renders below the related rows: focus brings it into view, and ⏎ lands on 取消, not the opener.
+      this.focusInPanel('.debt-cancel');
+    }
+    if (form) {
       // Keys start inside the form, so Esc / ⏎ reach it.
       afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>('.form-amount')?.focus(), {
         injector: this.injector,
@@ -767,7 +940,32 @@ export class EntryDetailComponent implements OnInit {
   }
 
   setFormAccount(value: string): void {
+    const detail = this.detail();
+    const wasCross = this.crossCurrency();
     this.formAccountId.set(Number(value));
+    this.formError.set(null);
+    if (!detail) {
+      return;
+    }
+    const nowCross = this.crossCurrency();
+    if (wasCross !== nowCross) {
+      this.applyAccountDefault(detail, this.panel(), nowCross);
+    } else if (nowCross) {
+      // Foreign to foreign: 金額 was in the other account's currency; 抵銷 stays as typed.
+      this.formAmount.set('');
+    }
+  }
+
+  /** The amount fields' default for an account: cross-currency → empty 金額 and 抵銷 = open amount; else 金額 = the cap. */
+  private applyAccountDefault(detail: EntryDetail, panel: DetailPanel, cross: boolean): void {
+    if (cross) {
+      this.formAmount.set('');
+      this.formOriginal.set(formatMoneyExact(detail.open_amount ?? '0'));
+      return;
+    }
+    const max = panel === 'refund' ? this.refundable() : Number(detail.open_amount ?? 0);
+    this.formAmount.set(max > 0 ? amountString(max, detail.currency) : '');
+    this.formOriginal.set('');
   }
 
   submitForm(): void {
@@ -781,19 +979,38 @@ export class EntryDetailComponent implements OnInit {
       this.formError.set('請選擇帳戶');
       return;
     }
-    const value = parseAmountText(this.formAmount(), detail.currency);
+    const account = this.formAccount();
+    const cross = this.crossCurrency() && !!account;
+    const amountCurrency = cross ? account.currency : detail.currency;
+    const value = parseAmountText(this.formAmount(), amountCurrency);
     if (value === null) {
       this.formError.set('請輸入金額');
       return;
     }
-    const max = this.formMax();
-    if (value > max + 1e-9) {
-      this.formError.set(`金額不可超過 ${formatMoney(max, detail.currency)}`);
-      return;
+    let originalAmount: string | undefined;
+    if (cross) {
+      const original = parseMoneyExact(this.formOriginal());
+      if (original === null) {
+        this.formError.set('請輸入金額');
+        return;
+      }
+      const openAmount = formatMoneyExact(detail.open_amount ?? '0');
+      if (moneyUnits(original) > moneyUnits(openAmount)) {
+        this.formError.set(`金額不可超過 ${currencySymbol(detail.currency)}${openAmount}`);
+        return;
+      }
+      originalAmount = original;
+    } else {
+      const max = this.formMax();
+      if (value > max + 1e-9) {
+        this.formError.set(`金額不可超過 ${formatMoney(max, detail.currency)}`);
+        return;
+      }
     }
     const body = {
       account_id: accountId,
-      amount: amountString(value, detail.currency),
+      amount: amountString(value, amountCurrency),
+      ...(originalAmount !== undefined ? { original_amount: originalAmount } : {}),
       entry_date: this.formDate(),
       entry_time: null,
       description: this.formNote().trim() || null,
@@ -806,13 +1023,31 @@ export class EntryDetailComponent implements OnInit {
     });
   }
 
+  /** #391: 重新開啟 / 標記結清 confirmed. The flag only; the entry reloads with its new remainder. */
+  confirmDebt(): void {
+    const detail = this.routedDetail();
+    const panel = this.panel();
+    if (!detail || this.locked() || this.busy() || (panel !== 'reopen' && panel !== 'close')) {
+      return;
+    }
+    const id = detail.id;
+    this.runWrite(panel === 'reopen' ? this.service.reopenDebt(id) : this.service.closeDebt(id), id, () => {
+      this.panel.set(null);
+      this.load(id, true);
+    });
+  }
+
   confirmDelete(scope: 'entry' | 'group'): void {
     const detail = this.routedDetail();
     if (!detail || this.locked()) {
       return;
     }
     const id = detail.id;
-    const request = scope === 'group' && detail.group ? this.service.deleteSplit(detail.group.id) : this.service.deleteEntry(id);
+    // The dialog listed the children on another account, so this delete confirms them (#390).
+    const request =
+      scope === 'group' && detail.group
+        ? this.service.deleteSplit(detail.group.id)
+        : this.service.deleteEntry(id, this.foreignChildren().length > 0);
     this.runWrite(request, id, () => this.close());
   }
 }

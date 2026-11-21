@@ -1,49 +1,179 @@
 import { Location } from '@angular/common';
-import { ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, signal, untracked } from '@angular/core';
+import {
+  ChangeDetectionStrategy, Component, DestroyRef, ElementRef, Injector, afterNextRender, computed, effect, inject, signal, untracked,
+} from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, ParamMap, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
 
-import { RewardRuleOverview, RewardRuleOverviewQuery, RewardRuleState, RewardRuleStats } from '../../../models/accounting.model';
+import {
+  RewardRuleCounts, RewardRuleOverview, RewardRuleOverviewAccount, RewardRuleOverviewQuery, RewardRuleOverviewRule,
+  RewardRuleState, RewardUsage,
+} from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
-import { LayoutModeService } from '../../../services/layout-mode.service';
+import { CapBarComponent } from '../../ui/cap-bar/cap-bar';
+import { AccountIconComponent } from '../account-icon/account-icon';
 import { leavePage } from '../accounting-ui';
-import { slashDate } from '../dates';
 import { formatMoney } from '../format';
 import { writeErrorMessage } from '../http-errors';
-import { RULE_STATE_LABELS, periodText, postingSummary, ruleLabel } from '../reward-rule-text';
+import {
+  RULE_STATE_LABELS, RewardUnit, mutedLine, postingSummary, rateChip, rewardFigure, ruleTitle, usageUnit, windowText,
+} from '../reward-rule-text';
 
 export type RewardRuleFilter = RewardRuleState | 'all';
 
+/** Chip order of the spec (D3); 全部 first because the rules-less row exists only there. */
 const FILTERS: readonly { key: RewardRuleFilter; label: string }[] = [
-  { key: 'active', label: '啟用中' },
-  { key: 'expired', label: '已到期' },
-  { key: 'upcoming', label: '尚未開始' },
-  { key: 'disabled', label: '已停用' },
   { key: 'all', label: '全部' },
+  { key: 'active', label: '生效中' },
+  { key: 'disabled', label: '已停用' },
+  { key: 'expired', label: '已過期' },
+  { key: 'upcoming', label: '未開始' },
 ];
 
-/** `綁定 N 筆（近 12 月 M）· 已入帳 K 筆 · 合計 X, Y · 最近 yyyy/MM/dd`; 合計 / 最近 only when there is something to show. */
-export function ruleStatsText(stats: RewardRuleStats): string {
-  let text = `綁定 ${stats.linked_entries} 筆（近 12 月 ${stats.linked_entries_12m}）· 已入帳 ${stats.rewards_count} 筆`;
-  if (stats.rewards_total.length) {
-    text += ` · 合計 ${stats.rewards_total.map(total => formatMoney(total.amount, total.currency)).join(', ')}`;
-  }
-  if (stats.rewards_last_date) {
-    text += ` · 最近 ${slashDate(stats.rewards_last_date)}`;
-  }
-  return text;
+export interface OverviewRow {
+  rule: RewardRuleOverviewRule;
+  title: string;
+  rate: string;
+  posting: string;
+  /** The state tag, or 基本; null on a plain active rule. */
+  tag: { label: string; state: RewardRuleState | 'basic' } | null;
+  /** The usage row behind the cap bar — active rules only. */
+  usage: RewardUsage | null;
+  unit: RewardUnit | null;
+  /** The muted line in place of the bar on a non-active rule. */
+  muted: string | null;
+  /** 「本期 M/D–M/D」 (「本月 …」 for a calendar month) only when this row's window differs from the card title's. */
+  window: string | null;
+}
+
+export interface OverviewCard {
+  account: RewardRuleOverviewAccount;
+  name: string;
+  window: string;
+  /** One period total per unit, money first. */
+  totals: string[];
+  rows: OverviewRow[];
+  linked12m: number;
 }
 
 function filterFrom(params: ParamMap): RewardRuleFilter {
   const state = params.get('state');
-  return FILTERS.some(option => option.key === state) ? (state as RewardRuleFilter) : 'active';
+  return FILTERS.some(option => option.key === state) ? (state as RewardRuleFilter) : 'all';
 }
 
-/** 回饋規則總覽: every card's reward rules with their usage, filtered by state through the URL. */
+function unitKey(row: RewardUsage): string {
+  return row.reward_is_money ? '$' : `#${row.reward_account_id}`;
+}
+
+/** The sum of `used + estimated` per unit; money first, then the points units in order of appearance; `$0` with no rows. */
+export function cardTotals(usage: RewardUsage[]): string[] {
+  const sums = new Map<string, { unit: RewardUnit; total: number }>();
+  for (const row of usage) {
+    const entry = sums.get(unitKey(row)) ?? { unit: usageUnit(row), total: 0 };
+    entry.total += Number(row.used) + Number(row.estimated);
+    sums.set(unitKey(row), entry);
+  }
+  if (sums.size === 0) {
+    return [formatMoney(0, 'TWD')];
+  }
+  const entries = [...sums.values()];
+  return [...entries.filter(e => e.unit.money), ...entries.filter(e => !e.unit.money)].map(e => rewardFigure(e.total, e.unit));
+}
+
+/** `2026-11-01`–`2026-11-30`: the first to the last day of one month. */
+function isWholeMonth(start: string, end: string): boolean {
+  if (start.slice(8, 10) !== '01' || start.slice(0, 7) !== end.slice(0, 7)) {
+    return false;
+  }
+  const lastDay = new Date(Date.UTC(Number(end.slice(0, 4)), Number(end.slice(5, 7)), 0)).getUTCDate();
+  return Number(end.slice(8, 10)) === lastDay;
+}
+
+/** A row is a calendar window when its first listed rule says so; with none of its rules listed (a state filter hid
+ * them, while `usage` ignores the filter) a whole calendar month counts as one. */
+function rowIsCalendar(row: RewardUsage, rules: RewardRuleOverviewRule[]): boolean {
+  const first = row.rule_ids.map(id => rules.find(rule => rule.id === id)).find(rule => rule !== undefined);
+  return first ? first.window === 'calendar_month' : isWholeMonth(row.window_start, row.window_end);
+}
+
+/** The usage row whose window the card title prints: the first statement-cycle row when the account has a closing day
+ * (so a calendar-month rule never names the card), else the first row. */
+function cardUsage(account: RewardRuleOverviewAccount): RewardUsage | undefined {
+  const cycle = account.closing_day === null
+    ? undefined
+    : account.usage.find(row => !rowIsCalendar(row, account.rules));
+  return cycle ?? account.usage[0];
+}
+
+function windowLine(account: RewardRuleOverviewAccount, own: RewardUsage | undefined): string {
+  const closing = account.closing_day === null ? '' : `結帳日 ${account.closing_day} 號`;
+  if (!own) {
+    return closing;
+  }
+  const period = windowText(own);
+  // Without a closing day the server's statement cycle is the calendar month (cycles.py), so the card is a calendar one.
+  if (account.closing_day === null || account.usage.every(candidate => rowIsCalendar(candidate, account.rules))) {
+    return `每月 1 日起算 · 本月 ${period}`;
+  }
+  return closing ? `${closing} · 本期 ${period}` : `本期 ${period}`;
+}
+
+export function buildCard(account: RewardRuleOverviewAccount): OverviewCard {
+  const own = cardUsage(account);
+  const rows = account.rules.map((rule): OverviewRow => {
+    const usage = account.usage.find(row => row.rule_ids.includes(rule.id)) ?? null;
+    const active = rule.state === 'active';
+    return {
+      rule,
+      title: ruleTitle(rule),
+      rate: rateChip(rule),
+      posting: postingSummary(rule),
+      tag: !active
+        ? { label: RULE_STATE_LABELS[rule.state], state: rule.state }
+        : rule.is_basic ? { label: '基本', state: 'basic' } : null,
+      usage: active ? usage : null,
+      unit: active && usage ? usageUnit(usage) : null,
+      muted: mutedLine(rule),
+      window: usage && own && (usage.window_start !== own.window_start || usage.window_end !== own.window_end)
+        ? `${rowIsCalendar(usage, account.rules) ? '本月' : '本期'} ${windowText(usage)}`
+        : null,
+    };
+  });
+  return {
+    account,
+    name: `${account.account_name}${account.is_archived ? '（已封存）' : ''}`,
+    window: windowLine(account, own),
+    totals: cardTotals(account.usage),
+    rows,
+    linked12m: account.rules.reduce((sum, rule) => sum + rule.stats.linked_entries_12m, 0),
+  };
+}
+
+/** `N 張卡 · M 條規則 · 本期回饋合計 $X（含預估）`, then ` ＋ K 種點數` for the distinct non-money units (D1a).
+ * `N` is the cards shown; the totals and the unit count run over every account's usage, whatever the state chip —
+ * usage ignores the filter, and a total that shrank under 已停用 would read as what disabled rules earned. */
+export function headlineText(shown: number, accounts: RewardRuleOverviewAccount[], counts: RewardRuleCounts): string {
+  const rules = counts.active + counts.disabled + counts.expired + counts.upcoming;
+  let money = 0;
+  const points = new Set<number>();
+  for (const account of accounts) {
+    for (const row of account.usage) {
+      if (row.reward_is_money) {
+        money += Number(row.used) + Number(row.estimated);
+      } else {
+        points.add(row.reward_account_id);
+      }
+    }
+  }
+  const head = `${shown} 張卡 · ${rules} 條規則 · 本期回饋合計 ${formatMoney(money, 'TWD')}（含預估）`;
+  return points.size ? `${head} ＋ ${points.size} 種點數` : head;
+}
+
+/** 回饋規則總覽 (D3): one card per account with rules, their period usage as cap bars, filtered by state through the URL. */
 @Component({
   selector: 'app-reward-rules',
-  imports: [RouterLink],
+  imports: [RouterLink, AccountIconComponent, CapBarComponent],
   templateUrl: './reward-rules.html',
   styleUrl: './reward-rules.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -53,16 +183,23 @@ export class RewardRulesOverviewComponent {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly location = inject(Location);
-  private readonly layoutMode = inject(LayoutModeService);
-
-  protected readonly filters = FILTERS;
-  protected readonly stateLabels = RULE_STATE_LABELS;
-  protected readonly ruleLabel = ruleLabel;
-  protected readonly postingSummary = postingSummary;
-  protected readonly periodText = periodText;
-  protected readonly statsText = ruleStatsText;
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
 
   private readonly params = toSignal(this.route.queryParamMap, { initialValue: this.route.snapshot.queryParamMap });
+  private readonly fragment = toSignal(this.route.fragment, { initialValue: this.route.snapshot.fragment });
+  /**
+   * This page's URL as path + query, never a fragment: the `back` of every link into an account's settings, which
+   * returns here at that card. `Location.path()` omits the hash (`Router.url` would carry `#card-<id>` after a return,
+   * and settings rejects a `back` with `#`); it is no signal, so `params()` is read first — setArchived / setFilter
+   * change the query in place without remounting the page.
+   */
+  readonly backUrl = computed<string>(() => {
+    this.params();
+    return this.location.path();
+  });
+  /** The `#card-<id>` fragment already acted on; a fragment acts once, after the overview is first shown. */
+  private shownFragment: string | null = null;
   readonly filter = computed(() => filterFrom(this.params()));
   readonly showArchived = computed(() => this.params().get('archived') === '1');
   private readonly accountIds = computed(() =>
@@ -75,8 +212,32 @@ export class RewardRulesOverviewComponent {
   readonly overview = signal<RewardRuleOverview | null>(null);
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
-  readonly callout = computed(() => (this.overview()?.counts.enabled_expired ?? 0) > 0);
-  readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+
+  readonly cards = computed(() => (this.overview()?.accounts ?? []).filter(a => a.rules.length > 0).map(buildCard));
+  /** Credit accounts without a listed rule — only under 全部, where "no rules" is what an empty list means. */
+  readonly bare = computed(() =>
+    this.filter() === 'all' ? (this.overview()?.accounts ?? []).filter(a => a.is_credit && a.rules.length === 0) : [],
+  );
+  readonly headline = computed(() => {
+    const data = this.overview();
+    return data ? headlineText(this.cards().length, data.accounts, data.counts) : '';
+  });
+  readonly chipCounts = computed<Record<RewardRuleFilter, number>>(() => {
+    const counts = this.overview()?.counts;
+    const of = (state: RewardRuleState): number => counts?.[state] ?? 0;
+    return {
+      all: of('active') + of('disabled') + of('expired') + of('upcoming'),
+      active: of('active'), disabled: of('disabled'), expired: of('expired'), upcoming: of('upcoming'),
+    };
+  });
+  readonly chips = computed(() =>
+    FILTERS.map(option => ({ ...option, text: this.overview() ? `${option.label} ${this.chipCounts()[option.key]}` : option.label })),
+  );
+  /** The expired-but-enabled count behind the banner; 0 hides it, as does the 已過期 filter itself. */
+  readonly banner = computed(() => {
+    const count = this.overview()?.counts.enabled_expired ?? 0;
+    return this.filter() === 'expired' ? 0 : count;
+  });
 
   private loadSub: Subscription | null = null;
 
@@ -92,6 +253,32 @@ export class RewardRulesOverviewComponent {
       untracked(() => this.load(query));
     });
     inject(DestroyRef).onDestroy(() => this.loadSub?.unsubscribe());
+    // Back from an account's settings at `#card-<id>`: that card scrolls into view and takes focus, once per fragment.
+    effect(() => {
+      const fragment = this.fragment();
+      if (!fragment) {
+        this.shownFragment = null;
+        return;
+      }
+      if (!this.overview() || fragment === this.shownFragment) {
+        return;
+      }
+      this.shownFragment = fragment;
+      afterNextRender(() => this.showCard(fragment), { injector: this.injector });
+    });
+  }
+
+  /** Scrolls the `card-<id>` section into view and focuses it; a fragment naming no shown card does nothing. */
+  private showCard(fragment: string): void {
+    if (!/^card-\d+$/.test(fragment)) {
+      return;
+    }
+    const section = this.host.nativeElement.querySelector<HTMLElement>(`#${fragment}`);
+    if (!section) {
+      return;
+    }
+    section.scrollIntoView?.({ block: 'start' });
+    section.focus({ preventScroll: true });
   }
 
   setFilter(state: RewardRuleFilter): void {
@@ -103,6 +290,12 @@ export class RewardRulesOverviewComponent {
   }
 
   back(): void {
+    // Returned here from an account's settings (`#card-<id>`): the entry behind this one is this same overview
+    // without the fragment, so `location.back()` would be a dead tap — go straight to the fallback.
+    if (this.fragment()?.startsWith('card-')) {
+      void this.router.navigateByUrl('/accounting/settings');
+      return;
+    }
     leavePage(this.router, this.location, '/accounting/settings');
   }
 

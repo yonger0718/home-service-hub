@@ -6,6 +6,7 @@ import { LedgerAccount } from '../../../models/accounting.model';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
 import { makeAccount } from '../testing/fixtures';
+import { pullGrab } from '../sheet-pull.testing';
 import { AccountPickerComponent } from './account-picker';
 import { RECENT_ACCOUNTS_KEY } from './recent-accounts';
 
@@ -224,6 +225,15 @@ describe('AccountPickerComponent', () => {
     const desk = render({ mode: 'sheet' });
     openPanel(desk.fixture);
     expect(desk.el.querySelector('.acct-popover.acct-panel[data-overlay]')).not.toBeNull();
+  });
+
+  it('phone: a pull on the grab bar closes the sheet and keeps the value', () => {
+    const { fixture, el, picker } = render({ mode: 'phone', value: 1 });
+    openPanel(fixture);
+    pullGrab(el.querySelector<HTMLElement>('.sheet.acct-panel .grab')!);
+    fixture.detectChanges();
+    expect(el.querySelector('.acct-panel')).toBeNull();
+    expect(picker.value()).toBe(1);
   });
 
   function key(target: Element, name: string, init: KeyboardEventInit = {}): KeyboardEvent {

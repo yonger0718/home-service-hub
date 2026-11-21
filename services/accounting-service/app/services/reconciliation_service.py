@@ -88,6 +88,7 @@ from app.services import dividend_service, trade_settlement_service
 from app.services.entry_write_service import lock_group, proposed_fx_fee
 from app.services.errors import CodedConflictError, NotFoundError
 from app.services.ledger_service import account_balance
+from app.services.reconciliation_hints import PEER_HINT, STAND_IN_DELETED_HINT
 from app.services.schedule_locks import take_import_key_shared
 from app.services.statements import matching, retired
 
@@ -712,8 +713,8 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
         event_id = lines[c.line_id].event_id
         if c.kind == "line_unmatched" and event_id in deleted:  # R6b.0: derived every reconcile, never carried
             context = {**(context or {}), "owner_deleted": True}
-            context.setdefault("hint", "stand_in_deleted")
-        if c.kind == "line_unmatched" and (context or {}).get("hint") == "needs_peer" \
+            context.setdefault("hint", STAND_IN_DELETED_HINT)
+        if c.kind == "line_unmatched" and (context or {}).get("hint") == PEER_HINT \
                 and stand_ins.pair_transfer_block(db, [event_id]):  # R6c: an occupied or owner-deleted pairing
             context = {**context, "owner_deleted": True}
         out.append(_case(c.kind, event_id=event_id, line_id=c.line_id, entry_id=c.entry_id,

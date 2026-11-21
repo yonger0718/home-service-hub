@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>回饋狀態規格</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1280px; min-height: 900px; box-sizing: border-box; padding: 40px 48px; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500; display: flex; flex-direction: column; gap: 28px">
+
+  <header style="display: flex; flex-direction: column; gap: 6px">
+    <h1 style="margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.03em">記錄詳情 · 回饋的四種狀態</h1>
+    <p style="margin: 0; font-size: 14px; color: {{t.muted}}">同一個標籤元件用在記錄詳情、日曆抽屜和帳戶的回饋規則列；金額一律寫回饋帳戶入帳的那個數字。</p>
+  </header>
+
+  <section aria-label="狀態流程" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px">
+    <sc-for list="{{states}}" as="s" hint-placeholder-count="4">
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; padding: 18px; display: flex; flex-direction: column; gap: 10px">
+        <span style="align-self: flex-start; display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 800; padding: 4px 10px; border-radius: 999px; background: {{s.bg}}; color: {{s.fg}}; border: 1.5px {{s.borderStyle}} {{s.border}}">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{s.icon}}"></path></svg>
+          {{s.label}}
+        </span>
+        <code style="font-size: 12px; color: {{t.muted}}">{{s.code}}</code>
+        <p style="margin: 0; font-size: 14px; line-height: 1.6">{{s.when}}</p>
+        <p style="margin: 0; font-size: 13px; line-height: 1.6; color: {{t.muted}}">{{s.shows}}</p>
+      </div>
+    </sc-for>
+  </section>
+
+  <p style="margin: -10px 0 0; font-size: 13px; color: {{t.muted}}">流程：預估 → 已入帳 → 銀行確認；任一步之前退款或改規則 → 未獲得。金額以 <code>ledger_amount</code> 為準（銀行確認後是銀行的數字），沒有入帳列時用 <code>estimate</code>。</p>
+
+  <section aria-label="記錄詳情範例" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px">
+    <sc-for list="{{examples}}" as="e" hint-placeholder-count="4">
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <small style="font-size: 12px; font-weight: 700; color: {{t.muted}}">{{e.caption}}</small>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+          <div style="display: flex; justify-content: space-between; align-items: baseline">
+            <b style="font-size: 13px; font-weight: 800; letter-spacing: 0.08em; color: {{t.muted}}">回饋</b>
+            <small style="font-size: 12px; color: {{t.muted}}">全聯 採買 −$1,286</small>
+          </div>
+          <sc-for list="{{e.lines}}" as="l" hint-placeholder-count="2">
+            <div style="display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 14px; background: {{t.soft}}">
+              <span style="display: flex; align-items: center; gap: 8px">
+                <span style="flex: 1; font-size: 14px; font-weight: 700">{{l.rule}}</span>
+                <span style="display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 999px; background: {{l.bg}}; color: {{l.fg}}; border: 1.5px {{l.borderStyle}} {{l.border}}">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{l.icon}}"></path></svg>
+                  {{l.state}}
+                </span>
+              </span>
+              <span style="display: flex; align-items: baseline; gap: 8px">
+                <b style="font-size: 18px; font-weight: 800; color: {{l.amtColor}}; text-decoration: {{l.strike}}">{{l.amount}}</b>
+                <sc-if value="{{l.hasWas}}" hint-placeholder-val="{{false}}"><small style="font-size: 12px; color: {{t.muted}}; text-decoration: line-through">{{l.was}}</small></sc-if>
+              </span>
+              <small style="font-size: 12px; color: {{t.muted}}; line-height: 1.5">{{l.note}}</small>
+              <sc-if value="{{l.hasLink}}" hint-placeholder-val="{{false}}"><a href="#" style="font-size: 12px; font-weight: 700; color: {{t.primary}}; text-decoration: none">{{l.link}}</a></sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-for>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1280,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', soft: '#202733', border: '#313a48', text: '#f3f6fb', muted: '#99a3b3',
+      primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)', okSoft: 'rgba(67,201,138,0.15)', okInk: '#43c98a', in: '#43c98a',
+      neutralSoft: 'rgba(150,165,197,0.15)',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', soft: '#edf1f6', border: '#d8dee7', text: '#151821', muted: '#5f6673',
+      primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)', okSoft: 'rgba(31,157,107,0.12)', okInk: '#17784f', in: '#1f9d6b',
+      neutralSoft: 'rgba(123,135,168,0.14)',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)'
+    };
+    const ICON = {
+      estimated: 'M12 7v5l3 2 M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z',
+      posted: 'M5 12l4 4 10-10',
+      bank_confirmed: 'M4 12l4 4 6-6 M10 16l1 1 9-9',
+      forfeited: 'M18 6L6 18 M6 6l12 12'
+    };
+    const STYLE = {
+      estimated: { label: '預估', bg: 'transparent', fg: t.primary, border: t.primary, borderStyle: 'dashed', icon: ICON.estimated },
+      posted: { label: '已入帳', bg: t.primarySoft, fg: t.primary, border: 'transparent', borderStyle: 'solid', icon: ICON.posted },
+      bank_confirmed: { label: '銀行確認', bg: t.okSoft, fg: t.okInk, border: 'transparent', borderStyle: 'solid', icon: ICON.bank_confirmed },
+      forfeited: { label: '未獲得', bg: t.neutralSoft, fg: t.muted, border: 'transparent', borderStyle: 'solid', icon: ICON.forfeited }
+    };
+    const states = [
+      ['estimated', '消費記下後，規則算出的回饋；還沒在回饋帳戶入帳。', '顯示預計入帳日、入帳帳戶，有上限的規則加「本期已用 / 上限」。'],
+      ['posted', '到了規則的入帳日，回饋帳戶已記一筆回饋。', '顯示入帳日，連到那筆回饋記錄。'],
+      ['bank_confirmed', '對帳單上看到銀行實際給的回饋，已核對。', '金額用銀行的數字；跟預估不同時，把預估劃掉放旁邊。'],
+      ['forfeited', '退款、刪除或規則改變，這筆回饋不會發。', '金額劃掉並灰掉，寫出原因；不計入本期已用。']
+    ].map(([k, when, shows]) => ({ ...STYLE[k], code: 'state: ' + k, when, shows }));
+
+    const L = (state, rule, amount, note, o) => {
+      const s = STYLE[state];
+      return { state: s.label, bg: s.bg, fg: s.fg, border: s.border, borderStyle: s.borderStyle, icon: s.icon, rule, amount, note,
+        amtColor: state === 'forfeited' ? t.muted : t.in, strike: state === 'forfeited' ? 'line-through' : 'none',
+        hasWas: !!(o && o.was), was: (o && o.was) || '', hasLink: !!(o && o.link), link: (o && o.link) || '' };
+    };
+    const examples = [
+      { caption: '① 剛記下（11/21）', lines: [
+        L('estimated', '一般消費 1%', '+$13', '預計 12/15 入帳到 玉山 Pi 卡 · 本期 $300 / $500'),
+        L('estimated', '全聯・家樂福加碼 5%', '+$20', '算出 $64，本期上限 $200 只剩 $20 · 預計 12/15 入帳', { was: '$64' })
+      ] },
+      { caption: '② 入帳日之後（12/15）', lines: [
+        L('posted', '一般消費 1%', '+$13', '12/15 已入帳到 玉山 Pi 卡', { link: '看回饋記錄 ›' }),
+        L('posted', '全聯・家樂福加碼 5%', '+$20', '12/15 已入帳 · 本期已達上限 $200', { link: '看回饋記錄 ›' })
+      ] },
+      { caption: '③ 對過帳單（1 月）', lines: [
+        L('bank_confirmed', '一般消費 1%', '+$12', '銀行實際給 $12（四捨五入方式不同）· 已與 12 月帳單核對', { was: '$13' }),
+        L('bank_confirmed', '全聯・家樂福加碼 5%', '+$20', '與 12 月帳單相符')
+      ] },
+      { caption: '④ 退款（11/28 全額退款）', lines: [
+        L('forfeited', '一般消費 1%', '$13', '11/28 全額退款，不會獲得這筆回饋；不計入本期已用'),
+        L('forfeited', '全聯・家樂福加碼 5%', '$20', '11/28 全額退款，不會獲得這筆回饋；額度還回本期')
+      ] }
+    ];
+    return { t, states, examples };
+  }
+}
+</script>
+</body>
+</html>

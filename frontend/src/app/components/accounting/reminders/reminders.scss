@@ -565,3 +565,100 @@
   font-weight: 700;
   padding: 6px 0;
 }
+
+/* #401: closes with a remainder that wait for the owner's 已確認. */
+.debt-reviews {
+  .load-error,
+  .muted {
+    margin: 6px 0;
+  }
+}
+
+.review-row {
+  align-items: center;
+  border-top: 1px solid var(--app-border);
+  display: grid;
+  gap: 2px 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: calc(var(--row-py) + 1px) 0;
+
+  .review-main {
+    background: none;
+    border: 0;
+    color: inherit;
+    display: grid;
+    font: inherit;
+    gap: 2px 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-width: 0;
+    padding: 0;
+    text-align: left;
+  }
+
+  .review-open {
+    cursor: pointer;
+
+    &:focus-visible {
+      outline: 2px solid var(--app-primary);
+      outline-offset: 2px;
+    }
+  }
+
+  .name {
+    font-weight: 700;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .amt {
+    font-variant-numeric: tabular-nums;
+    font-weight: 800;
+    text-align: right;
+  }
+
+  .sub {
+    color: var(--app-text-muted);
+    font-size: var(--fs-label, 0.75rem);
+    grid-column: 1 / -1;
+  }
+
+  .review-now {
+    color: var(--app-danger);
+    font-size: var(--fs-label, 0.75rem);
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    grid-column: 1 / -1;
+  }
+
+  .badge {
+    background: var(--app-surface-soft);
+    border-radius: var(--radius-pill);
+    color: var(--app-text-muted);
+    font-size: 0.72rem;
+    font-weight: 800;
+    padding: 0 8px;
+  }
+
+  .review-done {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: var(--radius-pill);
+    color: var(--app-primary);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--fs-label, 0.75rem);
+    font-weight: 700;
+    min-height: 32px;
+    padding: 2px 12px;
+
+    &:disabled {
+      cursor: default;
+      opacity: 0.6;
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--app-primary);
+      outline-offset: 1px;
+    }
+  }
+}

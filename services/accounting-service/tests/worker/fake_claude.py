@@ -26,8 +26,11 @@ def transcript(output=GOOD, *, tools=("StructuredOutput",), tool_name="Structure
                message_not_object=False, user_extra_block=False, tool_result_id_mismatch=False,
                assistant_extra_tool_use_after_text=False, no_ids=False, deep_json_line=False,
                thinking_prelude=False, ui_invalidate_first=False, other_system_subtype=False, assistant_after_user=False, sleep_after=0,
-               flood_after=False):
+               flood_after=False, auth_failed=False, auth_content=None, auth_second_assistant=False,
+               auth_result_is_error=True):
     events = [{"type": "system", "subtype": "init", "tools": list(tools) if isinstance(tools, (tuple, list)) else tools, "claude_code_version": "2.1.296"}]
+    if auth_failed:
+        return _auth_failed(events, auth_content, auth_second_assistant, auth_result_is_error, garbage_line)
     if ui_invalidate_first:
         events.insert(0, {"type": "system", "subtype": "ui_invalidate"})
     if hook_event:
@@ -71,6 +74,29 @@ def transcript(output=GOOD, *, tools=("StructuredOutput",), tool_name="Structure
     return out
 
 
+NOT_LOGGED_IN = "Not logged in \u00b7 Please run /login"
+
+
+def _auth_failed(events, content, second_assistant, result_is_error, garbage_line) -> "Transcript":
+    """Spec D3: the no-login stream captured on the host (2026-11-18). The assistant event carries the CLI's top-level
+    `error`/`is_api_error_message` and one text block; the result is `success` with `is_error: true` and 1 turn.
+    Knobs (the Review Focus look-alikes): `content` replaces the assistant content, `second_assistant` repeats the
+    assistant event, `result_is_error` sets the result's flag, `garbage_line` puts a non-JSON line before the result."""
+    assistant = {"type": "assistant", "error": "authentication_failed", "is_api_error_message": True,
+                 "message": {"content": [{"type": "text", "text": NOT_LOGGED_IN}] if content is None else content},
+                 "parent_tool_use_id": None, "session_id": "00000000-0000-4000-8000-000000000001",
+                 "timestamp": "2026-11-18T00:00:00.000Z", "uuid": "00000000-0000-4000-8000-000000000002"}
+    events.append(assistant)
+    if second_assistant:
+        events.append(assistant)
+    if garbage_line:
+        events.append("this is not json")
+    events.append({"type": "result", "subtype": "success", "is_error": result_is_error, "num_turns": 1,
+                   "result": NOT_LOGGED_IN})
+    text = "\n".join(e if isinstance(e, str) else json.dumps(e, ensure_ascii=False) for e in events) + "\n"
+    return Transcript(text)
+
+
 def _split_after_assistant(body: str) -> tuple[str, str]:
     lines = body.splitlines(keepends=True)
     for i, line in enumerate(lines):
@@ -79,10 +105,38 @@ def _split_after_assistant(body: str) -> tuple[str, str]:
     return body, ""
 
 
+TOKEN_PLACEHOLDER = "@@TOKEN@@"
+
+
+def _with_token_placeholder(body: str, where: str) -> str:
+    if where == "tools":
+        out = body.replace('"tools": ["StructuredOutput"]', f'"tools": ["{TOKEN_PLACEHOLDER}"]', 1)
+    elif where == "tool_name":
+        out = body.replace('"name": "StructuredOutput"', f'"name": "{TOKEN_PLACEHOLDER}"', 1)
+    elif where == "subtype":
+        lines = body.splitlines(keepends=True)
+        lines.insert(1, json.dumps({"type": "system", "subtype": TOKEN_PLACEHOLDER}) + "\n")
+        out = "".join(lines)
+    else:
+        raise ValueError(where)
+    assert out != body
+    return _keep_flags(body, out) if isinstance(body, Transcript) else out
+
+
+def _keep_flags(body: "Transcript", out: str) -> "Transcript":
+    new = Transcript(out)
+    new.sleep_after, new.flood_after = body.sleep_after, body.flood_after
+    return new
+
+
 def write(path: Path, body: str, *, version="2.1.296 (Claude Code)", sleep=0, stdout_bytes=None, exit_code=0,
           stderr_bytes=None, read_stdin=True, grandchild_pid_file=None, close_pipes_then_sleep=None,
-          sleep_after=None, flood_after=None) -> Path:
-    """`claude --version` prints `version`; any other invocation behaves per the options and prints `body`."""
+          sleep_after=None, flood_after=None, record_env=None, echo_env_in=None) -> Path:
+    """`claude --version` prints `version`; any other invocation behaves per the options and prints `body`.
+    `record_env`: a path the script writes {"token_set", "token_sha256"} to for CLAUDE_CODE_OAUTH_TOKEN (never the raw
+    value). `echo_env_in` ("tools" | "subtype" | "tool_name"): the env token value is placed in that field of the stream."""
+    if echo_env_in is not None:
+        body = _with_token_placeholder(body, echo_env_in)
     sleep_after = sleep_after if sleep_after is not None else getattr(body, "sleep_after", 0)
     flood_after = flood_after if flood_after is not None else getattr(body, "flood_after", False)
     q = lambda p: shlex.quote(str(p))  # noqa: E731
@@ -91,6 +145,11 @@ def write(path: Path, body: str, *, version="2.1.296 (Claude Code)", sleep=0, st
     part1.write_bytes(stdout_bytes if stdout_bytes is not None else first.encode("utf-8"))
     part2.write_bytes(rest.encode("utf-8"))
     script = ["#!/bin/sh", f'if [ "$1" = "--version" ]; then echo {shlex.quote(version)}; exit 0; fi']
+    if record_env is not None:
+        script.append('if [ -n "${CLAUDE_CODE_OAUTH_TOKEN+x}" ]; then s=true; h=$(printf %s "$CLAUDE_CODE_OAUTH_TOKEN" | sha256sum | cut -d" " -f1); '
+                      'else s=false; h=; fi')
+        script.append(f'printf \'{{"token_set": %s, "token_sha256": "%s"}}\' "$s" "$h" > {q(record_env)}')
+    emit = (lambda p: f'sed "s/{TOKEN_PLACEHOLDER}/$CLAUDE_CODE_OAUTH_TOKEN/g" {q(p)}') if echo_env_in else (lambda p: f"cat {q(p)}")
     if grandchild_pid_file is not None:
         script.append(f"sleep 60 & echo $! > {q(grandchild_pid_file)}")
     if read_stdin:
@@ -102,12 +161,12 @@ def write(path: Path, body: str, *, version="2.1.296 (Claude Code)", sleep=0, st
         err.write_bytes(stderr_bytes)
         script.append(f"cat {q(err)} >&2")
     script.append(f"sleep {sleep}")
-    script.append(f"cat {q(part1)}")
+    script.append(emit(part1))
     if sleep_after:
         script.append(f"sleep {sleep_after}")
     if flood_after:
         script.append("head -c 3000000 /dev/zero | tr '\\000' x")
-    script.append(f"cat {q(part2)}")
+    script.append(emit(part2))
     script.append(f"exit {exit_code}")
     path.write_text("\n".join(script) + "\n", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)

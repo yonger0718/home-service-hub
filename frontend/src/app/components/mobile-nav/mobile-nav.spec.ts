@@ -1,5 +1,5 @@
 import { Component, signal } from '@angular/core';
-import { TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -16,6 +16,9 @@ const BADGES: Record<string, NavBadge> = {
   import: { dot: true, label: '最近一次匯入失敗' },
 };
 
+/** The last `render`'s fixture, for a test that navigates after rendering. */
+let rendered: ComponentFixture<MobileNavComponent>;
+
 async function render(url: string, opts: { hidden?: string[]; badges?: boolean } = {}): Promise<HTMLElement> {
   if (opts.hidden) localStorage.setItem('hh-nav-hidden', JSON.stringify(opts.hidden));
   if (opts.badges === false) localStorage.setItem('hh-nav-badges', '0');
@@ -29,6 +32,7 @@ async function render(url: string, opts: { hidden?: string[]; badges?: boolean }
   await TestBed.inject(Router).navigateByUrl(url);
   const fixture = TestBed.createComponent(MobileNavComponent);
   fixture.detectChanges();
+  rendered = fixture;
   return fixture.nativeElement as HTMLElement;
 }
 
@@ -60,6 +64,23 @@ describe('MobileNavComponent', () => {
 
     expect(plus.getAttribute('href')).toBe('/accounting/entry');
     expect(plus.getAttribute('aria-label')).toBe('新增記錄');
+  });
+
+  it('links the plus to the entry page with the calendar month and day', async () => {
+    const el = await render('/accounting?month=2026-10&day=2026-10-21');
+    expect(el.querySelector('a.m-plus')!.getAttribute('href')).toBe('/accounting/entry?month=2026-10&day=2026-10-21');
+  });
+
+  it("links the plus to a bare entry page from a page whose ?month is not the calendar's (報表)", async () => {
+    const el = await render('/accounting/reports?month=2026-08');
+    expect(el.querySelector('a.m-plus')!.getAttribute('href')).toBe('/accounting/entry');
+  });
+
+  it('follows the calendar day after a navigation', async () => {
+    const el = await render('/portfolio');
+    await TestBed.inject(Router).navigateByUrl('/accounting?month=2026-10&day=2026-10-22');
+    rendered.detectChanges();
+    expect(el.querySelector('a.m-plus')!.getAttribute('href')).toBe('/accounting/entry?month=2026-10&day=2026-10-22');
   });
 
   it('marks the active group tab', async () => {

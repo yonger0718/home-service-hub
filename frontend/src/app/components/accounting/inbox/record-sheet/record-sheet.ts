@@ -18,6 +18,7 @@ import { CategoryNode, Project } from '../../../../models/accounting.model';
 import { AccountingService } from '../../../../services/accounting.service';
 import { focusSheetField, isHandledKey, restoreOverlayFocus, trapFocus } from '../../accounting-ui';
 import { CategoryPickerComponent } from '../../category-picker/category-picker';
+import { SheetPullDirective } from '../../sheet-pull.directive';
 import {
   AMOUNT_ANY_LABEL,
   InboxCard,
@@ -58,7 +59,7 @@ function findCategory(nodes: CategoryNode[], id: number): CategoryNode | null {
 @Component({
   selector: 'app-inbox-record-sheet',
   standalone: true,
-  imports: [CategoryPickerComponent],
+  imports: [CategoryPickerComponent, SheetPullDirective],
   templateUrl: './record-sheet.html',
   styleUrls: ['../../sheet.scss', './record-sheet.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,

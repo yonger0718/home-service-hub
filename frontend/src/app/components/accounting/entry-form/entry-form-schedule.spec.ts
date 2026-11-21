@@ -92,7 +92,10 @@ describe('EntryFormComponent schedules', () => {
     navigate = spy;
     const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
     const el = harness.routeNativeElement as HTMLElement;
-    const left = () => spy.mock.calls.some(([target]) => target === '/accounting') || back.mock.calls.length > 0;
+    const router = TestBed.inject(Router);
+    const left = () =>
+      spy.mock.calls.some(([target]) => (typeof target === 'string' ? target : router.serializeUrl(target)).split('?')[0] === '/accounting') ||
+      back.mock.calls.length > 0;
     return { el, left };
   }
 

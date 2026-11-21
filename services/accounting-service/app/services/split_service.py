@@ -358,14 +358,18 @@ def _apply_keep(db: Session, entry: LedgerEntry, item: SplitKeepIn) -> None:
     reward_engine.after_meta_write(db, entry, before_project_id=before_project_id, before_flag=before_flag)
 
 
-def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None) -> SplitResult:
+def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None,
+                 drop_children: bool = False) -> SplitResult:
     """PUT /splits/{group_id}: upsert by member id (§1.5). keep_full members are rewritten in place (financially
     changed), get a metadata-only update (financially unchanged) or are skipped (fully unchanged); keep_meta
     members get the sent metadata; new members are inserted; current members absent from the payload are deleted.
     Protected members (split_protection) only take the keep form and are never dropped. Reward ledger rows are
     never deleted here; a member's project change moves its engine reward rows (reward engine spec 5.1). Errors in
     phase order: see _readable_split, _check_put_cardinality, _plan_members,
-    _refuse_locked, _prepare, _revalidate."""
+    _refuse_locked, _prepare, _revalidate. `drop_children` (#396): a kept member's stored fee / discount child that
+    its payload does not carry is dropped only with it; else `children_unconfirmed` from the write phase, after
+    earlier members were written and absent ones deleted (the caller's rollback takes those back). A member left
+    out of the payload goes with its children as before."""
     # 1. preliminary read and classification: no lock, no FX
     _readable_split(db, group_id)
     current = _current_members(db, group_id)
@@ -395,7 +399,8 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
         elif member.action == "keep":
             _apply_keep(db, db.get(LedgerEntry, member.entry_id), member.item)
         elif member.change == "financial":
-            apply_prepared_update(db, db.get(LedgerEntry, member.entry_id), member.prepared)
+            apply_prepared_update(db, db.get(LedgerEntry, member.entry_id), member.prepared,
+                                  drop_children=drop_children)  # #396
         elif member.change == "meta":
             _apply_meta(db, db.get(LedgerEntry, member.entry_id), member.payload)
     db.flush()
@@ -448,12 +453,13 @@ def _refuse_anchor(db: Session, anchor: LedgerEntry) -> None:
 
 
 def convert_to_split(db: Session, entry_id: int, payload: SplitIn, *, http_get=None,
-                     source: str = "manual") -> SplitResult:
+                     source: str = "manual", drop_children: bool = False) -> SplitResult:
     """PUT /entries/{entry_id}/split (§1.6): the anchor joins a new split group and is rewritten in place (its id
     is stable); the other members are inserted with `source` (the reconciliation `split_entry` action passes
     'statement'). Phases as update_split; the only row lock is the anchor (it belongs to no group, and the new group
     row is invisible to other transactions until commit). A concurrent convert of the same entry waits on that lock
-    and then answers already_grouped."""
+    and then answers already_grouped. `drop_children` (#396): as on `update_entry`, for the anchor's stored fee /
+    discount child."""
     # 1. cardinality, 404, refusals on the unlocked read
     _check_convert_cardinality(entry_id, payload)
     _refuse_anchor(db, get_entry(db, entry_id))
@@ -480,7 +486,7 @@ def convert_to_split(db: Session, entry_id: int, payload: SplitIn, *, http_get=N
     anchor.group_id = group.id
     for member in members:
         if member.action == "full":
-            apply_prepared_update(db, anchor, member.prepared)
+            apply_prepared_update(db, anchor, member.prepared, drop_children=drop_children)  # #396
         else:
             member.entry_id = insert_prepared(db, member.prepared, group_id=group.id, remember=False,
                                               source=source)

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
+DEFAULT_PARSER_OAUTH_TOKEN_FILE = "~/.config/homehub-parser-oauth-token"  # tests repoint this: the runner may own a real token
 TRUE = {"1", "true", "yes", "on"}
 
 
@@ -48,6 +49,7 @@ class WorkerConfig:
     verify_db_url: str | None = field(repr=False)  # may embed a password
     verify_parser_config_dir: Path
     account_map_file: Path | None
+    parser_oauth_token_file: Path = Path(DEFAULT_PARSER_OAUTH_TOKEN_FILE).expanduser()  # #385: setup-token; file present = token mode
     ocr_enabled: bool = True          # R5: OCR child for files without a text layer (wired in R5c)
     ocr_threads: int = 2
     ocr_timeout_s: int = 120
@@ -59,6 +61,7 @@ class WorkerConfig:
     flex_poll_attempts: int = 12
     flex_poll_interval_s: int = 10
     portfolio_api_url: str = "http://127.0.0.1:8001"
+    portfolio_token_file: Path | None = None  # issue #117: bearer token for the portfolio API; unset = no header
     cathay_folder: str = "投資/國泰證券/日對帳單"  # Drive folder under drive_root, also the password-file key
     cathay_cutover: date = date(2026, 10, 16)
     cathay_timeout_s: int = 60
@@ -110,6 +113,7 @@ def _date(env: Mapping[str, str], key: str, default: str) -> date:
 def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
     key_file = _opt(env, "STATEMENT_MINIO_KEY_FILE")
     map_file = _opt(env, "STATEMENT_ACCOUNT_MAP_FILE")
+    portfolio_token = _opt(env, "STATEMENT_PORTFOLIO_TOKEN_FILE")
     return WorkerConfig(
         api_url=_str(env, "STATEMENT_API_URL", "http://127.0.0.1:8000").rstrip("/"),
         api_token_file=_path(env, "STATEMENT_API_TOKEN_FILE", "~/.config/homehub-statement-token"),
@@ -124,6 +128,7 @@ def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
         parser_cli_version=_ident(env, "STATEMENT_PARSER_CLI_VERSION", "2.1.296"),
         parser_model=_ident(env, "STATEMENT_PARSER_MODEL", "claude-sonnet-5-5"),
         parser_config_dir=_path(env, "STATEMENT_PARSER_CONFIG_DIR", "~/.local/state/home-hub-parser/claude"),
+        parser_oauth_token_file=_path(env, "STATEMENT_PARSER_OAUTH_TOKEN_FILE", DEFAULT_PARSER_OAUTH_TOKEN_FILE),
         parser_sandbox=_str(env, "STATEMENT_PARSER_SANDBOX", "true").lower() in TRUE,
         parser_allow_unsandboxed=_str(env, "STATEMENT_PARSER_ALLOW_UNSANDBOXED", "false").lower() in TRUE,
         parser_timeout_s=int(_str(env, "STATEMENT_PARSER_TIMEOUT", "120")),
@@ -143,6 +148,7 @@ def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
         flex_poll_attempts=int(_str(env, "STATEMENT_FLEX_POLL_ATTEMPTS", "12")),
         flex_poll_interval_s=int(_str(env, "STATEMENT_FLEX_POLL_INTERVAL", "10")),
         portfolio_api_url=_str(env, "STATEMENT_PORTFOLIO_API_URL", "http://127.0.0.1:8001").rstrip("/"),
+        portfolio_token_file=Path(portfolio_token).expanduser() if portfolio_token else None,
         cathay_folder=_str(env, "STATEMENT_CATHAY_FOLDER", "投資/國泰證券/日對帳單").strip("/"),
         cathay_cutover=_date(env, "STATEMENT_CATHAY_CUTOVER", "2026-10-16"),
         cathay_timeout_s=int(_str(env, "STATEMENT_CATHAY_TIMEOUT_S", "60")),

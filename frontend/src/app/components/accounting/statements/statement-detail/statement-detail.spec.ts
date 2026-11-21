@@ -457,6 +457,15 @@ describe('StatementDetailComponent', () => {
     expect(Array.from(el.querySelectorAll('.refusal li')).map(text)).toEqual(['仍有未處理項目']);
   });
 
+  it('the 強制確認 sheet has no grab bar', () => {
+    const fixture = loaded(statement());
+    const el = fixture.nativeElement as HTMLElement;
+    el.querySelector<HTMLButtonElement>('.force')!.click();
+    fixture.detectChanges();
+    expect(el.querySelector('.sheet')).not.toBeNull();
+    expect(el.querySelector('.sheet .grab')).toBeNull();
+  });
+
   it('keeps a whitespace note on the client and shows the server note error', () => {
     const fixture = loaded(statement());
     const el = fixture.nativeElement as HTMLElement;

@@ -169,6 +169,67 @@ describe('多類別 group view history (no page stacking)', () => {
     expect(stack()._historyIndex).toBe(1);
   });
 
+  describe('on the calendar (month / day in the URL)', () => {
+    const DAY_21 = { month: '2026-10', day: '2026-10-21' };
+    const LIST_23 = '/accounting?month=2026-10&day=2026-10-23';
+
+    /** The grid picks 10/23 while the page stays open: the timeline's merge + replace write. */
+    async function gridPicks23(): Promise<void> {
+      await router.navigate([], { queryParams: { month: '2026-10', day: '2026-10-23' }, queryParamsHandling: 'merge', replaceUrl: true });
+      await settle();
+    }
+
+    it('✕ on a detail goes back, then shows the day picked meanwhile in place: Back leaves the calendar in one step', async () => {
+      await router.navigateByUrl('/accounting?month=2026-10&day=2026-10-21');
+      await router.navigate(['/accounting/entries', 43], { queryParams: DAY_21 });
+      await settle();
+      await gridPicks23();
+      expect(location.path()).toBe('/accounting/entries/43?month=2026-10&day=2026-10-23');
+
+      await click('.dhead .close');
+      await vi.waitFor(() => expect(router.url).toBe(LIST_23));
+      await settle();
+      expect(history()).toEqual(['/accounting', LIST_23, '/accounting/entries/43?month=2026-10&day=2026-10-23']);
+      expect(stack()._historyIndex).toBe(2);
+
+      location.back();
+      await settle();
+      expect(router.url).toBe('/accounting');
+    });
+
+    it('✕ on a child of a group view goes back past the group view, then shows the day picked meanwhile in place', async () => {
+      await router.navigateByUrl('/accounting?month=2026-10&day=2026-10-21');
+      await router.navigate(['/accounting/entries', 42, 'group'], { state: FROM_LIST, queryParams: DAY_21 });
+      await settle();
+      await click('.split-child[data-member-id="43"]');
+      expect(location.path()).toBe('/accounting/entries/43?month=2026-10&day=2026-10-21');
+      await gridPicks23();
+
+      await click('.dhead .close');
+      await vi.waitFor(() => expect(router.url).toBe(LIST_23));
+      await settle();
+      expect(stack()._historyIndex).toBe(2);
+      expect(history()[1]).toBe(LIST_23);
+
+      location.back();
+      await settle();
+      expect(router.url).toBe('/accounting');
+    });
+
+    it('✕ on a group view goes back to the list, then shows the day picked meanwhile in place', async () => {
+      await router.navigateByUrl('/accounting?month=2026-10&day=2026-10-21');
+      await router.navigate(['/accounting/entries', 42, 'group'], { state: FROM_LIST, queryParams: DAY_21 });
+      await settle();
+      await gridPicks23();
+
+      await click('.dhead .close');
+      await vi.waitFor(() => expect(router.url).toBe(LIST_23));
+      await settle();
+      expect(stack()._historyIndex).toBe(2);
+      expect(history()).toEqual(['/accounting', LIST_23, '/accounting/entries/42/group?month=2026-10&day=2026-10-23']);
+    });
+  });
+
   it('browser back: child → group view → list; ✕ on the group view goes back to the list', async () => {
     await openGroupFromList();
     await click('.split-child[data-member-id="43"]');

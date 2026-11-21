@@ -20,10 +20,10 @@ TUE_0700 = datetime(2026, 10, 27, 7, 0, tzinfo=TZ)
 TUE_0650 = datetime(2026, 10, 27, 6, 50, tzinfo=TZ)
 
 
-def cfg(base="http://portfolio"):
+def cfg(base="http://portfolio", token_file=None):
     return NotifyConfig(
         api_base="http://api", token_file=Path("t"), hub_base_url="https://hub.example.invalid",
-        discord_target="discord:1", portfolio_base=base,
+        discord_target="discord:1", portfolio_base=base, portfolio_token_file=token_file,
     )
 
 
@@ -298,6 +298,31 @@ def test_client_factory_receives_base_and_timeout():
 
     cathay_lines(cfg(), TUE_0650, factory)
     assert seen == {"base_url": "http://portfolio", "timeout": 10}
+
+
+def test_portfolio_token_file_sends_a_bearer_header(tmp_path):
+    token = tmp_path / "portfolio-token"
+    token.write_text("notify-test-token\n")
+    seen = {}
+    client, _ = make_client(healthy())
+
+    def factory(**kw):
+        seen.update(kw)
+        return client
+
+    assert cathay_lines(cfg(token_file=token), TUE_0650, factory) == []
+    assert seen == {"base_url": "http://portfolio", "timeout": 10,
+                    "headers": {"Authorization": "Bearer notify-test-token"}}
+
+
+@pytest.mark.parametrize("content", [None, "", "  \n"])
+def test_unreadable_portfolio_token_file_is_the_unreadable_line(tmp_path, content):
+    token = tmp_path / "portfolio-token"
+    if content is not None:
+        token.write_text(content)
+    client, log = make_client(healthy())
+    assert cathay_lines(cfg(token_file=token), TUE_0650, lambda **kw: client) == UNREADABLE
+    assert not log
 
 
 def test_default_factory_resolved_at_call_time(monkeypatch):

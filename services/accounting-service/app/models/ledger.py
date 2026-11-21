@@ -135,6 +135,8 @@ class Account(Base, TimestampMixin):
     fx_fee_pct = Column(Numeric(6, 3), nullable=True)
     fx_fee_rounding = Column(rounding_mode_enum, nullable=True)
     fx_fee_refundable = Column(Boolean, nullable=False, server_default=text("false"))
+    # 1 點 = 1 元: rewards paid into this account count as money (polish-reward-and-account-settings D1a, PR A2).
+    cash_equivalent = Column(Boolean, nullable=False, server_default=text("false"))
     settings_locally_edited = Column(Boolean, nullable=False, server_default=text("false"))
     moze_id = Column(String(64), nullable=True, unique=True)
     statement_password_rule = Column(String(64), nullable=True)
@@ -326,7 +328,8 @@ class LedgerEntry(Base):
     refunds_entry_id = Column(Integer, ForeignKey("ledger_entry.id", ondelete="SET NULL"), nullable=True)
     # True for collections/repayments (set by settle, the backup importer and the CSV importer by sign).
     is_settlement = Column(Boolean, nullable=False, server_default=text("false"))
-    # A receivable / payable MOZE marks settled (its AHTarget's isSettle): closed whatever its settlements sum to.
+    # A closed receivable / payable: no remainder, whatever its settlements sum to. Set by the MOZE import (its
+    # AHTarget's isSettle) and by POST /entries/{id}/close; cleared by POST /entries/{id}/reopen (#391).
     is_closed = Column(Boolean, nullable=False, server_default=text("false"))
     reward_rule_id = Column(Integer, ForeignKey("reward_rule.id"), nullable=True)
     reward_source_entry_id = Column(Integer, ForeignKey("ledger_entry.id", ondelete="SET NULL"), nullable=True)
@@ -349,6 +352,36 @@ class LedgerEntry(Base):
 
 event.listen(LedgerEntry.__table__, "after_create", DDL(POSTED_DATE_FUNCTION_SQL))
 event.listen(LedgerEntry.__table__, "after_create", DDL(POSTED_DATE_TRIGGER_SQL))
+
+
+class DebtStateEvent(Base):
+    """One change of a debt's `is_closed` through POST /entries/{id}/close or /reopen (#401).
+
+    `entry_id` carries NO foreign key on purpose: the event outlives the entry (ledger ids are never reused), and the
+    entry delete path keeps its lock order and FK actions. The entry_* / counterparty columns are a snapshot for the
+    day the entry is gone. `reviewed_at`: the owner's confirmation; set at once when the caller held the owner's scope.
+    """
+
+    __tablename__ = "debt_state_event"
+    __table_args__ = (
+        CheckConstraint("action IN ('close', 'reopen')", name="ck_debt_state_event_action"),
+        Index("ix_debt_state_event_entry_id", "entry_id", "id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    entry_id = Column(Integer, nullable=False)
+    action = Column(String(8), nullable=False)
+    actor = Column(String(64), nullable=True)
+    # What `settlement_service.open_amount` said at that moment: the remainder a close took out or a reopen brought back.
+    open_amount = Column(Numeric(20, 4), nullable=False)
+    currency = Column(String(8), nullable=False)
+    entry_kind = Column(String(16), nullable=False)
+    entry_name = Column(String(128), nullable=True)
+    counterparty = Column(String(128), nullable=True)
+    entry_amount = Column(Numeric(20, 4), nullable=False)
+    entry_date = Column(Date, nullable=False)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class EntryRewardRule(Base):

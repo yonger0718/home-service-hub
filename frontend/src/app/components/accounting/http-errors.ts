@@ -45,6 +45,10 @@ const CONFLICT_MESSAGES: Record<string, string> = {
   kind_not_splittable: '此記錄類型不能拆帳',
   import_running: IMPORT_RUNNING_TOAST,
   group_scheduled: '排程產生的群組不可在此修改',
+  // #396: the form did not load this child (added since), so its save did not confirm dropping it
+  children_unconfirmed: '這筆記錄的手續費或折扣是在你開啟後才加上的；請重新載入後再編輯',
+  // #390: the delete dialog did not list this child (added since the load, or under the other transfer leg)
+  cascade_unconfirmed: '附帶的手續費或折扣記在別的帳戶；請重新載入後再刪，或先刪那筆附帶記錄',
 };
 
 /**

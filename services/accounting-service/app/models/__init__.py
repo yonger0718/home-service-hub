@@ -19,6 +19,7 @@ from .ledger import (
     Budget,
     Category,
     Counterparty,
+    DebtStateEvent,
     EntryGroup,
     EntryRewardRule,
     LedgerEntry,

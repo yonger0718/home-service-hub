@@ -2,7 +2,7 @@
   <nav class="m-tabbar" aria-label="分頁導覽">
     @for (slot of nav.tabBar().slots; track $index) {
       @if (slot.kind === 'plus') {
-        <a class="m-plus" routerLink="/accounting/entry" aria-label="新增記錄"><span aria-hidden="true">+</span></a>
+        <a class="m-plus" [routerLink]="'/accounting/entry'" [queryParams]="entryQuery()" aria-label="新增記錄"><span aria-hidden="true">+</span></a>
       } @else {
         @let group = slot.group;
         @let active = highlighted() === group.id;

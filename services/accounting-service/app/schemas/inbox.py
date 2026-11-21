@@ -108,6 +108,10 @@ class InboxItem(BaseModel):
     proposal: InboxProposal | None
     actions: list[str]
     rule_hint: InboxRuleHint | None
+    # #392: the settlement entries a bank line may be one part of (a repayment recorded as one entry for the sum), on
+    # a bank_only item or a proposed one whose proposal records the line; a non-empty list comes with group_key and
+    # rule_hint null
+    part_of: list[InboxEntry] = []
     transfer: InboxTransfer | None = None
     note: str | None = None  # the case context's note (reward engine plan P5: a `reward_early` line)
 

@@ -308,7 +308,8 @@ def stored_child_names(db: Session, parent_id: int) -> dict[str, str | None]:
 
 
 def sync_children(
-    db: Session, parent: LedgerEntry, fee: ChildIn | None, discount: ChildIn | None, *, source: str = "manual"
+    db: Session, parent: LedgerEntry, fee: ChildIn | None, discount: ChildIn | None, *, source: str = "manual",
+    drop_children: bool = False,
 ) -> None:
     """Reconcile the parent's fee / discount children with the payload by kind instead of delete + insert (issue
     #313), so a statement claim on an unchanged child survives an edit of the parent. Per kind: no payload → delete
@@ -317,10 +318,21 @@ def sync_children(
     sends them back as one value: their total and the first one's name) → leave them alone when the total matches,
     renaming the first if the name differs, else replace them with one row. A child row is written, and takes
     `source`, only when a column changes; a structural change (amount, date, account) then releases its claim at the
-    next sweep like any edited covered entry. Any other child kind is deleted, as before. Flushes, never commits."""
+    next sweep like any edited covered entry. Any other child kind is deleted, as before. Flushes, never commits.
+
+    #396: a stored child whose kind the payload does not carry is a drop, and a drop needs `drop_children` (the
+    caller's `?drop_children=true`); without it nothing is written and `children_unconfirmed` is raised. A kind the
+    payload carries is never a drop, also when several stored rows become one."""
     stored = list(db.scalars(select(LedgerEntry).where(LedgerEntry.parent_entry_id == parent.id)
                              .order_by(LedgerEntry.id)))
     wanted = {"fee": fee, "discount": discount}
+    dropped = [c for c in stored if wanted.get(c.kind) is None]
+    if dropped and not drop_children:
+        listed = ", ".join(f"entry {c.id} ({c.kind}) of entry {parent.id}" for c in dropped)
+        raise CodedConflictError(
+            CHILDREN_UNCONFIRMED,
+            f"updating entry {parent.id} would delete {listed}; send the fee / discount back, or the owner "
+            "confirms the drop in the app")
     doomed = [c.id for c in stored if c.kind not in wanted]
     new_fee = new_discount = None
     for kind, child in wanted.items():
@@ -427,7 +439,8 @@ def _stored_snapshot(entry: LedgerEntry) -> dict:
     return coverage_service.snapshot_entry(stored)
 
 
-def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEntry) -> None:
+def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEntry, *,
+                          drop_children: bool = False) -> None:
     """Rewrite an editable entry the caller holds FOR UPDATE: columns, fee / discount children (`sync_children`:
     unchanged children keep their row and statement claim, #313) and rule links.
     Reward ledger rows point at the entry through reward_source_entry_id, not parent_entry_id, so they stay. A
@@ -435,7 +448,8 @@ def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEnt
     cosmetic edit of a statement-booked entry (a stand-in, R6b.0/R6b.5, PR #76 review M1): when the stored row and
     the update agree on every `coverage_service.STRUCTURAL_KEYS` key and the entry has no fee / discount child
     before or after, it keeps `source='statement'`, so a categorised stand-in stays replaceable. A structural edit
-    still flips it to `manual` (the replacement then refuses `stand_in_changed`)."""
+    still flips it to `manual` (the replacement then refuses `stand_in_changed`). `drop_children`: see
+    `sync_children` (#396)."""
     payload = prepared.payload
     before_key = reward_engine.financial_key(entry, attached_rule_ids(db, entry.id))
     before_project_id, before_flag = entry.project_id, (entry.needs_review, entry.review_reason)
@@ -448,7 +462,7 @@ def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEnt
     if statement_booked and not had_children and payload.fee is None and payload.discount is None \
             and not coverage_service.structurally_changed(before, entry):
         source = entry.source = STATEMENT_SOURCE
-    sync_children(db, entry, payload.fee, payload.discount, source=source)
+    sync_children(db, entry, payload.fee, payload.discount, source=source, drop_children=drop_children)
     write_rule_links(db, entry.id, payload.reward_rule_ids)
     reward_engine.after_write(db, entry, before_key=before_key, before_project_id=before_project_id,
                               before_flag=before_flag)
@@ -582,7 +596,8 @@ def _assert_form_kind(entry: LedgerEntry) -> None:
         raise ValidationError("kind", f"{entry.kind} entries are not edited through this endpoint")
 
 
-def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get=None) -> None:
+def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get=None,
+                 drop_children: bool = False) -> None:
     """Settlement entries (`is_settlement`, with or without a settles_entry_id: the link is NULL after the
     original was deleted and imported collections may never have had one) and refund entries are never re-signed
     here: `signed(kind, amount)` would flip a +200 collection to −200. They are edited by deleting and
@@ -593,6 +608,10 @@ def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get
     is then loaded with SELECT … FOR UPDATE (`locked_entry`, the same lock settle / refund take), and every guard
     runs inside that lock: a concurrent settle / refund has either committed (has_settlements_or_refunds sees
     it) or waits until this transaction commits.
+
+    `drop_children` (#396): a stored fee / discount child the payload does not carry is dropped only with it; else
+    `children_unconfirmed`, raised by `sync_children` after the entry's own columns are rewritten (the caller's
+    rollback takes that back).
     """
     prepared = prepare_entry(db, payload, http_get=http_get, attached_rules=attached_rule_ids(db, entry_id))
     entry = locked_entry(db, entry_id)
@@ -602,7 +621,7 @@ def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get
         raise ValidationError(field, "transfer legs keep kind and account; edit them with PUT /transfers/{transfer_group_id}")
     _assert_form_kind(entry)
     _check_linked_original(db, entry, prepared)
-    apply_prepared_update(db, entry, prepared)
+    apply_prepared_update(db, entry, prepared, drop_children=drop_children)
     remember_defaults(db, payload.category_id, prepared.account.id, payload.project_id)
 
 
@@ -712,6 +731,53 @@ def dissolve_group(
     db.expire_all()
 
 
+CHILDREN_UNCONFIRMED = "children_unconfirmed"  # 409: an update would drop a stored fee / discount child (#396)
+CASCADE_UNCONFIRMED = "cascade_unconfirmed"  # 409: a delete would remove a child on another account (#390)
+
+
+@dataclass(frozen=True)
+class DeletedRow:
+    """One row `delete_entry` removed (#390). `role`: `entry` (the row asked for, also when it is itself a child),
+    `transfer_leg` (another top-level leg of its transfer) or `child` (a fee / discount child of either, deleted
+    along with it)."""
+
+    id: int
+    role: str
+    parent_entry_id: int | None
+    kind: str
+    name: str | None
+    amount: Decimal
+    currency: str
+    account_id: int
+    account_name: str
+    entry_date: date
+
+
+def _delete_report(db: Session, entry_id: int, targets: list[LedgerEntry]) -> list[DeletedRow]:
+    """What the coming `delete_entries_cascade(targets)` removes: the entry, the other legs by id, then the children
+    by id. Read under the target locks (a child is written under its parent's lock).
+
+    The children themselves are read without a row lock (#399 ruling): a direct `DELETE` of a child takes only the
+    child's lock, so one that commits between this read and the cascade is still listed here although the other
+    request removed it. The row is gone either way and nothing else is over-stated; a lock on the children would
+    add a tier to the delete lock order (targets by ascending id, then nothing) for no gain."""
+    target_ids = {target.id for target in targets}
+    children = list(db.scalars(select(LedgerEntry).where(LedgerEntry.parent_entry_id.in_(target_ids))
+                               .order_by(LedgerEntry.id)))
+    rows = sorted(targets, key=lambda row: (row.id != entry_id, row.id)) + children
+    names = dict(db.execute(select(Account.id, Account.name).where(Account.id.in_({r.account_id for r in rows}))).all())
+    return [
+        DeletedRow(
+            id=row.id,
+            role="entry" if row.id == entry_id else "transfer_leg" if row.id in target_ids else "child",
+            parent_entry_id=row.parent_entry_id, kind=row.kind, name=row.name, amount=row.amount,
+            currency=row.currency, account_id=row.account_id, account_name=names[row.account_id],
+            entry_date=row.entry_date,
+        )
+        for row in rows
+    ]
+
+
 @dataclass(frozen=True)
 class AffectedSet:
     """What DELETE /entries/{id} touches (split rework §1.7), read before any group or entry lock and again under
@@ -767,7 +833,7 @@ def affected_set(db: Session, entry: LedgerEntry) -> AffectedSet:
     return AffectedSet(tuple(sorted(targets)), entry.transfer_group_id, tuple(group_ids), split_members)
 
 
-def delete_entry(db: Session, entry_id: int) -> None:
+def delete_entry(db: Session, entry_id: int, *, cascade: bool = False) -> list[DeletedRow]:
     """Deleting needs no FX, so the locks are taken straight away, in the shared order (D32, split rework §1.7):
     the period's schedule rows (lock_for_entry_delete) → every affected entry_group row (lock_group, ascending id)
     → for an engine reward row, its source purchase FOR UPDATE (its `reward_posted` flag cleared) and then its
@@ -782,7 +848,11 @@ def delete_entry(db: Session, entry_id: int) -> None:
     (referenced loan, reward rows without an accrual, cutover lock); an engine reward row is deleted, its accrual
     forfeited and its window recomputed (spec 5.4, P1). After the delete every affected group of any kind left
     empty is removed, and a split group left with exactly one member is dissolved into it (installment / reward
-    groups are not)."""
+    groups are not).
+
+    #390: returns every row removed (`DeletedRow`). A child on another account than its own parent is not the
+    parent's own fee (only the MOZE imports write that shape): without `cascade` the delete is refused with
+    `cascade_unconfirmed` after the refusals above and before anything is written."""
     # D29: a loan a live schedule repays cannot be deleted; D32/D33: the period's schedule rows are locked first.
     schedule_entry_hooks.assert_not_referenced(db, loan_entry_id=entry_id)
     instance = schedule_entry_hooks.lock_for_entry_delete(db, [entry_id])
@@ -806,6 +876,18 @@ def delete_entry(db: Session, entry_id: int) -> None:
     for target_id in before.target_ids:
         assert_entry_editable(db, by_id[target_id])
     target_ids = list(before.target_ids)  # read before the cascade expires (and deletes) the rows
+    report = _delete_report(db, entry_id, [by_id[target_id] for target_id in target_ids])
+    # `child` rows are the cascaded ones, so their parent is a target and in the report; the row asked for is never
+    # held, also when it is itself a child on another account than its parent (deleting it is the repair)
+    accounts = {row.id: row.account_id for row in report}
+    foreign = [row for row in report if row.role == "child" and row.account_id != accounts[row.parent_entry_id]]
+    if foreign and not cascade:
+        listed = ", ".join(f"entry {row.id} ({row.kind}, account {row.account_id})" for row in foreign)
+        raise CodedConflictError(
+            CASCADE_UNCONFIRMED,
+            f"deleting entry {entry_id} also deletes children on another account: {listed}; "
+            "the owner confirms this delete in the app",
+        )
     forfeited = reward_engine.forfeit_for_delete(db, accrual) if accrual is not None else None
     delete_entries_cascade(db, target_ids)
     if forfeited is not None:
@@ -825,6 +907,7 @@ def delete_entry(db: Session, entry_id: int) -> None:
             dissolve_group(db, group_id, left[0], name=group.name, merchant=group.merchant, description=group.description)
     if instance is not None:
         schedule_entry_hooks.after_entries_deleted(db, instance, set(target_ids))
+    return report
 
 
 def _plain(value: Decimal) -> str:

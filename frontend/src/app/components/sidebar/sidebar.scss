@@ -105,6 +105,41 @@
   gap: 2px;
 }
 
+/* 記一筆: a filled primary link at the top of the nav. --app-primary-ink-bg exists in dark mode only (white on it ≥ 4.5:1),
+   as for .btn-primary; light keeps the brand primary. */
+.sidebar-new-entry {
+  align-items: center;
+  background: var(--app-primary-ink-bg, var(--app-primary));
+  border-radius: var(--radius-md);
+  color: var(--app-on-primary);
+  display: flex;
+  font-size: 14px;
+  font-weight: var(--fw-bold);
+  gap: 8px;
+  justify-content: center;
+  min-height: 40px;
+  text-decoration: none;
+  transition: background var(--dur-fast) var(--ease-standard);
+
+  &:hover {
+    background: var(--app-primary-ink-bg-hover, var(--app-primary-hover));
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
+
+  .pi {
+    font-size: 0.95rem;
+  }
+
+  kbd {
+    font: inherit;
+    opacity: 0.8;
+  }
+}
+
 .group-head {
   align-items: center;
   background: transparent;
@@ -330,6 +365,23 @@
     }
   }
 
+  /* 4 px here + the rail's 4 px gap = the 8 px under the button (gap + divider margin). */
+  .sidebar-new-entry {
+    height: 44px;
+    margin-top: 4px;
+    min-height: 0;
+    width: 44px;
+
+    .pi {
+      font-size: 1.2rem;
+    }
+
+    &:hover .side-tip,
+    &:focus-visible .side-tip {
+      display: flex;
+    }
+  }
+
   .item-icon {
     background: transparent;
     color: inherit;
@@ -416,7 +468,8 @@
     min-height: 26px;
   }
 
-  .side-item {
+  .side-item,
+  .sidebar-new-entry {
     min-height: 34px;
   }
 
@@ -438,7 +491,8 @@
     gap: 3px;
   }
 
-  .side-item {
+  .side-item,
+  .sidebar-new-entry {
     height: 38px;
     width: 38px;
   }

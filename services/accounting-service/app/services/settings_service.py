@@ -10,7 +10,7 @@ from hashlib import sha256
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, aliased
 
@@ -34,6 +34,7 @@ from ..schemas.writes import (
 from . import category_keys, reward_engine, schedule_entry_hooks
 from .errors import CodedConflictError, ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
 from .ledger_service import open_debt_filter
+from .settled_value import settled_value
 
 PREFERENCE_FIELDS = (
     "expense_income_colors", "keypad_layout", "week_start", "main_currency", "hide_rewards_on_timeline",
@@ -401,7 +402,8 @@ def _check_settlement(db: Session, settlement) -> dict:
     int strings (defaults are overlaid on read): unknown keys are refused; `enabled_from` is an ISO date, required
     when `stand_in_enabled`; `target_accounts` maps a bank account id to another existing account of the same
     currency, one the bank's settlement source answers in (`SOURCE_CURRENCIES`); `twin_window_days` is an integer
-    in 0..15; `dividend_category_id` an id or null."""
+    in 0..15; `dividend_category_id` null or an existing income category (the one `dividend_service.category_for`
+    books into)."""
     if not isinstance(settlement, dict):
         raise ValidationError("settlement", "must be an object")
     out = {}
@@ -419,8 +421,10 @@ def _check_settlement(db: Session, settlement) -> dict:
         elif key == "twin_window_days":
             if not _account_id(value) or not 0 <= value <= 15:
                 raise ValidationError("settlement", f"{key!r} must be an integer in 0..15")
-        elif value is not None and not _account_id(value):  # dividend_category_id
-            raise ValidationError("settlement", f"{key!r} must be null or a category id")
+        elif value is not None:  # dividend_category_id (#267: checked here, not first at booking time)
+            category = db.get(Category, value) if _account_id(value) else None
+            if category is None or category.kind != "income":
+                raise ValidationError("settlement", f"{key!r} must be null or an existing income category id")
         out[key] = value
     effective = {**SETTLEMENT_DEFAULTS, **out}
     if effective["stand_in_enabled"] and effective["enabled_from"] is None:
@@ -689,7 +693,7 @@ def _validate_account(db: Session, payload: AccountIn, account: Account | None) 
     _check_sharing_members(db, payload, self_id)
 
 
-ACCOUNT_COLUMNS_EXCLUDE = {"credit_sharing_members"}  # request-only field, not a column
+ACCOUNT_COLUMNS_EXCLUDE = {"credit_sharing_members", "cash_equivalent"}  # request-only / optional, written by hand
 
 
 def _check_sharing_members(db: Session, payload: AccountIn, self_id: int | None) -> None:
@@ -749,7 +753,8 @@ def _apply_sharing(db: Session, account: Account, previous: UUID | None, members
 
 def create_account(db: Session, payload: AccountIn) -> int:
     _validate_account(db, payload, None)
-    account = Account(**payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE), settings_locally_edited=True)
+    account = Account(**payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE), settings_locally_edited=True,
+                      cash_equivalent=bool(payload.cash_equivalent))
     db.add(account)
     db.flush()
     if payload.credit_sharing_members is not None:
@@ -783,6 +788,8 @@ def update_account(db: Session, account_id: int, payload: AccountIn) -> None:
     before_own, before_closing = account.closing_day, reward_engine.card_closing_day(db, account)
     for field, value in payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE).items():
         setattr(account, field, value)
+    if payload.cash_equivalent is not None:  # omitted keeps the stored value (PR A2)
+        account.cash_equivalent = payload.cash_equivalent
     account.settings_locally_edited = True
     db.flush()
     if payload.credit_sharing_members is not None:
@@ -1115,27 +1122,28 @@ def delete_project(db: Session, project_id: int) -> None:
 def _open_amounts(db: Session) -> dict[int, list[dict]]:
     """Per counterparty and currency: −Σ amount over its receivable and payable entries (settlements included).
 
-    Closed debts (`is_closed`) and the settlements linked to them are left out: MOZE counts them as settled. A
-    settlement linked to an original in another currency is left out too: it never nets against that original.
+    Closed debts (`is_closed`) and the settlements linked to them are left out: they count as settled. A
+    settlement linked to an original in another currency counts in that original's currency at its settled value
+    (its `original_amount` when that is in the original's currency, else nothing).
     """
     closed = select(LedgerEntry.id).where(LedgerEntry.is_closed).scalar_subquery()
-    original = aliased(LedgerEntry)
-    cross_currency = (
-        select(original.id)
-        .where(original.id == LedgerEntry.settles_entry_id, original.currency != LedgerEntry.currency)
-        .exists()
-    )
+    target = aliased(LedgerEntry)
+    # A linked settlement in another currency counts in its target's currency, at its settled value (0 without an
+    # original amount); every other row keeps its own currency and amount.
+    cross = and_(target.id.is_not(None), target.currency != LedgerEntry.currency)
+    bucket = case((cross, target.currency), else_=LedgerEntry.currency)
+    value = case((cross, settled_value(LedgerEntry, target.currency)), else_=LedgerEntry.amount)
     rows = db.execute(
-        select(LedgerEntry.counterparty_id, LedgerEntry.currency, func.sum(LedgerEntry.amount))
+        select(LedgerEntry.counterparty_id, bucket, func.sum(value))
+        .outerjoin(target, target.id == LedgerEntry.settles_entry_id)
         .where(
             LedgerEntry.counterparty_id.is_not(None),
             LedgerEntry.kind.in_(("receivable", "payable")),
             ~LedgerEntry.is_closed,
             or_(LedgerEntry.settles_entry_id.is_(None), LedgerEntry.settles_entry_id.not_in(closed)),
-            ~cross_currency,
         )
-        .group_by(LedgerEntry.counterparty_id, LedgerEntry.currency)
-        .order_by(LedgerEntry.currency)
+        .group_by(LedgerEntry.counterparty_id, bucket)
+        .order_by(bucket)
     )
     amounts: dict[int, list[dict]] = {}
     for counterparty_id, currency, total in rows:

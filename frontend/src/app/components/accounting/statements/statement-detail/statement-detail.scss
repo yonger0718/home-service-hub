@@ -201,6 +201,12 @@
   }
 }
 
+/* No grab bar on this sheet: its 16 px block (2 + 4 + 10) goes on the top padding, so the title sits where it sits
+   on every other sheet (8 px padding + the grab block). */
+.sheet.force-sheet {
+  padding-top: 24px;
+}
+
 .note-label {
   display: block;
   font-size: 0.75rem;

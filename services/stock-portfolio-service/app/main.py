@@ -1,6 +1,7 @@
 import logging
 
 from shared_lib import create_app
+from shared_lib.token_auth import install_token_auth
 
 from .database import SessionLocal, engine, get_db
 from .logging_config import configure_logging
@@ -40,6 +41,9 @@ app = create_app(
     otel_service_name_env="OTEL_SERVICE_NAME_STOCK",
     otel_strict=False,
 )
+
+# Issue #117: PORTFOLIO_API_TOKENS / PORTFOLIO_TOKEN_SCOPES (unset = no auth); a malformed configuration stops startup.
+logger.info(install_token_auth(app, "PORTFOLIO"))
 
 
 _scheduler = None

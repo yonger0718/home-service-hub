@@ -223,7 +223,7 @@ def test_delete_purchase_drops_estimated_keeps_posted(client, db_session):
     purchase_id, reward_id, rule_a_id, rule_b_id = purchase.id, reward.id, rule_a.id, rule_b.id
     db_session.commit()
 
-    assert client.delete(f"/entries/{purchase_id}").status_code == 204
+    assert client.delete(f"/entries/{purchase_id}").status_code == 200
     assert _accruals(db_session, rule_id=rule_a_id) == []
     survivor = _one(db_session, rule_id=rule_b_id)
     assert (survivor.state, survivor.source_entry_id, survivor.ledger_entry_id) == ("posted", None, reward_id)
@@ -239,7 +239,7 @@ def test_delete_purchase_recomputes_window(client, db_session):
     first_id, second_id = first.id, second.id
     db_session.commit()
     assert _one(db_session, source_entry_id=second_id).amount == Decimal("5.0000")
-    assert client.delete(f"/entries/{first_id}").status_code == 204
+    assert client.delete(f"/entries/{first_id}").status_code == 200
     assert _one(db_session).amount == Decimal("10.0000")
 
 
@@ -252,7 +252,7 @@ def test_delete_purchase_drops_refund_estimates(client, db_session):
                             json={"amount": "300", "entry_date": date(2026, 12, 20).isoformat()}).json()["id"]
     assert len(_accruals(db_session)) == 2
 
-    assert client.delete(f"/entries/{purchase_id}").status_code == 204
+    assert client.delete(f"/entries/{purchase_id}").status_code == 200
     assert _accruals(db_session) == []
     refund = _entry(db_session, refund_id)
     assert refund is not None and refund.refunds_entry_id is None  # refunds stay, unlinked
@@ -268,7 +268,7 @@ def test_delete_engine_reward_row_forfeits(client, db_session):
     db_session.commit()
     assert _one(db_session, source_entry_id=second_id).amount == Decimal("5.0000")
 
-    assert client.delete(f"/entries/{reward_id}").status_code == 204
+    assert client.delete(f"/entries/{reward_id}").status_code == 200
     forfeited = _one(db_session, source_entry_id=first_id)
     assert (forfeited.state, forfeited.ledger_entry_id, forfeited.amount) == ("forfeited", None, Decimal("10.0000"))
     assert _entry(db_session, reward_id) is None
@@ -288,7 +288,7 @@ def test_owner_reward_delete_clears_purchase_flag(client, db_session):
     purchase = _entry(db_session, purchase_id)
     assert (purchase.needs_review, purchase.review_reason) == (True, "reward_posted")
 
-    assert client.delete(f"/entries/{reward_id}").status_code == 204
+    assert client.delete(f"/entries/{reward_id}").status_code == 200
     purchase = _entry(db_session, purchase_id)
     assert (purchase.needs_review, purchase.review_reason) == (False, None)
 
@@ -301,9 +301,66 @@ def test_owner_reward_delete_keeps_other_review_flag(client, db_session):
     purchase.needs_review = True  # flagged for some other reason (no review_reason)
     purchase_id, reward_id = purchase.id, reward.id
     db_session.commit()
-    assert client.delete(f"/entries/{reward_id}").status_code == 204
+    assert client.delete(f"/entries/{reward_id}").status_code == 200
     purchase = _entry(db_session, purchase_id)
     assert (purchase.needs_review, purchase.review_reason) == (True, None)
+
+
+def _posted_reward_with_a_foreign_child(client, db_session) -> tuple[int, int, int]:
+    """A purchase flagged `reward_posted`, its posted reward row and a fee child of that row on another account (the
+    #390 shape) → (purchase id, reward id, fee id)."""
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    other = make_account(db_session, "他行")
+    db_session.commit()
+    purchase_id = client.post("/entries", json=_payload(card, reward_rule_ids=[rule.id])).json()["id"]
+    reward_id = _post(db_session, _one(db_session)).id
+    db_session.commit()
+    setup = client.put(f"/entries/{purchase_id}", json=_payload(card, amount="2000", reward_rule_ids=[rule.id]))
+    assert setup.status_code == 200, setup.text
+    fee_id = make_entry(db_session, other, "-1", kind="fee", parent_entry_id=reward_id).id
+    db_session.commit()
+    return purchase_id, reward_id, fee_id
+
+
+def test_reward_delete_refused_over_a_foreign_child_changes_nothing(client, db_session, pg_engine):
+    # #390 / #399: the purchase's flag is cleared before the refusal (prepare_reward_delete); the refusal must take
+    # that back with everything else. Read from another session.
+    purchase_id, reward_id, fee_id = _posted_reward_with_a_foreign_child(client, db_session)
+
+    response = client.delete(f"/entries/{reward_id}")
+
+    assert response.status_code == 409 and response.json()["message"].startswith("cascade_unconfirmed: ")
+    with sessionmaker(bind=pg_engine, autoflush=False)() as other:
+        purchase = other.get(LedgerEntry, purchase_id)
+        accrual = other.scalar(select(RewardAccrual).where(RewardAccrual.source_entry_id == purchase_id))
+        assert (purchase.needs_review, purchase.review_reason) == (True, "reward_posted")
+        assert (accrual.state, accrual.ledger_entry_id) == ("posted", reward_id)
+        assert other.get(LedgerEntry, reward_id) is not None and other.get(LedgerEntry, fee_id) is not None
+
+
+def test_reward_delete_confirmed_over_a_foreign_child_forfeits(client, db_session):
+    purchase_id, reward_id, fee_id = _posted_reward_with_a_foreign_child(client, db_session)
+
+    response = client.delete(f"/entries/{reward_id}?cascade=true")
+
+    assert response.status_code == 200, response.text
+    accrual = _one(db_session, source_entry_id=purchase_id)
+    assert (accrual.state, accrual.ledger_entry_id) == ("forfeited", None)
+    assert _entry(db_session, reward_id) is None and _entry(db_session, fee_id) is None
+
+
+def test_the_foreign_child_refusal_comes_before_the_forfeit(client, db_session, monkeypatch):
+    # today the rollback hides the order; the forfeit must still not run for a delete that is refused
+    _, reward_id, _ = _posted_reward_with_a_foreign_child(client, db_session)
+    forfeits = []
+    monkeypatch.setattr(reward_engine, "forfeit_for_delete", lambda db, accrual: forfeits.append(accrual.id))
+
+    with pytest.raises(CodedConflictError) as refused:
+        ews.delete_entry(db_session, reward_id)
+
+    db_session.rollback()
+    assert refused.value.code == ews.CASCADE_UNCONFIRMED and forfeits == []
 
 
 def test_delete_moze_reward_row_still_refused(client, db_session):

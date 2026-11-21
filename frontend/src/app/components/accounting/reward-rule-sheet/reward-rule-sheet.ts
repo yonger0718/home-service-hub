@@ -13,6 +13,7 @@ import { focusables, isHandledKey, restoreOverlayFocus, trapFocus } from '../acc
 import { decimalText } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
 import { REWARD_ROUNDING_LABELS, REWARD_WINDOW_LABELS, basicOverlapRuleId, parseReferenced, referencedText, ruleLabel, ruleToInput } from '../reward-rule-text';
+import { SheetPullDirective } from '../sheet-pull.directive';
 
 /** The sheet's editable state; numbers stay text until `toInput()`. */
 export interface RuleForm {
@@ -59,6 +60,7 @@ function isInteger(text: string): boolean {
   selector: 'app-reward-rule-sheet',
   standalone: true,
   templateUrl: './reward-rule-sheet.html',
+  imports: [SheetPullDirective],
   styleUrls: ['../sheet.scss', './reward-rule-sheet.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(keydown)': 'onHostKeydown($event)' },
@@ -81,6 +83,11 @@ export class RewardRuleSheetComponent implements OnInit {
   /** Open accounts for 入帳帳戶; the card itself is preselected. */
   readonly accounts = input<LedgerAccount[]>([]);
   readonly projects = input<Project[]>([]);
+  /**
+   * Open on an existing rule with the delete confirmation already armed (⋯ 刪除 on the account settings rows). Read
+   * once in ngOnInit, never tracked: `remove()` disarms it and nothing may re-arm it (e.g. after a rule_referenced error).
+   */
+  readonly startDelete = input(false);
 
   readonly saved = output<RewardRule>();
   readonly deleted = output<number>();
@@ -153,9 +160,16 @@ export class RewardRuleSheetComponent implements OnInit {
       this.form.set({ ...this.blankForm(), reward_account_id: this.accountId() });
     }
     this.initial = JSON.stringify(this.form());
+    // The same state the 刪除 button's first press sets; ignored on a create (no rule, no 刪除 button).
+    const deleting = rule !== null && this.startDelete();
+    if (deleting) {
+      this.confirmingDelete.set(true);
+    }
     afterNextRender(() => {
       const dialog = this.dialog();
-      if (dialog) focusables(dialog)[0]?.focus();
+      if (!dialog) return;
+      const target = deleting ? dialog.querySelector<HTMLElement>('.rule-delete') : null;
+      (target ?? focusables(dialog)[0])?.focus();
     }, { injector: this.injector });
   }
 

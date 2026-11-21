@@ -35,11 +35,16 @@ def _entries(session, account_name: str) -> list[LedgerEntry]:
     )
 
 
+# pg_locks lists the whole server. The test database lives on the shared dev/prod Postgres server, where the live
+# services take the same advisory keys in their own database, so every advisory-lock count filters on this database.
+THIS_DATABASE = "database = (SELECT oid FROM pg_database WHERE datname = current_database())"
+
+
 def advisory_locks(engine) -> int:
-    """Number of sessions currently holding the import advisory lock."""
+    """Number of sessions currently holding the import advisory lock in this database."""
     with engine.connect() as conn:
         return conn.execute(
-            text("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = :key"),
+            text(f"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = :key AND {THIS_DATABASE}"),
             {"key": IMPORT_LOCK_KEY},
         ).scalar_one()
 

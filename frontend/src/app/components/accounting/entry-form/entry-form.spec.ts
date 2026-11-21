@@ -8,7 +8,7 @@ import { Location } from '@angular/common';
 import { provideLocationMocks } from '@angular/common/testing';
 import { Component } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { Router, Routes, provideRouter } from '@angular/router';
+import { Router, Routes, UrlTree, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { Observable, Subject } from 'rxjs';
 import { MockInstance, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -20,6 +20,7 @@ import { makeAccount, makeAccountDetail, makeCategory, makeEntry, makeEntryDetai
 import { EntryDetailComponent } from '../entry-detail/entry-detail';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { EntryFormComponent, NO_RELATED, RelatedLoad } from './entry-form';
+import { todayIso } from './entry-draft';
 
 /** Stands in for the timeline so the form's real `navigateByUrl('/accounting')` (leave()) has somewhere to land. */
 @Component({ template: '' })
@@ -121,6 +122,14 @@ describe('EntryFormComponent', () => {
     settle();
   }
 
+  /** Router.navigate() reaches the navigateByUrl spy as (UrlTree, extras): compare the serialised URL and the extras. */
+  function expectNavigatedTo(url: string, extras: Record<string, unknown>): void {
+    const router = TestBed.inject(Router);
+    expect(
+      navigate!.mock.calls.some(([target, given]) => router.serializeUrl(target as UrlTree).split('?')[0] === url && JSON.stringify(given) === JSON.stringify(extras)),
+    ).toBe(true);
+  }
+
   async function open(url: string, mode: LayoutMode = 'phone', accounts = ACCOUNTS) {
     TestBed.inject(LayoutModeService).set(mode);
     harness = await RouterTestingHarness.create();
@@ -142,7 +151,10 @@ describe('EntryFormComponent', () => {
     // navigation (and a fresh GET of that entry) after the test has finished asserting.
     const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
     const el = harness.routeNativeElement as HTMLElement;
-    const left = () => spy.mock.calls.some(([target]) => target === '/accounting') || back.mock.calls.length > 0;
+    const router = TestBed.inject(Router);
+    const left = () =>
+      spy.mock.calls.some(([target]) => (typeof target === 'string' ? target : router.serializeUrl(target)).split('?')[0] === '/accounting') ||
+      back.mock.calls.length > 0;
     return { el, left };
   }
 
@@ -535,6 +547,30 @@ describe('EntryFormComponent', () => {
 
   });
 
+  it('prefills the date from ?date=', async () => {
+    const { el } = await open('/accounting/entry?date=2026-10-21&month=2026-10&day=2026-10-21');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    expect((el.querySelector('input.date-input') as HTMLInputElement).value).toBe('2026-10-21');
+  });
+
+  it('ignores a malformed date', async () => {
+    const { el } = await open('/accounting/entry?date=tomorrow');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    expect((el.querySelector('input.date-input') as HTMLInputElement).value).toBe(todayIso());
+  });
+
+  it('cancel with no history returns to the calendar day', async () => {
+    const { el } = await open('/accounting/entry?month=2026-10&day=2026-10-21');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    Object.defineProperty(TestBed.inject(Router), 'lastSuccessfulNavigation', { configurable: true, value: () => ({}) });
+    el.querySelector('.entry-form')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    settle();
+    expect(navigate!.mock.calls.some(([target]) => TestBed.inject(Router).serializeUrl(target as UrlTree) === '/accounting?month=2026-10&day=2026-10-21')).toBe(true);
+  });
+
   it('cancels on Esc unless the Esc was already handled', async () => {
     const { el, left } = await open('/accounting/entry');
     respond('/api/accounting/categories', [FOOD]);
@@ -766,7 +802,7 @@ describe('EntryFormComponent', () => {
       .toEqual(form.children().map(child => child.key));
     put.flush({ group_id: 4, member_ids: [7, 8], members: form.children().map(child => ({ id: child.id!, client_key: child.key })) });
     settle();
-    expect(navigate).toHaveBeenCalledWith('/accounting/entries/7', { replaceUrl: true, state: { closeTo: 'list' } });
+    expectNavigatedTo('/accounting/entries/7', { replaceUrl: true, queryParams: {}, state: { closeTo: 'list' } });
     expect(left()).toBe(false);
   });
 
@@ -927,6 +963,96 @@ describe('EntryFormComponent', () => {
     expect(put.request.url).toBe('/api/accounting/transfers/g-7');
     expect(put.request.body).toMatchObject({ from_account_id: 1, to_account_id: 2, out_amount: '5000', category_id: 40 });
     put.flush({});
+    settle();
+    expect(left()).toBe(true);
+  });
+
+  it('saves a transfer with a stored fee and discount again after a failed save, with the same fields, and clears the error', async () => {
+    const { el, left } = await open('/accounting/entries/8/edit');
+    const inLeg = makeEntryDetail({
+      id: 8, kind: 'transfer_in', account_id: 2, amount: '5000.0000', category_id: 40, transfer_group_id: 'g-7',
+      transfer_counterpart: makeEntry({ id: 7, kind: 'transfer_out', account_id: 1 }),
+      children: [makeEntry({ id: 81, kind: 'discount', account_id: 2, amount: '20.0000', parent_entry_id: 8 })],
+    });
+    respond('/api/accounting/entries/8', inLeg);
+    respond('/api/accounting/entries/7', {
+      ...inLeg, id: 7, kind: 'transfer_out', account_id: 1, amount: '-5000.0000',
+      children: [makeEntry({ id: 71, kind: 'fee', account_id: 1, amount: '-15.0000', parent_entry_id: 7 })],
+    });
+    respondTransferCategories();
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const first = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/transfers/g-7');
+    expect(first.request.params.keys()).toEqual([]);
+    expect(first.request.body).toMatchObject({
+      out_fee: { amount: '15', name: '手續費' }, out_discount: null, in_fee: null, in_discount: { amount: '20', name: '折扣' },
+    });
+    first.flush({ code: 'conflict', message: 'retry: leg 7 changed', trace_id: 't-1' }, { status: 409, statusText: 'Conflict' });
+    settle();
+    expect(text(el.querySelector('.form-error'))).toBe('記錄剛被更新，請重新載入後再試');
+    expect(left()).toBe(false);
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const second = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/transfers/g-7');
+    expect(el.querySelector('.form-error')).toBeNull();
+    expect(second.request.params.keys()).toEqual([]);
+    expect(second.request.body).toEqual(first.request.body);
+    second.flush({});
+    settle();
+    expect(left()).toBe(true);
+  });
+
+  it('saves a fee changed through the fee sheet on an entry with a stored fee, without confirming a drop (#396)', async () => {
+    const { el, left } = await open('/accounting/entries/9/edit');
+    respond('/api/accounting/entries/9', makeEntryDetail({
+      id: 9, account_id: 2, category_id: 12, amount: '-170.0000',
+      children: [makeEntry({ id: 10, kind: 'fee', account_id: 2, amount: '-5.0000', parent_entry_id: 9 })],
+    }));
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    expect(text(el.querySelector('.chip.fee'))).toContain('手續費');
+
+    (el.querySelector('.fee-open') as HTMLButtonElement).click();
+    settle();
+    expect((el.querySelector('app-fee-sheet .fee-amount') as HTMLInputElement).value).toBe('5');
+    typeInto(el, 'app-fee-sheet .fee-amount', '8');
+    (el.querySelector('app-fee-sheet .sheet-confirm') as HTMLButtonElement).click();
+    settle();
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+
+    const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/entries/9');
+    expect(put.request.params.keys()).toEqual([]);
+    expect(put.request.body).toMatchObject({ account_id: 2, amount: '170', fee: { amount: '8', name: null }, discount: null });
+    put.flush(makeEntryDetail({ id: 9 }));
+    settle();
+    expect(left()).toBe(true);
+  });
+
+  it('confirms the drop of a stored fee and discount that a move to another currency cleared (#396)', async () => {
+    const { el, left } = await open('/accounting/entries/9/edit', 'phone', FX_ACCOUNTS);
+    respond('/api/accounting/entries/9', makeEntryDetail({
+      id: 9, account_id: 2, category_id: 12, amount: '-170.0000',
+      children: [
+        makeEntry({ id: 10, kind: 'fee', account_id: 2, amount: '-5.0000', parent_entry_id: 9 }),
+        makeEntry({ id: 11, kind: 'discount', account_id: 2, amount: '3.0000', parent_entry_id: 9 }),
+      ],
+    }));
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+
+    chooseAccount(el, 4);
+    expect(text(el.querySelector('.form-notice'))).toBe('已清除手續費與折扣（帳戶幣別變更）');
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+
+    const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/entries/9');
+    expect(put.request.params.get('drop_children')).toBe('true');
+    expect(put.request.params.keys()).toEqual(['drop_children']);
+    expect(put.request.body).toMatchObject({ account_id: 4, amount: '170', fee: null, discount: null });
+    put.flush(makeEntryDetail({ id: 9, account_id: 4 }));
     settle();
     expect(left()).toBe(true);
   });
@@ -1210,7 +1336,7 @@ describe('EntryFormComponent', () => {
     expect(form.isDirty()).toBe(false);
     await Promise.all(navigate!.mock.results.map(result => result.value));
 
-    expect(navigate).toHaveBeenCalledWith('/accounting/entries/8', { replaceUrl: true, state: { closeTo: 'list' } });
+    expectNavigatedTo('/accounting/entries/8', { replaceUrl: true, queryParams: {}, state: { closeTo: 'list' } });
     expect(TestBed.inject(Router).url).toBe('/accounting/entries/8');
     expect(TestBed.inject(Location).back).not.toHaveBeenCalled();
   });
@@ -1437,6 +1563,27 @@ describe('EntryFormComponent', () => {
   });
 
   describe('unsaved input', () => {
+    it('keeps a dirty draft when only the calendar month/day query changes, but restarts on a kind change', async () => {
+      const { el } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+      typeInto(el, '.name-input', '午餐');
+      expect(form.isDirty()).toBe(true);
+      const startSpy = vi.spyOn(form as unknown as { start(...args: unknown[]): unknown }, 'start');
+
+      await TestBed.inject(Router).navigate([], { queryParams: { month: '2026-10', day: '2026-10-05' }, queryParamsHandling: 'merge', replaceUrl: true });
+      settle();
+      expect(startSpy).not.toHaveBeenCalled();
+      expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('午餐');
+      expect(form.isDirty()).toBe(true);
+
+      await TestBed.inject(Router).navigate([], { queryParams: { kind: 'income' }, queryParamsHandling: 'merge', replaceUrl: true });
+      settle();
+      expect(startSpy).toHaveBeenCalledTimes(1);
+      httpMock.match(r => r.method === 'GET').forEach(request => request.flush([]));
+    });
+
     it('is clean after load, dirty after typing a name, clean again after save-and-continue and after save', async () => {
       const { el, left } = await open('/accounting/entry');
       respond('/api/accounting/categories', [FOOD]);

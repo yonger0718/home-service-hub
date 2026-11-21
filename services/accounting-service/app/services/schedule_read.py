@@ -15,6 +15,7 @@ from .errors import NotFoundError
 from .schedule_generation import residual_last_override
 from .schedule_rules import plain
 from .schedule_templates import LEDGER_KINDS, loan_line, resolved_amounts
+from .settled_value import settled_value
 
 POSITIVE_LINE_KINDS = ("income", "payable", "collection")
 QUEUE_DAYS = 30
@@ -160,7 +161,8 @@ def loan_summary(db: Session, definition: ScheduleDefinition) -> tuple[Decimal |
     loan = linked_loan(db, definition)
     if loan is not None:
         repaid = db.scalar(
-            select(func.coalesce(func.sum(func.abs(LedgerEntry.amount)), 0)).where(LedgerEntry.settles_entry_id == loan.id)
+            select(func.coalesce(func.sum(func.abs(settled_value(LedgerEntry, loan.currency))), 0))
+            .where(LedgerEntry.settles_entry_id == loan.id)
         )
         return loan_open_amount(db, loan), Decimal(repaid)
     if definition.kind == "installment" and definition.total_amount is not None:

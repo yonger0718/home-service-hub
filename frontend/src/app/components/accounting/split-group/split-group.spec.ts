@@ -5,7 +5,7 @@ import { provideLocationMocks } from '@angular/common/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, RouterLink, convertToParamMap, provideRouter } from '@angular/router';
 import { By } from '@angular/platform-browser';
-import { BehaviorSubject } from 'rxjs';
+import { BehaviorSubject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail, EntryGroupSummary } from '../../../models/accounting.model';
@@ -34,11 +34,13 @@ function splitDetail(overrides: Partial<EntryDetail> = {}): EntryDetail {
 describe('SplitGroupComponent (多類別 group view)', () => {
   let http: HttpTestingController;
   let params: BehaviorSubject<ParamMap>;
+  let query: ParamMap;
   let router: Router;
   let location: Location;
 
   beforeEach(async () => {
     params = new BehaviorSubject(convertToParamMap({ id: '42' }));
+    query = convertToParamMap({});
     await TestBed.configureTestingModule({
       imports: [SplitGroupComponent],
       providers: [
@@ -46,7 +48,10 @@ describe('SplitGroupComponent (多類別 group view)', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         provideLocationMocks(),
-        { provide: ActivatedRoute, useValue: { paramMap: params } },
+        {
+          provide: ActivatedRoute,
+          useValue: { paramMap: params, get queryParamMap() { return of(query); }, snapshot: { get queryParamMap() { return query; } } },
+        },
       ],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
@@ -156,6 +161,17 @@ describe('SplitGroupComponent (多類別 group view)', () => {
     expect(child.state).toEqual({ groupDepth: 2, viaGroup: true });
   });
 
+  it('keeps the calendar month and day in the child links', () => {
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const fixture = render();
+    const hrefs = Array.from(el(fixture).querySelectorAll('.split-child')).map(link => link.getAttribute('href'));
+    expect(hrefs).toEqual([
+      '/accounting/entries/42?month=2026-10&day=2026-10-21',
+      '/accounting/entries/43?month=2026-10&day=2026-10-21',
+      '/accounting/entries/44?month=2026-10&day=2026-10-21',
+    ]);
+  });
+
   it('keeps the passbook in the child links when opened from a passbook', () => {
     params.next(convertToParamMap({ id: '3', eid: '42' }));
     const fixture = render();
@@ -174,6 +190,16 @@ describe('SplitGroupComponent (多類別 group view)', () => {
     const fixture = render();
     el(fixture).querySelector<HTMLButtonElement>('.action-edit')!.click();
     expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit'], { queryParams: { select: 'parent' } });
+  });
+
+  it('編輯 keeps the calendar month and day', () => {
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+    const fixture = render();
+    el(fixture).querySelector<HTMLButtonElement>('.action-edit')!.click();
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit'], {
+      queryParams: { select: 'parent', month: '2026-10', day: '2026-10-21' },
+    });
   });
 
   it('disables 編輯 and 刪除整組 on a locked split and offers no 複製', () => {
@@ -239,6 +265,45 @@ describe('SplitGroupComponent (多類別 group view)', () => {
     expect(navigate).toHaveBeenCalledWith('/accounting');
   });
 
+  it('✕ on a deep-linked group view on the calendar goes to that month and day', () => {
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const go = vi.spyOn(location, 'historyGo');
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render();
+    el(fixture).querySelector<HTMLButtonElement>('.dhead .close')!.click();
+    expect(navigate).toHaveBeenCalledExactlyOnceWith('/accounting?month=2026-10&day=2026-10-21');
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it('✕ on the calendar goes back to the list (history not grown), not to the day by a new entry', () => {
+    openedWith({ groupDepth: 1 });
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-22' });
+    const go = vi.spyOn(location, 'historyGo').mockImplementation(() => undefined);
+    const back = vi.spyOn(location, 'back');
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render();
+    el(fixture).querySelector<HTMLButtonElement>('.dhead .close')!.click();
+    expect(go).toHaveBeenCalledExactlyOnceWith(-1);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(back).not.toHaveBeenCalled();
+  });
+
+  it('刪除整組 on the calendar goes back to the list like ✕', () => {
+    openedWith({ groupDepth: 1 });
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-22' });
+    const go = vi.spyOn(location, 'historyGo').mockImplementation(() => undefined);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render();
+    el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
+    fixture.detectChanges();
+    el(fixture).querySelector<HTMLButtonElement>('.delete-confirm .delete-group')!.click();
+    http.expectOne('/api/accounting/splits/4').flush(null);
+    expect(go).toHaveBeenCalledExactlyOnceWith(-1);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it('✕ follows the entry-detail closeTo rule: the reminder centre, and the passbook it was opened from', () => {
     openedWith({ closeTo: 'reminders', groupDepth: 1 });
     const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
@@ -258,7 +323,22 @@ describe('SplitGroupComponent (多類別 group view)', () => {
     openedWith({ groupDepth: 1 });
     const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
     render(makeEntryDetail({ id: 42 }));
-    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42], { replaceUrl: true, state: { groupDepth: 1 } });
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42], { replaceUrl: true, state: { groupDepth: 1 }, queryParams: {} });
+  });
+
+  it('hands a dissolved split over to the entry detail with the calendar month and day', () => {
+    openedWith({ groupDepth: 1 });
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+    render(makeEntryDetail({ id: 42 }));
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42], {
+      replaceUrl: true,
+      state: { groupDepth: 1 },
+      queryParams: { month: '2026-10', day: '2026-10-21' },
+    });
+    expect(router.serializeUrl(router.createUrlTree(navigate.mock.calls[0][0], navigate.mock.calls[0][1]))).toBe(
+      '/accounting/entries/42?month=2026-10&day=2026-10-21',
+    );
   });
 
   it('shows the load error with a ✕ when the member cannot be read', () => {

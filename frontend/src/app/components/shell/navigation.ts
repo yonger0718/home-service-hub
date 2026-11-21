@@ -11,6 +11,8 @@ export interface NavItem {
   group: NavGroupId;
   sub?: boolean;
   exact?: boolean;
+  /** Other path prefixes that select this item (checked before the longest-prefix match). */
+  also?: readonly string[];
 }
 
 export interface NavGroup {
@@ -56,7 +58,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { id: 'accounting-timeline', path: '/accounting', icon: 'pi-list', label: '記錄', sidebarLabel: '記帳記錄', title: '記帳記錄', group: 'accounting', exact: true },
       { id: 'accounting', path: '/accounting/accounts', icon: 'pi-wallet', label: '帳戶', sidebarLabel: '帳戶', title: '記帳帳戶', group: 'accounting', sub: true },
       { id: 'accounting-reports', path: '/accounting/reports', icon: 'pi-chart-pie', label: '報表', sidebarLabel: '報表', title: '報表', group: 'accounting', sub: true },
-      { id: 'accounting-settings', path: '/accounting/settings', icon: 'pi-sliders-h', label: '記帳設定', sidebarLabel: '記帳設定', title: '記帳設定', group: 'accounting', sub: true, exact: true },
+      { id: 'accounting-settings', path: '/accounting/settings', icon: 'pi-sliders-h', label: '記帳設定', sidebarLabel: '記帳設定', title: '記帳設定', group: 'accounting', sub: true, exact: true,
+        also: ['/accounting/reward-rules'] },
     ],
   },
   {
@@ -80,7 +83,9 @@ export function landingPathFor(hidden: readonly NavGroupId[]): string {
 
 export function navItemForUrl(url: string): NavItem {
   const cleanUrl = url.split('?')[0].split('#')[0];
+  const under = (prefix: string): boolean => cleanUrl === prefix || cleanUrl.startsWith(`${prefix}/`);
   return NAV_ITEMS.find(item => item.exact && item.path === cleanUrl)
+    ?? NAV_ITEMS.find(item => item.also?.some(under))
     ?? [...NAV_ITEMS]
       .sort((left, right) => right.path.length - left.path.length)
       .find(item => cleanUrl === item.path || cleanUrl.startsWith(`${item.path}/`))

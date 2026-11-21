@@ -89,14 +89,18 @@ def _shift_months(d: date, months: int) -> date:
 
 
 def compare_window(date_from: date, date_to: date, compare: Compare) -> tuple[date, date]:
-    """The comparison range. `last_year`: both dates a year earlier (Feb 29 → Feb 28). `previous`: a range of whole
-    calendar months moves back by its number of months; any other range by its own inclusive day count, ending the
-    day before `date_from`."""
+    """The comparison range. `last_year`: both dates a year earlier (Feb 29 → Feb 28). `previous`: a range starting on
+    the 1st moves back by the number of calendar months it touches; a whole-month range ends the day before
+    `date_from`, one ending mid-month keeps its end day, clipped to the target month (2026-11-01..11-07 →
+    2026-10-01..10-07, 2026-03-01..03-30 → 2026-02-01..02-28). Any other range moves back by its own inclusive day
+    count, ending the day before `date_from`."""
     if compare == "last_year":
         return _shift_months(date_from, -12), _shift_months(date_to, -12)
-    if date_from.day == 1 and date_to.day == calendar.monthrange(date_to.year, date_to.month)[1]:
+    if date_from.day == 1:
         months = (date_to.year - date_from.year) * 12 + date_to.month - date_from.month + 1
-        return _shift_months(date_from, -months), date_from - timedelta(days=1)
+        if date_to.day == calendar.monthrange(date_to.year, date_to.month)[1]:
+            return _shift_months(date_from, -months), date_from - timedelta(days=1)
+        return _shift_months(date_from, -months), _shift_months(date_to, -months)
     days = (date_to - date_from).days + 1
     return date_from - timedelta(days=days), date_from - timedelta(days=1)
 

@@ -1896,6 +1896,165 @@ def test_near_twin_window_boundary_is_the_matchers_near_window(seed, db_session,
         _books_one(db_session, stmt, "backfill_entry")
 
 
+# --- partial-settlement twins (#389): several lines ↔ one owner settlement entry ------------------------------------
+
+def _live_bank(seed, db, name="銀行"):
+    bank = seed.account(name, opening="1000", statement_live_from=date(2026, 9, 1))
+    db.commit()
+    return bank
+
+
+def _settlement(seed, bank, amount, *, day=DAY):
+    """An owner settlement entry on the bank: a receipt of a receivable (positive) or a repayment of a payable
+    (negative). Its debt original is dated 20 days earlier, outside every window these tests use."""
+    kind = "receivable" if Decimal(amount) > 0 else "payable"
+    debt = seed.entry(bank, str(-Decimal(amount)), kind=kind, day=day - timedelta(days=20))
+    seed.db.flush()
+    return seed.entry(bank, amount, kind=kind, day=day, is_settlement=True, settles_entry_id=debt.id)
+
+
+def _two_transfers(seed, db, run, *, sign=1):
+    """A live bank statement printing a 400 and a 200 transfer (deposits, or withdrawals for sign=-1) beside one
+    unclaimed owner settlement entry of 600 in the same direction: (bank, settlement entry, stmt, (line, line))."""
+    bank = _live_bank(seed, db)
+    entry = _settlement(seed, bank, str(600 * sign))
+    db.commit()
+    kind, text_ = ("deposit", "轉入") if sign > 0 else ("withdrawal", "轉出")
+    stmt, lines, _ = _submit(db, run, bank, [_line(1, DAY, text_, 400 * sign, kind), _line(2, DAY, text_, 200 * sign, kind)],
+                             kind="bank", opening=Decimal("1000"))
+    return bank, entry, stmt, lines
+
+
+def test_policy_never_backfills_deposits_that_are_parts_of_an_owner_settlement_receipt(seed, db_session, run, dirty_on):
+    """#389: a friend repaid 600 in two transfers and the owner recorded one receipt of 600. No line equals the
+    receipt, the matcher offers nothing, and the policy booked both lines as income beside it."""
+    _, receipt, stmt, lines = _two_transfers(seed, db_session, run)
+    for line in lines:
+        case = _open_line_case(db_session, stmt.id, line.id)
+        assert not case.candidates  # only the twin guard keeps the policy off the line
+        _never_books(db_session, stmt, line, case, "backfill_entry")
+    assert db_session.get(LedgerEntry, receipt.id) is not None
+
+
+def test_the_hold_ends_once_the_receipt_is_gone(seed, db_session, run, dirty_on):
+    _, receipt, stmt, _ = _two_transfers(seed, db_session, run)
+    _set_policy(db_session, _creation_policy("backfill_entry"))
+    assert policy_service.run_policy(db_session, stmt.id).applied == []
+    db_session.delete(db_session.get(LedgerEntry, receipt.id))
+    db_session.commit()
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    assert len(policy_service.run_policy(db_session, stmt.id).applied) == 2
+
+
+@pytest.mark.parametrize("amount, kind, days, blocked", [
+    ("600", "settlement", 15, True),    # the drift window's edge
+    ("600", "settlement", 16, False),
+    ("150", "settlement", 0, False),    # smaller than the 200 line
+    ("600", "income", 0, False),        # larger, but not a settlement (the spec's non-goal)
+    ("-600", "settlement", 0, False),   # a repayment going out is no twin of a deposit
+])
+def test_partial_settlement_twin_boundaries(seed, db_session, run, dirty_on, amount, kind, days, blocked):
+    bank = _live_bank(seed, db_session)
+    day = DAY - timedelta(days=days)
+    if kind == "settlement":
+        _settlement(seed, bank, amount, day=day)
+    else:
+        seed.entry(bank, amount, kind=kind, day=day)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, bank, [_line(1, DAY, "轉入", 200, "deposit")], kind="bank",
+                               opening=Decimal("1000"))
+    case = _open_line_case(db_session, stmt.id, line.id)
+    if blocked:
+        _never_books(db_session, stmt, line, case, "backfill_entry")
+    else:
+        _books_one(db_session, stmt, "backfill_entry")
+
+
+def test_a_claimed_settlement_receipt_holds_no_other_line(seed, db_session, run, dirty_on):
+    """The 600 line claims the receipt exactly; the receipt is then nobody's twin and the 200 line is backfilled."""
+    bank = _live_bank(seed, db_session)
+    receipt = _settlement(seed, bank, "600")
+    db_session.commit()
+    stmt, (whole, other), _ = _submit(db_session, run, bank, [_line(1, DAY, "轉入", 600, "deposit"),
+                                                             _line(2, DAY, "轉入", 200, "deposit")],
+                                      kind="bank", opening=Decimal("1000"))
+    assert [(c.line_id, c.entry_id) for c in _active(db_session, stmt.id)] == [(whole.id, receipt.id)]
+    case = _open_line_case(db_session, stmt.id, other.id)
+    action_id = _books_one(db_session, stmt, "backfill_entry")
+    assert _reload(db_session, ReconciliationAction, action_id).case_id == case.id and len(_booked(db_session)) == 1
+
+
+def test_policy_never_backfills_withdrawals_that_are_parts_of_an_owner_repayment(seed, db_session, run, dirty_on):
+    """The mirror case: the owner repaid a payable of 600 in two transfers and recorded one repayment."""
+    _, _, stmt, lines = _two_transfers(seed, db_session, run, sign=-1)
+    for line in lines:
+        _never_books(db_session, stmt, line, _open_line_case(db_session, stmt.id, line.id), "backfill_entry")
+
+
+def test_the_owner_may_still_backfill_a_line_the_guard_holds(seed, db_session, run, dirty_on):
+    _, _, stmt, (line, _other) = _two_transfers(seed, db_session, run)
+    case = _open_line_case(db_session, stmt.id, line.id)
+    assert "backfill_entry" in registry.allowed(case)
+    engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "income"}, actor="owner", label="t")
+    db_session.commit()
+    assert len(_booked(db_session)) == 1
+
+
+def test_a_settlement_receipt_recorded_since_the_collect_refuses_the_backfill_under_the_lock(seed, db_session, run):
+    bank = _live_bank(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, bank, [_line(1, DAY, "轉入", 200, "deposit")], kind="bank",
+                               opening=Decimal("1000"))
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0})
+    statement, cand = _only_candidate(db_session, stmt.id)
+    assert cand.action == "backfill_entry"
+    _settlement(seed, bank, "600")  # dirty off: no recheck, the case is kept as collected
+    db_session.commit()
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=cand.case_id, action="backfill_entry", params=cand.params, actor="policy",
+                            label="policy", budget=(MONTH, "TWD", cand.amount), precheck=partial(policy_service._policy_precheck, cand))
+    db_session.rollback()
+    assert info.value.code == "candidate_changed"
+    assert _backfills(db_session) == [] and _booked(db_session) == []
+
+
+def test_the_policy_supersedes_its_pending_backfill_proposal_once_a_larger_settlement_receipt_arrives(seed, db_session, run,
+                                                                                                     dirty_on):
+    """The over-cap proposal was made before the owner recorded the receipt; the next run supersedes it, and the
+    owner applying it meanwhile is refused under the barrier."""
+    bank = _live_bank(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, bank, [_line(1, DAY, "轉入", 200, "deposit")], kind="bank",
+                               opening=Decimal("1000"))
+    _set_policy(db_session, _creation_policy("backfill_entry", "100"))
+    (pid,) = policy_service.run_policy(db_session, stmt.id).proposed
+    _settlement(seed, bank, "600")
+    db_session.commit()
+    with pytest.raises(CodedConflictError) as info:
+        proposal_service.apply_proposal(db_session, proposal_id=pid, label="owner-test", request_id=None)
+    db_session.rollback()
+    assert info.value.code == "owner_may_record"
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed) == ([], [])
+    assert _reload(db_session, ReconciliationProposal, pid).status == "superseded"
+    (superseded,) = _audit(db_session, "proposal_superseded")
+    assert superseded.detail == {"proposal_id": pid, "by": "owner_may_record"}
+    assert _booked(db_session) == [] and _open_line_case(db_session, stmt.id, line.id) is not None
+
+
+def test_only_the_backfill_guard_asks_for_settlement_parts(seed, db_session, run, dirty_on):
+    """The part-of-a-settlement shape is opt-in (`settlement_parts=True`): the plain guard the other automatic
+    bookings use (system entries, dividends, trade settlements, transfer pairs) does not see it."""
+    _, receipt, stmt, (line, _other) = _two_transfers(seed, db_session, run)
+    rules = rec.rules_for(settings_service.reconciliation_rules(db_session), stmt.period_end)
+    accounts = coverage_service.participating_accounts(db_session, stmt.account_id)
+    assert stand_ins.owner_twins(db_session, stmt, line, accounts, rules) == []
+    assert stand_ins.owner_twins(db_session, stmt, line, accounts, rules, settlement_parts=True) == [receipt.id]
+    assert stand_ins.owner_may_record(db_session, stmt, line.event_id, line, rules) is False
+    assert stand_ins.owner_may_record(db_session, stmt, line.event_id, line, rules, settlement_parts=True) is True
+
+
 def test_a_claimed_child_is_no_twin_but_a_child_of_an_unclaimed_parent_is(seed, db_session, run, dirty_on):
     """The exact child under the claimed purchase is itself claimed by the 5 fee line: it is nobody's twin. The
     near child under an UNCLAIMED purchase is the 64 fee line's twin and keeps the policy off it."""

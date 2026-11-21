@@ -1,0 +1,72 @@
+:host {
+  display: block;
+}
+
+.today-bar {
+  align-items: center;
+  background: var(--app-surface-soft, transparent);
+  border: 0;
+  border-radius: 16px;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: var(--fs-sm, 0.85rem);
+  gap: 12px;
+  min-height: 56px;
+  padding: 0 14px;
+  text-align: left;
+  width: 100%;
+}
+
+.tb-disc {
+  align-items: center;
+  background: var(--app-primary-soft);
+  border-radius: 50%;
+  color: var(--app-primary, inherit);
+  display: flex;
+  flex: none;
+  font-weight: 800;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.tb-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tb-title {
+  font-weight: 700;
+}
+
+.tb-names {
+  display: block;
+  color: var(--app-text-muted);
+  font-size: var(--fs-micro, 0.72rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tb-net {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.neg {
+  color: var(--tone-neg, var(--c-red));
+}
+
+.pos {
+  color: var(--tone-pos, var(--c-green));
+}
+
+.tb-chev {
+  flex: none;
+  opacity: 0.6;
+}

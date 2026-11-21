@@ -85,6 +85,19 @@ def world(tmp_path, client, card):
     return services, drive_files, cfg
 
 
+def test_run_summary_carries_the_token_age_in_token_mode(world, tmp_path, db_session):
+    services, _, cfg = world
+    pipeline.run(services, trigger="owner_cli")
+    assert "parser_token_age_days" not in db_session.execute(text("select summary from ingest_run")).scalar_one()["versions"]
+    tok = tmp_path / "oauth-token"
+    tok.write_text("sk-ant-oat01-FAKE-TEST-TOKEN")
+    token_cfg = dataclasses.replace(cfg, parser_oauth_token_file=tok)
+    token_services = dataclasses.replace(services, cfg=token_cfg, parser=parser_mod.Parser(token_cfg, services.runner))
+    pipeline.run(token_services, trigger="owner_cli")
+    age = db_session.execute(text("select summary from ingest_run order by id desc limit 1")).scalar_one()["versions"]["parser_token_age_days"]
+    assert isinstance(age, float) and 0 <= age < 1
+
+
 def _operator_gate(services):
     """The operator gate needs a verify parser to clear the latch; reuse the fake CLI for it."""
     return services.gate.run_operator_gate(services.parser, verify_parser=services.parser)
@@ -994,9 +1007,13 @@ def test_both_attempts_fail_is_parse_with_one_ocr_start(world, tmp_path, db_sess
     assert again["unchanged"] == 1 and services.ocr.starts == 1
 
 
-def _garbled_text_parse(services, *, ocr_merchant="咖啡店", ocr_amount=None, mark="OCRMARK", text_twin=False):
-    """#206: the text-layer parse prints line 1's merchant as `(cid:N)` garbage; the OCR text (carries `mark`) parses
-    to the same statement with `ocr_merchant` on line 1 (and `ocr_amount` instead of its amount when given).
+def _garbled_text_parse(services, *, ocr_merchant="咖啡店", ocr_amount=None, mark="OCRMARK", text_twin=False,
+                        text_merchant="(cid:222)(cid:221)X", text_kind=None, second_text_merchant=None,
+                        second_ocr_merchant=None):
+    """#206: the text-layer parse prints line 1's merchant as `text_merchant` (default `(cid:N)` garbage; #387: empty
+    or a bare country code); the OCR text (carries `mark`) parses to the same statement with `ocr_merchant` on line 1
+    (and `ocr_amount` instead of its amount when given). `text_kind` sets line 1's kind on both sides;
+    `second_text_merchant` / `second_ocr_merchant` set line 2's merchant on the text / OCR side.
     `text_twin`: on the text side only, the clean line 2 takes line 1's dates, amount and kind (a shared key)."""
     calls = []
     real = services.parser.parse
@@ -1004,13 +1021,20 @@ def _garbled_text_parse(services, *, ocr_merchant="咖啡店", ocr_amount=None, 
     def parse(masked):
         parsed = real(masked)
         first = parsed.lines[0]
+        if text_kind is not None:
+            first = first.model_copy(update={"line_kind": text_kind})
+        second = parsed.lines[1]
         if mark in masked:
             calls.append("ocr")
             update = {"merchant_raw": ocr_merchant} | ({"printed_amount": ocr_amount} if ocr_amount else {})
-            return parsed.model_copy(update={"lines": [first.model_copy(update=update), *parsed.lines[1:]]})
+            if second_ocr_merchant is not None:
+                second = second.model_copy(update={"merchant_raw": second_ocr_merchant})
+            return parsed.model_copy(update={"lines": [first.model_copy(update=update), second, *parsed.lines[2:]]})
         calls.append("text")
-        garbled = first.model_copy(update={"merchant_raw": "(cid:222)(cid:221)X"})
-        rest = parsed.lines[1:]
+        garbled = first.model_copy(update={"merchant_raw": text_merchant})
+        if second_text_merchant is not None:
+            second = second.model_copy(update={"merchant_raw": second_text_merchant})
+        rest = [second, *parsed.lines[2:]]
         if text_twin:
             key = {f: getattr(first, f) for f in ("txn_date", "posted_date", "printed_amount", "line_kind")}
             rest = [rest[0].model_copy(update=key), *rest[1:]]
@@ -1101,6 +1125,94 @@ def test_clean_text_parse_never_starts_the_repair(world, tmp_path, db_session):
     summary = pipeline.run(services, trigger="owner_cli")
     assert summary["parsed"] == 1 and services.ocr.starts == 0 and summary["ocr_merchant_repair"] == 0
     assert _revision(db_session)[0] == "claude-cli"
+
+
+# --- #387: a missing card merchant (empty or a bare country code, as on HSBC's CJK-less text layer) -----------------
+
+def _line(merchant, kind):
+    return parse_schema.ParsedLine.model_validate(fake_claude.GOOD["lines"][0] | {"merchant_raw": merchant,
+                                                                                    "line_kind": kind})
+
+
+@pytest.mark.parametrize("merchant,kind,expected", [
+    ("", "purchase", True), ("  ", "refund", True), ("JPN", "purchase", True), ("US", "purchase", True),
+    ("KFC", "purchase", True),  # accepted false positive (spec): costs one OCR read, replaced only by a clean read
+    ("Uber", "purchase", False), ("ikea", "purchase", False), ("USAA", "purchase", False),
+    ("咖啡店", "purchase", False), ("J P", "purchase", False),
+    ("", "payment", False), ("", "deposit", False), ("", "fee", False), ("JPN", "transfer_in", False),
+    ("", "withdrawal", False), ("JPN", "withdrawal", False), ("", "transfer_out", False), ("TWN", "transfer_out", False),
+])
+def test_missing_merchant(merchant, kind, expected):
+    assert pipeline.missing_merchant(_line(merchant, kind)) is expected
+
+
+def test_needs_merchant_repair_covers_garbled_and_missing():
+    assert pipeline.needs_merchant_repair(_line("(cid:3)X", "purchase"))
+    assert pipeline.needs_merchant_repair(_line("", "purchase"))
+    assert not pipeline.needs_merchant_repair(_line("COFFEE", "purchase"))
+
+
+@pytest.mark.parametrize("text_merchant", ["", "JPN"])
+def test_missing_merchant_is_repaired_from_the_ocr_parse(world, tmp_path, db_session, text_merchant):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT, boxes=7))
+    calls = _garbled_text_parse(services, text_merchant=text_merchant)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and calls == ["text", "ocr"] and services.ocr.starts == 1
+    assert summary["ocr_merchant_repair"] == 1 and summary["merchant_lines_repaired"] == 1
+    parser, notes, merchants, amounts = _revision(db_session)
+    assert parser == "claude-cli+ocr-merchants" and merchants == "咖啡店|BOOKS" and amounts == "80.0000|500.0000"
+    assert notes == "ocr: merchant repair 1/1 lines mean_confidence=0.93 boxes=7 scale=3.0"
+
+
+def test_empty_refund_merchant_is_repaired(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    calls = _garbled_text_parse(services, text_merchant="", text_kind="refund")
+    summary = pipeline.run(services, trigger="owner_cli")
+    # a refund breaks the fixture's printed total, so after the repair the API refuses the revision and the file
+    # takes the R5.3 fallback (a second OCR parse); the repair counters are the point
+    assert calls[:2] == ["text", "ocr"] and summary["ocr_merchant_repair"] == 1
+    assert summary["merchant_lines_repaired"] == 1
+
+
+@pytest.mark.parametrize("kind", ["payment", "deposit"])
+def test_blank_payment_or_deposit_never_starts_the_repair(world, tmp_path, db_session, kind):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    _garbled_text_parse(services, text_merchant="", text_kind=kind)
+    summary = pipeline.run(services, trigger="owner_cli")
+    # the kind change may break the printed total and send the file down the R5.3 fallback (its own OCR start);
+    # what matters is that the merchant repair never starts
+    assert summary["ocr_merchant_repair"] == 0 and summary["merchant_lines_repaired"] == 0
+    assert services.ocr.starts == summary["ocr_fallback"]
+
+
+def test_country_code_ocr_merchant_does_not_replace(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    calls = _garbled_text_parse(services, text_merchant="", ocr_merchant="JPN")
+    summary = pipeline.run(services, trigger="owner_cli")
+    parser, notes, merchants, _ = _revision(db_session)
+    assert calls == ["text", "ocr"] and summary["merchant_lines_repaired"] == 0
+    assert parser == "claude-cli" and merchants == "|BOOKS" and notes.startswith("ocr: merchant repair 0/1 lines")
+
+
+def test_a_bare_code_ocr_merchant_does_not_replace_a_garbled_one(world, tmp_path, db_session):
+    # the same rule for a #206 garbled line (AMEX): an OCR merchant that is only a 2-3 letter code is not a clean read
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    calls = _garbled_text_parse(services, ocr_merchant="KFC")
+    summary = pipeline.run(services, trigger="owner_cli")
+    parser, notes, merchants, _ = _revision(db_session)
+    assert calls == ["text", "ocr"] and summary["merchant_lines_repaired"] == 0
+    assert parser == "claude-cli" and "(cid:" in merchants and "KFC" not in merchants
+    assert notes.startswith("ocr: merchant repair 0/1 lines")
+
+
+def test_garbled_and_empty_lines_repair_in_one_ocr_read(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    calls = _garbled_text_parse(services, second_text_merchant="", second_ocr_merchant="書店")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert calls == ["text", "ocr"] and services.ocr.starts == 1 and summary["merchant_lines_repaired"] == 2
+    parser, notes, merchants, _ = _revision(db_session)
+    assert parser == "claude-cli+ocr-merchants" and merchants == "咖啡店|書店"
+    assert notes.startswith("ocr: merchant repair 2/2 lines")
 
 
 def test_ocr_unavailable_during_fallback_keeps_parse_and_reports_the_code(world, tmp_path, db_session):
@@ -1679,3 +1791,62 @@ def test_composite_map_change_requeues_only_mapping_failures(composite_world, cl
     summary = pipeline.run(services, trigger="owner_cli")
     assert summary["composite_files"] == 1 and _bank_row(db_session) == ("parsed", None)
     assert db_session.execute(text("select status, failure from statement_file where kind = 'card'")).one() == ("failed", "parse")
+
+
+# ---- #385 D3: the run summary names the latched reason -----------------------------------------------------------
+
+@pytest.mark.parametrize("path", ["real_input", "ocr_repair", "gate"])
+def test_latched_auth_names_the_reason(world, tmp_path, db_session, path):
+    services, _, _ = world
+    services.gate.ensure(services.parser)  # a valid cached gate: the failure happens after it
+    if path == "real_input":  # the no-login stream itself, through the fake CLI
+        fake_claude.write(tmp_path / "claude", fake_claude.transcript(auth_failed=True), exit_code=1)
+    elif path == "ocr_repair":
+        services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+        calls = _garbled_text_parse(services)
+        garbled = services.parser.parse
+
+        def parse(masked):
+            if "OCRMARK" in masked:
+                calls.append("ocr")
+                raise parser_mod.ParseError("auth")
+            return garbled(masked)
+        services.parser.parse = parse
+    else:
+        services.gate.latch("auth on real input", services.gate.key(services.parser))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert "auth" in summary["errors"] and "parser_disabled" in summary["errors"]
+    assert summary["errors"].count("auth") == 1 and services.gate.latch_path.exists()
+    assert json.loads(services.gate.latch_path.read_text())["reason"] == "auth on real input"
+    if path == "ocr_repair":
+        assert calls == ["text", "ocr"] and summary["parsed"] == 1  # the text parse is still submitted
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("auth on real input", "auth"), ("sandbox on real input", "sandbox"), ("cli_version on real input", "cli_version"),
+    ("auth", "auth"), ("sandbox: result out of order", "sandbox"), ("cli_version: found 2.1.295, pinned 2.1.296",
+                                                                   "cli_version"),
+    ("auth on verify input", "auth"), ("auth; verify: auth", "auth"),
+    ("authx on real input", None), ("Auth on real input", None), (" auth on real input", None),
+    ("verify: auth", None), ("schema: lines: missing", None), ("key: OSError", None), ("error: FileNotFoundError", None),
+    ("timeout", None), ("", None), (None, None), (5, None),
+])
+def test_latch_reason_maps_only_the_fixed_vocabulary(text, expected):
+    assert pipeline.safe_reason(text) == expected
+
+
+@pytest.mark.parametrize("reason,expected", [("sandbox: result out of order", ["sandbox"]), ("key: OSError", []),
+                                             ("free text that must never be copied", [])])
+def test_latched_gate_adds_only_a_known_reason(world, reason, expected):
+    services, _, _ = world
+    services.gate.latch(reason, {})
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert [e for e in summary["errors"] if e != "parser_disabled"] == expected and "parser_disabled" in summary["errors"]
+
+
+def test_corrupt_latch_file_adds_no_reason(world):
+    services, _, cfg = world
+    cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    services.gate.latch_path.write_text("{not json")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["errors"] == ["parser_disabled"]

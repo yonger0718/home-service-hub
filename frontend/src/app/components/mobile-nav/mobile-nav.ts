@@ -14,6 +14,9 @@ import { NavigationStateService } from '../shell/navigation-state.service';
 export class MobileNavComponent {
   protected readonly nav = inject(NavigationStateService);
 
+  /** The ＋ link's query: the calendar month / day of the current URL, `{}` off the calendar. */
+  protected readonly entryQuery = this.nav.calendarQuery;
+
   /** The tab marked active: none on 設定, a pushed screen with its own ‹ back button. */
   protected readonly highlighted = computed<NavGroupId | null>(() =>
     this.nav.activeItem().id === 'settings' ? null : this.nav.activeGroup().id,

@@ -49,6 +49,11 @@ export function periodLabel(period: Period): string {
   return `${shortDate(period.start)} – ${shortDate(period.end)}`;
 }
 
+/** Compact cycle text, `09/16–10/15` (no spaces around the dash), for the account settings cycle line. */
+export function cycleText(period: Period): string {
+  return `${shortDate(period.start)}–${shortDate(period.end)}`;
+}
+
 /** Due date of the statement closing on `closingDate`; null without a rule. */
 export function dueDate(closingDate: string, rule: DueRule | null, value: number | null): string | null {
   if (!rule || value === null || value === undefined) {

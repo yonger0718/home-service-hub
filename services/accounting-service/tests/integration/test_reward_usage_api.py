@@ -166,3 +166,89 @@ def test_entry_list_includes_accruals(client, db_session, seed):
     db_session.commit()
     items = {i["id"]: i for i in client.get(f"/accounts/{card.id}/entries").json()["items"]}
     assert items[a.id]["accruals"] == [] and [x["amount"] for x in items[b.id]["accruals"]] == ["12.0000"]
+
+
+# polish-reward-and-account-settings D1a: every usage row names the account the reward pays into and whether
+# it is money.
+def _pay_into(db, rule, account):
+    rule.reward_account_id = account.id if account is not None else None
+    db.flush()
+    return rule
+
+
+def _unit(item):
+    return item["reward_account_id"], item["reward_account_name"], item["reward_is_money"]
+
+
+def test_usage_unit_card_itself_and_unset(client, db_session, seed):
+    card, _ = _card_with_spends(seed, db_session)
+    _rule(seed, card, name="A")  # seed default: reward_account_id = card
+    _pay_into(db_session, _rule(seed, card, name="B"), None)
+    db_session.commit()
+    assert [_unit(i) for i in _usage(client, card, date="2026-11-10")] == [(card.id, "測試卡", True)] * 2
+
+
+def test_usage_unit_other_credit_card_is_money(client, db_session, seed):
+    card, _ = _card_with_spends(seed, db_session)
+    other = seed.account("另一張卡", is_credit=True)
+    _pay_into(db_session, _rule(seed, card), other)
+    db_session.commit()
+    assert [_unit(i) for i in _usage(client, card, date="2026-11-10")] == [(other.id, "另一張卡", True)]
+
+
+def test_usage_unit_archived_points_account(client, db_session, seed):
+    card, _ = _card_with_spends(seed, db_session)
+    miles = seed.account("測試里程", is_archived=True)
+    _pay_into(db_session, _rule(seed, card), miles)
+    db_session.commit()
+    assert [_unit(i) for i in _usage(client, card, date="2026-11-10")] == [(miles.id, "測試里程", False)]
+
+
+def test_usage_unit_cash_equivalent_account_is_money(client, db_session, seed):
+    """PR A2: a points account marked 1 點 = 1 元 pays money."""
+    card, _ = _card_with_spends(seed, db_session)
+    points = seed.account("測試現金點", cash_equivalent=True)
+    _pay_into(db_session, _rule(seed, card), points)
+    db_session.commit()
+    assert [_unit(i) for i in _usage(client, card, date="2026-11-10")] == [(points.id, "測試現金點", True)]
+
+
+def test_usage_unit_archived_cash_equivalent(client, db_session, seed):
+    card, _ = _card_with_spends(seed, db_session)
+    points = seed.account("測試現金點", cash_equivalent=True, is_archived=True)
+    _pay_into(db_session, _rule(seed, card), points)
+    db_session.commit()
+    assert [_unit(i) for i in _usage(client, card, date="2026-11-10")] == [(points.id, "測試現金點", True)]
+
+
+def test_usage_unit_comes_from_the_groups_first_rule(client, db_session, seed):
+    card, _ = _card_with_spends(seed, db_session)
+    miles = seed.account("測試里程")
+    group = uuid4()
+    first = _rule(seed, card, name="先", shared_cap_id=group, total_cap=Decimal("100"), sort_order=0)
+    _pay_into(db_session, first, miles)
+    _rule(seed, card, name="後", shared_cap_id=group, total_cap=Decimal("100"), sort_order=1)
+    db_session.commit()
+    [item] = _usage(client, card, date="2026-11-10")
+    assert _unit(item) == (miles.id, "測試里程", False)
+
+
+def test_usage_unit_shared_cap_group_paying_into_a_cash_equivalent_account(client, db_session, seed):
+    """PR A2: the group's first rule pays into a 1 點 = 1 元 account → money; flagged on the second rule only → not."""
+    card, _ = _card_with_spends(seed, db_session)
+    points = seed.account("測試現金點", cash_equivalent=True)
+    miles = seed.account("測試里程")
+    group = uuid4()
+    first = _rule(seed, card, name="先", shared_cap_id=group, total_cap=Decimal("100"), sort_order=0)
+    second = _rule(seed, card, name="後", shared_cap_id=group, total_cap=Decimal("100"), sort_order=1)
+    _pay_into(db_session, first, points)
+    _pay_into(db_session, second, miles)
+    db_session.commit()
+    [item] = _usage(client, card, date="2026-11-10")
+    assert _unit(item) == (points.id, "測試現金點", True)
+
+    _pay_into(db_session, first, miles)
+    _pay_into(db_session, second, points)
+    db_session.commit()
+    [item] = _usage(client, card, date="2026-11-10")
+    assert _unit(item) == (miles.id, "測試里程", False)

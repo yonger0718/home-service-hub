@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { Component, WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   COMPACT_QUERY,
@@ -10,6 +13,7 @@ import {
   PHONE_QUERY,
   SIDEBAR_WIDE_QUERY,
 } from '../../services/layout-mode.service';
+import { DirtyAware, DirtyFormRegistry } from '../accounting/dirty-form.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
 import { NavigationPreferencesService } from '../../services/navigation-preferences.service';
 import { NAV_ITEMS, NavBadge } from '../shell/navigation';
@@ -240,5 +244,166 @@ describe('SidebarComponent', () => {
     // overflow-y lives in sidebar.scss (jsdom does not apply it); the structure it relies on is checked here.
     const scroller = host.querySelector('.hub-sidebar')!;
     expect(Array.from(scroller.children).map(child => child.className)).toEqual(['side-head', 'side-nav']);
+  });
+});
+
+describe('SidebarComponent 記一筆', () => {
+  beforeEach(() => localStorage.clear());
+
+  const link = (host: HTMLElement) => host.querySelectorAll<HTMLAnchorElement>('a.sidebar-new-entry');
+
+  it('expanded: one filled link with the text 記一筆 at the top of the nav, above the first group', async () => {
+    const { host } = await render(1440);
+
+    expect(link(host).length).toBe(1);
+    const entry = link(host)[0];
+    expect(text(entry)).toBe('記一筆');
+    expect(entry.getAttribute('href')).toBe('/accounting/entry');
+    expect(entry.getAttribute('aria-label')).toBe('記一筆（快捷鍵 N）');
+    expect(entry.querySelector('.side-tip')).toBeNull();
+    expect(entry.querySelector('.pi-plus')).not.toBeNull();
+    const nav = host.querySelector('nav.side-nav')!;
+    expect(nav.firstElementChild).toBe(entry);
+    expect(entry.nextElementSibling!.classList.contains('side-group')).toBe(true);
+  });
+
+  it('rail: the same link as an icon with a tooltip, no visible text, the accessible name 記一筆（快捷鍵 N）', async () => {
+    const { host } = await render(1100);
+
+    expect(link(host).length).toBe(1);
+    const entry = link(host)[0];
+    expect(host.classList.contains('rail')).toBe(true);
+    expect(entry.getAttribute('aria-label')).toBe('記一筆（快捷鍵 N）');
+    expect(entry.querySelector('.side-new-entry-label')).toBeNull();
+    expect(entry.querySelector('.side-tip')!.getAttribute('aria-hidden')).toBe('true');
+    expect(text(entry.querySelector('.side-tip'))).toContain('記一筆');
+    expect(entry.querySelector('.pi-plus')).not.toBeNull();
+    expect(host.querySelector('nav.side-nav')!.firstElementChild).toBe(entry);
+    // One line: the label and the key sit in one inline wrapper, not as two flex-column items.
+    expect(entry.querySelectorAll('.side-tip > *').length).toBe(1);
+    expect(entry.querySelector('.side-tip > .tip-line kbd')).not.toBeNull();
+  });
+
+  it('rail at compact height keeps the link and the nav items the same size and has the 4 px extra gap above', async () => {
+    const { host } = await render(1100, '/portfolio', {}, 700);
+    expect(host.classList.contains('compact')).toBe(true);
+    expect(host.classList.contains('rail')).toBe(true);
+    expect(link(host).length).toBe(1);
+    const css = readFileSync(join(__dirname, 'sidebar.scss'), 'utf8');
+    expect(css).toMatch(/:host\(\.compact\.rail\)[\s\S]*\.side-item,\s*\.sidebar-new-entry\s*\{\s*height:\s*38px;\s*width:\s*38px/);
+  });
+
+  it('rail adds 4 px above the link, so the gap under the logo row equals the 8 px below it', () => {
+    const css = readFileSync(join(__dirname, 'sidebar.scss'), 'utf8');
+    expect(css).toMatch(/:host\(\.rail\)\s*\{[\s\S]*?\.sidebar-new-entry\s*\{[^}]*margin-top:\s*4px/);
+  });
+
+  it('on the new-entry form a plain click does nothing: no dirty prompt, no navigation', async () => {
+    const { host } = await render(1440, '/accounting/entry');
+    const router = TestBed.inject(Router);
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const dirty: DirtyAware = { isDirty: () => true, showDiscardPrompt: vi.fn() };
+    registry.register(dirty);
+    const navigate = vi.spyOn(router, 'navigate');
+
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    link(host)[0].dispatchEvent(click);
+
+    expect(click.defaultPrevented).toBe(true);
+    expect(dirty.showDiscardPrompt).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(router.url).toBe('/accounting/entry');
+  });
+
+  it('on the new-entry form with a query a plain click also does nothing', async () => {
+    const { host } = await render(1440, '/accounting/entry?month=2026-10');
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    link(host)[0].dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('on the edit form of an entry a dirty form is still asked first', async () => {
+    const { host } = await render(1440, '/accounting/entries/9/edit');
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const dirty: DirtyAware = { isDirty: () => true, showDiscardPrompt: vi.fn() };
+    registry.register(dirty);
+
+    link(host)[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+
+    expect(dirty.showDiscardPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('a ctrl-click on the new-entry form is left to the browser', async () => {
+    const { host } = await render(1440, '/accounting/entry');
+    let prevented: boolean | null = null;
+    const swallow = (event: Event) => {
+      prevented = event.defaultPrevented;
+      event.preventDefault();
+    };
+    document.addEventListener('click', swallow, { once: true });
+    link(host)[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ctrlKey: true }));
+    expect(prevented).toBe(false);
+  });
+
+  it('is shown on the report pages and the entry form (no hiding conditions)', async () => {
+    for (const url of ['/accounting/reports?month=2026-08', '/accounting/reports/custom/7', '/accounting/entry', '/portfolio']) {
+      TestBed.resetTestingModule();
+      const { host } = await render(1440, url);
+      expect(link(host).length, url).toBe(1);
+    }
+  });
+
+  it('is not rendered in phone mode (the bottom tab bar has its own +)', async () => {
+    const { host } = await render(390);
+    expect(link(host).length).toBe(0);
+  });
+
+  it('its href carries the calendar month and day', async () => {
+    const { host } = await render(1440, '/accounting?month=2026-10&day=2026-10-21');
+    expect(link(host)[0].getAttribute('href')).toBe('/accounting/entry?month=2026-10&day=2026-10-21');
+  });
+
+  it('a plain click asks a dirty form first, then navigates to the entry form with the calendar params', async () => {
+    const { host } = await render(1440, '/accounting?month=2026-10&day=2026-10-21');
+    const router = TestBed.inject(Router);
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const dirty: DirtyAware = { isDirty: () => true, showDiscardPrompt: vi.fn() };
+    registry.register(dirty);
+
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    link(host)[0].dispatchEvent(click);
+
+    expect(click.defaultPrevented).toBe(true);
+    expect(dirty.showDiscardPrompt).toHaveBeenCalledTimes(1);
+    expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21');
+    registry.confirmDiscard();
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry?month=2026-10&day=2026-10-21'));
+  });
+
+  it('a plain click without a dirty form navigates at once', async () => {
+    const { host } = await render(1440, '/portfolio');
+    const router = TestBed.inject(Router);
+    link(host)[0].click();
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
+  });
+
+  it('a modified click (new tab) is left to the browser', async () => {
+    const { host } = await render(1440, '/portfolio');
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigate');
+    let prevented: boolean | null = null;
+    const swallow = (event: Event) => {
+      prevented = event.defaultPrevented;
+      event.preventDefault();
+    };
+    document.addEventListener('click', swallow, { once: true });
+
+    link(host)[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, metaKey: true }));
+
+    expect(prevented).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(router.url).toBe('/portfolio');
   });
 });

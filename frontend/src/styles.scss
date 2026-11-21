@@ -40,6 +40,8 @@
 
   --app-success: #5f7f98;       /* muted slate blue */
   --app-warning: #7b87a8;       /* muted blue-gray */
+  --app-banner-warn: #7d5920;   /* amber ink for 帳單 / near-cap marks (owner pick; ≥ 4.5:1 on its own 10 % tint over surface, past-day and selected-day fills) */
+  --app-banner-warn-soft: rgba(125, 89, 32, 0.10);
   --app-danger:  #7b6c9c;       /* muted lavender */
   --app-dividend:#7e78a8;       /* muted violet — dividends */
 
@@ -189,6 +191,8 @@
   --app-focus-ring: rgba(139, 125, 255, 0.30);
   --app-success: #8daec7;
   --app-warning: #96a5c5;
+  --app-banner-warn: #d0a06a;
+  --app-banner-warn-soft: rgba(208, 160, 106, 0.14);
   --app-danger: #a494c6;
   --app-dividend: #aba6d0;
   --app-state-success-bg: rgba(141, 174, 199, 0.15);
@@ -360,6 +364,22 @@ body {
   margin: 0;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* No pull-to-refresh while a bottom sheet is open: the scrollport may be html or body, the accidental pull usually
+   starts on the fixed backdrop (not a scroll container), and overscroll-behavior on a sheet whose content does not
+   overflow has no effect (WebKit 243452 / Chromium 813094). */
+html:has(.overlay, .filter-overlay),
+html:has(.overlay, .filter-overlay) body {
+  overscroll-behavior-y: none;
+}
+@media (max-width: 759.98px) {
+  /* Scroll lock: the reliable iOS backstop. Phone only, so a desktop scrollbar never disappears under a sheet.
+     html only: with html non-visible too, body would become the scroll container for position: sticky and the
+     viewport-sticky bars (the settings save bar and the like) would jump while a sheet is open. */
+  html:has(.overlay, .filter-overlay) {
+    overflow: hidden;
+  }
 }
 
 .hh-title       { font-size: var(--fs-display); font-weight: var(--fw-heavy); letter-spacing: var(--tracking-tighter); color: var(--app-text); line-height: var(--lh-tight); }
@@ -776,6 +796,29 @@ body {
   > p-datepicker, > p-select, > p-multiselect { width: 100%; min-width: 0; }
   p-datepicker .p-datepicker, p-datepicker .p-inputtext { width: 100%; }
 }
+/* App-styled tick on a native checkbox (native semantics stay). The unchecked border is --app-text-muted: it is the
+   only cue for an empty box, and --app-border is too faint for that. Dark: white on --app-primary is 3.24:1, so the checked fill
+   uses --app-primary-ink-bg there, as filled buttons do. */
+.hub-check {
+  appearance: none;
+  width: 20px; height: 20px; flex: none; margin: 0;
+  border: 1.5px solid var(--app-text-muted); border-radius: 6px;
+  background: var(--app-surface);
+  display: inline-grid; place-content: center;
+  cursor: pointer;
+}
+.hub-check::after {
+  content: '';
+  width: 5px; height: 10px;
+  border: solid var(--app-on-primary); border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg) scale(0);
+}
+.hub-check:checked { background: var(--app-primary); border-color: var(--app-primary); }
+.app-dark-mode .hub-check:checked { background: var(--app-primary-ink-bg); border-color: var(--app-primary-ink-bg); }
+.hub-check:checked::after { transform: translateY(-1px) rotate(45deg) scale(1); }
+.hub-check:focus-visible { outline: 2px solid var(--app-focus-ring); outline-offset: 2px; }
+.hub-check:disabled { opacity: 0.5; cursor: default; }
+
 /* Switch fields: control and text on one line (僅當沖). */
 .hub-filter-field--row { flex-direction: row; align-items: center; gap: 10px; }
 

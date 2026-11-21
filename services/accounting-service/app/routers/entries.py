@@ -1,12 +1,12 @@
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from ..auth import method_scope
+from ..auth import holds_admin, method_scope, require_admin_to_confirm
 from ..database import get_db
-from ..schemas.ledger import DailySummaryOut, EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
+from ..schemas.ledger import DailySummaryOut, EntryDeleteOut, EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
 from ..schemas.writes import (
     EntryIn, EntryUpdateIn, EntryWriteOut, RefundIn, RewardRepriceIn, RewardRepriceOut, RewardRulesIn, SettleIn, SplitIn,
     SplitOut,
@@ -89,19 +89,27 @@ def post_entry(payload: EntryIn, db: Session = Depends(get_db)):
 
 
 @router.put("/{entry_id}", response_model=EntryWriteOut)
-def put_entry(entry_id: int, payload: EntryUpdateIn, db: Session = Depends(get_db)):
+def put_entry(entry_id: int, payload: EntryUpdateIn, request: Request, drop_children: bool = False,
+              db: Session = Depends(get_db)):
+    """A stored fee / discount child the payload does not carry is dropped only with `?drop_children=true`
+    (409 `children_unconfirmed`, #396); the parameter needs the admin scope."""
+    require_admin_to_confirm(request, drop_children)
     with service_errors():
-        entry_write_service.update_entry(db, entry_id, payload)
+        entry_write_service.update_entry(db, entry_id, payload, drop_children=drop_children)
     db.commit()
     return _written(db, entry_id)
 
 
-@router.delete("/{entry_id}", status_code=204)
-def remove_entry(entry_id: int, db: Session = Depends(get_db)):
+@router.delete("/{entry_id}", response_model=EntryDeleteOut)
+def remove_entry(entry_id: int, request: Request, cascade: bool = False, db: Session = Depends(get_db)):
+    """Delete the entry with its fee / discount children and, for a transfer, the other leg; the answer lists every
+    row removed. A child on another account than its parent needs `?cascade=true` (409 `cascade_unconfirmed`, #390);
+    the parameter needs the admin scope (#396)."""
+    require_admin_to_confirm(request, cascade)
     with service_errors():
-        entry_write_service.delete_entry(db, entry_id)
+        deleted = entry_write_service.delete_entry(db, entry_id, cascade=cascade)
     db.commit()
-    return Response(status_code=204)
+    return EntryDeleteOut(deleted=[vars(row) for row in deleted])
 
 
 @router.put("/{entry_id}/reward-rules", response_model=EntryDetailOut)
@@ -136,10 +144,13 @@ def post_reward_reprice(entry_id: int, payload: RewardRepriceIn, db: Session = D
 
 
 @router.put("/{entry_id}/split", response_model=SplitOut)
-def put_entry_split(entry_id: int, payload: SplitIn, db: Session = Depends(get_db)):
-    """Convert a single entry into a split; the entry keeps its id (split rework §1.6)."""
+def put_entry_split(entry_id: int, payload: SplitIn, request: Request, drop_children: bool = False,
+                    db: Session = Depends(get_db)):
+    """Convert a single entry into a split; the entry keeps its id (split rework §1.6). `drop_children`: as on
+    PUT /entries/{entry_id} (#396)."""
+    require_admin_to_confirm(request, drop_children)
     with service_errors():
-        result = split_service.convert_to_split(db, entry_id, payload)
+        result = split_service.convert_to_split(db, entry_id, payload, drop_children=drop_children)
     db.commit()
     return result.out()
 
@@ -150,6 +161,28 @@ def post_settlement(entry_id: int, payload: SettleIn, db: Session = Depends(get_
         new_id = settlement_service.settle(db, entry_id, payload)
     db.commit()
     return ledger_service.get_entry_detail(db, new_id)
+
+
+def _set_closed(request: Request, db: Session, entry_id: int, closed: bool) -> dict:
+    """The change is recorded with the caller's label; a close by a caller without the owner's scope waits for the
+    owner's confirmation when it leaves a remainder (#401)."""
+    with service_errors():
+        settlement_service.set_closed(
+            db, entry_id, closed, actor=getattr(request.state, "client_label", None), by_owner=holds_admin(request))
+    db.commit()
+    return ledger_service.get_entry_detail(db, entry_id)
+
+
+@router.post("/{entry_id}/reopen", response_model=EntryDetailOut)
+def reopen_debt(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    """Clear `is_closed` on a receivable / payable original: its remainder follows from its settlements again (#391)."""
+    return _set_closed(request, db, entry_id, False)
+
+
+@router.post("/{entry_id}/close", response_model=EntryDetailOut)
+def close_debt(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    """Set `is_closed` on a receivable / payable original: no remainder, whatever its settlements sum to (#391)."""
+    return _set_closed(request, db, entry_id, True)
 
 
 @router.post("/{entry_id}/refund", response_model=EntryDetailOut, status_code=201)
