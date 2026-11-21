@@ -19,7 +19,8 @@ export function guardedRetry(
   }
   const retry = (): void => {
     if (busy()) {
-      raised?.(toasts.error(text, { retry }));
+      const id = toasts.error(text, { retry });
+      raised?.(id);
       return;
     }
     run();
