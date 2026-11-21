@@ -1,0 +1,240 @@
+/// <reference types="node" />
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { ChangeDetectionStrategy, Component, signal } from '@angular/core';
+import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
+import { describe, expect, it } from 'vitest';
+
+import { NotifCommand, NotifTask } from '../notif-task';
+import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row';
+
+const commandTask: NotifTask = {
+  id: 'sched:7',
+  source: 'ledger',
+  from: 'schedules',
+  tier: 'overdue',
+  icon: '🏠',
+  title: '測試月費 · 3 期未入帳',
+  when: '最早 08/20',
+  meta: '測試銀行卡',
+  amount: 'NT$ 2,400',
+  progress: null,
+  primary: {
+    label: '全部入帳',
+    command: { kind: 'catchUp', definitionId: 7, name: '測試月費' },
+  },
+  secondary: [
+    { label: '逐期處理', route: '/accounting/reminders', queryParams: { tab: 'pending' } },
+  ],
+  sortKey: '2026-08-20',
+  fingerprint: 'f',
+};
+
+const linkTask: NotifTask = {
+  ...commandTask,
+  id: 'bill:11:2026-10-24',
+  from: 'bills',
+  tier: 'today',
+  icon: 'pi pi-credit-card',
+  title: '測試銀行卡帳單',
+  when: '今天扣款',
+  meta: null,
+  amount: null,
+  primary: { label: '記繳款', route: '/accounting/accounts/11' },
+  secondary: [],
+};
+
+@Component({
+  imports: [NotifRowComponent],
+  template: `<app-notif-row
+    [task]="task()"
+    [busy]="busy()"
+    [solid]="solid()"
+    (run)="ran.push($event)"
+  />`,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+class HostComponent {
+  readonly task = signal<NotifTask>(commandTask);
+  readonly busy = signal(false);
+  readonly solid = signal(false);
+  readonly ran: NotifCommand[] = [];
+}
+
+function setup(task: NotifTask = commandTask) {
+  TestBed.configureTestingModule({ providers: [provideRouter([])] });
+  const fixture = TestBed.createComponent(HostComponent);
+  fixture.componentInstance.task.set(task);
+  fixture.autoDetectChanges();
+  const root: HTMLElement = fixture.nativeElement;
+  const q = <T extends Element = HTMLElement>(s: string) => root.querySelector<T>(s);
+  return { fixture, host: fixture.componentInstance, root, q };
+}
+
+describe('NotifRowComponent', () => {
+  it('renders title, source tag, when, meta and amount', async () => {
+    const { fixture, q } = setup();
+    await fixture.whenStable();
+    expect(q('.notif-title')?.textContent?.trim()).toBe('測試月費 · 3 期未入帳');
+    expect(q('.notif-tag')?.textContent?.trim()).toBe('財務');
+    expect(q('.notif-when')?.textContent?.trim()).toBe('最早 08/20');
+    expect(q('.notif-meta')?.textContent).toBe(' · 測試銀行卡');
+    expect(q('.notif-amount')?.textContent?.trim()).toBe('NT$ 2,400');
+    expect(q('.notif-line')?.textContent).toBe('最早 08/20 · 測試銀行卡');
+  });
+
+  it('renders no separator or empty element for an empty when or meta', async () => {
+    const a = setup({ ...commandTask, when: '', meta: null });
+    await a.fixture.whenStable();
+    expect(a.q('.notif-when')).toBeNull();
+    expect(a.q('.notif-meta')).toBeNull();
+    expect(a.q('.notif-line')).toBeNull();
+    TestBed.resetTestingModule();
+    const b = setup({ ...commandTask, when: '', meta: '測試銀行卡' });
+    await b.fixture.whenStable();
+    expect(b.q('.notif-when')).toBeNull();
+    expect(b.q('.notif-meta')?.textContent).toBe('測試銀行卡');
+    TestBed.resetTestingModule();
+    const c = setup({ ...commandTask, when: '今天', meta: '' });
+    await c.fixture.whenStable();
+    expect(c.q('.notif-meta')).toBeNull();
+    expect(c.q('.notif-line')?.textContent?.trim()).toBe('今天');
+  });
+
+  it('an overdue row marks itself and shows when in the alert tone', () => {
+    const { q } = setup();
+    const row = q('app-notif-row')!;
+    expect(row.classList.contains('notif-row')).toBe(true);
+    expect(row.classList.contains('notif-row--alert')).toBe(true);
+    expect(row.getAttribute('data-task-id')).toBe('sched:7');
+    expect(q('.notif-when')).not.toBeNull();
+  });
+
+  it('a non-alert row has no alert class; a system row has', () => {
+    const a = setup(linkTask);
+    expect(a.root.querySelector('.notif-row--alert')).toBeNull();
+    TestBed.resetTestingModule();
+    const b = setup({ ...linkTask, tier: 'system' });
+    expect(b.root.querySelector('.notif-row--alert')).not.toBeNull();
+  });
+
+  it('a command primary is a native button named 「全部入帳：測試月費 · 3 期未入帳」 and emits its command once', () => {
+    const { q, host, fixture } = setup();
+    const btn = q(NOTIF_PRIMARY_CONTROL)!;
+    expect(btn.tagName).toBe('BUTTON');
+    expect(btn.getAttribute('aria-label')).toBe('全部入帳：測試月費 · 3 期未入帳');
+    expect(q('app-btn.notif-primary')?.hasAttribute('aria-label')).toBe(false);
+    btn.click();
+    fixture.detectChanges();
+    expect(host.ran).toEqual([{ kind: 'catchUp', definitionId: 7, name: '測試月費' }]);
+  });
+
+  it('NOTIF_PRIMARY_CONTROL matches exactly one focusable element per row, for a command and for a link', () => {
+    for (const task of [commandTask, linkTask]) {
+      const { root } = setup(task);
+      const all = root.querySelectorAll<HTMLElement>(NOTIF_PRIMARY_CONTROL);
+      expect(all.length).toBe(1);
+      document.body.appendChild(root);
+      all[0].focus();
+      expect(document.activeElement).toBe(all[0]);
+      root.remove();
+      TestBed.resetTestingModule();
+    }
+  });
+
+  it('busy: the button is disabled, exposes aria-busy and emits nothing', () => {
+    const { q, host, fixture } = setup();
+    host.busy.set(true);
+    fixture.detectChanges();
+    const btn = q<HTMLButtonElement>(NOTIF_PRIMARY_CONTROL)!;
+    expect(btn.disabled).toBe(true);
+    expect(btn.getAttribute('aria-busy')).toBe('true');
+    btn.click();
+    expect(host.ran).toEqual([]);
+  });
+
+  it('a link primary is an anchor to /accounting/accounts/11 named 「記繳款：測試銀行卡帳單」', () => {
+    const { q } = setup(linkTask);
+    const a = q<HTMLAnchorElement>(NOTIF_PRIMARY_CONTROL)!;
+    expect(a.tagName).toBe('A');
+    expect(a.getAttribute('href')).toBe('/accounting/accounts/11');
+    expect(a.getAttribute('aria-label')).toBe('記繳款：測試銀行卡帳單');
+    expect(a.classList.contains('notif-primary--link')).toBe(true);
+    expect(q('app-btn')).toBeNull();
+  });
+
+  it('secondary links follow the primary in the DOM with their query params', () => {
+    const { q, root } = setup();
+    const s = q<HTMLAnchorElement>('a.notif-secondary')!;
+    expect(s.getAttribute('href')).toBe('/accounting/reminders?tab=pending');
+    expect(s.getAttribute('aria-label')).toBe('逐期處理：測試月費 · 3 期未入帳');
+    const focusables = Array.from(root.querySelectorAll('button, a'));
+    expect(focusables.indexOf(q(NOTIF_PRIMARY_CONTROL)!)).toBeLessThan(focusables.indexOf(s));
+    expect(focusables.length).toBe(2);
+  });
+
+  it('progress 17 / 28 renders a bar 60.7% wide, hidden from assistive tech; no bar without progress', () => {
+    const { q, host, fixture } = setup();
+    expect(q('.notif-bar')).toBeNull();
+    host.task.set({ ...commandTask, progress: { k: 17, n: 28 } });
+    fixture.detectChanges();
+    const bar = q('.notif-bar')!;
+    expect(bar.getAttribute('aria-hidden')).toBe('true');
+    const fill = bar.querySelector<HTMLElement>('span')!;
+    expect(parseFloat(fill.style.width)).toBeCloseTo(60.7, 1);
+    host.task.set({ ...commandTask, progress: { k: 0, n: 0 } });
+    fixture.detectChanges();
+    expect(q('.notif-bar')).toBeNull();
+  });
+
+  it('no amount element when amount is null', () => {
+    const { q } = setup(linkTask);
+    expect(q('.notif-amount')).toBeNull();
+  });
+
+  it('solid: the command button uses the primary variant; the link gets .solid', () => {
+    const a = setup();
+    expect(a.q(NOTIF_PRIMARY_CONTROL)!.classList.contains('btn-soft')).toBe(true);
+    a.host.solid.set(true);
+    a.fixture.detectChanges();
+    expect(a.q(NOTIF_PRIMARY_CONTROL)!.classList.contains('btn-primary')).toBe(true);
+    TestBed.resetTestingModule();
+    const b = setup(linkTask);
+    expect(b.q(NOTIF_PRIMARY_CONTROL)!.classList.contains('solid')).toBe(false);
+    b.host.solid.set(true);
+    b.fixture.detectChanges();
+    expect(b.q(NOTIF_PRIMARY_CONTROL)!.classList.contains('solid')).toBe(true);
+  });
+
+  it('an emoji icon renders as text, a pi icon as <i>; the tile is hidden from assistive tech', () => {
+    const a = setup();
+    const tile = a.q('.notif-icon')!;
+    expect(tile.getAttribute('aria-hidden')).toBe('true');
+    expect(tile.textContent?.trim()).toBe('🏠');
+    expect(tile.querySelector('i')).toBeNull();
+    TestBed.resetTestingModule();
+    const b = setup(linkTask);
+    const i = b.q('.notif-icon i')!;
+    expect(i.classList.contains('pi-credit-card')).toBe(true);
+    expect(b.q('.notif-icon')!.textContent?.trim()).toBe('');
+  });
+
+  it('title and amount sit in the head, the line under it; progress is not conveyed by the bar alone', () => {
+    const { q, host, fixture } = setup();
+    host.task.set({ ...commandTask, progress: { k: 17, n: 28 }, when: '17 / 28 已核對' });
+    fixture.detectChanges();
+    expect(q('.notif-line')?.textContent).toContain('17 / 28 已核對');
+    expect(q('.notif-bar')?.textContent?.trim()).toBe('');
+  });
+
+  it('scss: no colour literal', () => {
+    const css = readFileSync(
+      join(process.cwd(), 'src/app/components/notifications/notif-row/notif-row.scss'),
+      'utf8',
+    );
+    expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(css).not.toMatch(/rgba?\(/);
+  });
+});
