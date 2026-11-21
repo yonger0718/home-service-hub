@@ -72,6 +72,10 @@ describe('navigation model', () => {
       expect(navItemForUrl(url), url).toBe(NOTIFICATIONS_ITEM);
     }
     expect(navItemForUrl('/nowhere').id).toBe('inventory');
+    expect(navItemForUrl('/notifications/')).toBe(NOTIFICATIONS_ITEM);
+    // A longer first segment is not under /notifications.
+    expect(navItemForUrl('/notificationsfoo')).not.toBe(NOTIFICATIONS_ITEM);
+    expect(navItemForUrl('/notificationsfoo').id).toBe('inventory');
   });
 
   it('通知 sits outside the nav groups and items', () => {

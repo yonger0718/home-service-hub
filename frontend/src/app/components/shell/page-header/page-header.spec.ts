@@ -228,6 +228,14 @@ describe('PageHeaderComponent', () => {
       expect(navigate).not.toHaveBeenCalled();
     });
 
+    it('an empty backFallback is not a path: the landing path is used', async () => {
+      const { button, navigate } = await renderBack(['/notifications'], { fallback: '' });
+
+      button!.click();
+
+      expect(navigate).toHaveBeenCalledWith('/portfolio');
+    });
+
     it('without backFallback the landing path is used (unchanged)', async () => {
       const { button, navigate } = await renderBack(['/notifications']);
 

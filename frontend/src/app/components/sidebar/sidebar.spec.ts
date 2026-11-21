@@ -241,6 +241,7 @@ describe('SidebarComponent', () => {
   });
 
   it('no nav item renders a count (expanded and rail)', async () => {
+    // Fixture keys are nav item ids: `accounting` is the 帳戶 item, `accounting-timeline` is 記帳記錄 (href `/accounting`).
     const badges: Record<string, NavBadge> = {
       'accounting': { dot: true, tone: 'red', label: '有逾期的卡費' },
       'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },

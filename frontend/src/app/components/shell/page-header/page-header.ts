@@ -199,7 +199,7 @@ export class PageHeaderComponent {
     if (this.hasAppHistory()) {
       this.location.back();
     } else {
-      void this.router.navigateByUrl(this.backFallback() ?? this.nav.landingPath());
+      void this.router.navigateByUrl(this.backFallback() || this.nav.landingPath());
     }
   }
 }

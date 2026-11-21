@@ -125,6 +125,17 @@ describe('MobileNavComponent', () => {
     expect(tab(primary, '財務').querySelector('.tab-dot.tab-dot--primary')).not.toBeNull();
   });
 
+  it('a group with one red and one primary item shows a red tab dot', async () => {
+    const el = await render('/portfolio', {
+      values: {
+        accounting: { dot: true, tone: 'red', label: '有逾期的卡費' },
+        'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
+      },
+    });
+    expect(tab(el, '財務').querySelector('.tab-dot')).not.toBeNull();
+    expect(tab(el, '財務').querySelector('.tab-dot--primary')).toBeNull();
+  });
+
   it('the active group shows none', async () => {
     const el = await render('/accounting');
     expect(tab(el, '財務').querySelector('.tab-dot')).toBeNull();
@@ -164,6 +175,6 @@ describe('MobileNavComponent', () => {
     const scss = readFileSync(join(process.cwd(), 'src/app/components/mobile-nav/mobile-nav.scss'), 'utf8');
     expect(scss).toContain('var(--c-red-ink)');
     expect(scss).toContain('var(--app-primary)');
-    expect(scss).not.toMatch(/\.sub-count|\.item-count|\.group-count/);
+    expect(scss).not.toMatch(/\.tab-count|\.sub-count|\.item-count|\.group-count/);
   });
 });
