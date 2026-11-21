@@ -1,9 +1,10 @@
+import { finalize } from 'rxjs';
 import { Component, OnInit, inject, signal, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ItemService } from '../../services/item.service';
 import { injectToasts } from '../../services/toast.service';
-import { retryOnNetwork } from '../accounting/http-errors';
+import { guardedRetry } from '../../services/toast-retry';
 import {
   InventoryTransactionRequest,
   InventoryTransactionResponse,
@@ -57,6 +58,13 @@ export class ItemListComponent implements OnInit {
 
   items = signal<ItemResponse[]>([]);
   history = signal<InventoryTransactionResponse[]>([]);
+  /** Bumped each time the item form or the quick-action dialog opens: a late answer (or 重試) touches a dialog only if it is still the one it was sent from. */
+  private dialogSession = 0;
+  private savingItem = false;
+  private uploading = false;
+  private deleting = false;
+  private actionBusy = false;
+  private readonly adjusting = new Set<number>();
   displayDialog = false;
   displayActionDialog = false;
   displayHistoryDialog = false;
@@ -134,12 +142,14 @@ export class ItemListComponent implements OnInit {
   showDialog() {
     this.newItem = this.resetNewItem();
     this.isEdit = false;
+    this.dialogSession++;
     this.displayDialog = true;
   }
 
   editItem(item: ItemResponse) {
     this.newItem = { ...item };
     this.isEdit = true;
+    this.dialogSession++;
     this.displayDialog = true;
   }
 
@@ -162,51 +172,49 @@ export class ItemListComponent implements OnInit {
       imageUrl: this.newItem.imageUrl || undefined
     };
 
-    this.sendItem(payload, this.isEdit && this.newItem.id ? this.newItem.id : null);
+    this.sendItem(payload, this.isEdit && this.newItem.id ? this.newItem.id : null, this.dialogSession);
   }
 
-  private sendItem(payload: ItemRequest, id: number | null): void {
-    if (id !== null) {
-      this.itemService.update(id, payload).subscribe({
-        next: () => {
-          this.toasts.done('物品已更新');
-          this.displayDialog = false;
-          this.loadItems();
-        },
-        error: err => this.toasts.error(err?.error?.message || '更新失敗', {
-          retry: retryOnNetwork(err, () => this.sendItem(payload, id)),
-        })
-      });
-      return;
-    }
-
-    this.itemService.create(payload).subscribe({
+  private sendItem(payload: ItemRequest, id: number | null, session: number): void {
+    this.savingItem = true;
+    const request = id !== null ? this.itemService.update(id, payload) : this.itemService.create(payload);
+    request.pipe(finalize(() => (this.savingItem = false))).subscribe({
       next: () => {
-        this.toasts.done('物品已建立');
-        this.displayDialog = false;
+        this.toasts.done(id !== null ? '物品已更新' : '物品已建立');
+        if (session === this.dialogSession) this.displayDialog = false;
         this.loadItems();
       },
-      error: err => this.toasts.error(err?.error?.message || '建立失敗', {
-        retry: retryOnNetwork(err, () => this.sendItem(payload, null)),
-      })
+      error: err => {
+        const text = err?.error?.message || (id !== null ? '更新失敗' : '建立失敗');
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.savingItem, () => this.sendItem(payload, id, session)),
+        });
+      }
     });
   }
 
   onUpload(event: { files: File[] }) {
     const file = event.files[0];
     if (this.isEdit && this.newItem.id) {
-      this.sendUpload(this.newItem.id, file);
+      this.sendUpload(this.newItem.id, file, this.dialogSession);
     }
   }
 
-  private sendUpload(id: number, file: File): void {
-    this.itemService.uploadImage(id, file).subscribe({
+  private sendUpload(id: number, file: File, session: number): void {
+    this.uploading = true;
+    this.itemService.uploadImage(id, file).pipe(finalize(() => (this.uploading = false))).subscribe({
       next: updatedItem => {
-        this.newItem.imageUrl = updatedItem.imageUrl;
+        // Only the form the file was chosen in gets the new image; one opened since (another item) is left alone.
+        if (session === this.dialogSession && this.newItem.id === id) this.newItem.imageUrl = updatedItem.imageUrl;
         this.toasts.done('圖片上傳成功');
         this.loadItems();
       },
-      error: err => this.toasts.error('圖片上傳失敗', { retry: retryOnNetwork(err, () => this.sendUpload(id, file)) })
+      error: err => {
+        const text = '圖片上傳失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.uploading, () => this.sendUpload(id, file, session)),
+        });
+      }
     });
   }
 
@@ -218,25 +226,36 @@ export class ItemListComponent implements OnInit {
     if (delta < 0 && item.quantity <= 0) {
       return;
     }
+    this.sendAdjust(item.id, delta);
+  }
 
-    const nextQuantity = Math.max(0, item.quantity + delta);
+  /**
+   * The row moves at once (looked up by id; nothing happens to the list if it is gone). On failure the list is
+   * loaded again, which puts the server's quantity back; 重試 sends the same id and delta again and moves the
+   * row (as it is listed now) by the delta once more.
+   */
+  private sendAdjust(itemId: number, delta: 1 | -1): void {
     this.items.update(rows => rows.map(row =>
-      row.id === item.id ? this.withQuantity(row, nextQuantity) : row,
+      row.id === itemId ? this.withQuantity(row, Math.max(0, row.quantity + delta)) : row,
     ));
 
     const payload: InventoryTransactionRequest = delta > 0
       ? { type: 'RESTOCK', deltaQuantity: 1, operatorName: 'web-ui', reason: '快速補貨 +1' }
       : { type: 'CONSUME', deltaQuantity: 1, operatorName: 'web-ui', reason: '快速使用 -1' };
 
-    this.itemService.createTransaction(item.id, payload).subscribe({
+    this.adjusting.add(itemId);
+    this.itemService.createTransaction(itemId, payload).pipe(finalize(() => this.adjusting.delete(itemId))).subscribe({
       next: result => {
         if (result?.item) {
-          this.items.update(rows => rows.map(row => row.id === item.id ? result.item : row));
+          this.items.update(rows => rows.map(row => row.id === itemId ? result.item : row));
         }
       },
       error: err => {
         this.loadItems();
-        this.toasts.error(err?.error?.message || '操作失敗', { retry: retryOnNetwork(err, () => this.adjustQuantity(item, delta)) });
+        const text = err?.error?.message || '操作失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.adjusting.has(itemId), () => this.sendAdjust(itemId, delta)),
+        });
       },
     });
   }
@@ -248,6 +267,7 @@ export class ItemListComponent implements OnInit {
     this.actionAmount = 1;
     this.actualAmount = item.quantity;
     this.actionReason = '';
+    this.dialogSession++;
     this.displayActionDialog = true;
   }
 
@@ -269,8 +289,9 @@ export class ItemListComponent implements OnInit {
     }
 
     const successMessage = this.actionType === 'RESTOCK' ? '補貨成功' : '盤點修正成功';
+    const session = this.dialogSession;
     this.submitTransaction(this.selectedItem.id, payload, successMessage, () => {
-      this.displayActionDialog = false;
+      if (session === this.dialogSession) this.displayActionDialog = false;
     });
   }
 
@@ -291,12 +312,18 @@ export class ItemListComponent implements OnInit {
   }
 
   private sendDelete(id: number): void {
-    this.itemService.delete(id).subscribe({
+    this.deleting = true;
+    this.itemService.delete(id).pipe(finalize(() => (this.deleting = false))).subscribe({
       next: () => {
         this.toasts.done('物品已刪除');
         this.loadItems();
       },
-      error: err => this.toasts.error('刪除失敗', { retry: retryOnNetwork(err, () => this.sendDelete(id)) })
+      error: err => {
+        const text = '刪除失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.deleting, () => this.sendDelete(id)),
+        });
+      }
     });
   }
 
@@ -340,15 +367,19 @@ export class ItemListComponent implements OnInit {
     successMessage: string,
     callback?: () => void
   ) {
-    this.itemService.createTransaction(itemId, payload).subscribe({
+    this.actionBusy = true;
+    this.itemService.createTransaction(itemId, payload).pipe(finalize(() => (this.actionBusy = false))).subscribe({
       next: () => {
         this.toasts.done(successMessage);
         this.loadItems();
         callback?.();
       },
-      error: err => this.toasts.error(err?.error?.message || '操作失敗', {
-        retry: retryOnNetwork(err, () => this.submitTransaction(itemId, payload, successMessage, callback)),
-      })
+      error: err => {
+        const text = err?.error?.message || '操作失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.actionBusy, () => this.submitTransaction(itemId, payload, successMessage, callback)),
+        });
+      }
     });
   }
 

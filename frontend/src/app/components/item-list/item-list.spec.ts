@@ -176,5 +176,63 @@ describe('ItemListComponent', () => {
       toasts().current()!.action!.run();
       expect(itemServiceMock.createTransaction.mock.calls.map(call => [call[0], call[1].type])).toEqual([[2, 'CONSUME'], [2, 'CONSUME']]);
     });
+
+    it('a 重試 of an image upload that succeeds after another item was opened does not write into that form', () => {
+      itemServiceMock.uploadImage.mockReturnValueOnce(serverError());
+      component.editItem(items[0]);
+      component.onUpload({ files: [new File(['x'], '範例.png')] });
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '圖片上傳失敗' }));
+
+      component.editItem(items[1]);
+      const loads = itemServiceMock.getAllFiltered.mock.calls.length;
+      itemServiceMock.uploadImage.mockReturnValueOnce(of({ ...items[0], imageUrl: '/img/dish.png' }));
+      toasts().current()!.action!.run();
+
+      expect(itemServiceMock.uploadImage.mock.calls.map(call => call[0])).toEqual([1, 1]);
+      expect(component.newItem.id).toBe(2);
+      expect(component.newItem.imageUrl).toBeUndefined();
+      expect(itemServiceMock.getAllFiltered).toHaveBeenCalledTimes(loads + 1);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'done', text: '圖片上傳成功' }));
+    });
+
+    it('a 重試 of a save that succeeds after the form was reopened leaves the open form alone', () => {
+      itemServiceMock.update.mockReturnValueOnce(serverError());
+      component.editItem(items[0]);
+      component.saveItem();
+      component.editItem(items[1]);
+      itemServiceMock.update.mockReturnValueOnce(of({}));
+      toasts().current()!.action!.run();
+      expect(component.displayDialog).toBe(true);
+      expect(component.newItem.id).toBe(2);
+      expect(toasts().current()?.text).toBe('物品已更新');
+    });
+
+    it('adjustQuantity 重試 re-sends the same id and delta once, moving the row as listed now (looked up by id)', () => {
+      itemServiceMock.createTransaction.mockReturnValueOnce(serverError());
+      component.items.set([{ ...items[1], quantity: 5 }]);
+      component.adjustQuantity(component.items()[0], -1);
+      // The failure reloads the list, which puts the server's quantity back (a different row object).
+      const quantityOf = () => component.items().find(row => row.id === 2)?.quantity;
+      expect(quantityOf()).toBe(5);
+      itemServiceMock.createTransaction.mockClear();
+
+      toasts().current()!.action!.run();
+      expect(itemServiceMock.createTransaction).toHaveBeenCalledTimes(1);
+      expect(itemServiceMock.createTransaction.mock.calls[0][0]).toBe(2);
+      expect(itemServiceMock.createTransaction.mock.calls[0][1]).toEqual(expect.objectContaining({ type: 'CONSUME', deltaQuantity: 1 }));
+      expect(quantityOf()).toBe(4);
+    });
+
+    it('adjustQuantity 重試 for a row that is gone sends the request and touches no row', () => {
+      itemServiceMock.createTransaction.mockReturnValueOnce(serverError());
+      component.adjustQuantity(items[1], -1);
+      itemServiceMock.getAllFiltered.mockReturnValue(of([items[0]]));
+      component.loadItems();
+      itemServiceMock.createTransaction.mockClear();
+
+      expect(() => toasts().current()!.action!.run()).not.toThrow();
+      expect(itemServiceMock.createTransaction).toHaveBeenCalledTimes(1);
+      expect(component.items().map(row => row.id)).toEqual([1]);
+    });
   });
 });

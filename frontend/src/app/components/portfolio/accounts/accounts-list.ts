@@ -18,7 +18,7 @@ import {
 } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { injectToasts } from '../../../services/toast.service';
-import { retryOnNetwork } from '../../accounting/http-errors';
+import { guardedRetry } from '../../../services/toast-retry';
 import { CashFlowFormComponent } from '../cash-flow-form/cash-flow-form';
 import { TagComponent } from '../../ui/tag/tag';
 import { abbrInk } from '../dashboard/dashboard-math';
@@ -102,6 +102,8 @@ export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
   readonly accountsList = signal<AccountsList>(EMPTY_ACCOUNTS_LIST);
   readonly accounts = signal<BrokerAccount[]>([]);
   readonly loading = signal<boolean>(false);
+  /** Bumped each time the create dialog opens or closes; a late answer closes it only if it is still the one it was sent from. */
+  private dialogSession = 0;
   readonly createDialogVisible = signal<boolean>(false);
   readonly creating = signal<boolean>(false);
   readonly cashFormVisible = signal<boolean>(false);
@@ -178,10 +180,12 @@ export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
       opening_balance: '0',
       opening_date: this.todayIso(),
     });
+    this.dialogSession++;
     this.createDialogVisible.set(true);
   }
 
   closeCreateDialog(): void {
+    this.dialogSession++;
     this.createDialogVisible.set(false);
   }
 
@@ -201,21 +205,24 @@ export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
       is_active: true,
     };
 
-    this.sendCreate(body);
+    this.sendCreate(body, this.dialogSession);
   }
 
-  private sendCreate(body: CreateBrokerAccount): void {
+  private sendCreate(body: CreateBrokerAccount, session: number): void {
     this.creating.set(true);
     this.portfolioService.createAccount(body).subscribe({
       next: () => {
         this.creating.set(false);
-        this.createDialogVisible.set(false);
+        if (session === this.dialogSession) this.createDialogVisible.set(false);
         this.toasts.done('帳戶已建立');
         this.fetchAccounts();
       },
       error: err => {
         this.creating.set(false);
-        this.toasts.error('新增帳戶失敗', { retry: retryOnNetwork(err, () => this.sendCreate(body)) });
+        const text = '新增帳戶失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.creating(), () => this.sendCreate(body, session)),
+        });
       },
     });
   }

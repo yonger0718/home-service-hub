@@ -11,7 +11,7 @@ import { SelectModule } from 'primeng/select';
 import { BROKER_LABELS, Broker, BrokerCashBalance, BrokerCashFlow } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { injectToasts, toastText } from '../../../services/toast.service';
-import { retryOnNetwork } from '../../accounting/http-errors';
+import { guardedRetry } from '../../../services/toast-retry';
 
 const TYPE_OPTIONS: { label: string; value: BrokerCashFlow['type'] }[] = [
   { label: '存入 Deposit', value: 'deposit' },
@@ -108,7 +108,16 @@ const BROKER_CURRENCY_DEFAULT: Record<Broker, string> = {
   `],
 })
 export class CashFlowFormComponent {
-  @Input() visible = false;
+  private shown = false;
+  /** Bumped each time the dialog opens or closes; a late answer resets and closes it only if it is still the one it was sent from. */
+  private session = 0;
+  @Input() set visible(value: boolean) {
+    if (value !== this.shown) this.session++;
+    this.shown = value;
+  }
+  get visible(): boolean {
+    return this.shown;
+  }
   @Input() initialBroker: Broker | null = null;
   @Output() visibleChange = new EventEmitter<boolean>();
   @Output() created = new EventEmitter<BrokerCashBalance>();
@@ -170,29 +179,34 @@ export class CashFlowFormComponent {
       currency: raw.currency,
       note: raw.note ?? null,
     };
-    this.send(payload);
+    this.send(payload, this.session);
   }
 
-  private send(payload: BrokerCashFlow): void {
+  private send(payload: BrokerCashFlow, session: number): void {
     this.submitting.set(true);
     this.portfolioService.createBrokerCashFlow(payload).subscribe({
       next: result => {
         this.submitting.set(false);
         this.toasts.done(toastText('已新增', `${BROKER_LABELS[payload.broker]} ${result.currency}`));
         this.created.emit(result);
-        this.form.reset({
-          broker: payload.broker,
-          type: 'deposit',
-          currency: payload.currency,
-          amount: '',
-          date: new Date(),
-          note: null,
-        });
-        this.onVisibleChange(false);
+        if (session === this.session) {
+          this.form.reset({
+            broker: payload.broker,
+            type: 'deposit',
+            currency: payload.currency,
+            amount: '',
+            date: new Date(),
+            note: null,
+          });
+          this.onVisibleChange(false);
+        }
       },
       error: err => {
         this.submitting.set(false);
-        this.toasts.error(err?.error?.detail ?? '新增失敗', { retry: retryOnNetwork(err, () => this.send(payload)) });
+        const text = err?.error?.detail ?? '新增失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.submitting(), () => this.send(payload, session)),
+        });
       },
     });
   }

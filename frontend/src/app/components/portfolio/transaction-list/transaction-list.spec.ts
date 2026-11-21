@@ -823,6 +823,41 @@ describe('PortfolioTransactionListComponent', () => {
       expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'error', text: '更新失敗，請檢查欄位', action: null }));
     });
 
+    it('a 重試 that succeeds after the dialog was reopened leaves the open dialog and its form alone, but reloads and shows 完成', () => {
+      const fixture = create();
+      const component = fixture.componentInstance;
+      portfolioService['createTransaction'].mockReturnValueOnce(serverError());
+      component.openNew();
+      component.newTransaction.symbol = '2330';
+      component.saveTransaction();
+      component.showDialog.set(false);
+      component.openNew();
+      component.newTransaction.symbol = '0050';
+      const lists = listCalls.length;
+
+      toasts().current()!.action!.run();
+      expect(component.showDialog()).toBe(true);
+      expect(component.newTransaction.symbol).toBe('0050');
+      expect(listCalls.length).toBeGreaterThan(lists);
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'done', text: '紀錄已新增' }));
+    });
+
+    it('a retried delete answered 404 counts as done: reload and 完成', () => {
+      const fixture = create();
+      const component = fixture.componentInstance;
+      vi.spyOn(fixture.debugElement.injector.get(ConfirmationService), 'confirm')
+        .mockImplementation(options => { options.accept?.(); return fixture.debugElement.injector.get(ConfirmationService); });
+      portfolioService['deleteTransaction']
+        .mockReturnValueOnce(serverError())
+        .mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 404 })));
+      component.deleteTransaction(buy);
+      const lists = listCalls.length;
+
+      toasts().current()!.action!.run();
+      expect(toasts().current()).toEqual(expect.objectContaining({ kind: 'done', text: '紀錄已刪除' }));
+      expect(listCalls.length).toBeGreaterThan(lists);
+    });
+
     it('a delete answered 500 shows 重試 that deletes the same row once', () => {
       const fixture = create();
       const component = fixture.componentInstance;

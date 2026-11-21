@@ -13,7 +13,7 @@ import {
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
-import { BehaviorSubject, Observable, catchError, debounceTime, distinctUntilChanged, filter, map, merge, of, switchMap } from 'rxjs';
+import { BehaviorSubject, Observable, catchError, debounceTime, distinctUntilChanged, filter, finalize, map, merge, of, switchMap } from 'rxjs';
 
 import { ConfirmationService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
@@ -45,7 +45,7 @@ import {
 } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { injectToasts, toastText } from '../../../services/toast.service';
-import { retryOnNetwork } from '../../accounting/http-errors';
+import { guardedRetry } from '../../../services/toast-retry';
 import { AppearanceService } from '../../../services/appearance.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { formatMoney } from '../../ui/format';
@@ -174,6 +174,9 @@ export class PortfolioAccountDetailComponent implements OnInit {
   readonly selectedTypes = signal<CashTransactionType[]>([]);
   readonly mergeRelated = signal<boolean>(false);
   readonly expandedTransactionIds = signal<Set<number>>(new Set<number>());
+  /** Bumped each time a dialog opens or closes: a late answer (or 重試) touches a dialog only if it is still the one it was sent from. */
+  private dialogSession = 0;
+  private deleting = false;
   readonly editDialogVisible = signal<boolean>(false);
   readonly transactionDialogVisible = signal<boolean>(false);
   readonly savingAccount = signal<boolean>(false);
@@ -429,10 +432,12 @@ export class PortfolioAccountDetailComponent implements OnInit {
       is_active: account.is_active,
     });
     this.editAccountId = account.id;
+    this.dialogSession++;
     this.editDialogVisible.set(true);
   }
 
   closeEditDialog(): void {
+    this.dialogSession++;
     this.editDialogVisible.set(false);
     this.editAccountId = null;
   }
@@ -456,10 +461,10 @@ export class PortfolioAccountDetailComponent implements OnInit {
       is_active: raw.is_active,
     };
 
-    this.sendEdit(accountId, patch);
+    this.sendEdit(accountId, patch, this.dialogSession);
   }
 
-  private sendEdit(accountId: number, patch: PatchBrokerAccount): void {
+  private sendEdit(accountId: number, patch: PatchBrokerAccount, session: number): void {
     this.savingAccount.set(true);
     this.portfolioService.patchAccount(accountId, patch).subscribe({
       next: account => {
@@ -467,7 +472,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
         // Switched away while saving: the write landed on its own account; leave the one now shown alone.
         if (account.id === this.effectiveId()) {
           this.account.set(account);
-          this.closeEditDialog();
+          if (session === this.dialogSession) this.closeEditDialog();
         }
         this.toasts.done('帳戶資料已更新');
         if (!this.embedded()) this.loadBalanceHistory();
@@ -475,7 +480,10 @@ export class PortfolioAccountDetailComponent implements OnInit {
       },
       error: err => {
         this.savingAccount.set(false);
-        this.toasts.error('帳戶更新失敗', { retry: retryOnNetwork(err, () => this.sendEdit(accountId, patch)) });
+        const text = '帳戶更新失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.savingAccount(), () => this.sendEdit(accountId, patch, session)),
+        });
       },
     });
   }
@@ -484,6 +492,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
     if (!this.accountReady()) return;
     this.resetTransactionForm();
     this.transactionAccountId = this.effectiveId();
+    this.dialogSession++;
     this.transactionDialogVisible.set(true);
   }
 
@@ -508,10 +517,12 @@ export class PortfolioAccountDetailComponent implements OnInit {
       note: '補登未記錄入金',
     });
     this.transactionAccountId = this.effectiveId();
+    this.dialogSession++;
     this.transactionDialogVisible.set(true);
   }
 
   closeTransactionDialog(): void {
+    this.dialogSession++;
     this.transactionDialogVisible.set(false);
     this.transactionAccountId = null;
   }
@@ -538,21 +549,24 @@ export class PortfolioAccountDetailComponent implements OnInit {
       note: note || null,
     };
 
-    this.sendTransaction(accountId, body);
+    this.sendTransaction(accountId, body, this.dialogSession);
   }
 
-  private sendTransaction(accountId: number, body: CreateCashTransaction): void {
+  private sendTransaction(accountId: number, body: CreateCashTransaction, session: number): void {
     this.savingTransaction.set(true);
     this.portfolioService.createCashTransaction(accountId, body).subscribe({
       next: () => {
         this.savingTransaction.set(false);
-        if (accountId === this.effectiveId()) this.closeTransactionDialog();
+        if (accountId === this.effectiveId() && session === this.dialogSession) this.closeTransactionDialog();
         this.toasts.done('交易已建立');
         this.ledgerWritten();
       },
       error: err => {
         this.savingTransaction.set(false);
-        this.toasts.error('新增交易失敗', { retry: retryOnNetwork(err, () => this.sendTransaction(accountId, body)) });
+        const text = '新增交易失敗';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.savingTransaction(), () => this.sendTransaction(accountId, body, session)),
+        });
       },
     });
   }
@@ -589,14 +603,16 @@ export class PortfolioAccountDetailComponent implements OnInit {
   }
 
   private sendDelete(txn: CashTransaction, accountId: number): void {
-    this.portfolioService.deleteCashTransaction(accountId, txn.id).subscribe({
+    this.deleting = true;
+    this.portfolioService.deleteCashTransaction(accountId, txn.id).pipe(finalize(() => (this.deleting = false))).subscribe({
       next: () => {
         this.ledgerWritten();
         this.toasts.done('已刪除');
       },
       error: error => {
-        this.toasts.error(toastText('刪除失敗', this.deleteErrorMessage(error)), {
-          retry: retryOnNetwork(error, () => this.sendDelete(txn, accountId)),
+        const text = toastText('刪除失敗', this.deleteErrorMessage(error));
+        this.toasts.error(text, {
+          retry: guardedRetry(error, this.toasts, text, () => this.deleting, () => this.sendDelete(txn, accountId)),
         });
       },
     });

@@ -237,7 +237,7 @@ describe('ToastOutletComponent', () => {
   it('no PrimeNG toast remains', () => {
     const root = join(process.cwd(), 'src/app');
     const sources = (readdirSync(root, { recursive: true }) as string[])
-      .filter(file => /\.(ts|html)$/.test(file) && !file.endsWith('.spec.ts'));
+      .filter(file => /\.(ts|html|scss)$/.test(file) && !file.endsWith('.spec.ts'));
     expect(sources.length).toBeGreaterThan(100);
     const hits = sources.filter(file => /\bp-toast\b|primeng\/toast|MessageService/.test(readFileSync(join(root, file), 'utf8')));
     expect(hits).toEqual([]);

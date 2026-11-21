@@ -176,6 +176,36 @@ describe('PortfolioAccountsListComponent', () => {
     expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '新增帳戶失敗', action: null }));
   });
 
+  it('a create 重試 pressed while a fresh create is in flight sends nothing and keeps the toast; after it closed and reopened the dialog stays', () => {
+    const { fixture } = render();
+    const component = fixture.componentInstance;
+    const toasts = TestBed.inject(ToastService);
+    const posts = () => httpMock.match(req => req.method === 'POST' && req.url === '/api/portfolio/accounts/');
+    const fill = () => component.createForm.patchValue({ broker: 'sinopac', nickname: '永豐台幣', currency: 'TWD', opening_balance: '5000', opening_date: '2026-06-01' });
+
+    component.openCreateDialog();
+    fill();
+    component.submitCreate();
+    posts()[0].flush({}, { status: 500, statusText: 'Server Error' });
+    const retry = toasts.current()!.action!;
+
+    component.submitCreate();
+    const fresh = posts();
+    expect(fresh).toHaveLength(1);
+    retry.run();
+    expect(posts()).toHaveLength(0);
+    expect(toasts.current()?.action?.label).toBe('重試');
+
+    fresh[0].flush({}, { status: 500, statusText: 'Server Error' });
+    component.closeCreateDialog();
+    component.openCreateDialog();
+    toasts.current()!.action!.run();
+    posts()[0].flush({});
+    expect(component.createDialogVisible()).toBe(true);
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '帳戶已建立' }));
+    httpMock.match(req => req.url === '/api/portfolio/accounts/' && req.method === 'GET');
+  });
+
   it('shows the broker · currency line, with the opening balance on the selected card only', () => {
     const { el } = render(1);
     const metas = Array.from(el.querySelectorAll('.acct-card-meta')).map(meta => meta.textContent?.trim());

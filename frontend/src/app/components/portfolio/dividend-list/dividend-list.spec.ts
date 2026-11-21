@@ -1293,6 +1293,70 @@ describe('Dividend filter-wide summary', () => {
         fixture.destroy();
       });
 
+      it('a receipt 重試 that succeeds after another row\'s form was opened leaves that form open and reloads', () => {
+        service['confirmDividendReceipt']
+          .mockReturnValueOnce(serverError())
+          .mockReturnValueOnce(of(tw));
+        const fixture = rendered([tw, due]);
+        open(fixture, 21);
+        fill(fixture, '2026-11-18', '7');
+        formButton(fixture, '確認已收到並入帳').click();
+        fixture.detectChanges();
+        expect(forms(fixture)).toHaveLength(0);
+        open(fixture, 13);
+        expect(fixture.componentInstance.openReceiptId()).toBe(13);
+        const loads = listCalls.length;
+
+        shown()!.action!.run();
+        fixture.detectChanges();
+        expect(fixture.componentInstance.openReceiptId()).toBe(13);
+        expect(forms(fixture)).toHaveLength(1);
+        expect(listCalls.length).toBeGreaterThan(loads);
+        // A confirmed receipt has no 完成 toast of its own; the 失敗 toast is gone.
+        expect(shown()).toBeNull();
+        fixture.destroy();
+      });
+
+      it('a receipt 重試 pressed while a fresh confirmation is in flight sends nothing and keeps the toast', () => {
+        const pendingAnswer = new Subject<Dividend>();
+        service['confirmDividendReceipt']
+          .mockReturnValueOnce(serverError())
+          .mockReturnValueOnce(pendingAnswer);
+        const fixture = rendered([tw]);
+        open(fixture, 21);
+        fill(fixture, '2026-11-18', '7');
+        formButton(fixture, '確認已收到並入帳').click();
+        respond(listCalls[1], { items: [tw], total: 1 });
+        respond(summaryCalls[1], { items: [tw], total: 1 });
+        fixture.detectChanges();
+        const retry = shown()!.action!;
+        open(fixture, 21);
+        fill(fixture, '2026-11-18', '7');
+        formButton(fixture, '確認已收到並入帳').click();
+        expect(service['confirmDividendReceipt']).toHaveBeenCalledTimes(2);
+
+        retry.run();
+        expect(service['confirmDividendReceipt']).toHaveBeenCalledTimes(2);
+        expect(shown()?.action?.label).toBe('重試');
+        fixture.destroy();
+      });
+
+      it('a retried delete answered 404 counts as done: reload and 完成', () => {
+        service['deleteDividend'] = vi.fn()
+          .mockReturnValueOnce(serverError())
+          .mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 404 })));
+        const fixture = rendered([due]);
+        vi.spyOn(fixture.debugElement.injector.get(ConfirmationService), 'confirm')
+          .mockImplementation(options => { options.accept?.(); return fixture.debugElement.injector.get(ConfirmationService); });
+        fixture.componentInstance.deleteDividend(due);
+        const loads = listCalls.length;
+
+        shown()!.action!.run();
+        expect(shown()).toEqual(expect.objectContaining({ kind: 'done', text: '紀錄已刪除' }));
+        expect(listCalls.length).toBeGreaterThan(loads);
+        fixture.destroy();
+      });
+
       it('a create answered 500 shows 重試 that re-sends the captured record after the dialog was closed', () => {
         service['createDividend'].mockReturnValueOnce(serverError());
         const fixture = rendered([tw]);

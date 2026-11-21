@@ -1,10 +1,11 @@
 import { Component, ElementRef, Injector, OnDestroy, OnInit, afterNextRender, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { Subscription, catchError, of } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
+import { Subscription, catchError, finalize, of } from 'rxjs';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { injectToasts, toastText } from '../../../services/toast.service';
-import { retryOnNetwork } from '../../accounting/http-errors';
+import { guardedRetry } from '../../../services/toast-retry';
 import { BrokerAccount, Dividend, DividendQuery, ExDividendRecord } from '../../../models/portfolio.model';
 import { DialogModule } from 'primeng/dialog';
 import { FormsModule } from '@angular/forms';
@@ -199,6 +200,11 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   });
 
   /** The row whose inline receipt form is open; one at a time. */
+  /** Bumped each time an inline form or the edit dialog opens or closes: a late answer (or 重試) acts on one only if it is still the one it was sent from. */
+  private formSession = 0;
+  private dialogSession = 0;
+  private deleting = false;
+  private saving = false;
   readonly openReceiptId = signal<number | null>(null);
   /** The open row as listed now (its latest revision); null when it left the list or is no longer pending, so no form renders. */
   readonly receiptRow = computed(() => {
@@ -215,6 +221,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.closeDeductions();
     this.receiptDate.set('');
     this.receiptAccountId.set(null);
+    this.formSession++;
     this.openReceiptId.set(row.id);
     if (this.accountsFailed) this.loadAccounts();
     this.focusAfterRender('.receipt-form input[type="date"]');
@@ -222,6 +229,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
 
   /** Closes the form and clears its fields (also on every filter, sort, status or page change). */
   closeReceipt(): void {
+    this.formSession++;
     this.openReceiptId.set(null);
     this.receiptDate.set('');
     this.receiptAccountId.set(null);
@@ -251,19 +259,27 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       return;
     }
     if (!receiptDate || accountId === null || this.receiptBusy()) return;
-    this.sendReceipt(row, { receipt_date: receiptDate, account_id: accountId, revision: row.revision ?? 1 });
+    this.sendReceipt(row, { receipt_date: receiptDate, account_id: accountId, revision: row.revision ?? 1 }, this.formSession);
   }
 
-  private sendReceipt(row: Dividend, body: { receipt_date: string; account_id: number; revision: number }): void {
+  private sendReceipt(row: Dividend, body: { receipt_date: string; account_id: number; revision: number }, session: number): void {
     this.receiptBusy.set(true);
-    const settle = () => { this.receiptBusy.set(false); this.closeReceipt(); this.focusRowButton(row.id); this.reload(); };
+    const settle = () => {
+      this.receiptBusy.set(false);
+      if (session === this.formSession) {
+        this.closeReceipt();
+        this.focusRowButton(row.id);
+      }
+      this.reload();
+    };
     this.receiptSub?.unsubscribe();
     this.receiptSub = this.portfolioService.confirmDividendReceipt(row.id, body).subscribe({
       next: () => settle(),
       error: err => {
         settle();
-        this.toasts.error(toastText('收款確認未完成', serverReason(err)), {
-          retry: retryOnNetwork(err, () => this.sendReceipt(row, body)),
+        const text = toastText('收款確認未完成', serverReason(err));
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.receiptBusy() || this.deductionsBusy(), () => this.sendReceipt(row, body, session)),
         });
       },
     });
@@ -291,11 +307,13 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.deductionsFee.set(String(Number(row.fee ?? 0)));
     this.deductionsTax.set(String(Number(row.tax ?? 0)));
     this.deductionsRevision = row.revision ?? 1;
+    this.formSession++;
     this.openDeductionsId.set(row.id);
     this.focusAfterRender('.deductions-form input[aria-label="匯費"]');
   }
 
   closeDeductions(): void {
+    this.formSession++;
     this.openDeductionsId.set(null);
     this.deductionsFee.set('');
     this.deductionsTax.set('');
@@ -322,19 +340,27 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     const fee = amountInput(this.deductionsFee());
     const tax = amountInput(this.deductionsTax());
     if (fee === null || tax === null || this.deductionsBusy()) return;
-    this.sendDeductions(row, { fee, tax, revision: this.deductionsRevision });
+    this.sendDeductions(row, { fee, tax, revision: this.deductionsRevision }, this.formSession);
   }
 
-  private sendDeductions(row: Dividend, body: { fee: number; tax: number; revision: number }): void {
+  private sendDeductions(row: Dividend, body: { fee: number; tax: number; revision: number }, session: number): void {
     this.deductionsBusy.set(true);
-    const settle = () => { this.deductionsBusy.set(false); this.closeDeductions(); this.focusRowAction(row.id); this.reload(); };
+    const settle = () => {
+      this.deductionsBusy.set(false);
+      if (session === this.formSession) {
+        this.closeDeductions();
+        this.focusRowAction(row.id);
+      }
+      this.reload();
+    };
     this.deductionsSub?.unsubscribe();
     this.deductionsSub = this.portfolioService.updateDividendDeductions(row.id, body).subscribe({
       next: () => settle(),
       error: err => {
         settle();
-        this.toasts.error(toastText('扣款更新未完成', serverReason(err)), {
-          retry: retryOnNetwork(err, () => this.sendDeductions(row, body)),
+        const text = toastText('扣款更新未完成', serverReason(err));
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.receiptBusy() || this.deductionsBusy(), () => this.sendDeductions(row, body, session)),
         });
       },
     });
@@ -656,12 +682,14 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   openNew() {
     this.isEdit.set(false);
     this.newDividend = { amount: 0, fee: 0, tax: 0 };
+    this.dialogSession++;
     this.showDialog.set(true);
   }
 
   editDividend(dividend: Dividend) {
     this.isEdit.set(true);
     this.newDividend = { ...dividend, ex_dividend_date: dividend.ex_dividend_date ? new Date(dividend.ex_dividend_date) : undefined };
+    this.dialogSession++;
     this.showDialog.set(true);
   }
 
@@ -674,45 +702,48 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     });
   }
 
-  private sendDelete(dividend: Dividend): void {
-    this.portfolioService.deleteDividend(dividend.id).subscribe({
-      next: () => {
-        this.toasts.done('紀錄已刪除');
-        this.reload();
-      },
+  private sendDelete(dividend: Dividend, retried = false): void {
+    this.deleting = true;
+    this.portfolioService.deleteDividend(dividend.id).pipe(finalize(() => (this.deleting = false))).subscribe({
+      next: () => this.deleted(),
       error: err => {
-        this.toasts.error('刪除失敗，請稍後再試', { retry: retryOnNetwork(err, () => this.sendDelete(dividend)) });
+        // A retried delete answered 404: the first attempt did commit, so the record is gone.
+        if (retried && err instanceof HttpErrorResponse && err.status === 404) {
+          this.deleted();
+          return;
+        }
+        const text = '刪除失敗，請稍後再試';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.deleting, () => this.sendDelete(dividend, true)),
+        });
       },
     });
   }
 
-  saveDividend() {
-    this.sendSave({ ...this.newDividend }, this.isEdit() && this.newDividend.id ? this.newDividend.id : null);
+  private deleted(): void {
+    this.toasts.done('紀錄已刪除');
+    this.reload();
   }
 
-  private sendSave(payload: Partial<Dividend>, id: number | null): void {
-    if (id !== null) {
-      this.portfolioService.updateDividend(id, payload).subscribe({
-        next: () => {
-          this.showDialog.set(false);
-          this.reload();
-          this.toasts.done('紀錄已更新');
-        },
-        error: err => {
-          this.toasts.error('更新失敗，請檢查欄位', { retry: retryOnNetwork(err, () => this.sendSave(payload, id)) });
-        },
-      });
-    } else {
-      this.portfolioService.createDividend(payload).subscribe({
-        next: () => {
-          this.showDialog.set(false);
-          this.reload();
-          this.toasts.done('紀錄已新增');
-        },
-        error: err => {
-          this.toasts.error('新增失敗，請檢查欄位', { retry: retryOnNetwork(err, () => this.sendSave(payload, null)) });
-        },
-      });
-    }
+  saveDividend() {
+    this.sendSave({ ...this.newDividend }, this.isEdit() && this.newDividend.id ? this.newDividend.id : null, this.dialogSession);
+  }
+
+  private sendSave(payload: Partial<Dividend>, id: number | null, session: number): void {
+    this.saving = true;
+    const request = id !== null ? this.portfolioService.updateDividend(id, payload) : this.portfolioService.createDividend(payload);
+    request.pipe(finalize(() => (this.saving = false))).subscribe({
+      next: () => {
+        if (session === this.dialogSession) this.showDialog.set(false);
+        this.reload();
+        this.toasts.done(id !== null ? '紀錄已更新' : '紀錄已新增');
+      },
+      error: err => {
+        const text = id !== null ? '更新失敗，請檢查欄位' : '新增失敗，請檢查欄位';
+        this.toasts.error(text, {
+          retry: guardedRetry(err, this.toasts, text, () => this.saving, () => this.sendSave(payload, id, session)),
+        });
+      },
+    });
   }
 }
