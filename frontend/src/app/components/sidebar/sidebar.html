@@ -38,6 +38,35 @@
         }
       </a>
     }
+    @let notif = nav.notifications();
+    @let notifCurrent = nav.activeItem().id === 'notifications';
+    <a
+      class="side-item side-notif"
+      [class.active]="notifCurrent"
+      routerLink="/notifications"
+      [attr.aria-label]="notif.label"
+      [attr.aria-current]="notifCurrent ? 'page' : null"
+    >
+      <span class="item-icon">
+        <i class="pi pi-bell" aria-hidden="true"></i>
+        @if (!expanded() && notif.total > 0) {
+          <span class="notif-count item-pill" [class.notif-count--red]="notif.tone === 'red'" aria-hidden="true">{{ notif.total }}</span>
+        }
+      </span>
+      @if (expanded()) {
+        <span class="item-label">通知</span>
+        @if (notif.total > 0) {
+          <span class="notif-count" [class.notif-count--red]="notif.tone === 'red'" aria-hidden="true">{{ notif.total }}</span>
+        }
+      } @else {
+        <span class="side-tip" aria-hidden="true">
+          通知
+          @if (notif.total > 0) {
+            <small>{{ notifDetail() }}</small>
+          }
+        </span>
+      }
+    </a>
     @for (group of nav.visibleGroups(); track group.id) {
       @let active = nav.activeGroup().id === group.id;
       @let folded = expanded() && nav.isFolded(group.id);

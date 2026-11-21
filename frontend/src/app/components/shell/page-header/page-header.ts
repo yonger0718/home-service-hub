@@ -77,6 +77,8 @@ export class PageHeaderComponent {
 
   protected readonly heading = computed(() => this.title() ?? this.nav.activeItem().title);
   protected readonly phone = computed(() => this.layout.mode() === 'phone');
+  /** The 通知 bell: phones only, on every page but 通知 itself (it would link to the page being viewed). */
+  protected readonly bell = computed(() => this.phone() && this.nav.activeItem().id !== 'notifications');
   /** No gear on 設定 itself: it would link to the page being viewed. */
   protected readonly gear = computed(
     () => this.phone() && this.nav.tabBar().settingsInHeader && this.nav.activeItem().id !== 'settings',

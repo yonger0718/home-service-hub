@@ -194,6 +194,14 @@
   background: var(--app-primary);
 }
 
+/* The rail's pill overlays the icon's top-right corner (the icon box is positioned; see `.item-icon`). */
+.item-pill {
+  box-shadow: 0 0 0 2px var(--app-surface);
+  position: absolute;
+  right: 2px;
+  top: 2px;
+}
+
 .group-hint {
   font-size: var(--fs-micro);
   font-weight: var(--fw-semibold);

@@ -11,7 +11,9 @@
     <button type="button" class="month-prev" aria-label="上個月" (click)="moveMonth(-1)">‹</button>
     <b class="month-label">{{ monthText() }}</b>
     <button type="button" class="month-next" aria-label="下個月" (click)="moveMonth(1)">›</button>
-    <button type="button" class="bell" [attr.aria-label]="'提醒中心，' + reminderCount() + ' 項'" (click)="openReminders()"><i class="pi pi-bell" aria-hidden="true"></i>@if (reminderCount() > 0) {<span class="bell-count" aria-hidden="true">{{ reminderCount() }}</span>}</button>
+    @if (!isPhone()) {
+      <a class="bell" routerLink="/notifications" aria-label="通知"><i class="pi pi-bell" aria-hidden="true"></i></a>
+    }
     @if (wideCalendar()) {
       <dl class="monthbar-figures" aria-label="本月摘要" [attr.aria-busy]="summaryLoading() ? 'true' : null">
         @if (summaryError()) {

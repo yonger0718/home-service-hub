@@ -69,6 +69,7 @@ h1 {
 }
 
 .header-gear,
+.header-bell,
 .header-more {
   align-items: center;
   background: var(--app-surface);
@@ -86,6 +87,18 @@ h1 {
     box-shadow: 0 0 0 4px var(--app-focus-ring);
     outline: none;
   }
+}
+
+.header-bell {
+  position: relative;
+}
+
+/* The pill overlays the bell's top-right; the 44 px circle is the tap target, the pill adds none. */
+.header-bell-count {
+  box-shadow: 0 0 0 2px var(--app-bg);
+  position: absolute;
+  right: -4px;
+  top: -4px;
 }
 
 .header-more {
