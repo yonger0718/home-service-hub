@@ -4,7 +4,7 @@
   <div class="notif-chips" role="radiogroup" aria-label="來源">
     @for (option of chips; track option.key) {
       <button type="button" role="radio" [attr.aria-checked]="chip() === option.key" [attr.aria-label]="chipName(option)" (click)="pick(option.key)">
-        {{ option.label }}<span class="chip-count" aria-hidden="true">{{ counts()[option.key] }}</span>
+        {{ option.label }}@if (center.loaded()) {<span class="chip-count" aria-hidden="true">{{ counts()[option.key] }}</span>}
       </button>
     }
   </div>

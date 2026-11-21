@@ -253,7 +253,9 @@ describe('phone route matrix (390 px)', () => {
         expect(root.querySelector('app-sub-nav')).not.toBeNull();
         expect(root.querySelector('app-sub-nav')?.querySelector('a.active') ?? null).toBeNull();
       } else if (url === '/notifications') {
-        // 通知 is a pushed screen too: ‹, no bell (it would link to itself), no tab highlighted.
+        // 通知 is a pushed screen too: ‹, no bell (it would link to itself), no tab highlighted. The gear stays, as on
+        // every list-level page (neither the brief nor the plan rulings take it away).
+        expect(root.querySelector('a[aria-label="設定"][href="/settings"]')).not.toBeNull();
         expect(root.querySelector('button.page-back[aria-label="返回"]')).not.toBeNull();
         expect(root.querySelector('a.header-bell')).toBeNull();
         expect(root.querySelector('app-sub-nav a.active') ?? null).toBeNull();

@@ -58,6 +58,9 @@ export class NotificationsComponent {
   /** The counted tiers that have a task under the chosen chip, rows in the service's order. */
   protected readonly sections: Signal<{ tier: NotifTier; label: string; tasks: NotifTask[] }[]> =
     computed(() => {
+      if (!this.center.loaded()) {
+        return [];
+      }
       const chip = this.chip();
       const tasks = this.center.tasks().filter((t) => chip === 'all' || t.source === chip);
       return COUNTED_TIERS.map((tier) => ({
@@ -69,10 +72,14 @@ export class NotificationsComponent {
 
   /** 全部 has work but the chosen source has none. */
   protected readonly chipEmpty = computed(
-    () => this.chip() !== 'all' && this.counts()[this.chip()] === 0 && this.counts().all > 0,
+    () => this.center.loaded() && this.chip() !== 'all' && this.counts()[this.chip()] === 0 && this.counts().all > 0,
   );
 
-  protected readonly subtitle = computed(() => {
+  protected readonly subtitle = computed<string | null>(() => {
+    // `summary()` is NO_TASKS until the first round settles: no subtitle rather than a false all-clear.
+    if (!this.center.loaded()) {
+      return null;
+    }
     const { total, overdue } = this.center.summary();
     if (total === 0) {
       return '沒有要處理的事';
@@ -88,7 +95,9 @@ export class NotificationsComponent {
   });
 
   /** 追蹤中 is a ledger thing: hidden under 投資, and without rows. */
-  protected readonly trackingRows = computed(() => (this.chip() === 'portfolio' ? [] : this.center.trackingRows()));
+  protected readonly trackingRows = computed(() =>
+    this.center.loaded() && this.chip() !== 'portfolio' ? this.center.trackingRows() : [],
+  );
   protected readonly trackingSum = computed(() =>
     this.trackingRows()
       .map((row) => `${TRACKING_UNIT[row.id].name} ${row.count} ${TRACKING_UNIT[row.id].unit}`)
@@ -104,7 +113,7 @@ export class NotificationsComponent {
   }
 
   protected chipName(option: ChipOption): string {
-    return `${option.label}，${this.counts()[option.key]} 件`;
+    return this.center.loaded() ? `${option.label}，${this.counts()[option.key]} 件` : option.label;
   }
 
   protected isBusy(_id: string): boolean {
