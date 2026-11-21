@@ -209,7 +209,7 @@ export class ScheduleSheetComponent {
   /**
    * One action; on success the sheet reloads (or `after` runs), and the service bump reloads the reminder centre.
    * The request is not cancelled when the sheet closes (the write and its bump still land), but a destroyed sheet
-   * ignores the answer: no emit, no reload, no focus work.
+   * ignores the answer: no emit, no reload, no focus work (a failure still reaches the toast).
    */
   private act(request: Observable<unknown>, after?: () => void): void {
     this.busy.set(true);
@@ -229,7 +229,7 @@ export class ScheduleSheetComponent {
       },
       error: (error: unknown) => {
         if (this.destroyed()) {
-          // import_running still shows the page toast; nothing else of a closed sheet is touched.
+          // A closed sheet touches nothing of its own; the 失敗 toast still reports the answer (no 重試: the sheet is gone).
           scheduleActionError(error, this.toasts);
           return;
         }

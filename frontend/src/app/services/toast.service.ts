@@ -49,13 +49,16 @@ export class ToastService {
   private readonly held = new Set<ToastPause>();
 
   /**
-   * A scope whose calls return -1 and raise nothing once `owner.destroyed`. On owner destroy: its progress toast is
-   * dismissed; its done / error toast keeps its text and loses its action. Replacing a toast unregisters the hook.
+   * A scope for `owner`. While the owner lives its toasts carry their action; on its destroy its progress toast is
+   * dismissed and its done / error toast keeps its text and loses its action. After the owner is destroyed progress()
+   * returns -1 and raises nothing (no 進行中 for a page that is gone), but done() / error() still show their result
+   * (a late answer is real news), without undo / retry: the page that could run them no longer exists.
+   * Replacing a toast unregisters the hook.
    */
   scope(owner: DestroyRef): ToastScope {
     const raise = (kind: ToastKind, text: string, label: ToastAction['label'] | null, run?: () => void): number => {
       if (owner.destroyed) {
-        return -1;
+        return kind === 'progress' ? -1 : this.raise(kind, text, null);
       }
       const id = this.raise(kind, text, label && run ? label : null, run);
       const unregister = owner.onDestroy(() => this.ownerGone(id, kind));

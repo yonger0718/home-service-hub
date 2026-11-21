@@ -171,12 +171,23 @@ describe('ToastService', () => {
     expect(s.current()).toBeNull();
   });
 
-  it('a call from a destroyed owner raises nothing and returns -1', () => {
+  it('a destroyed owner can no longer raise a 進行中', () => {
     ownerInjector.destroy();
-    expect(t.error('x')).toBe(-1);
-    expect(t.done('x')).toBe(-1);
     expect(t.progress('x')).toBe(-1);
     expect(s.current()).toBeNull();
+  });
+
+  it('a 完成 from a destroyed owner still shows, without 復原', () => {
+    ownerInjector.destroy();
+    const id = t.done('已完成', { undo: vi.fn() });
+    expect(id).toBeGreaterThan(0);
+    expect(s.current()).toEqual(expect.objectContaining({ id, kind: 'done', text: '已完成', action: null }));
+  });
+
+  it('a 失敗 from a destroyed owner still shows, without 重試', () => {
+    ownerInjector.destroy();
+    const id = t.error('匯入進行中，請稍後再試', { retry: vi.fn() });
+    expect(s.current()).toEqual(expect.objectContaining({ id, kind: 'error', text: '匯入進行中，請稍後再試', action: null }));
   });
 
   it('a toast replaced before its owner dies is untouched by that destroy', () => {
@@ -196,7 +207,7 @@ describe('ToastService', () => {
     expect(s.current()?.id).toBe(id);
     ownerInjector.destroy();
     expect(s.current()).toBeNull();
-    expect(scope.done('x')).toBe(-1);
+    expect(scope.progress('x')).toBe(-1);
   });
 
   it('toastText joins with a full-width colon and drops an empty detail', () => {

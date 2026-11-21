@@ -1016,6 +1016,18 @@ describe('AccountingRemindersComponent', () => {
       flushLoad([], [], [], [], []);
     });
 
+    it('a 重試 that fails with import_running after the page is gone still shows its 失敗 toast', () => {
+      const failing = makeDefinition({ id: 14, failing: { instance_id: 5, due_date: '2026-10-01', last_error: 'lines[0].account_id: 帳戶已封存' } });
+      const { fixture, el } = render([], [], [], [], [failing]);
+      tab(el, '借還款追蹤').click();
+      fixture.detectChanges();
+      (el.querySelector('.schedule-failing .retry') as HTMLButtonElement).click();
+      const req = http.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions/14/catch-up');
+      fixture.destroy();
+      req.flush({ detail: 'import_running' }, { status: 409, statusText: 'Conflict' });
+      expect(TestBed.inject(ToastService).current()).toMatchObject({ kind: 'error', text: '匯入進行中，請稍後再試', action: null });
+    });
+
     it('opens the manage sheet from a row and shows 已暫停 after a pause', () => {
       // Spec "Pause from the sheet".
       const { fixture, el } = render([], [], [], [], [LOAN]);
