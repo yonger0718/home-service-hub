@@ -337,7 +337,7 @@ describe('NotificationsComponent', () => {
     it('two failed sources read 「無法讀取：帳單、對帳」', () => {
       failedSources.set(['bills', 'recon']);
       const root = mount();
-      expect(text(q(root, '.notif-failed span'))).toBe('無法讀取：帳單、對帳');
+      expect(text(q(root, '.notif-failed .banner-title'))).toBe('無法讀取：帳單、對帳');
     });
 
     it('a failed source with no task left: no 都處理好了, no 讀取中…, no subtitle; the failure line, chips and links show', () => {
@@ -354,11 +354,81 @@ describe('NotificationsComponent', () => {
       expect(q(root, 'details.notif-tracking')).not.toBeNull();
     });
 
-    it('the failure line is announced as an alert once, and 重試 names what it retries', () => {
+    it('the failure line is the shared banner: an alert, text 「無法讀取：帳單、對帳」, button 重試; its text node survives unrelated changes', async () => {
       failedSources.set(['bills', 'recon']);
       const root = mount();
-      expect(q(root, '.notif-failed [role="alert"]')).not.toBeNull();
-      expect(q(root, 'button.notif-retry')!.getAttribute('aria-label')).toBe('重試讀取帳單、對帳');
+      const banner = q(root, 'app-banner.notif-failed')!;
+      expect(banner.querySelector('.banner--error[role="alert"]')).not.toBeNull();
+      expect(text(banner.querySelector('.banner-action'))).toBe('重試');
+      const title = banner.querySelector('.banner-title')!;
+      const node = title.firstChild;
+      root.querySelectorAll<HTMLButtonElement>('.notif-chips button')[1].click();
+      tasks.set([...TASKS, task('z9', 'today')]);
+      await settle();
+      expect(q(root, 'app-banner.notif-failed')).toBe(banner);
+      expect(banner.querySelector('.banner-title')!.firstChild).toBe(node);
+    });
+
+    it('a failed source: the rows render, but no subtitle and no chip count (lower bounds), chip names are bare labels', () => {
+      failedSources.set(['recon']);
+      const root = mount();
+      expect(root.querySelectorAll('app-notif-row').length).toBe(5);
+      expect(q(root, '.page-subtitle')).toBeNull();
+      const chips = Array.from(root.querySelectorAll<HTMLButtonElement>('.notif-chips button'));
+      expect(chips.map(c => text(c))).toEqual(['全部', '財務', '投資']);
+      expect(chips.map(c => c.getAttribute('aria-label'))).toEqual(['全部', '財務', '投資']);
+      expect(q(root, '.chip-count')).toBeNull();
+    });
+
+    it('truncated with nothing listed: no 「沒有要處理的事」 subtitle', () => {
+      tasks.set([]);
+      truncated.set(true);
+      const root = mount();
+      expect(q(root, '.page-subtitle')).toBeNull();
+    });
+
+    it('after a 重試 that succeeds the counts and the subtitle come back', async () => {
+      failedSources.set(['recon']);
+      const root = mount();
+      (q(root, '.notif-failed .banner-action') as HTMLButtonElement).click();
+      await settle();
+      expect(q(root, '.chip-count')).toBeNull();
+      failedSources.set([]);
+      settledRound.set(round());
+      await settle();
+      expect(text(root.querySelector('.notif-chips button'))).toBe('全部5');
+      expect(subtitle(root)).toContain('5 件要處理');
+    });
+
+    it('two presses on 重試 call invalidate once', async () => {
+      failedSources.set(['recon']);
+      const root = mount();
+      const button = q(root, '.notif-failed .banner-action') as HTMLButtonElement;
+      button.click();
+      button.click();
+      await settle();
+      expect(invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it('the all-clear stays while a later round runs', async () => {
+      tasks.set([]);
+      const root = mount();
+      round.set(2);
+      await settle();
+      expect(q(root, '.notif-empty')).not.toBeNull();
+      expect(q(root, '.notif-loading')).toBeNull();
+    });
+
+    it('under the 投資 chip the all-clear hides the next-bill line and the tracking link', async () => {
+      tasks.set([]);
+      nextUpcoming.set(BILL_NEXT);
+      const root = mount();
+      expect(q(root, '.empty-next')).not.toBeNull();
+      root.querySelectorAll<HTMLButtonElement>('.notif-chips button')[2].click();
+      await settle();
+      expect(q(root, '.notif-empty h2')).not.toBeNull();
+      expect(q(root, '.empty-next')).toBeNull();
+      expect(q(root, '.empty-tracking')).toBeNull();
     });
 
     it('重試 calls invalidate(); the line stays and the button is disabled while loading; the line leaves on recovery', async () => {
@@ -366,13 +436,13 @@ describe('NotificationsComponent', () => {
       settledRound.set(1);
       const root = mount();
       const line = q(root, '.notif-failed');
-      const button = q(root, 'button.notif-retry') as HTMLButtonElement;
+      const button = q(root, '.notif-failed .banner-action') as HTMLButtonElement;
       expect(button.disabled).toBe(false);
       button.click();
       await settle();
       expect(invalidate).toHaveBeenCalledTimes(1);
       expect(q(root, '.notif-failed')).toBe(line);
-      expect((q(root, 'button.notif-retry') as HTMLButtonElement).disabled).toBe(true);
+      expect((q(root, '.notif-failed .banner-action') as HTMLButtonElement).disabled).toBe(true);
       failedSources.set([]);
       settledRound.set(round());
       await settle();
@@ -382,7 +452,7 @@ describe('NotificationsComponent', () => {
     it('a retry that succeeds hands focus to the chosen chip when 重試 held it', async () => {
       failedSources.set(['recon']);
       const root = mount();
-      const button = q(root, 'button.notif-retry') as HTMLButtonElement;
+      const button = q(root, '.notif-failed .banner-action') as HTMLButtonElement;
       button.focus();
       button.click();
       await settle();
@@ -396,7 +466,7 @@ describe('NotificationsComponent', () => {
     it('a retry that fails again keeps the line and returns focus to 重試 when focus fell to <body>', async () => {
       failedSources.set(['recon']);
       const root = mount();
-      const button = q(root, 'button.notif-retry') as HTMLButtonElement;
+      const button = q(root, '.notif-failed .banner-action') as HTMLButtonElement;
       button.focus();
       button.click();
       await settle();
@@ -409,13 +479,13 @@ describe('NotificationsComponent', () => {
       settledRound.set(round());
       await settle();
       expect(q(root, '.notif-failed')).not.toBeNull();
-      expect(document.activeElement).toBe(q(root, 'button.notif-retry'));
+      expect(document.activeElement).toBe(q(root, '.notif-failed .banner-action'));
     });
 
     it('a retry that fails again leaves focus the owner moved elsewhere alone', async () => {
       failedSources.set(['recon']);
       const root = mount();
-      (q(root, 'button.notif-retry') as HTMLButtonElement).click();
+      (q(root, '.notif-failed .banner-action') as HTMLButtonElement).click();
       await settle();
       const chip = q(root, '.notif-chips button')!;
       chip.focus();
@@ -481,7 +551,7 @@ describe('NotificationsComponent', () => {
       expect(q(root, '.notif-empty')).toBeNull();
     });
 
-    it('重試 pressed while a row is busy does not release it; only the newer round that settles does', async () => {
+    it('重試 pressed while a row is busy: the retry\'s round releases it only once it settles; an older round does not', async () => {
       const rent = task('sched:1', 'today', {
         from: 'schedules',
         primary: { label: '入帳', command: { kind: 'postInstance', instanceId: 7, name: '測試房租' } },
@@ -489,19 +559,26 @@ describe('NotificationsComponent', () => {
       tasks.set([rent]);
       failedSources.set(['recon']);
       round.set(4);
-      settledRound.set(4);
+      settledRound.set(3);
       const root = mount();
       const control = () => q(root, `app-notif-row[data-task-id="sched:1"] ${NOTIF_PRIMARY_CONTROL}`) as HTMLButtonElement;
+      const retryButton = () => q(root, '.notif-failed .banner-action') as HTMLButtonElement;
       control().click();
       await settle();
       posts[0].next({} as ScheduleInstance);
-      posts[0].complete();
+      posts[0].complete(); // answered while round 4 is the newest: the row waits for a round above 4
+      await settle();
+      expect(retryButton().disabled).toBe(true); // round 4 still in flight
+      settledRound.set(4); // the older round settles: no release
       await settle();
       expect(control().disabled).toBe(true);
-      (q(root, 'button.notif-retry') as HTMLButtonElement).click(); // invalidate(): round 5
+      expect(retryButton().disabled).toBe(false);
+      retryButton().click();
       await settle();
-      expect(control().disabled).toBe(true);
-      settledRound.set(5); // round 5 started after the write answered: now it may release
+      expect(invalidate).toHaveReturnedWith(5);
+      expect(round()).toBe(5);
+      expect(control().disabled).toBe(true); // round 5 unsettled
+      settledRound.set(5);
       await settle();
       expect(control().disabled).toBe(false);
     });

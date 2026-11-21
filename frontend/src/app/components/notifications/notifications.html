@@ -4,7 +4,7 @@
   <div class="notif-chips" role="radiogroup" aria-label="來源">
     @for (option of chips; track option.key) {
       <button type="button" role="radio" [attr.aria-checked]="chip() === option.key" [attr.aria-label]="chipName(option)" (click)="pick(option.key)">
-        {{ option.label }}@if (center.loaded()) {<span class="chip-count" aria-hidden="true">{{ counts()[option.key] }}</span>}
+        {{ option.label }}@if (countsFinal()) {<span class="chip-count" aria-hidden="true">{{ counts()[option.key] }}</span>}
       </button>
     }
   </div>
@@ -73,8 +73,6 @@
     <p class="notif-partial">{{ note }}</p>
   }
   @if (failure(); as line) {
-    <p class="notif-failed">
-      <span role="alert">{{ line }}</span>&ngsp;<button type="button" class="notif-retry" [attr.aria-label]="retryName()" [disabled]="center.loading()" (click)="retry()">重試</button>
-    </p>
+    <app-banner class="notif-failed" tone="error" [heading]="line" actionLabel="重試" [actionDisabled]="center.loading()" (action)="retry()" />
   }
 </div>

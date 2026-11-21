@@ -529,7 +529,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(center.loaded()).toBe(true);
       expect(emptyBlock()).toBeNull();
       expect(root.querySelector('.notif-failed')?.textContent).toContain('無法讀取：對帳');
-      root.querySelector<HTMLButtonElement>('button.notif-retry')!.click();
+      root.querySelector<HTMLButtonElement>('.notif-failed .banner-action')!.click();
       await settle();
       await answerReads(take(), makeInbox([]));
       await answerCard('0');

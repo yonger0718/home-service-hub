@@ -23,6 +23,7 @@ import { writeErrorMessage } from '../accounting/http-errors';
 import { IMPORT_RUNNING_TOAST, isImportRunning } from '../accounting/schedule-math';
 import { apiErrorText, splitApiCode } from '../accounting/statements/statement-view';
 import { focusPageIfLost, focusRetryIfLost } from '../accounting/retry-focus';
+import { BannerComponent } from '../ui/banner/banner';
 import { PageHeaderComponent } from '../shell/page-header/page-header';
 import {
   COUNTED_TIERS,
@@ -71,7 +72,7 @@ const TRACKING_UNIT: Record<NotifTrackingRow['id'], { name: string; unit: string
  */
 @Component({
   selector: 'app-notifications',
-  imports: [NotifRowComponent, PageHeaderComponent, RouterLink],
+  imports: [BannerComponent, NotifRowComponent, PageHeaderComponent, RouterLink],
   templateUrl: './notifications.html',
   styleUrl: './notifications.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -117,15 +118,18 @@ export class NotificationsComponent {
     () => this.center.loaded() && this.chip() !== 'all' && this.counts()[this.chip()] === 0 && this.counts().all > 0,
   );
 
+  /** The counts are exact: a round settled and no source failed (a failed source's tasks are missing: lower bounds). */
+  protected readonly countsFinal = computed(() => this.center.loaded() && this.center.failedSources().length === 0);
+
   protected readonly subtitle = computed<string | null>(() => {
     // `summary()` is NO_TASKS until the first round settles: no subtitle rather than a false all-clear.
-    if (!this.center.loaded()) {
+    if (!this.countsFinal()) {
       return null;
     }
     const { total, overdue } = this.center.summary();
     if (total === 0) {
-      // A failed source's tasks are dropped: zero here is not "all clear".
-      return this.center.failedSources().length > 0 ? null : '沒有要處理的事';
+      // Truncated: the catch-all task normally makes the total non-zero; zero here is not "all clear" either.
+      return this.center.truncated() ? null : '沒有要處理的事';
     }
     const parts = [`${total} 件要處理`];
     if (overdue > 0) {
@@ -173,7 +177,6 @@ export class NotificationsComponent {
   protected readonly notes: Signal<string[]> = computed(() => (this.center.truncated() ? ['對帳項目較多，僅列出部分'] : []));
 
   protected readonly failure = computed(() => failureLine(this.center.failedSources()));
-  protected readonly retryName = computed(() => `重試讀取${(this.failure() ?? '').replace('無法讀取：', '')}`);
   /** A 重試 of the reads is running: the line stays (same element) and the button waits. */
   protected readonly retrying = signal(false);
 
@@ -190,7 +193,7 @@ export class NotificationsComponent {
       if (untracked(this.center.failedSources).length === 0) {
         focusPageIfLost(host, this.injector, '.notif-chips button[aria-checked="true"]');
       } else {
-        focusRetryIfLost(host, this.injector, 'button.notif-retry');
+        focusRetryIfLost(host, this.injector, '.notif-failed .banner-action');
       }
     });
 
@@ -259,7 +262,7 @@ export class NotificationsComponent {
   }
 
   protected chipName(option: ChipOption): string {
-    return this.center.loaded() ? `${option.label}，${this.counts()[option.key]} 件` : option.label;
+    return this.countsFinal() ? `${option.label}，${this.counts()[option.key]} 件` : option.label;
   }
 
   protected isBusy(id: string): boolean {
