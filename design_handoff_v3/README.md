@@ -58,7 +58,7 @@ Not clickable on the canvas (drawn only): the period controls, the field pickers
 | `#6b6596` / `#aba6d0` dividend amount | `--app-dividend`; at ≤ 13 px add an ink variant (`#6b6596` is 5.2:1 on `--app-surface`; the token is 4.0:1) |
 | `#b5323a` / `#ff8a8e` 多花 | new `--app-spend-more` |
 | `#2f6f9f` / `#7fb5e0` 少花 | new `--app-spend-less` |
-| `#8a6327` / `#d0a06a` warning banner | new `--app-banner-warn` (+ `-soft`); `--app-warning` is a blue-grey and reads as info |
+| `#8a6327` / `#d0a06a` warning banner (light shipped as `#7d5920`: the artboard value is 4.20:1 on a past day and 4.00:1 on a selected day) | new `--app-banner-warn` (+ `-soft`); `--app-warning` is a blue-grey and reads as info |
 | dark solid primary button with dark text | follow the existing rule: `--app-primary-ink-bg` with white text |
 | category / series palette | the dashboard's five-colour stock series, then the owner's category colours where a category is shown |
 

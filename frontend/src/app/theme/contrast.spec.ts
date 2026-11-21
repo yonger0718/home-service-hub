@@ -299,9 +299,9 @@ describe('banner-warn pair (帳單 tag / bill dot / cap bar near)', () => {
   const capScss = src('src/app/components/ui/cap-bar/cap-bar.scss');
 
   it('is declared in both themes: owner hex, soft = the same colour at 10 % (light) / 14 % (dark)', () => {
-    expect(light['--app-banner-warn']).toBe('#8a6327');
+    expect(light['--app-banner-warn']).toBe('#7d5920');
     expect(dark['--app-banner-warn']).toBe('#d0a06a');
-    expect(rgba(light, '--app-banner-warn-soft')).toEqual([0x8a, 0x63, 0x27, 0.1]);
+    expect(rgba(light, '--app-banner-warn-soft')).toEqual([0x7d, 0x59, 0x20, 0.1]);
     expect(rgba(dark, '--app-banner-warn-soft')).toEqual([0xd0, 0xa0, 0x6a, 0.14]);
   });
 
@@ -332,11 +332,10 @@ describe('banner-warn pair (帳單 tag / bill dot / cap bar near)', () => {
     ['page (bg)', (t) => hex(t, '--app-bg')],
   ];
 
-  // Pinned ratios of the 帳單 tag text on its composited tint (2 decimals). The owner's two colours are fixed: the
-  // light cases below 4.5 are known and reported, not silently accepted — a change of token or surface moves a number
-  // and fails here. `page (bg)` is not a surface the tag sits on; it is listed for reference only.
+  // Pinned ratios of the 帳單 tag text on its composited tint (2 decimals): a change of token or surface moves a
+  // number and fails here. `page (bg)` is not a surface the tag sits on; it is listed for reference only.
   const pinned: Record<string, number[]> = {
-    light: [4.61, 4.2, 4.0, 4.29],
+    light: [5.36, 4.88, 4.64, 4.97],
     dark: [5.71, 4.95, 4.51, 6.37],
   };
 
@@ -351,8 +350,10 @@ describe('banner-warn pair (帳單 tag / bill dot / cap bar near)', () => {
       expect(got).toEqual(pinned[name]);
     });
 
-    it('帳單 tag text ≥ 4.5:1 on its tint over the future day / legend / 本月摘要 surface', () => {
-      expect(pinned[name][0]).toBeGreaterThanOrEqual(4.5);
+    it('帳單 tag text ≥ 4.5:1 on its tint over every surface the tag sits on (future, past and selected day)', () => {
+      for (const value of pinned[name].slice(0, 3)) {
+        expect(value).toBeGreaterThanOrEqual(4.5);
+      }
     });
 
     it.each(backgrounds)('cap bar near text on %s ≥ 4.5:1 (no tint)', (_label, under) => {
