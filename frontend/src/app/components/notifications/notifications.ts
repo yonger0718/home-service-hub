@@ -11,6 +11,7 @@ import {
   signal,
   untracked,
 } from '@angular/core';
+import { HttpErrorResponse } from '@angular/common/http';
 import { RouterLink } from '@angular/router';
 
 import { AccountingService } from '../../services/accounting.service';
@@ -20,6 +21,7 @@ import { injectToasts, toastText } from '../../services/toast.service';
 import { guardedRetry } from '../../services/toast-retry';
 import { writeErrorMessage } from '../accounting/http-errors';
 import { IMPORT_RUNNING_TOAST, isImportRunning } from '../accounting/schedule-math';
+import { apiErrorText, splitApiCode } from '../accounting/statements/statement-view';
 import { PageHeaderComponent } from '../shell/page-header/page-header';
 import {
   COUNTED_TIERS,
@@ -33,6 +35,15 @@ import {
   chipCounts,
 } from './notif-task';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
+
+/** 409 `already_posted`: the instance was posted before this request (by its own earlier send, or elsewhere). */
+function isAlreadyPosted(err: unknown): boolean {
+  if (!(err instanceof HttpErrorResponse) || err.status !== 409) {
+    return false;
+  }
+  const text = apiErrorText(err);
+  return text !== null && splitApiCode(text).code === 'already_posted';
+}
 
 interface ChipOption {
   readonly key: NotifChip;
@@ -214,9 +225,12 @@ export class NotificationsComponent {
       this.accounting.catchUpSchedule(command.definitionId).subscribe({
         next: ({ posted, failed: stop }) =>
           this.succeeded(taskId, () =>
-            stop === null
-              ? this.toasts.done(`已入帳 ${posted.length} 期：${command.name}`)
-              : this.toasts.error(`${command.name}：已入帳 ${posted.length} 期，之後的入帳失敗（${stop.error}）`),
+            stop !== null
+              ? this.toasts.error(`${command.name}：已入帳 ${posted.length} 期，之後的入帳失敗（${stop.error}）`)
+              : posted.length === 0
+                ? // Nothing was pending (e.g. the interceptor's resend after a catch-up that had gone through).
+                  this.toasts.done(`${command.name}：沒有待入帳的期數`)
+                : this.toasts.done(`已入帳 ${posted.length} 期：${command.name}`),
           ),
         error: failed,
       });
@@ -235,10 +249,14 @@ export class NotificationsComponent {
 
   /**
    * An error bumps nothing, and the write may still have committed (a 5xx after the commit; the interceptor's
-   * resend): re-read now. The reads raise no toast, so the 失敗 toast stays the visible one.
+   * resend): re-read now. The reads raise no toast, so the 失敗 toast stays the visible one. `already_posted` takes
+   * this path too (re-read, release, focus) but reads as done.
    */
   private failed(taskId: string, command: NotifCommand, err: unknown): void {
-    if (isImportRunning(err)) {
+    if (isAlreadyPosted(err)) {
+      // The entry exists (a resend after a post that had gone through, #411): done, with the failure path's re-read.
+      this.toasts.done(`${command.name}：此期已入帳`);
+    } else if (isImportRunning(err)) {
       this.toasts.error(IMPORT_RUNNING_TOAST);
     } else {
       const text = toastText(`${command.name} 入帳失敗`, writeErrorMessage(err));

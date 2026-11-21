@@ -640,11 +640,68 @@ describe('NotificationsComponent', () => {
       expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗：帳戶已封存', action: null }));
     });
 
-    it('a 409 already_posted says the period is posted, without 重試', async () => {
+    it('a 409 already_posted reads as done: 「測試房租：此期已入帳」, no 重試, a re-read, released by the newer round', async () => {
+      round.set(4);
+      settledRound.set(3);
+      const root = open();
+      await press(root, RENT.id);
+      await fail(posts[0], 409, { detail: 'already_posted' });
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '測試房租：此期已入帳', action: null }));
+      // An error bumps nothing: the page re-reads itself.
+      expect(invalidate).toHaveBeenCalledTimes(1);
+      expect(round()).toBe(5);
+      expect(button(root, RENT.id).disabled).toBe(true);
+      settledRound.set(4);
+      await settle();
+      expect(button(root, RENT.id).disabled).toBe(true);
+      settledRound.set(5);
+      await settle();
+      expect(button(root, RENT.id).disabled).toBe(false);
+    });
+
+    it('already_posted in the shared_lib body (`message`) reads as done too; another 409 code stays a failure', async () => {
       const root = open();
       await press(root, RENT.id);
       await fail(posts[0], 409, { code: 'CONFLICT', message: 'already_posted' });
-      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗：此期已入帳', action: null }));
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '測試房租：此期已入帳', action: null }));
+      await press(root, LOAN.id);
+      await fail(posts[1], 409, { detail: 'skipped' });
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '測試分期 入帳失敗：此期已略過', action: null }));
+    });
+
+    it('a 全部入帳 that posted nothing reads 「測試月費：沒有待入帳的期數」 and waits for the write\'s own round', async () => {
+      round.set(4);
+      settledRound.set(4);
+      const root = open();
+      await press(root, FEE.id);
+      await answer(catchUps[0], catchUp([], null));
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '測試月費：沒有待入帳的期數', action: null }));
+      // The call bumps entriesChanged on any answer: the service starts the round, the page does not.
+      expect(invalidate).not.toHaveBeenCalled();
+      expect(button(root, FEE.id).disabled).toBe(true);
+      await settleRound(5);
+      expect(button(root, FEE.id).disabled).toBe(false);
+    });
+
+    it('a 全部入帳 that posted nothing and then failed keeps the failure copy', async () => {
+      const root = open();
+      await press(root, FEE.id);
+      await answer(catchUps[0], catchUp([], { instance_id: 31, error: '帳戶已封存' }));
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'error', text: '測試月費：已入帳 0 期，之後的入帳失敗（帳戶已封存）', action: null }),
+      );
+    });
+
+    it('focus follows an already_posted row that leaves, as for a success', async () => {
+      const root = open();
+      document.body.appendChild(root);
+      control(root, RENT.id)!.focus();
+      await press(root, RENT.id);
+      await fail(posts[0], 409, { detail: 'already_posted' });
+      tasks.set([FEE, LOAN, BILL]);
+      await settleRound(2);
+      await settle();
+      expect(document.activeElement).toBe(control(root, LOAN.id));
     });
 
     it('a failed write reloads silently: the 失敗 toast with 重試 is still current after the newer round lands', async () => {

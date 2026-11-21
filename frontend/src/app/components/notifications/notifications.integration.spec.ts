@@ -1,9 +1,10 @@
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { HttpTestingController, TestRequest, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { errorLoggingInterceptor } from '../../interceptors/error-logging.interceptor';
 import { MATCH_MEDIA } from '../../services/layout-mode.service';
 import { NotificationCenterService } from '../../services/notification-center.service';
 import { ToastService } from '../../services/toast.service';
@@ -15,7 +16,8 @@ import { NotificationsComponent } from './notifications';
 /**
  * The page over the REAL NotificationCenterService, BillingService, AccountingService, InboxService, StatementsService
  * and ToastService, with HttpTestingController: the write / read interleavings of the plan's Review Focus. The app's
- * error-logging interceptor (which resends a failed request once, #411) is not installed: one flush is one answer.
+ * error-logging interceptor (which resends a failed request once, #411) is installed only in its own describe block;
+ * elsewhere one flush is one answer.
  */
 
 /** Saturday 2026-10-24. */
@@ -26,6 +28,12 @@ const CARD = makeAccount({ id: 11, name: '測試銀行卡', is_credit: true, clo
 const RENT = makeInstance({ id: 7, definition_id: 1, definition_name: '測試房租', due_date: TODAY, rule_date: TODAY });
 const API = '/api/accounting';
 const RENT_ROW = 'app-notif-row[data-task-id="sched:1"]';
+/** 測試月費 (definition 3), two overdue instances: one 全部入帳 row, id `sched:3`. */
+const FEE = [
+  makeInstance({ id: 31, definition_id: 3, definition_name: '測試月費', seq: 1, due_date: '2026-10-20', rule_date: '2026-10-20' }),
+  makeInstance({ id: 32, definition_id: 3, definition_name: '測試月費', seq: 2, due_date: '2026-10-22', rule_date: '2026-10-22' }),
+];
+const FEE_ROW = 'app-notif-row[data-task-id="sched:3"]';
 
 interface RoundRequests {
   accounts: TestRequest;
@@ -98,7 +106,13 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     if (open('counterparties')) round.counterparties.flush([]);
     if (open('queue')) round.queue.flush(queue);
     if (open('inbox')) round.inbox.flush(makeInbox([]));
-    if (open('latest')) round.latest.flush('', { status: 404, statusText: 'Not Found' });
+    if (open('latest')) {
+      round.latest.flush('', { status: 404, statusText: 'Not Found' });
+      // With the interceptor the 404 is sent once more.
+      for (const again of http.match(get(`${API}/imports/latest`))) {
+        again.flush('', { status: 404, statusText: 'Not Found' });
+      }
+    }
     if (open('actions')) round.actions.flush([]);
     await flushSide();
   }
@@ -107,7 +121,8 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
   const rentButton = () => rentRow()?.querySelector<HTMLButtonElement>(NOTIF_PRIMARY_CONTROL) ?? null;
 
   /** Page open after round 1 has settled with the rent row; then a window focus 31 s later starts round 2. */
-  async function openThenFocus(): Promise<RoundRequests> {
+  async function openThenFocus(interceptor = false): Promise<RoundRequests> {
+    boot(interceptor);
     center.start(); // the shell's call
     TestBed.tick();
     http.expectOne(get(`${API}/calendar/business-days`)).flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
@@ -126,12 +141,11 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     return take();
   }
 
-  beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
-    vi.setSystemTime(new Date(2026, 9, 24, 10, 0, 0));
+  /** The app's own HTTP setup when `interceptor` (the error-logging interceptor resends a failed request once, #411). */
+  function boot(interceptor: boolean): void {
     TestBed.configureTestingModule({
       providers: [
-        provideHttpClient(),
+        interceptor ? provideHttpClient(withInterceptors([errorLoggingInterceptor])) : provideHttpClient(),
         provideHttpClientTesting(),
         provideRouter([]),
         {
@@ -144,12 +158,21 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     http = TestBed.inject(HttpTestingController);
     center = TestBed.inject(NotificationCenterService);
     toasts = TestBed.inject(ToastService);
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    vi.setSystemTime(new Date(2026, 9, 24, 10, 0, 0));
   });
 
   afterEach(() => {
-    http.verify();
-    TestBed.resetTestingModule();
-    vi.useRealTimers();
+    try {
+      http.verify();
+    } finally {
+      // A failed test must not leave the module instantiated for the next one.
+      TestBed.resetTestingModule();
+      vi.useRealTimers();
+    }
   });
 
   it("the reviewer's interleaving: old queue GET in flight, POST commits but answers 500", async () => {
@@ -188,7 +211,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', action: expect.objectContaining({ label: '重試' }) }));
   });
 
-  it('重試 after the 500 that in fact committed resends instance 7; the server refuses it (409 already_posted), no duplicate and no 重試', async () => {
+  it('重試 after the 500 that in fact committed resends instance 7; the server refuses it (409 already_posted): 此期已入帳 as done, no duplicate', async () => {
     const round2 = await openThenFocus();
     await flushRound(round2, [], ['queue']);
     rentButton()!.click();
@@ -204,10 +227,11 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     toasts.runAction(toasts.current()!.id);
     await settle();
     const again = http.expectOne(isPost);
-    // The server posts an instance once: a second post of 7 is refused, and no entry is written.
-    again.flush({ code: 'CONFLICT', message: 'already_posted' }, { status: 409, statusText: 'Conflict' });
+    // The server posts an instance once: a second post of 7 is refused, and no entry is written. The entry exists,
+    // so it reads as done.
+    again.flush({ detail: 'already_posted' }, { status: 409, statusText: 'Conflict' });
     await settle();
-    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗：此期已入帳', action: null }));
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '測試房租：此期已入帳', action: null }));
     // That failure re-reads too (round 4); nothing else is sent.
     expect(center.round()).toBe(4);
     await flushRound(take(), []);
@@ -313,5 +337,95 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     await flushRound(take(), []);
     expect(center.settledRound()).toBe(3);
     expect(center.tasks().some(task => task.id === 'sched:1')).toBe(false);
+  });
+
+  describe('with the app\'s error-logging interceptor (a failed request is sent once more, #411)', () => {
+    const posts: TestRequest[] = [];
+    const takePost = () => {
+      const req = http.expectOne(isPost);
+      posts.push(req);
+      return req;
+    };
+
+    beforeEach(() => {
+      posts.length = 0;
+      for (const method of ['group', 'groupEnd', 'error', 'warn', 'log'] as const) {
+        vi.spyOn(console, method).mockImplementation(() => undefined);
+      }
+    });
+    afterEach(() => vi.restoreAllMocks());
+
+    it('POST 500, the automatic re-send answers 409 already_posted: one done toast, no 重試, released after the re-read, two POSTs', async () => {
+      await flushRound(await openThenFocus(true), [RENT]);
+      expect(center.settledRound()).toBe(2);
+      rentButton()!.click();
+      await settle();
+      takePost().flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
+      // The interceptor re-sends at once: the first had committed.
+      takePost().flush({ detail: 'already_posted' }, { status: 409, statusText: 'Conflict' });
+      await settle();
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '測試房租：此期已入帳', action: null }));
+      // An error bumps nothing: the page's own re-read (round 3).
+      expect(center.round()).toBe(3);
+      const round3 = take();
+      expect(rentButton()!.disabled).toBe(true);
+      round3.queue.flush([RENT]); // even a list that still has it: the row waits for the round to settle
+      await settle();
+      expect(rentButton()!.disabled).toBe(true);
+      await flushRound(round3, [], ['queue']);
+      expect(center.settledRound()).toBe(3);
+      expect(rentButton()!.disabled).toBe(false);
+      http.expectNone(isPost);
+      expect(posts.length).toBe(2);
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '測試房租：此期已入帳' }));
+    });
+
+    it('catch-up 500, the re-send answers { posted: [], failed: null }: 「測試月費：沒有待入帳的期數」', async () => {
+      const isCatchUp = (req: { method: string; url: string }) =>
+        req.method === 'POST' && req.url === `${API}/schedules/definitions/3/catch-up`;
+      await flushRound(await openThenFocus(true), FEE);
+      const button = () => root.querySelector(FEE_ROW)?.querySelector<HTMLButtonElement>(NOTIF_PRIMARY_CONTROL) ?? null;
+      expect(button()?.textContent).toContain('全部入帳');
+      button()!.click();
+      await settle();
+      http.expectOne(isCatchUp).flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
+      http.expectOne(isCatchUp).flush({ posted: [], failed: null, definition: {} });
+      await settle();
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '測試月費：沒有待入帳的期數', action: null }));
+      // The answer bumped entriesChanged: the service started round 3.
+      expect(center.round()).toBe(3);
+      expect(button()!.disabled).toBe(true);
+      await flushRound(take(), []);
+      expect(center.settledRound()).toBe(3);
+      expect(root.querySelector(FEE_ROW)).toBeNull();
+      http.expectNone(isCatchUp);
+    });
+
+    it('重試 pressed twice sends one write', async () => {
+      await flushRound(await openThenFocus(true), [RENT]);
+      rentButton()!.click();
+      await settle();
+      takePost().flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
+      takePost().flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
+      await settle();
+      const failure = toasts.current()!;
+      expect(failure).toEqual(expect.objectContaining({ kind: 'error', action: expect.objectContaining({ label: '重試' }) }));
+      await flushRound(take(), [RENT]);
+      expect(rentButton()!.disabled).toBe(false);
+
+      toasts.runAction(failure.id);
+      toasts.runAction(failure.id);
+      await settle();
+      rentButton()!.click(); // the row is busy again
+      await settle();
+      const third = takePost();
+      http.expectNone(isPost);
+      third.flush({ ...RENT, status: 'posted' });
+      await settle();
+      expect(posts.length).toBe(3);
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已入帳：測試房租' }));
+      await flushRound(take(), []);
+      expect(rentRow()).toBeNull();
+    });
   });
 });
