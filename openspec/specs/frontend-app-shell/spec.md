@@ -135,7 +135,11 @@ Every group except 系統 SHALL be hideable from Settings; a hidden group SHALL 
 
 ### Requirement: App-wide 記一筆 floating button
 
-On viewports ≥ 760px every route SHALL show one 56px `--app-primary` floating button at the bottom-right, tooltip `記一筆` with key `N`, that opens the entry form; it SHALL hide while the form is open and, while a pane is open, sit at the right offset the pane layout provides. While the page's scrolling ancestor (the document or `.hub-main` on ordinary pages, the accounting list pane in panes mode) scrolls down the button SHALL slide out (translate and fade, 160 ms; instant under `prefers-reduced-motion`) and end in `visibility: hidden`, leaving the tab order; it SHALL return on any upward scroll, when the scroll reaches the end, or after 1.2 s without scrolling, and SHALL NOT hide while it has focus. `N` SHALL open the form from any route outside text fields, also while the button is hidden. The sidebar and page headers SHALL NOT contain a 記一筆 button.
+On viewports ≥ 760px every route except `/accounting/reports` and the saved-report pages under it (query strings included) SHALL show one 56px `--app-primary` floating button at the bottom-right, tooltip `記一筆` with key `N`, that opens the entry form; it SHALL hide while the form is open and, while a pane is open, sit at the right offset the pane layout provides. While the page's scrolling ancestor (the document or `.hub-main` on ordinary pages, the accounting list pane in panes mode) scrolls down the button SHALL slide out (translate and fade, 160 ms; instant under `prefers-reduced-motion`) and end in `visibility: hidden`, leaving the tab order; it SHALL return on any upward scroll, when the scroll reaches the end, or after 1.2 s without scrolling, and SHALL NOT hide while it has focus. `N` SHALL open the form from any route outside text fields, also while the button is hidden or absent. Page headers SHALL NOT contain a 記一筆 button; the sidebar's 記一筆 control is a separate requirement.
+
+#### Scenario: No floating button on the report pages
+- **WHEN** the owner opens `/accounting/reports` or `/accounting/reports/custom/<id>?from=2026-10-01` at 1440px
+- **THEN** no floating button SHALL render, while the sidebar 記一筆 control and the `N` key (outside a text field) SHALL still open the entry form
 
 #### Scenario: Floating button on a portfolio page
 - **WHEN** the owner is on `/portfolio/dividends` at 1440px and presses the floating button
@@ -165,7 +169,37 @@ On viewports ≥ 760px every route SHALL show one 56px `--app-primary` floating 
 
 #### Scenario: Page create actions stay secondary
 - **WHEN** `/portfolio/transactions` renders
-- **THEN** its 新增交易 button SHALL use the soft-primary style and no 記一筆 button SHALL appear in the page header or the sidebar
+- **THEN** its 新增交易 button SHALL use the soft-primary style and no 記一筆 button SHALL appear in the page header
+
+### Requirement: Sidebar 記一筆 control
+
+From 760px the sidebar SHALL show a 記一筆 link at the top of its navigation, above the first group, on every page, inert with the sidebar while the 760–1023px sheet is open, and SHALL NOT render below 760px. Expanded it SHALL be a full-width filled `--app-primary` button with a + icon and the text 記一筆; as a rail, a filled + icon button named `記一筆（快捷鍵 N）` with a one-line tooltip. It SHALL behave like the floating button, except that on the new-entry form a plain click does nothing.
+
+#### Scenario: Expanded sidebar
+- **WHEN** the owner opens `/portfolio` at 1440px
+- **THEN** the first element of the sidebar navigation SHALL be a link with the text 記一筆 whose href is `/accounting/entry`
+
+#### Scenario: Rail sidebar
+- **WHEN** the sidebar is a rail
+- **THEN** the control SHALL show only a + icon, be named `記一筆（快捷鍵 N）` and show the tooltip on hover or focus
+
+#### Scenario: Report pages keep it
+- **WHEN** the owner opens `/accounting/reports` at 1440px
+- **THEN** no floating button SHALL render and the sidebar 記一筆 link SHALL be present
+
+#### Scenario: Same behaviour as the floating button
+- **GIVEN** the owner is on the calendar at `?month=2026-10&day=2026-10-21` with an unsaved entry form
+- **WHEN** the owner clicks the sidebar control and confirms 放棄
+- **THEN** the entry form SHALL open with that month and day, and a ctrl- or meta-click SHALL be left to the browser
+
+#### Scenario: New-entry form
+- **GIVEN** the owner is on `/accounting/entry` with unsaved input
+- **WHEN** the owner clicks the sidebar control
+- **THEN** no discard prompt SHALL appear and no navigation SHALL happen; on an entry's edit form the click SHALL still ask first
+
+#### Scenario: Phone
+- **WHEN** the viewport is narrower than 760px
+- **THEN** the sidebar control SHALL NOT render
 
 ### Requirement: Pane state belongs to two-pane layouts
 

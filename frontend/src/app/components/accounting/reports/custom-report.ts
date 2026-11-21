@@ -611,9 +611,12 @@ export class CustomReportComponent {
     return `${this.name() || '報表'}：${this.rows().map(row => `${this.rowLabel(row)} ${value(row)}`).join('、')}`;
   });
 
+  /** One split series: its column already holds the total, so 合計 would only repeat it. */
+  private readonly totalHidden = computed(() => this.seriesKeys().length === 1);
+
   readonly columns = computed<{ label: string; kind: ColumnKind }[]>(() => [
     ...this.seriesKeys().map(label => ({ label, kind: 'series' as const })),
-    { label: this.toDate() ? toDateNouns(this.period(), this.today()).current : '合計', kind: 'total' },
+    ...(this.totalHidden() ? [] : [{ label: this.toDate() ? toDateNouns(this.period(), this.today()).current : '合計', kind: 'total' as const }]),
     { label: '筆數', kind: 'count' },
     ...(this.compareOn() ? [{ label: this.compareLabel(), kind: 'base' as const }, { label: '增減', kind: 'change' as const }] : []),
   ]);
@@ -633,8 +636,8 @@ export class CustomReportComponent {
     const cells = (values: number[], total: number, count: number, base: number | null, empty = false, isTotal = false): TableCell[] => {
       const list: TableCell[] = [
         ...values.map(value => ({ text: n0(value), kind: 'series' as const })),
-        { text: n0(total), kind: 'total' },
-        { text: String(count), kind: 'count', muted: true },
+        ...(this.totalHidden() ? [] : [{ text: n0(total), kind: 'total' as const }]),
+        { text: String(count), kind: 'count' as const, muted: true },
       ];
       if (compare && base === null) {
         // M4: the running bucket's base read failed, so the row shows no change.

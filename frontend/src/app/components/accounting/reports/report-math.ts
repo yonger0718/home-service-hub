@@ -217,6 +217,18 @@ export function trendRange(period: ReportPeriod, months = 12): { from: string; t
   return { from: `${shiftMonth(last, -(months - 1))}-01`, to: lastPeriod.to };
 }
 
+/** The trend chart shows at least this many months, even when the data starts later. */
+export const TREND_MIN_MONTHS = 6;
+
+/**
+ * Index of the first bucket the trend chart shows: the first one with a non-zero total, but never fewer than the last
+ * `min` buckets (and never padding beyond what was loaded).
+ */
+export function trendStart(totals: number[], min = TREND_MIN_MONTHS): number {
+  const firstNonZero = totals.findIndex(total => total !== 0);
+  return Math.min(firstNonZero < 0 ? totals.length : firstNonZero, Math.max(totals.length - min, 0));
+}
+
 // ---- running periods (polish D1) ---------------------------------------------------------------------------------
 
 /** Running: it has started and its last day (`to`, inclusive) is still ahead; on the last day it counts as finished. */

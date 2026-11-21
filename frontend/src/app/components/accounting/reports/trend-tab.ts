@@ -108,6 +108,8 @@ interface CompareColumns {
 export class ReportTrendComponent {
   readonly trend = input<TrendResponse | null>(null);
   readonly trendState = input<LoadState>('loading');
+  /** The first month shown (a bucket start); null shows every loaded month. */
+  readonly from = input<string | null>(null);
   /** Expense by category compared with the previous period (the chips and the table). */
   readonly expense = input<BreakdownResponse | null>(null);
   /** Expense by category compared with the same period last year. */
@@ -122,6 +124,14 @@ export class ReportTrendComponent {
   readonly series = input<number | null>(null);
   readonly seriesChange = output<number | null>();
   readonly toggleWhole = output<void>();
+
+  /** The months drawn: from the first one at or after `from`, all of them when `from` is null or matches none. */
+  private readonly buckets = computed<TrendResponse['buckets']>(() => {
+    const all = this.trend()?.buckets ?? [];
+    const from = this.from();
+    const index = from === null ? -1 : all.findIndex(bucket => bucket.start >= from);
+    return index <= 0 ? all : all.slice(index);
+  });
 
   private readonly layoutMode = inject(LayoutModeService);
   /** The phone drawing below 760 px, the desktop one from there (the SVG scales to the card either way). */
@@ -146,15 +156,15 @@ export class ReportTrendComponent {
     return id === null ? '全部支出' : (this.categoryRows().find(row => Number(row.key) === id)?.label ?? '類別');
   });
   readonly title = computed(() => {
-    const months = this.trend()?.buckets.length ?? 12;
+    const months = this.trend() ? this.buckets().length : 12;
     return this.series() === null ? `每月支出 · 近 ${months} 個月` : `每月支出 · ${this.seriesName()} · 近 ${months} 個月`;
   });
 
   private readonly seriesKey = computed(() => (this.series() === null ? TREND_ALL : String(this.series())));
-  private readonly values = computed(() => (this.trend()?.buckets ?? []).map(bucket => num(bucket.values[this.seriesKey()])));
+  private readonly values = computed(() => this.buckets().map(bucket => num(bucket.values[this.seriesKey()])));
   /** D4: the average of the months with data through the last finished one; null draws no line. */
   private readonly monthMean = computed(() =>
-    monthAverage((this.trend()?.buckets ?? []).map((bucket, index) => ({ start: bucket.start, value: this.values()[index] })), this.today()),
+    monthAverage(this.buckets().map((bucket, index) => ({ start: bucket.start, value: this.values()[index] })), this.today()),
   );
   readonly average = computed(() => this.monthMean()?.average ?? null);
 
@@ -163,7 +173,7 @@ export class ReportTrendComponent {
    * never below what the month already holds when the period is that month (the whole-period read covers it then).
    */
   readonly forecast = computed<RunningForecast | null>(() => {
-    const buckets = this.trend()?.buckets ?? [];
+    const buckets = this.buckets();
     if (this.whole() || buckets.length === 0) return null;
     const start = buckets[buckets.length - 1].start.slice(0, 10);
     if (!runningBucket(start.slice(0, 7), 'month', this.today())) return null;
@@ -191,7 +201,7 @@ export class ReportTrendComponent {
   });
   /** One tap target per month: the whole column, so a thin phone bar is easy to hit. */
   readonly hits = computed(() => {
-    const buckets = this.trend()?.buckets ?? [];
+    const buckets = this.buckets();
     const { plot } = this.layout();
     const slot = plot.width / Math.max(buckets.length, 1);
     return buckets.map((bucket, index) => ({
@@ -206,12 +216,12 @@ export class ReportTrendComponent {
   /** The tapped month's figure; the running month shows 實際 and 預估. */
   readonly tip = computed<BarTip | null>(() => {
     const key = this.picked();
-    const index = (this.trend()?.buckets ?? []).findIndex(bucket => bucket.start === key);
+    const index = this.buckets().findIndex(bucket => bucket.start === key);
     return index < 0 ? null : this.tipAt(index);
   });
 
   private tipAt(index: number): BarTip {
-    const buckets = this.trend()!.buckets;
+    const buckets = this.buckets();
     const bar = this.bars()[index];
     const spansYears = buckets[0].start.slice(0, 4) !== buckets[buckets.length - 1].start.slice(0, 4);
     const name = bucketText(buckets[index].start, 'month', spansYears);
@@ -240,7 +250,7 @@ export class ReportTrendComponent {
   private readonly max = computed(() => niceCeiling(Math.max(...this.values(), this.average() ?? 0, this.forecast()?.value ?? 0, 0)));
 
   readonly bars = computed<Bar[]>(() => {
-    const buckets = this.trend()?.buckets ?? [];
+    const buckets = this.buckets();
     const geometry = barGeometry(this.values(), this.layout().plot, this.max());
     return geometry.map((bar, index) => {
       const last = index === geometry.length - 1;
@@ -271,7 +281,7 @@ export class ReportTrendComponent {
   readonly averageTextY = computed(() => (yOf(this.average() ?? 0, this.layout().plot, this.max()) - 6).toFixed(1));
   readonly averageLabel = computed(() => `${this.monthMean()?.months ?? 0} 個月平均 ${n0(this.average())}`);
   readonly chartAria = computed(() => {
-    const buckets = this.trend()?.buckets ?? [];
+    const buckets = this.buckets();
     const values = this.values();
     const spansYears = buckets.length > 0 && buckets[0].start.slice(0, 4) !== buckets[buckets.length - 1].start.slice(0, 4);
     const name = (bucket: { start: string }, index: number) => {

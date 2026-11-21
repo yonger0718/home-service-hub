@@ -23,7 +23,15 @@ The SPA SHALL provide `/accounting/reports` with tabs 總覽, 趨勢與比較, �
 
 ### Requirement: Trend and comparison tab
 
-趨勢與比較 SHALL show twelve monthly bars ending at the selected month with a dashed average line, switchable between all expense and single categories, and a table per category with this period, the previous period and the same period last year, each change as ▲ / ▼ amount and percentage, and a total row.
+趨勢與比較 SHALL load twelve months ending at the selected month and show the bars from the first month whose 全部支出 total is not 0, at least the last 6 and never more than the loaded twelve, with a dashed average line, switchable between all expense and single categories, and a table per category with this period, the previous period and the same period last year, each change as ▲ / ▼ amount and percentage, and a total row.
+
+#### Scenario: Chart starts where the data starts
+- **GIVEN** 全部支出 is 0 until 2026-08 and the selected month is 2026-10
+- **THEN** the bars SHALL be the last 6 months (the minimum, 5 月 to 10 月, the first three empty), headed 近 6 個月
+
+#### Scenario: More than six months of data
+- **GIVEN** the first month with 全部支出 data is 2026-03 and the selected month is 2026-10
+- **THEN** the bars SHALL run 3 月 to 10 月, headed 近 8 個月, with no empty bar before 3 月, and picking a category chip SHALL keep that window
 
 #### Scenario: Unchanged category
 - **WHEN** 訂閱 is 1,078 in both September and October
@@ -67,6 +75,14 @@ At ≥ 760 px `/accounting/reports/custom/new` and `/accounting/reports/custom/:
 - **WHEN** it is opened on 2026-12-02
 - **THEN** it SHALL cover July to December 2026
 
+### Requirement: Single-series saved report table
+
+A saved report whose split yields exactly one series SHALL NOT render the total column (合計, or 本月至今 / 本期至今 while the period runs), because it repeats the series column; this holds for finished and running periods alike.
+
+#### Scenario: One split series has no total column
+- **GIVEN** a saved report split into exactly one series
+- **THEN** the table's 合計 / 本月至今 column SHALL be absent from the head, the rows and the total row, while the comparison columns and 筆數 stay; with no split or two or more series it SHALL stay
+
 ### Requirement: Saved reports on phones
 
 Below 760 px the reports page SHALL list saved reports as chips under the tabs; opening one SHALL show its figures, chart and table, with 編輯條件 opening a bottom sheet of its conditions and 套用. Creating a report SHALL be desktop only.
@@ -80,7 +96,7 @@ Below 760 px the reports page SHALL list saved reports as chips under the tabs; 
 A report period (`to` being its inclusive last day) SHALL be *running* while `from ≤ today < to`. For a running period:
 
 - **The amounts, the charts and the comparisons** SHALL all use the range from the period's start through today. Changes SHALL be marked 「截至 M/D」.
-- **The current column** SHALL read 「本月至今（M/D–M/D）」 (「本期至今」 for other periods), and the comparison columns 上月同期 (上期同期) and 去年同期.
+- **The current column** SHALL read 「本月至今（M/D–M/D）」 (「本期至今」 for other periods), hidden in a saved report that splits into exactly one series; the comparison columns are 上月同期 (上期同期) and 去年同期.
 
 #### Scenario: Header on the 7th
 - **GIVEN** today is 2026-11-07, November's expense so far is 4,233, October 1–7 is 6,910 and November 1–7 2025 is 5,120
@@ -205,14 +221,18 @@ The year SHALL be prefixed (2025 年 9 月, 2025/10/5) when the report spans mor
 
 ### Requirement: Reports header and button clearance
 
-From 1024 px the reports page header SHALL be one row: the title with the statistics rules line on the left, and the period control on the right. Below 1024 px the period control SHALL stay under the title.
+From 1024 px the reports page header SHALL be one row: the title with the statistics rules line on the left, and the period control on the right. Below 1024 px the period control SHALL stay under the title; from 760 px the period control wraps to its own row, and below 760 px the title, a one-line subtitle and the gear SHALL share one row.
 
-The reports page and the saved-report page SHALL keep ending with the shell's floating-button clearance, so the 記一筆 button covers no figure once the page is scrolled to its end.
+The reports page and the saved-report page SHALL keep the shell's floating-button clearance at their end, though no 記一筆 button shows on them.
 
 #### Scenario: Desktop header
 - **WHEN** `/accounting/reports` opens at 1440 px
 - **THEN** the period stepper SHALL be on the title's row and no separate period row SHALL appear
 
+#### Scenario: Phone header on one row
+- **WHEN** `/accounting/reports` opens at 390 px
+- **THEN** the title, the one-line subtitle and the gear SHALL sit on one row, with the period control beneath
+
 #### Scenario: Last column visible
 - **WHEN** a saved report's table is scrolled to its end at 1440 px
-- **THEN** the 增減 column of the total row SHALL not be covered by the 記一筆 button
+- **THEN** no floating button SHALL cover the 增減 column of the total row, and the bottom clearance SHALL remain

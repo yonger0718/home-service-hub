@@ -203,7 +203,7 @@ The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accou
 - **信用卡:** a 信用帳戶 switch in the section header. When on, it reveals:
   - 繳款期限: 未設定, fixed day or days after closing, with a stepper and the computed due date when set;
   - 信用額度;
-  - 額度共用, a multi-select of credit accounts;
+  - 額度共用, a multi-select of credit accounts, each option a native checkbox in the app's `.hub-check` style (token colours, dark-theme checked fill);
   - 主帳戶 and 自動扣繳, pickers.
 - **回饋規則:** the current window and 「所有卡片的規則 ›」 in the header, the account's rules as rows (requirement "Reward rule rows"), and ＋ 新增規則.
 - **國外交易:** a switch in the header revealing 費率 (%), 計算方式 and 退款時退回.
@@ -828,7 +828,7 @@ Accounts with rules SHALL be cards, two columns from 1024 px. Each card shows:
 
 ### Requirement: Reward overview units and windows
 
-Overview figures SHALL use the rule's reward unit: money, or the number and the points account's name. A card's total SHALL be given per unit, and the header's total SHALL sum money only, followed by 「＋ N 種點數」 counting the other units. A reward account marked `cash_equivalent` is money. When an account's rules have different windows, the card header SHALL show only the closing day and each rule row its own period.
+Overview figures SHALL use the rule's reward unit: money, or the number and the points account's name. A card's total SHALL be given per unit, and the header's total SHALL sum money only, followed by 「＋ N 種點數」 counting the other units. A reward account marked `cash_equivalent` is money.
 
 #### Scenario: Points rule on the overview
 - **GIVEN** a card with a money rule and a rule paying points into 亞洲萬里通
@@ -838,9 +838,13 @@ Overview figures SHALL use the rule's reward unit: money, or the number and the 
 - **GIVEN** the overview opened with `?account_id=<that card>` only
 - **THEN** the points rule's figures SHALL still read in 亞洲萬里通, taken from the usage row's unit
 
+### Requirement: Reward overview card window
+
+A card with usage SHALL show its own window in the title; a rule row SHALL show its own 「本期 …」 / 「本月 …」 line only when its window differs from the title's. A closing-day card whose rules all count by calendar month SHALL read 「每月 1 日起算 · 本月 …」, and a card without usage SHALL show only its closing day.
+
 #### Scenario: Mixed windows on one card
 - **GIVEN** a card with a statement-cycle rule and a calendar-month rule
-- **THEN** the card header SHALL show only 「結帳日 N 號」 and each rule row its own 「本期 …」
+- **THEN** the card title SHALL show the statement cycle, the statement-cycle row SHALL show no period line, and the calendar-month row SHALL show 「本月 M/D–M/D」
 
 ### Requirement: Reward overview rule lines
 
@@ -848,9 +852,13 @@ Each rule row on an overview card SHALL show:
 
 - the name and a rate chip, never the rate repeated in the label;
 - a state tag only when the rule is not active, or is 基本;
-- the posting summary;
+- the posting summary, in plain 「… 入帳」 wording;
 - for an active rule with a cap, the cap bar;
 - for an active rule without a cap, 「無上限 · 本期 … 已入帳 + … 預估」; for any other rule, one muted line instead of the bar: 「停用中，不估算回饋」 (disabled), 「已結束，不再估算」 (expired) or 「Y/M/D 起才估算」 (upcoming, the start date without zero padding).
+
+#### Scenario: Posting summary wording
+- **GIVEN** rules posting on day 15 of the window's end month, of the next period, of the one after, 3 days after the transaction, and by hand
+- **THEN** their summaries SHALL read 結帳當月 15 號入帳, 下期 15 號入帳, 下下期 15 號入帳, 交易後 3 天入帳 and 手動入帳, on the overview and in account settings
 
 #### Scenario: Upcoming rule
 - **GIVEN** a rule starting 2027-01-01, viewed in 2026
@@ -896,7 +904,7 @@ In account settings each rule SHALL be one row:
 
 - a drag handle;
 - the name and a rate chip, and a state tag only when the rule is not active or is 基本;
-- the posting summary;
+- the posting summary, in the same wording as the overview;
 - the cap bar for an active capped rule;
 - an enable switch;
 - a ⋯ menu with 編輯, 刪除, 上移 and 下移.

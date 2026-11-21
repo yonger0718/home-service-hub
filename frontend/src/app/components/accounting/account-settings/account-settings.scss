@@ -137,6 +137,7 @@
 .due-fields { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .cycle-preview, .due-preview { color: var(--app-text-muted); display: block; }
 .sharing-list { display: flex; flex-direction: column; gap: 2px; }
+.sharing-option { display: flex; align-items: center; gap: 10px; min-height: 40px; }
 .sharing-current { color: var(--app-text-muted); font-size: 0.75rem; }
 
 /* 回饋規則 (spec §6.1): the rows are app-account-rules (rules-section.scss); the header, message and 新增規則 stay here. */

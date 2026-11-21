@@ -1,10 +1,10 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { Observable, catchError, forkJoin, of } from 'rxjs';
+import { Observable, catchError, forkJoin, map, of } from 'rxjs';
 
 import { CategoryNode, Project } from '../../../models/accounting.model';
-import { BreakdownResponse, BreakdownRow, BudgetInput, BudgetStatusResponse, SavedReport, TrendQuery, TrendResponse } from '../../../models/reports.model';
+import { BreakdownResponse, BreakdownRow, BudgetInput, BudgetStatusResponse, SavedReport, TREND_ALL, TrendQuery, TrendResponse } from '../../../models/reports.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { NgTemplateOutlet } from '@angular/common';
 import { LayoutModeService } from '../../../services/layout-mode.service';
@@ -36,6 +36,7 @@ import {
   shiftPeriod,
   totalChange,
   trendRange,
+  trendStart,
   viewRange,
   windowEmpty,
 } from './report-math';
@@ -125,6 +126,18 @@ export class AccountingReportsComponent {
   readonly state = signal<LoadState>('loading');
   readonly trend = signal<TrendResponse | null>(null);
   readonly trendState = signal<LoadState>('loading');
+  /** `date_from/date_to` of the read behind `trend`. */
+  private readonly trendLoadedRange = signal<string | null>(null);
+  /**
+   * Where the chart starts, judged on the 全部支出 read of `range`: a category read has no such key, so the window is
+   * remembered here and reused while a chip is on.
+   */
+  readonly trendFrom = signal<{ range: string; start: string } | null>(null);
+  /** `trendFrom`'s start, only while it belongs to the loaded trend. */
+  readonly trendFromStart = computed(() => {
+    const from = this.trendFrom();
+    return from && from.range === this.trendLoadedRange() ? from.start : null;
+  });
   /** The trend's category (chip); null = everything. */
   readonly trendSeries = signal<number | null>(null);
   /** 排行: the ranked rows of the dimension, the selected row and its six-month bars. Read only while the tab is open. */
@@ -448,20 +461,35 @@ export class AccountingReportsComponent {
     const view = viewRange(period, this.today(), whole);
     const range = trendRange({ ...period, to: view.to });
     if (isRunning(period, this.today())) range.to = view.to;
-    this.reports
-      .getTrend({ date_from: range.from, date_to: range.to, metric: 'expense', granularity: 'month', series: series === null ? undefined : [series] })
-      .subscribe({
-        next: trend => {
-          if (id !== this.trendRequestId) return;
-          this.trend.set(trend);
-          this.trendState.set('ready');
-        },
-        error: () => {
-          if (id !== this.trendRequestId) return;
-          this.trend.set(null);
-          this.trendState.set('error');
-        },
-      });
+    const key = `${range.from}/${range.to}`;
+    const read = (ids: number[] | undefined) =>
+      this.reports.getTrend({ date_from: range.from, date_to: range.to, metric: 'expense', granularity: 'month', series: ids });
+    const windowOf = (all: TrendResponse): { range: string; start: string } | null => {
+      const start = all.buckets[trendStart(all.buckets.map(bucket => num(bucket.values[TREND_ALL])))]?.start;
+      return start === undefined ? null : { range: key, start };
+    };
+    const filtered = series !== null;
+    const needsWindow = filtered && this.trendFrom()?.range !== key;
+    const request: Observable<{ trend: TrendResponse; all: TrendResponse | null }> =
+      series === null
+        ? read(undefined).pipe(map(trend => ({ trend, all: trend })))
+        : needsWindow
+          ? forkJoin({ trend: read([series]), all: read(undefined).pipe(catchError(() => of(null))) })
+          : read([series]).pipe(map(trend => ({ trend, all: null })));
+    request.subscribe({
+      next: ({ trend, all }) => {
+        if (id !== this.trendRequestId) return;
+        if (all) this.trendFrom.set(windowOf(all));
+        this.trendLoadedRange.set(key);
+        this.trend.set(trend);
+        this.trendState.set('ready');
+      },
+      error: () => {
+        if (id !== this.trendRequestId) return;
+        this.trend.set(null);
+        this.trendState.set('error');
+      },
+    });
   }
 
   // ---- URL state ------------------------------------------------------------------------------------------------

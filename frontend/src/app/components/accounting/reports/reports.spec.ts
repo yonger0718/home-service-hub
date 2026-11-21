@@ -898,12 +898,18 @@ describe('AccountingReportsComponent', () => {
 
     it('keeps the header on one row from 1024 px and wraps the period control below', () => {
       const css = scss('reports.scss');
-      const media = /@media \(max-width: 1023\.98px\) \{([\s\S]*?)\n  \}\n\}|@media \(max-width: 1023\.98px\) \{([\s\S]*?)\n\}/.exec(css);
-      const block = media?.[1] ?? media?.[2] ?? '';
+      // Phones keep title, subtitle and gear on one row (no wrap below 760 px); only 760-1023.98 px wraps.
+      const query = '@media (min-width: 760px) and (max-width: 1023.98px)';
+      const start = css.indexOf(query);
+      expect(start).toBeGreaterThan(-1);
+      const block = /\{([\s\S]*?)\n\}/.exec(css.slice(start + query.length))?.[1] ?? '';
       expect(block).toContain('.page-actions');
       expect(block).toMatch(/flex(-basis)?:\s*(1 1 )?100%|width:\s*100%/);
       // M2: the actions go after the title and the gear, so the period control stays under them (the phone sub-nav is handled by the template, see the next test).
       expect(block).toMatch(/\.page-actions\s*\{[^}]*order:\s*1\b/);
+      expect(block).toMatch(/\.page-header-row\s*\{\s*flex-wrap:\s*wrap/);
+      const wrapsAt = (c: string) => [...c.matchAll(/@media \(([^)]*)\)[^{]*\{/g)].map((m) => m[1]);
+      expect(wrapsAt(css)).not.toContain('max-width: 1023.98px');
       const outside = css.replace(/@media[^{]*\{(?:[^{}]|\{[^{}]*\})*\}/g, '');
       for (const rule of outside.match(/[^{}]*\.rp-period\b[^{}]*\{[^}]*\}/g) ?? []) {
         expect(rule).not.toMatch(/display:\s*none|order:|position:|transform|margin-top/);
@@ -1282,6 +1288,100 @@ describe('AccountingReportsComponent', () => {
       expect(el.querySelector('.tr-average')).not.toBeNull();
     });
 
+    describe('where the chart starts (item 9)', () => {
+      const labels = (el: HTMLElement) => texts(el, '.tr-label .tr-month');
+      const chips = (el: HTMLElement) => el.querySelectorAll<HTMLButtonElement>('.tr-chips button');
+      const category = (values: number[]): TrendResponse => ({
+        currency: 'TWD',
+        granularity: 'month',
+        buckets: MONTHS.slice(MONTHS.length - values.length).map((m, i) => ({ start: `${m}-01`, values: { '2': String(values[i]) } })),
+        average: {},
+      });
+      const trendReads = () => live(http.match(r => r.url === TREND));
+
+      it('starts at the first month with data, six bars at least', async () => {
+        const { el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+        expect(el.querySelectorAll('.tr-bar')).toHaveLength(6);
+        expect(el.querySelector('.tr-card h2')?.textContent?.trim()).toBe('每月支出 · 近 6 個月');
+        expect(labels(el)).toEqual(['6 月', '7 月', '8 月', '9 月', '10 月', '11 月']);
+        expect(el.querySelector('.tr-label .tr-year')?.textContent).toBe('2026');
+        expect(el.querySelector('.tr-average-label')?.textContent).toBe('3 個月平均 37,566');
+        expect(el.querySelector('.tr-chart')?.getAttribute('aria-label')).toMatch(/^全部支出近 6 個月：6 月 0、7 月 0、8 月 31,200、/);
+      });
+
+      it('never pads beyond the months loaded', async () => {
+        const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, trend: trendOf([5000, 31200, 39608, 41890, 4233]) });
+        expect(el.querySelectorAll('.tr-bar')).toHaveLength(5);
+      });
+
+      it('keeps the heading at 近 12 個月 while the trend is loading', async () => {
+        vi.setSystemTime(new Date(2026, 10, 7, 10, 0));
+        const { el } = await open('/accounting/reports?month=2026-11&tab=trend');
+        expect(el.querySelector('.tr-card h2')?.textContent?.trim()).toBe('每月支出 · 近 12 個月');
+        for (const request of pending().breakdowns) request.flush(breakdown(breakdownQuery(request), FOOD, 5));
+        for (const request of pending().trends) request.flush(trendOf(SERIES));
+      });
+
+      it('keeps the window when a category chip is picked: one request, a response with only that category', async () => {
+        const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+        chips(el)[1].click();
+        harness.detectChanges();
+        const reads = trendReads();
+        expect(reads).toHaveLength(1);
+        expect(trendQuery(reads[0]).series).toEqual([2]);
+        reads[0].flush(category([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12000, 4233]));
+        harness.detectChanges();
+        expect(el.querySelectorAll('.tr-bar')).toHaveLength(6);
+        expect(labels(el)).toEqual(['6 月', '7 月', '8 月', '9 月', '10 月', '11 月']);
+        expect(el.querySelector('.tr-card h2')?.textContent?.trim()).toBe('每月支出 · 餐飲 · 近 6 個月');
+      });
+
+      it('reads the unfiltered trend too when the period changes under a chip, and windows from it', async () => {
+        const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+        chips(el)[1].click();
+        harness.detectChanges();
+        trendReads()[0].flush(category(Array<number>(12).fill(1)));
+        harness.detectChanges();
+
+        await harness.navigateByUrl('/accounting/reports?month=2026-10&tab=trend');
+        harness.detectChanges();
+        const reads = trendReads();
+        expect(reads).toHaveLength(2);
+        expect(reads.map(read => trendQuery(read).series).sort()).toEqual([undefined, [2]].sort());
+        for (const read of reads) read.flush(trendQuery(read).series ? category(Array<number>(12).fill(1)) : trendOf(SERIES));
+        for (const request of pending().breakdowns) request.flush(breakdown(breakdownQuery(request), FOOD, 5));
+        harness.detectChanges();
+        expect(el.querySelectorAll('.tr-bar')).toHaveLength(6);
+      });
+
+      it('shows every loaded month when that unfiltered read fails', async () => {
+        const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+        chips(el)[1].click();
+        harness.detectChanges();
+        trendReads()[0].flush(category(Array<number>(12).fill(1)));
+        await harness.navigateByUrl('/accounting/reports?month=2026-10&tab=trend');
+        harness.detectChanges();
+        for (const read of trendReads()) {
+          if (trendQuery(read).series) read.flush(category(Array<number>(12).fill(1)));
+          else read.flush('x', { status: 500, statusText: 'Server Error' });
+        }
+        for (const request of pending().breakdowns) request.flush(breakdown(breakdownQuery(request), FOOD, 5));
+        harness.detectChanges();
+        expect(el.querySelectorAll('.tr-bar')).toHaveLength(12);
+        expect(el.querySelector('.tr-empty[role=alert]')).toBeNull();
+      });
+
+      it('leaves the 類別 table rows as they were', async () => {
+        const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+        const before = texts(el, '.tr-table tbody tr td');
+        chips(el)[1].click();
+        harness.detectChanges();
+        trendReads()[0].flush(category([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12000, 4233]));
+        harness.detectChanges();
+        expect(texts(el, '.tr-table tbody tr td')).toEqual(before);
+      });
+    });
+
     it('draws no average for a ledger younger than a month', async () => {
       const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, trend: trendOf([4233]) });
       expect(el.querySelector('.tr-average')).toBeNull();
@@ -1315,24 +1415,25 @@ describe('AccountingReportsComponent', () => {
 
       it('shows a finished month figure and hides it on a second tap', async () => {
         const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD });
-        expect(el.querySelectorAll('.tr-chart .tr-hit')).toHaveLength(12);
-        tap(harness, hit(el, 10));
-        expect(tipText(el)).toEqual(['2026 年 10 月', '$41,890']);
-        tap(harness, hit(el, 10));
+        expect(el.querySelectorAll('.tr-chart .tr-hit')).toHaveLength(6);
+        tap(harness, hit(el, 4));
+
+        expect(tipText(el)).toEqual(['10 月', '$41,890']);
+        tap(harness, hit(el, 4));
         expect(tip(el)).toBeNull();
       });
 
       it('shows the running month to date and its 預估', async () => {
         const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD });
-        tap(harness, hit(el, 11));
-        expect(tipText(el)).toEqual(['2026 年 11 月（至 11/7）', '實際 $4,233', '預估 $33,034']);
+        tap(harness, hit(el, 5));
+        expect(tipText(el)).toEqual(['11 月（至 11/7）', '實際 $4,233', '預估 $33,034']);
         expect(tip(el)!.classList.contains('end')).toBe(true);
       });
 
       it('shows the 預估 at what the month already holds when that is higher', async () => {
         const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD, whole: [row('2', '餐飲', 50000, 12)] });
-        tap(harness, hit(el, 11));
-        expect(tipText(el)).toEqual(['2026 年 11 月（至 11/7）', '實際 $4,233', '預估 $50,000']);
+        tap(harness, hit(el, 5));
+        expect(tipText(el)).toEqual(['11 月（至 11/7）', '實際 $4,233', '預估 $50,000']);
       });
 
       it('anchors the first month to the left and closes on a tap on the chart background', async () => {
@@ -1346,14 +1447,14 @@ describe('AccountingReportsComponent', () => {
       it('reaches every month from the keyboard: a named, focusable button per column, opened with Enter', async () => {
         const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD });
         expect(el.querySelector('.tr-chart')?.getAttribute('role')).toBe('group');
-        const target = hit(el, 11);
+        const target = hit(el, 5);
         expect(target.getAttribute('tabindex')).toBe('0');
         expect(target.getAttribute('role')).toBe('button');
-        expect(target.getAttribute('aria-label')).toBe('2026 年 11 月（至 11/7） 實際 $4,233 預估 $33,034');
-        expect(hit(el, 10).getAttribute('aria-label')).toBe('2026 年 10 月 $41,890');
+        expect(target.getAttribute('aria-label')).toBe('11 月（至 11/7） 實際 $4,233 預估 $33,034');
+        expect(hit(el, 4).getAttribute('aria-label')).toBe('10 月 $41,890');
         target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
         harness.detectChanges();
-        expect(tipText(el)[0]).toBe('2026 年 11 月（至 11/7）');
+        expect(tipText(el)[0]).toBe('11 月（至 11/7）');
         expect(target.getAttribute('aria-pressed')).toBe('true');
         target.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
         harness.detectChanges();
@@ -1362,7 +1463,7 @@ describe('AccountingReportsComponent', () => {
 
       it('closes when another category is picked', async () => {
         const { harness, el, today } = await openTrend([2026, 11, 7], { toDate: FOOD });
-        tap(harness, hit(el, 10));
+        tap(harness, hit(el, 4));
         expect(tip(el)).not.toBeNull();
         el.querySelectorAll<HTMLButtonElement>('.tr-chips button')[1].click();
         harness.detectChanges();
@@ -1388,7 +1489,7 @@ describe('AccountingReportsComponent', () => {
       expect(bars.at(-1)!.classList.contains('running')).toBe(true);
       expect(bars.filter(bar => bar.classList.contains('running'))).toHaveLength(1);
       expect(el.querySelector('.tr-chart')?.getAttribute('aria-label')).toContain('11 月 進行中（至 11/7） 4,233');
-      expect(texts(el, '.tr-label .tr-year')).toEqual(['2025', '2026']);
+      expect(texts(el, '.tr-label .tr-year')).toEqual(['2026']);
     });
 
     it('heads the table 本月至今（11/1–11/7） / 上月同期 / 去年同期 while running', async () => {

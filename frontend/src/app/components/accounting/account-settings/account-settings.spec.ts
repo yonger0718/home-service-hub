@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
@@ -622,6 +624,22 @@ describe('AccountSettingsComponent', () => {
     req.flush(DETAIL);
   });
 
+  it('styles every 額度共用 checkbox with the app tick (hub-check)', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    const boxes = el(fixture).querySelectorAll<HTMLInputElement>('.sharing-option input[type="checkbox"]');
+    expect(boxes.length).toBeGreaterThan(0);
+    boxes.forEach((box) => expect(box.classList.contains('hub-check')).toBe(true));
+  });
+
+  it('defines .hub-check globally: custom box, primary fill when checked, focus ring, dark ink fill', () => {
+    const css = readFileSync(join(process.cwd(), 'src/styles.scss'), 'utf8');
+    expect(css).toMatch(/\.hub-check\s*\{[^}]*appearance:\s*none/);
+    expect(css).toMatch(/\.hub-check:checked\s*\{[^}]*var\(--app-primary\)/);
+    expect(css).toMatch(/\.hub-check:focus-visible\s*\{[^}]*--app-focus-ring/);
+    expect(css).toMatch(/\.app-dark-mode\s+\.hub-check:checked\s*\{[^}]*--app-primary-ink-bg/);
+  });
+
   it('adds a chosen card to credit_sharing_members in the one PUT of this account', async () => {
     await setup('11');
     const fixture = render(DETAIL);
@@ -1041,7 +1059,7 @@ describe('AccountSettingsComponent', () => {
     expect(el(fixture).querySelectorAll('.rule-row').length).toBe(2);
     expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般', '餐飲']);
     expect(texts(fixture, '.rule-row .rule-rate')).toEqual(['1%', '5.2%']);
-    expect(texts(fixture, '.rule-row .rule-posting')).toEqual(['· 帳單結帳後第 1 月 15 日', '· 交易後 3 天']);
+    expect(texts(fixture, '.rule-row .rule-posting')).toEqual(['· 下期 15 號入帳', '· 交易後 3 天入帳']);
     const states = Array.from(el(fixture).querySelectorAll('.rule-row .rule-state'));
     expect(states.map(s => [s.getAttribute('data-state'), s.textContent?.trim()])).toEqual([['disabled', '已停用']]);
     const rows = Array.from(el(fixture).querySelectorAll('.rule-row'));

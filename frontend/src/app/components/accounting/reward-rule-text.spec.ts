@@ -19,9 +19,14 @@ describe('ruleState', () => {
 
 describe('text', () => {
   it('summarises posting', () => {
-    expect(postingSummary(makeRule({ posting: 'after_window', post_month_offset: 1, post_day: 15 }))).toBe('帳單結帳後第 1 月 15 日');
-    expect(postingSummary(makeRule({ posting: 'after_transaction', delay_days: 3 }))).toBe('交易後 3 天');
-    expect(postingSummary(makeRule({ posting: 'manual' }))).toBe('手動');
+    const after = (post_month_offset: number, post_day: number) =>
+      postingSummary(makeRule({ posting: 'after_window', post_month_offset, post_day }));
+    expect(after(0, 15)).toBe('結帳當月 15 號入帳');
+    expect(after(1, 15)).toBe('下期 15 號入帳');
+    expect(after(2, 15)).toBe('下下期 15 號入帳');
+    expect(after(1, 5)).toBe('下期 5 號入帳');
+    expect(postingSummary(makeRule({ posting: 'after_transaction', delay_days: 3 }))).toBe('交易後 3 天入帳');
+    expect(postingSummary(makeRule({ posting: 'manual' }))).toBe('手動入帳');
   });
   it('renders the period', () => {
     expect(periodText({ starts_on: '2026-01-01', ends_on: '2026-12-31' })).toBe('2026/01/01 – 2026/12/31');
