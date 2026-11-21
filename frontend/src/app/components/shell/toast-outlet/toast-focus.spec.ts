@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ToastScope, ToastService } from '../../../services/toast.service';
 import { trapFocus } from '../../accounting/accounting-ui';
 import { ToastOutletComponent } from './toast-outlet';
-import { cycleFocusables, toastCycleTarget } from './toast-focus';
+import { cycleFocusables, outermostModal, toastCycleTarget } from './toast-focus';
 
 @Component({
   imports: [ToastOutletComponent],
@@ -135,6 +135,60 @@ describe('toast focus cycle with an open modal', () => {
     const event = tab(q('#d2'));
     expect(event.defaultPrevented).toBe(true);
     expect(document.activeElement).toBe(q('#d1'));
+  });
+
+  it("with no toast and the sentinels present the outlet leaves the event alone", () => {
+    q('#d2').focus();
+    const event = tab(q('#d2'));
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(q('#d2'));
+  });
+
+  it('a nested role="dialog" inside the dialog does not become the modal: the cycle follows the outer dialog', () => {
+    const inner = document.createElement('div');
+    inner.setAttribute('role', 'dialog');
+    inner.innerHTML = '<button id="n1">內一</button><button id="n2">內二</button>';
+    q('#d2').after(inner);
+    raise();
+    expect(outermostModal(q('#n2'))).toBe(q('#dlg'));
+    q('#n2').focus();
+    // n2 is the outer dialog's last control: on to the toast, and 關閉 wraps to the outer dialog's first control.
+    expect(tab(q('#n2')).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(q('.toast-action'));
+    q('.toast-close').focus();
+    tab(q('.toast-close'));
+    expect(document.activeElement).toBe(q('#d1'));
+    // n1 to n2 stays inside the dialog: not the outlet's.
+    q('#n1').focus();
+    expect(tab(q('#n1')).defaultPrevented).toBe(false);
+  });
+
+  it('an overlay panel appended to body while the dialog is open is not hijacked', () => {
+    const panel = document.createElement('div');
+    panel.className = 'p-datepicker p-component';
+    panel.setAttribute('role', 'dialog');
+    panel.innerHTML = '<button id="o1">日</button><button id="o2">月</button>';
+    document.body.appendChild(panel);
+    raise();
+    try {
+      expect(outermostModal(panel.querySelector<HTMLElement>('#o2')!)).toBeNull();
+      const last = panel.querySelector<HTMLElement>('#o2')!;
+      last.focus();
+      expect(tab(last).defaultPrevented).toBe(false);
+      expect(document.activeElement).toBe(last);
+      const first = panel.querySelector<HTMLElement>('#o1')!;
+      first.focus();
+      expect(tab(first, true).defaultPrevented).toBe(false);
+    } finally {
+      panel.remove();
+    }
+  });
+
+  it('Shift+Tab with the dialog container itself focused moves to 關閉', () => {
+    raise();
+    q('#dlg').focus();
+    expect(tab(q('#dlg'), true).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(q('.toast-close'));
   });
 
   it('without a modal the outlet leaves Tab alone', () => {

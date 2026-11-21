@@ -12,7 +12,7 @@ import {
 
 import { Toast, ToastService } from '../../../services/toast.service';
 import { isHandledKey } from '../../accounting/accounting-ui';
-import { MODAL_SELECTOR, toastCycleTarget } from './toast-focus';
+import { outermostModal, toastCycleTarget } from './toast-focus';
 
 /**
  * The one toast of the app (shell-level). Two live regions stay in the DOM so a screen reader hears a toast that is
@@ -172,8 +172,8 @@ export class ToastOutletComponent {
     }
     const inToast = toast.contains(active);
     const modal = inToast
-      ? (this.lastOutside?.isConnected ? this.lastOutside.closest<HTMLElement>(MODAL_SELECTOR) : null)
-      : active.closest<HTMLElement>(MODAL_SELECTOR);
+      ? (this.lastOutside?.isConnected ? outermostModal(this.lastOutside) : null)
+      : outermostModal(active);
     const target = toastCycleTarget({ active, modal, toast, backwards: event.shiftKey });
     if (target) {
       event.preventDefault();

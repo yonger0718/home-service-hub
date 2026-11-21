@@ -73,11 +73,8 @@ function find(harness: RouterTestingHarness, selector: string): Promise<Element>
 
 const LIST = '.list-pane > *';
 const PANE_PAGE = '.detail-pane router-outlet + :not(.pane-empty)';
-/**
- * A page in the layout's primary outlet, never the toast that follows it before the page loads
- * (`:scope >`: jsdom 27 mis-caches a bare `router-outlet + *`).
- */
-const SCREEN = ':scope > router-outlet + :not(app-accounting-toast)';
+/** A page in the layout's primary outlet (`:scope >`: jsdom 27 mis-caches a bare `router-outlet + *`). */
+const SCREEN = ':scope > router-outlet + *';
 
 describe('AccountingLayoutComponent', () => {
   afterEach(() => localStorage.removeItem('hh.accounting.timelineView'));
@@ -1239,6 +1236,12 @@ describe('AccountingLayoutComponent', () => {
     expect(getComputedStyle(host).getPropertyValue('--fs-micro').trim()).toBe('0.72rem');
   });
 
+  it('renders no toast of its own', async () => {
+    const harness = await start('panes', '/accounting');
+    await find(harness, '.list-pane');
+    expect(harness.routeNativeElement!.querySelector('app-toast-outlet, .toast')).toBeNull();
+  });
+
   it('marks the list pane as the page scroller for the shell', async () => {
     const harness = await start('panes', '/accounting');
     const pane = await find(harness, '.list-pane');
@@ -1423,6 +1426,32 @@ describe('AccountingLayoutComponent', () => {
       close.focus();
       expect(tab(close).defaultPrevented).toBe(true);
       expect(document.activeElement).toBe(first);
+      outlet.destroy();
+      host.remove();
+    });
+
+    it('Shift+Tab: the sheet first control goes to the toast last button, the toast first button back to the sheet last', async () => {
+      const { sheet, outlet, host } = await openSheetWithToast();
+      const items = focusables(sheet());
+      items[0].focus();
+      expect(tab(items[0], true).defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(host.querySelector('.toast-close'));
+      const action = host.querySelector<HTMLElement>('.toast-action')!;
+      action.focus();
+      expect(tab(action, true).defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(items[items.length - 1]);
+      outlet.destroy();
+      host.remove();
+    });
+
+    it('Shift+Tab with the sheet container itself focused moves to the toast last button', async () => {
+      const { sheet, outlet, host } = await openSheetWithToast();
+      const pane = sheet();
+      pane.tabIndex = -1;
+      pane.focus();
+      expect(document.activeElement).toBe(pane);
+      expect(tab(pane, true).defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(host.querySelector('.toast-close'));
       outlet.destroy();
       host.remove();
     });

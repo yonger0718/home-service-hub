@@ -19,6 +19,7 @@ import {
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { ToastService } from '../../../services/toast.service';
+import { cycleFocusables } from '../../shell/toast-outlet/toast-focus';
 import { ToastOutletComponent } from '../../shell/toast-outlet/toast-outlet';
 import { ALLOCATION_SERIES, abbrInk, holdingAbbr } from '../dashboard/dashboard-math';
 import { PortfolioTransactionListComponent } from './transaction-list';
@@ -796,8 +797,7 @@ describe('PortfolioTransactionListComponent', () => {
     scope.error('儲存失敗', { retry: vi.fn() });
     outlet.changeDetectorRef.detectChanges();
 
-    const real = Array.from(dialog!.querySelectorAll<HTMLElement>('button, input, select, textarea, [tabindex]'))
-      .filter(node => node.tabIndex >= 0 && node.dataset['pHiddenFocusable'] !== 'true' && !node.hasAttribute('disabled'));
+    const real = cycleFocusables(dialog!);
     const last = real[real.length - 1];
     last.focus();
     const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
