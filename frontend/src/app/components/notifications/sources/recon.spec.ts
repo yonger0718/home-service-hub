@@ -180,7 +180,7 @@ describe('inboxMissing without counts', () => {
     expect(reconOverflowTask('unknown')).toMatchObject({
       id: 'recon:more',
       title: '還有對帳項目未列出',
-      when: '還有項目要你決定',
+      when: '',
       fingerprint: 'more',
     });
   });
@@ -206,8 +206,8 @@ describe('reconOverflowTask', () => {
       from: 'recon',
       tier: 'confirm',
       icon: 'pi-list',
-      title: '還有對帳項目未列出',
-      when: '還有 4 筆要你決定',
+      title: '還有 4 筆對帳項目未列出',
+      when: '',
       meta: '到提醒中心的待處理查看',
       amount: null,
       progress: null,
@@ -228,7 +228,7 @@ describe('reconOverflowTask', () => {
     expect(tasks.map((t) => t.id)).toEqual(['recon:31', 'recon:32']);
     expect(summarize(tasks).total).toBe(2);
     expect(inboxMissing(inbox)).toBe(6);
-    expect(reconOverflowTask(inboxMissing(inbox))).toMatchObject({ id: 'recon:more', when: '還有 6 筆要你決定' });
+    expect(reconOverflowTask(inboxMissing(inbox))).toMatchObject({ id: 'recon:more', title: '還有 6 筆對帳項目未列出' });
     expect(tasks.some((t) => t.id === 'recon:more')).toBe(false);
   });
 });

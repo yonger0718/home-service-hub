@@ -268,7 +268,7 @@ describe('NotificationsComponent', () => {
       when: '10/27 截止',
       amount: '$1,824',
     });
-    const CATCH_ALL = task('recon:more', 'confirm', { from: 'recon', title: '還有對帳項目未列出', when: '還有 12 筆要你決定', primary: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } } });
+    const CATCH_ALL = task('recon:more', 'confirm', { from: 'recon', title: '還有 12 筆對帳項目未列出', when: '', primary: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } } });
     const q = (root: HTMLElement, sel: string) => root.querySelector<HTMLElement>(sel);
 
     it('before the first answers: 讀取中… as a polite status, no 都處理好了, chips still there', () => {
@@ -594,9 +594,12 @@ describe('NotificationsComponent', () => {
       failedSources.set(['bills']);
       const root = mount();
       const note = q(root, 'p.notif-overflow')!;
-      expect(text(note)).toContain('還有對帳項目未列出');
-      expect(text(note)).toContain('還有 12 筆要你決定');
-      expect(text(note)).toContain('不計入');
+      expect(text(note)).toBe('還有 12 筆對帳項目未列出 · 到提醒中心查看 ›');
+      expect(text(note)).not.toContain('不計入數字');
+      const link = note.querySelector('a')!;
+      expect(link.classList.contains('notif-foot-link')).toBe(true);
+      expect(text(link)).toBe('到提醒中心查看 ›');
+      expect(link.querySelector('span')?.getAttribute('aria-hidden')).toBe('true');
       expect(note.previousElementSibling?.matches('section.notif-section')).toBe(true);
       // Not a row and not inside a section: the numbers stay the rows' numbers.
       expect(note.closest('section.notif-section')).toBeNull();
@@ -625,6 +628,13 @@ describe('NotificationsComponent', () => {
       (root.querySelectorAll('.notif-chips button')[2] as HTMLButtonElement).click();
       await settle();
       expect(q(root, 'p.notif-overflow')).toBeNull();
+    });
+
+    it('truncated with an unknown number: 「還有對帳項目未列出 · 到提醒中心查看 ›」', () => {
+      truncated.set(true);
+      overflow.set({ ...CATCH_ALL, title: '還有對帳項目未列出' });
+      const root = mount();
+      expect(text(q(root, 'p.notif-overflow'))).toBe('還有對帳項目未列出 · 到提醒中心查看 ›');
     });
 
     it('not truncated: no such line', () => {
@@ -1463,21 +1473,19 @@ describe('NotificationsComponent', () => {
       expect(block).toMatch(/&:focus-visible/);
       expect(block).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(/i);
       const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
-      expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(/\.notif-foot-link,\s*\.notif-overflow a\s*\{[^}]*min-height:\s*44px/);
+      expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(/\.notif-foot-link\s*\{[^}]*min-height:\s*44px/);
     });
 
     it('the focus ring of the footer links and the overflow-note link is the --app-focus-ring token (as styles.scss)', () => {
       const foot = css.slice(css.indexOf('\n.notif-foot-link {'));
       expect(foot.slice(0, foot.indexOf('\n}\n'))).toMatch(/&:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--app-focus-ring\)/);
       const note = css.slice(css.indexOf('\n.notif-overflow {'));
-      const block = note.slice(0, note.indexOf('\n}\n') + 3);
-      expect(block).toMatch(/a\s*\{/);
-      expect(block).toMatch(/&:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--app-focus-ring\)/);
+      expect(note.slice(0, note.indexOf('\n}\n'))).not.toMatch(/focus-visible/);
     });
 
     it('the 到提醒中心查看 link in the overflow note is 44 px high on a phone', () => {
       const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
-      expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(/\.notif-overflow a\s*\{[^}]*min-height:\s*44px/);
+      expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(/\.notif-foot-link\s*\{[^}]*min-height:\s*44px/);
     });
 
     it('on a phone the header adds no bottom margin of its own: header to chips is the page gap (14 px), as chips to section', () => {

@@ -39,7 +39,7 @@
 
   @if (overflow(); as rest) {
     <p class="notif-overflow">
-      {{ rest.text }} <a [routerLink]="rest.link.route" [queryParams]="rest.link.queryParams ?? null">到提醒中心查看</a>
+      {{ rest.text }} · <a class="notif-foot-link" [routerLink]="rest.link.route" [queryParams]="rest.link.queryParams ?? null">到提醒中心查看&ngsp;<span aria-hidden="true">›</span></a>
     </p>
   }
 

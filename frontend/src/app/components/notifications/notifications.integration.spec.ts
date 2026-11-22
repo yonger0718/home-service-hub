@@ -562,7 +562,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(center.loaded()).toBe(true);
       expect(emptyBlock()).toBeNull();
       // The catch-all is a plain note, not a counted row: nothing to do is counted, the all-clear still does not show.
-      expect(root.querySelector('p.notif-overflow')?.textContent).toContain('還有對帳項目未列出');
+      expect(root.querySelector('p.notif-overflow')?.textContent).toContain('還有 3 筆對帳項目未列出');
       expect(root.querySelectorAll('app-notif-row').length).toBe(0);
       expect(center.summary().total).toBe(0);
       expect(root.querySelector('.page-subtitle')?.textContent?.trim()).toBe('還有對帳項目未列出');
@@ -589,7 +589,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(nav.summary().total).toBe(1);
       expect(nav.summary().label).toBe('通知，1 件要處理');
       const note = root.querySelector('p.notif-overflow');
-      expect(note?.textContent).toContain('還有 4 筆要你決定');
+      expect(note?.textContent?.replace(/\s+/g, ' ').trim()).toBe('還有 4 筆對帳項目未列出 · 到提醒中心查看 ›');
       expect(note?.closest('section')).toBeNull();
     });
 

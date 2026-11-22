@@ -219,7 +219,7 @@ export class NotificationsComponent {
    */
   protected readonly overflow = computed(() => {
     const rest = !this.pending() && this.chip() !== 'portfolio' ? this.center.overflow() : null;
-    return rest && !isCommand(rest.primary) ? { text: `${rest.title} · ${rest.when}（不計入數字）`, link: rest.primary } : null;
+    return rest && !isCommand(rest.primary) ? { text: rest.title, link: rest.primary } : null;
   });
 
   protected readonly failure = computed(() => failureLine(this.center.failedSources()));
