@@ -162,8 +162,16 @@ export class NotificationsComponent {
     }
     const { total, overdue } = this.center.summary();
     if (this.center.failedSources().length > 0) {
-      // Partial read: the count the sidebar shows, then the warning; with nothing counted the warning alone.
-      return total > 0 ? `${total} 件要處理 · 部分資料無法讀取` : '部分資料無法讀取';
+      // Partial read: the count the sidebar shows (and the overdue part), then the warning; with nothing counted the
+      // warning alone.
+      if (total === 0) {
+        return '部分資料無法讀取';
+      }
+      const counted = [`${total} 件要處理`];
+      if (overdue > 0) {
+        counted.push(`${overdue} 件已逾期`);
+      }
+      return [...counted, '部分資料無法讀取'].join(' · ');
     }
     if (total === 0) {
       // Nothing counted, but the inbox has items this page could not list: not an all-clear.

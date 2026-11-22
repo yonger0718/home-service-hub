@@ -651,7 +651,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(Array.from(root.querySelectorAll('.chip-count')).map(c => c.textContent?.trim())[0]).toBe(String(nav.summary().total));
       expect(chips[0].getAttribute('aria-label')).toBe('全部，1 件');
       expect(root.querySelector('section.notif-section h2 .sec-count')?.textContent?.trim()).toBe('1');
-      expect(root.querySelector('.page-subtitle')?.textContent?.trim()).toBe('1 件要處理 · 部分資料無法讀取');
+      expect(root.querySelector('.page-subtitle')?.textContent?.trim()).toBe('1 件要處理 · 1 件已逾期 · 部分資料無法讀取');
     });
 
     it('a failed inbox with nothing else: the failure line and no 都處理好了; 重試 re-reads and the all-clear returns when it answers', async () => {
