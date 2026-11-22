@@ -21,6 +21,11 @@
   app-page-header {
     margin-bottom: 0;
   }
+
+  /* Tap target: 44 px high, as the rows' controls. */
+  .notif-foot-link {
+    min-height: 44px;
+  }
 }
 
 .notif-chips {
@@ -188,14 +193,26 @@
   text-decoration: none;
 }
 
-.notif-handled,
-.notif-reminders {
+.notif-foot-link {
+  align-items: center;
   align-self: flex-start;
-  color: var(--app-text-muted);
+  color: var(--app-primary);
+  display: inline-flex;
   font-size: 0.8rem;
   font-weight: 700;
+  gap: 4px;
   padding: 6px;
   text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
+
+  &:focus-visible {
+    border-radius: 6px;
+    outline: 2px solid var(--app-primary);
+    outline-offset: 2px;
+  }
 }
 
 .notif-loading {

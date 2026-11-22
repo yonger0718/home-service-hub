@@ -72,9 +72,9 @@
   }
 
   @if (center.handled(); as handled) {
-    <a class="notif-handled" routerLink="/accounting/reminders" [queryParams]="{ tab: 'todo' }">已處理的對帳（近 7 天）{{ handled }} ›</a>
+    <a class="notif-foot-link notif-handled" routerLink="/accounting/reminders" [queryParams]="{ tab: 'todo' }">已處理的對帳（近 7 天）{{ handled }}<span aria-hidden="true">›</span></a>
   }
-  <a class="notif-reminders" routerLink="/accounting/reminders">提醒中心（借還款、週期與分期管理）</a>
+  <a class="notif-foot-link notif-reminders" routerLink="/accounting/reminders">提醒中心（借還款、週期與分期管理）<span aria-hidden="true">›</span></a>
 
   @if (failure(); as line) {
     <app-banner class="notif-failed" tone="error" [heading]="line" actionLabel="重試" [actionDisabled]="center.loading()" (action)="retry()" />

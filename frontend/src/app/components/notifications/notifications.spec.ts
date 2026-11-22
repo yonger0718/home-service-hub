@@ -795,7 +795,7 @@ describe('NotificationsComponent', () => {
   describe('links', () => {
     it('handled link: 已處理的對帳（近 7 天）3 件 › → /accounting/reminders?tab=todo', () => {
       const a = mount().querySelector('a.notif-handled')!;
-      expect(text(a)).toBe('已處理的對帳（近 7 天）3 件 ›');
+      expect(text(a)).toMatch(/^已處理的對帳（近 7 天）3 件\s?›$/);
       expect(a.getAttribute('href')).toBe('/accounting/reminders?tab=todo');
     });
     it('handled link is absent when handled is null', () => {
@@ -804,8 +804,20 @@ describe('NotificationsComponent', () => {
     });
     it('the 提醒中心 link is always there', () => {
       const a = mount().querySelector('a.notif-reminders')!;
-      expect(text(a)).toBe('提醒中心（借還款、週期與分期管理）');
+      expect(text(a)).toMatch(/^提醒中心（借還款、週期與分期管理）\s?›$/);
       expect(a.getAttribute('href')).toBe('/accounting/reminders');
+    });
+    it('both footer links are one link style: the shared class, a decorative › at the end, the text as the accessible name', () => {
+      const root = mount();
+      const links = [root.querySelector('a.notif-handled')!, root.querySelector('a.notif-reminders')!];
+      for (const a of links) {
+        expect(a.classList.contains('notif-foot-link')).toBe(true);
+        const chevron = a.querySelector('span[aria-hidden="true"]')!;
+        expect(chevron.textContent).toBe('›');
+        expect(a.lastElementChild).toBe(chevron);
+        expect(a.textContent?.trim().endsWith('›')).toBe(true);
+        expect(a.getAttribute('aria-label')).toBeNull();
+      }
     });
   });
 
@@ -1401,6 +1413,17 @@ describe('NotificationsComponent', () => {
 
   describe('scss rules (source pins)', () => {
     const css = readFileSync(join(process.cwd(), 'src/app/components/notifications/notifications.scss'), 'utf8');
+
+    it('the footer link style: primary colour from a token, hover and focus-visible, 44 px high on a phone, no raw colour', () => {
+      const rule = css.slice(css.indexOf('\n.notif-foot-link {'));
+      const block = rule.slice(0, rule.indexOf('\n}\n'));
+      expect(block).toMatch(/color:\s*var\(--app-primary\)/);
+      expect(block).toMatch(/&:hover/);
+      expect(block).toMatch(/&:focus-visible/);
+      expect(block).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(/i);
+      const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
+      expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(/\.notif-foot-link\s*\{[^}]*min-height:\s*44px/);
+    });
 
     it('on a phone the header adds no bottom margin of its own: header to chips is the page gap (14 px), as chips to section', () => {
       const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
