@@ -48,6 +48,9 @@ O = owner, C = coordinator, P = planner (made where the others were silent).
 | P6 | 匯入 dot label: the import failure's 最近一次匯入失敗 (spec), or the run task's title, or both joined with 「、」 | String |
 | P7 | A pending date's fingerprint is `status|reason` (not `last_at`, which moves on every run) | E's wake-up |
 | P8 | No amount on the dividend task (gross / net / currency mixes are the 股利 page's business) | One field |
+| C12 | A dividend scan that hits `allPages`' page cap (`capped: true`; default 50 pages, `portfolio/paging.ts:13`, `:24–25`) marks the `dividends` source FAILED for that round: 「無法讀取：股利」, no task, no row, no dot. A partial scan never reads as an all-clear. O1 (client-side filtering) stands | Beyond 5,000 dividend rows the source needs the server filter |
+| C13 | `read()`'s 20 s `timeout` (`notification-center.service.ts:440`) covers the whole paginated dividend stream: `allPages` emits once, after its last page, so pages that together take longer than `READ_TIMEOUT_MS` fail the whole source for that round | A per-page timeout later |
+| C14 | The card releases a 確認 row when `settledRound() >= N`, where N is the id `invalidate()` returned (`:324–325`) — the round started after the ack's answer. This differs on purpose from the 通知 page, which stores the round id read *before* its `invalidate()` and releases on `settled > that` (`notifications.ts:415–417`, `:270`); both mean "a round started after the answer has settled" | One comparison |
 
 ## Copy
 
@@ -76,6 +79,7 @@ O = owner, C = coordinator, P = planner (made where the others were silent).
 | Card title | `國泰每日對帳單` |
 | Card run line (ok) | `{stamp} · 已匯入 {posted} 份` (spec); `{stamp} · 沒有新的對帳單` when `posted` is 0; plus ` · 收到 {files_seen} 份` when `files_seen > posted` |
 | Card banner (bad run) | heading = the run title; detail = when and meta joined with ` · `; tone error for failed, warn for latched / stale |
+| Card latest-run details (bad run, beside the banner) | `最近一次執行：{stamp} · {result} · 收到 {files_seen} 份 · 已匯入 {posted} 份`, `{result}` = `失敗` / `已停用` / `成功` (a stale run whose latest was ok); absent only when there is no run at all |
 | Card last success | `上次成功 {stamp}` (only under a bad run, when `latest_ok` exists) |
 | Card dates | heading `需要你確認的日期`; row `{MM/DD}` + the line-2 text; button `確認` (accessible name `確認：國泰對帳單 {MM/DD}`); none: `沒有需要確認的日期` |
 | Card truncation | `還有 {n} 天未列出` |
@@ -91,7 +95,7 @@ O = owner, C = coordinator, P = planner (made where the others were silent).
 - Time: the run rule uses the fixed offset +08:00 and UTC getters only — no `getHours()`, `getDate()`, `todayIso()` or `toLocale…` inside `sources/cathay.ts`.
 - Out of scope: the review flow (PR D), snooze / auto-pay / answers (PR E), e-invoices (PR F), the phone bell on the ten own-header pages (#413), issues #414 #416 #418, any un-ack, any batch 確認收款 from 通知.
 - Tests use fictional data only: symbols `9901`, `9902`, `9903`, the name 測試股票, file `測試匯入.csv`, invented amounts and dates. No real holding, amount or account.
-- Request load, accepted and stated in the PR body: each round adds the recalc status, two 國泰 reads and every dividend page (100 rows per request).
+- Request load, accepted and stated in the PR body: each round adds 3 requests (the recalc status, two 國泰 reads) plus the dividend pages — one per 100 rows, up to 50 (the `allPages` cap, C12). That is before the app's interceptor, which re-sends a failed GET once (`interceptors/error-logging.interceptor.ts:12`, `:19`), so a failing round can double it.
 - Commit per task with explicit paths, message in English, ending with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`. No `--amend`, no push.
 - Known load-flaky tests (pass alone; not this PR's): two fragment-scroll tests in `reward-rules.spec.ts`, `shell.spec` "820 px: N inside the detail sheet opens the form", `rules-section.spec.ts` "a menu that does not fit below the viewport opens above ⋯".
 
@@ -105,17 +109,17 @@ O = owner, C = coordinator, P = planner (made where the others were silent).
 | D8 "匯入 (import or Cathay failure, red)" | Whether pending dates count as a "Cathay failure" | O2: no |
 | NC scenario "Dividends past payment date": 玉山金 and 台積電 | The dividend rows carry no name | Open point 5 |
 | Proposal Impact: "Portfolio routes have no auth today (#117)" | Token auth shipped (#117); the ack needs `write` | Checked live in Task 8 |
-| csv-import card "(time, result, files seen, posted)" vs its scenario 「今天 06:41 · 已匯入 1 份」 | The scenario line has no files-seen part | `收到 N 份` is added only when it differs from `posted` |
+| csv-import card "(time, result, files seen, posted)" vs its scenario 「今天 06:41 · 已匯入 1 份」 | The scenario line has no result or files-seen part | Healthy run: the scenario's line, `收到 N 份` added only when it differs from `posted` (the result is implied by the absence of a banner). Bad run: the banner plus a details line that always carries all four (time, result, 收到 N 份, 已匯入 N 份) |
 
 ## Review Focus
 
 Five input classes no happy-path test would exercise; each has a test in the task named.
 
-- **A device outside Taipei, at the day boundary.** `now` given as `…Z` instants around 22:54Z / 22:55Z (06:54 / 06:55 Taipei, the previous UTC day): the rule must not depend on the machine's zone. An implementation using local getters fails this test on a UTC machine (this VPS and CI). → Task 2.
+- **A device outside Taipei, at the day boundary.** `now` given as `…Z` instants around 22:54Z / 22:55Z (06:54 / 06:55 Taipei, the previous UTC day): the rule must not depend on the machine's zone. Writing one instant two ways is not a host-zone test, so the focused spec is run twice, once per host zone, and must pass both times (Task 2 Step 4): `cd frontend && TZ=UTC npx ng test --watch=false --include='src/app/components/notifications/sources/cathay.spec.ts'` and `cd frontend && TZ=Asia/Taipei npx ng test --watch=false --include='src/app/components/notifications/sources/cathay.spec.ts'`. → Task 2.
 - **Portfolio API down.** All four portfolio reads fail: three sources are named, 股利 and 匯入 lose their dots (the device-local failure included), ledger tasks and their count stay, the round settles. And half a 國泰 answer (pending ok, runs fails) fails the whole source. → Task 4.
 - **Ack that nothing announces.** A 200 ack bumps no change signal: the row must leave through the handler's own `invalidate()`. A 500 that committed, then 重試 → 404 → reads as done. One POST per press with the app's interceptor installed. → Task 5.
 - **Truncated or inconsistent `pending`.** `total: 73` with 50 items → 50 counted tasks and a note saying 23; `truncated: true` with `total` ≤ the items received → no note and never a negative number. → Tasks 2, 5.
-- **Dividend rows at the edges.** Pending with `payment_date` null, today, tomorrow; `receipt_status` undefined, `legacy_unknown`, `unresolved`, `confirmed`; 101 rows (two requests, both counted). → Tasks 3, 4.
+- **Dividend rows at the edges.** Pending with `payment_date` null, today, tomorrow; `receipt_status` undefined, `legacy_unknown`, `unresolved`, `confirmed`; 101 rows (two requests, both counted); a scan stopped by the page cap or by the 20 s limit mid-stream (source failed, never an all-clear). → Tasks 3, 4.
 - Real browser only (jsdom cannot see it): the card in the side column at 1440 against the two cards above it, and under the footer at 390; the 確認 button's 44 px target on a phone. → Screenshot plan.
 
 ## File map
@@ -206,6 +210,8 @@ tasks.md 3.3 (run health rule, pending dates), 3.4 (the 07:00 test). C3, C4, C9,
     readonly state: CathayRunState;
     readonly runLine: string | null;                                                            // ok only
     readonly banner: { readonly tone: 'error' | 'warn'; readonly heading: string; readonly detail: string } | null;
+    /** Bad run only: `最近一次執行：{stamp} · {result} · 收到 N 份 · 已匯入 N 份`; null when ok or when there is no run. */
+    readonly runDetails: string | null;
     readonly lastOk: string | null;                                                             // `上次成功 …`, bad run only
     readonly days: readonly CathayDayView[];
     readonly more: number;
@@ -267,10 +273,14 @@ Fields (all `source: 'portfolio'`, `from: 'cathay'`, `tier: 'system'`, `amount: 
   it('cathayView: posted 0 → 沒有新的對帳單; files_seen 3, posted 1 → … · 已匯入 1 份 · 收到 3 份', …);
   it('cathayView failed: error banner naming password_file, lastOk 上次成功 昨天 06:41, dotLabel 國泰對帳單匯入失敗', …);
   it('cathayView latched / stale: warn banner; ok: dotLabel null', …);
+  it('cathayView failed with files_seen 3, posted 2: runDetails 最近一次執行：今天 06:41 · 失敗 · 收到 3 份 · 已匯入 2 份', …);
+  it('runDetails: latched → 已停用; stale after an ok run → 昨天 06:41 · 成功 · 收到 1 份 · 已匯入 1 份; no run → null; healthy → null', …);
   ```
 - [ ] **Step 2: Run** `--include='src/app/components/notifications/sources/cathay.spec.ts'` — Expected: FAIL (module not found).
 - [ ] **Step 3: Implement** per the signatures, the table and the Copy table. Taipei arithmetic: shift the epoch by +8 h and read UTC fields (Global Constraints).
-- [ ] **Step 4: Run** — Expected: PASS.
+- [ ] **Step 4: Run twice, once per host zone** — Expected: PASS both times:
+  `cd frontend && TZ=UTC npx ng test --watch=false --include='src/app/components/notifications/sources/cathay.spec.ts'`
+  `cd frontend && TZ=Asia/Taipei npx ng test --watch=false --include='src/app/components/notifications/sources/cathay.spec.ts'`
 - [ ] **Step 5: Commit** `feat(notifications): 國泰 statement run rule, tasks and card view`.
 
 ### Task 3: Dividend and import-failure builders (parallel with 2 and 6)
@@ -359,19 +369,25 @@ tasks.md 3.1–3.3 (reads, dots), D8. O2, C8, P1–P3, P6.
   readonly cathayMore: Signal<number>;
   ```
   Behaviour, each a private data signal set to null on a failed read:
-  - `dividends`: `allPages(offset => portfolio.getDividends({ limit: 100, offset }))` through `read()`; `mark('dividends', …)`. Tasks: `dividendBatch(due)`; `trackingRows` gains `dividendsRow(waiting)` last; `badges['dividends'] = dividendsBadge(due)`.
+  - `dividends`: `allPages(offset => portfolio.getDividends({ limit: 100, offset }), 100, DIVIDEND_MAX_PAGES)` through one `read()`, with `export const DIVIDEND_MAX_PAGES = 50` (the helper's default, named so the test can cite it). The answer `{ items, capped }` is applied as: `capped` → the data signal is null and `mark('dividends', round, 'failed')` (C12); else the items and `'ok'`. The one `read()` wraps the whole stream, so its 20 s limit is for all pages together (C13). Tasks: `dividendBatch(due)`; `trackingRows` gains `dividendsRow(waiting)` last; `badges['dividends'] = dividendsBadge(due)`.
   - `imports`: `portfolio.getRecalcStatus()` through `read()` in every round; `mark('imports', …)`. While the applied answer is not null: task `importFailureTask(recalc, importHistory.attempts()[0])` built only when `recalcFailed(recalc) || importHistory.lastFailed()` (the dot's signal, unchanged). `readRecalc()`, `recalcGeneration` and the call in `refresh()` are removed.
   - `cathay`: `forkJoin({ pending: portfolio.getCathayPending(), runs: portfolio.getCathayRuns() })` through one `read()`; `mark('cathay', …)`. Tasks `cathayTasks(pending, runs, now)`; `cathay = cathayView(…)`.
   - `now`: a signal set from `NOTIF_CLOCK` in `startRound()`; `today` becomes `todayIso(now)`.
   - `badges['import']`: present when the import failure task exists or `cathay()?.dotLabel` is set; `{ dot: true, tone: 'red', label }` with `label` per P6. Pending dates never set it.
   - The Task 1 shim is deleted. The class comment's "five task sources" becomes eight.
 
-- [ ] **Step 1: Update the harnesses** (no behaviour yet, so these fail until Step 3): the service spec's stub `PortfolioService` gains `getDividends`, `getCathayPending`, `getCathayRuns` as `calls()` subjects and `answer()` gains `dividends` (default `{ items: [], total: 0 }`), `cathayPending` (default `{ items: [], total: 0, truncated: false }`), `cathayRuns` (default `{ latest: null, latest_ok: null }` **with the clock at a time that makes a null latest matter**: provide `NOTIF_CLOCK` and default the runs to an ok run 5 minutes before the clock so unrelated tests gain no `cathay:run` task) and answers `recalc` in every round. `rounds.spec.ts` `take()` (`:65–71`) and the integration spec's `take()` / `flushSide()` (`:87–99`, `:482`, `:672`) expect and answer `/api/portfolio/dividends` (params `limit=100`, `offset=0`), `…/cathay-statement/pending`, `…/runs/latest` and `…/recalc/status` in every round with the same quiet defaults.
+- [ ] **Step 1: Update the harnesses** (no behaviour yet, so these fail until Step 3): the service spec's stub `PortfolioService` gains `getDividends`, `getCathayPending`, `getCathayRuns` as `calls()` subjects and `answer()` gains `dividends` (default `{ items: [], total: 0 }`), `cathayPending` (default `{ items: [], total: 0, truncated: false }`), `cathayRuns` (default a HEALTHY run: provide `NOTIF_CLOCK` and default to `{ latest: okRun, latest_ok: okRun }` with `okRun.run_at` 5 minutes before the clock, so unrelated tests gain no `cathay:run` task; `latest: null` is passed only by the missing-run test) and answers `recalc` in every round. `rounds.spec.ts` `take()` (`:65–71`) and the integration spec's `take()` / `flushSide()` (`:87–99`, `:482`, `:672`) expect and answer `/api/portfolio/dividends` (params `limit=100`, `offset=0`), `…/cathay-statement/pending`, `…/runs/latest` and `…/recalc/status` in every round with the same quiet defaults.
 - [ ] **Step 2: Failing tests** (`notification-center.service.spec.ts` unless noted):
   ```ts
   it('two dividends past their payment date: one counted task, the 股利 dot labelled 2 筆待確認收款, tone primary', …);   // summary().total 1, tone 'primary'
   it('pending dividends with a later or no date are a 追蹤中 row after the ledger rows and are not counted', …);
   it('101 dividends are read in two requests (offset 0 and 100) and both pages count', …);
+  it('cap boundary: DIVIDEND_MAX_PAGES full pages with total 5001 → no further request, 股利 failed, no div:batch, no row, no 股利 dot, the round settles', …);
+  //   land 50 pages of 100 pending due rows each, total 5001; getDividends called exactly 50 times; failedSources() contains 'dividends'
+  it('exactly DIVIDEND_MAX_PAGES pages (total 5000) is a complete scan: source ok, one batch of 5000', …);
+  it('a missing latest run (latest null) is stale: cathay:run with 還沒有執行紀錄', …);                                   // the only test that passes latest: null
+  it('settlement: page 1 of the dividends answers, page 2 is still open at READ_TIMEOUT_MS → 股利 failed for the round, the round settles, page 1\'s rows make no task', …);
+  it('settlement: a round does not settle while a dividend page is open before the limit, and settles when the last page lands', …);
   it('a failed recalc chain → a 系統 task import:fail:… and the red 匯入 dot 最近一次匯入失敗', …);                         // replaces :223
   it('the device\'s last failed commit → the same task and dot with a healthy recalc chain', …);                        // replaces :237
   it('a pending 國泰 date is a counted 系統 task (red count) and does not light the 匯入 dot', …);                         // O2
@@ -475,8 +491,8 @@ tasks.md 3.3 (status card). C11, D7.
 - Produces: `CathayStatusCardComponent`, selector `app-cathay-status-card`, no inputs. One `<app-bento title="國泰每日對帳單">` containing, by state:
   - not `loaded()` → `讀取中…` (`role="status"`);
   - `cathay` in `failedSources()` → `無法讀取國泰對帳單狀態` and a `重試` button calling `center.invalidate()` (disabled while `loading()`);
-  - else from the view: the ok run line, or `<app-banner [tone] [heading] [detail]>` (not dismissible) plus the `上次成功` line; the `需要你確認的日期` list (one row per day with a `確認` `app-btn`, `variant="soft"`, busy and disabled while its ack runs) or `沒有需要確認的日期`; `還有 {n} 天未列出` when `more > 0`.
-  - 確認: `ackCathayDay(tradeDate)` once per press; success and 404 → the Task 5 完成 toasts then `center.invalidate()`; other errors → the Task 5 失敗 toast with `guardedRetry`, then `center.invalidate()`. The row stays busy until `center.settledRound()` passes the round returned by that `invalidate()`.
+  - else from the view: the ok run line, or `<app-banner [tone] [heading] [detail]>` (not dismissible) followed by the `runDetails` line (`p.cathay-run-details`; time, result, files seen, posted — the csv-import requirement's four) and the `上次成功` line; the `需要你確認的日期` list (one row per day with a `確認` `app-btn`, `variant="soft"`, busy and disabled while its ack runs) or `沒有需要確認的日期`; `還有 {n} 天未列出` when `more > 0`.
+  - 確認: `ackCathayDay(tradeDate)` once per press; success and 404 → the Task 5 完成 toasts then `center.invalidate()`; other errors → the Task 5 失敗 toast with `guardedRetry` (its `busy()` is this row's busy state), then `center.invalidate()`. Busy release (C14): keep `const n = center.invalidate()` — the NEW round's id — per trade date and release the row when `center.settledRound() >= n`. Round N itself releases it; no round N+1 is needed. A superseded round never settles, so when a later round M > N supersedes N the row is released when M settles (`M >= n`). Not the 通知 page's form: that page stores the round id read before its `invalidate()` and compares with `>` (`notifications.ts:415–417`, `:270`); copying its `>` here with N would leave the button and 重試 dead until some unrelated later round.
   - The constructor calls `center.refresh({ reason: 'open' })`.
   Styles use existing tokens only; the date rows reuse the side column's row rhythm (`.recent-row` as the model).
 
@@ -488,6 +504,11 @@ tasks.md 3.3 (status card). C11, D7.
   it('a held date lists 10/28 保留：名稱對不到代號 測試股票 with a button named 確認：國泰對帳單 10/28', …);
   it('確認 posts once, the button is busy, then 已確認：國泰對帳單 10/28 and invalidate()', …);
   it('404 → 國泰對帳單 10/28：已經不需要確認 as done; 500 → 國泰對帳單 10/28 確認失敗 with 重試', …);
+  it('a failed run with files_seen 3 and posted 2 shows 最近一次執行：今天 06:41 · 失敗 · 收到 3 份 · 已匯入 2 份 beside the error banner', …);
+  it('failed ack, invalidate() returned round N: while N is in flight 確認 is disabled and 重試 re-raises the toast; once settledRound() is N the button is enabled and 重試 posts again — no round N+1', …);
+  //   stub: invalidate() returns 4; settledRound.set(3) → still busy; settledRound.set(4) → enabled; press 重試 → ackCathayDay called a second time
+  it('a later round superseding N also releases: invalidate() returned 4, round 4 never settles, settledRound() becomes 5 → enabled', …);
+  it('a successful ack keeps the row busy until settledRound() >= N, then the row is gone with the new view', …);
   it('more 23: 還有 23 天未列出', …);
   it('before the first round: 讀取中…; source failed: 無法讀取國泰對帳單狀態 and 重試 calls invalidate()', …);
   it('opening the card asks for a refresh with reason open', …);
@@ -506,7 +527,7 @@ tasks.md 3.3 (status card). C11, D7.
 - [ ] **Step 1: Screens** per the Screenshot plan (fictional data only, through the demo preview stack or stubbed responses; never against production data).
 - [ ] **Step 2: Live check** on the deployed preview: press 確認 once on a pending date if one exists (otherwise record "no pending date to try"), confirming the SPA token may write. Record the result in the PR body.
 - [ ] **Step 3: Tick 3.1–3.4** with notes that say what C does not do. Use these texts, amended for anything that turned out differently:
-  - 3.1 `(dividends are read by paging every row and filtering in the SPA — the API has no receipt_status filter; a payment date of today counts as past; rows show symbols, not names; plus the 股利 dot from 2.4 and ?status=pending on the 股利 page)`
+  - 3.1 `(dividends are read by paging every row and filtering in the SPA — the API has no receipt_status filter; a scan that hits the 50-page cap or the 20 s limit fails the source instead of showing a partial result; a payment date of today counts as past; rows show symbols, not names; plus the 股利 dot from 2.4 and ?status=pending on the 股利 page)`
   - 3.2 `(the recalc status is now read in every round as source 匯入. Known limit, unchanged: the server status is in-process and the last failure is per device, so the task can differ between devices and disappear after an API restart)`
   - 3.3 `(run rule in Asia/Taipei, evaluated once per round; latched and stale are worded as warnings but 系統 rows and the 匯入 dot are red; pending dates do not light the 匯入 dot; beyond 50 dates one uncounted note. Not in C: 復原 for an ack — no endpoint; snooze — 5.3)`
   - 3.4 `(ack removes the task; 404 reads as done; one request per press; 07:00 / yesterday 06:41 with the 06:54 and 06:55 boundaries and a UTC-written variant)`
@@ -537,3 +558,15 @@ Before / after at 1440 and 390, light and dark, fictional data. "Before" exists 
 | 12 | 股利 | Opened from the task: 待收 selected |
 
 Check in a real browser: the card's height against the two cards above it at 1440, the 確認 targets at 390 (44 px), and that the toast clears the tab bar.
+
+## Plan review
+
+Reviewer: Multica AGENT-567 (dev-astra), at `b4662b1b`. Three findings, all accepted; cited lines re-checked in the worktree.
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | Dividend paging cap: `allPages` stops at 50 pages and returns `{ items, capped }` (`portfolio/paging.ts:13`, `:24–25`, `:31`); the plan let a capped scan look complete | C12: `capped` marks the `dividends` source failed for the round (named, no task, no row, no dot). C13: `read()`'s 20 s limit covers the whole paginated stream. Task 4 gains the cap-boundary test (50 full pages, total 5001), the exact-50 complete case and two settlement tests, and keeps the 101-row two-request test. Load estimate corrected in Global Constraints. O1 unchanged |
+| 2 | Card busy release: `invalidate()` returns the new round N (`notification-center.service.ts:324–325`); "until `settledRound()` passes it" would wait for N+1 | C14: release at `settledRound() >= N`, with the difference from the 通知 page's pre-invalidation id and `>` spelled out (Task 7). Tests: failed ack → N settles → 確認 and 重試 work; a superseding later round also releases |
+| 3 | Bad-run card dropped the latest run's result, files seen and posted, which the csv-import requirement lists | `CathayView.runDetails` (Task 2) and a details line beside the banner (Task 7), copy row added, conflicts row updated, tests for a failed run with `files_seen` 3 / `posted` 2 |
+
+Minors: the shared harness default is a healthy latest run, `latest: null` only in the missing-run test (Task 4 Step 1); the time-zone Review Focus item now runs the focused 國泰 spec under `TZ=UTC` and `TZ=Asia/Taipei` (Task 2 Step 4).
