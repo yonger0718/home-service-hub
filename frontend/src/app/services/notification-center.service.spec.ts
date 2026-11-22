@@ -1550,7 +1550,18 @@ describe('NotificationCenterService', () => {
       ['items not an array', { items: {}, total: 1, truncated: false }],
     ];
 
-    it.each(bad)('國泰 pending %s → cathay failed, the round settles', async (_name, body) => {
+    const day = { trade_date: '2026-10-27', status: 'held', reason: null, since: null, last_at: null };
+    const badPending: readonly [string, unknown][] = [
+      ...bad,
+      ['a numeric trade_date', { items: [{ ...day, trade_date: 20261027 }], total: 1, truncated: false }],
+      ['an unknown status', { items: [{ ...day, status: 'weird' }], total: 1, truncated: false }],
+      ['a numeric reason', { items: [{ ...day, reason: 42 }], total: 1, truncated: false }],
+      ['an object reason', { items: [{ ...day, reason: { code: 'x' } }], total: 1, truncated: false }],
+      ['a numeric since', { items: [{ ...day, since: 1 }], total: 1, truncated: false }],
+      ['an array last_at', { items: [{ ...day, last_at: [] }], total: 1, truncated: false }],
+    ];
+
+    it.each(badPending)('國泰 pending %s → cathay failed, the round settles', async (_name, body) => {
       const svc = service();
       svc.start();
       await answer(0, { cathayPending: body as CathayPending });
@@ -1566,6 +1577,11 @@ describe('NotificationCenterService', () => {
       ['null', null],
       ['{}', {}],
       ['latest without run_at', { latest: { result: 'ok' }, latest_ok: null }],
+      ['latest with an unparseable run_at', { latest: { run_at: 'not a time', result: 'failed', code: null, files_seen: 0, posted: 0 }, latest_ok: null }],
+      ['latest_ok with an unparseable run_at', {
+        latest: { run_at: '2026-10-28T06:41:00+08:00', result: 'failed', code: null, files_seen: 0, posted: 0 },
+        latest_ok: { run_at: '', result: 'ok', code: null, files_seen: 0, posted: 0 },
+      }],
     ] as const)('國泰 runs %s → cathay failed, the round settles', async (_name, body) => {
       const svc = service();
       svc.start();

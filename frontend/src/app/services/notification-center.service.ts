@@ -44,7 +44,7 @@ import { scheduleTasks } from '../components/notifications/sources/schedules';
 import { allPages } from '../components/portfolio/paging';
 import { NavBadge } from '../components/shell/navigation';
 import { Counterparty, ImportRun, LedgerAccount, ScheduleInstance } from '../models/accounting.model';
-import { CathayPending, CathayRun, CathayRuns, Dividend, Paged, RecalcStatus } from '../models/portfolio.model';
+import { CathayPending, CathayPendingDay, CathayRun, CathayRuns, Dividend, Paged, RecalcStatus } from '../models/portfolio.model';
 import { AccountingService } from './accounting.service';
 import { BusinessCalendarService } from './business-calendar.service';
 import { ImportHistoryService } from './import-history.service';
@@ -69,19 +69,39 @@ function checkedPage(page: unknown): Paged<Dividend> {
   return page as unknown as Paged<Dividend>;
 }
 
-/** 國泰 pending: dates with a string `trade_date` and `status`, a numeric total; else an error, so the source fails. */
+const PENDING_STATUSES: readonly unknown[] = ['held', 'mismatch', 'conflict'] satisfies CathayPendingDay['status'][];
+/** Null, absent or a string (`reason` / `since` / `last_at`). */
+const optionalText = (value: unknown): boolean => value === null || value === undefined || typeof value === 'string';
+
+/**
+ * 國泰 pending: dates with a string `trade_date`, a known `status`, and `reason` / `since` / `last_at` each null or a
+ * string, plus a numeric total; else an error, so the source fails (a non-string reason would throw in a computed).
+ */
 function checkedPending(pending: unknown): CathayPending {
-  const day = (d: unknown) => isObject(d) && typeof d['trade_date'] === 'string' && typeof d['status'] === 'string';
+  const day = (d: unknown) =>
+    isObject(d) &&
+    typeof d['trade_date'] === 'string' &&
+    PENDING_STATUSES.includes(d['status']) &&
+    optionalText(d['reason']) &&
+    optionalText(d['since']) &&
+    optionalText(d['last_at']);
   if (!isObject(pending) || !Array.isArray(pending['items']) || typeof pending['total'] !== 'number' || !pending['items'].every(day)) {
     throw new Error('cathay pending');
   }
   return pending as unknown as CathayPending;
 }
 
-/** 國泰 runs: `latest` / `latest_ok` each null or a run with string `run_at` and `result`; else an error (source fails). */
+/**
+ * 國泰 runs: `latest` / `latest_ok` each null or a run with a `run_at` that parses to a finite time and a string
+ * `result`; else an error (source fails): an unparseable run_at would render 「上次執行 NaN/NaN NaN:NaN」.
+ */
 function checkedRuns(runs: unknown): CathayRuns {
   const run = (r: unknown): r is CathayRun | null =>
-    r === null || (isObject(r) && typeof r['run_at'] === 'string' && typeof r['result'] === 'string');
+    r === null ||
+    (isObject(r) &&
+      typeof r['run_at'] === 'string' &&
+      Number.isFinite(new Date(r['run_at']).getTime()) &&
+      typeof r['result'] === 'string');
   if (!isObject(runs) || !('latest' in runs) || !('latest_ok' in runs) || !run(runs['latest']) || !run(runs['latest_ok'])) {
     throw new Error('cathay runs');
   }

@@ -438,11 +438,12 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
 
   it('a 500 that committed, then 重試 answered 404: done toast, the row leaves, two POSTs in total (one per press)', async () => {
     await openWithCathay();
-    let sent = 0;
     cathayButton()!.click();
     await settle();
-    http.expectOne(isAck).flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
-    sent++;
+    // Every ack request the press put on the wire (the controller's count, not one this test keeps).
+    const first = http.match(isAck);
+    expect(first).toHaveLength(1);
+    first[0].flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
     await settle();
     http.expectNone(isAck);
     const failure = toasts.current()!;
@@ -456,15 +457,15 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
 
     toasts.runAction(failure.id);
     await settle();
-    http.expectOne(isAck).flush({ detail: 'Not Found' }, { status: 404, statusText: 'Not Found' });
-    sent++;
+    const second = http.match(isAck);
+    expect(second).toHaveLength(1);
+    second[0].flush({ detail: 'Not Found' }, { status: 404, statusText: 'Not Found' });
     await settle();
     expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要確認', action: null }));
     expect(center.round()).toBe(3);
     await flushRound(take(), []);
     expect(cathayRow()).toBeNull();
     http.expectNone(isAck);
-    expect(sent).toBe(2);
   });
 
   it('portfolio reads all fail: 無法讀取：股利、匯入、國泰對帳單 with the ledger rows and their count intact', async () => {
@@ -503,6 +504,40 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     expect(center.summary().total).toBe(total);
     expect(TestBed.inject(NavBadgeService).summary().total).toBe(total);
     expect(root.querySelector('.page-subtitle')?.textContent).toContain(`${total} 件要處理`);
+  });
+
+  describe('a truncated 國泰 pending answer (Review Focus: truncated or inconsistent pending)', () => {
+    /** Page open at Thu 2026-10-29 07:00 Taipei, no card, nothing else to do, with `pending` as the 國泰 answer. */
+    async function openWithPending(pending: typeof HELD): Promise<void> {
+      vi.setSystemTime(new Date('2026-10-29T07:00:00+08:00'));
+      boot(false);
+      center.start();
+      TestBed.tick();
+      http.expectOne(get(`${API}/calendar/business-days`)).flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
+      fixture = TestBed.createComponent(NotificationsComponent);
+      fixture.autoDetectChanges();
+      root = fixture.nativeElement as HTMLElement;
+      const round1 = take();
+      flushPortfolioWith(round1, pending);
+      round1.accounts.flush([]);
+      await flushRound(round1, [], ['accounts']);
+      expect(center.settledRound()).toBe(1);
+      expect(center.summary().total).toBe(0);
+    }
+    const note = () => root.querySelector('.notif-overflow--portfolio');
+
+    it('truncated with no items and total 0: no note, and the page may show the all-clear', async () => {
+      await openWithPending({ items: [], total: 0, truncated: true });
+      expect(note()).toBeNull();
+      expect(root.querySelector('.notif-empty h2')?.textContent?.trim()).toBe('都處理好了');
+    });
+
+    it('truncated with total 5 and no items: the note says 5 and the page does NOT say 都處理好了 beside it', async () => {
+      await openWithPending({ items: [], total: 5, truncated: true });
+      expect(note()?.textContent?.replace(/\s+/g, ' ').trim()).toBe('還有 5 天的國泰對帳單未列出 · 到匯入頁查看 ›');
+      expect(root.querySelector('.notif-empty')).toBeNull();
+      expect(root.textContent).not.toContain('都處理好了');
+    });
   });
 
   describe('with the app\'s error-logging interceptor (a failed write is sent once, #411)', () => {
@@ -582,14 +617,14 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
 
     it("with the app's error-logging interceptor a failed ack is sent once", async () => {
       await openWithCathay(true);
-      const acks: TestRequest[] = [];
       cathayButton()!.click();
       await settle();
-      acks.push(http.expectOne(isAck));
-      acks[0].flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
+      // The controller's count of ack requests on the wire: the interceptor must not have added a second one.
+      const first = http.match(isAck);
+      expect(first).toHaveLength(1);
+      first[0].flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
       await settle();
       http.expectNone(isAck);
-      expect(acks.length).toBe(1);
       const failure = toasts.current()!;
       expect(failure).toEqual(
         expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 確認失敗', action: expect.objectContaining({ label: '重試' }) }),
@@ -603,15 +638,14 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
 
       toasts.runAction(failure.id);
       await settle();
-      acks.push(http.expectOne(isAck));
-      http.expectNone(isAck);
-      acks[1].flush({ trade_date: '2026-10-28', ack_status: 'held' });
+      const second = http.match(isAck);
+      expect(second).toHaveLength(1);
+      second[0].flush({ trade_date: '2026-10-28', ack_status: 'held' });
       await settle();
       expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已確認：國泰對帳單 10/28', action: null }));
       await flushRound(take(), []);
       expect(cathayRow()).toBeNull();
       http.expectNone(isAck);
-      expect(acks.length).toBe(2);
     });
 
     it('重試 pressed twice sends one write', async () => {

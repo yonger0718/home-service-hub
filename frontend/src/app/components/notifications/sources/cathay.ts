@@ -164,7 +164,9 @@ export function cathayView(pending: CathayPending, runs: CathayRuns, now: Date):
     .map(d => ({ tradeDate: d.trade_date, label: shortDate(d.trade_date), text: dayStatusText(d) }));
   let runLine: string | null = null;
   if (state === 'ok' && latest) {
-    runLine = `${runStamp(latest.run_at, now)} · ${latest.posted === 0 ? '沒有新的對帳單' : `已匯入 ${latest.posted} 份`}`;
+    // 沒有新的對帳單 only when nothing arrived: a statement received but held reads 已匯入 0 份 · 收到 N 份.
+    const nothing = latest.files_seen === 0 && latest.posted === 0;
+    runLine = `${runStamp(latest.run_at, now)} · ${nothing ? '沒有新的對帳單' : `已匯入 ${latest.posted} 份`}`;
     if (latest.files_seen > latest.posted) runLine += ` · 收到 ${latest.files_seen} 份`;
   }
   return {

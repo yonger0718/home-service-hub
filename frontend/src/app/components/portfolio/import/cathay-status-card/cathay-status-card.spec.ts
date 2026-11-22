@@ -243,6 +243,28 @@ describe('CathayStatusCardComponent', () => {
     expect(el.querySelector('.cathay-day')).toBeNull();
   });
 
+  it('the first round still in flight (a slow other source): the 國泰 answer shows at once; its failure shows at once', async () => {
+    round.set(1);
+    settledRound.set(0);
+    cathay.set(null);
+    const el = mount();
+    expect(text(el.querySelector('[role="status"]'))).toBe('讀取中…');
+
+    // The 國泰 source answered; the round has not settled (another source is slow).
+    cathay.set(WITH_HELD);
+    await settle();
+    expect(text(el)).not.toContain('讀取中…');
+    expect(text(el.querySelector('.cathay-run-line'))).toBe('今天 06:41 · 已匯入 1 份');
+    expect(ackButton()).not.toBeNull();
+
+    // A later first-round-like state where 國泰 failed before the round settled: the unread banner, not 讀取中….
+    cathay.set(null);
+    failedSources.set(['cathay']);
+    await settle();
+    expect(text(el)).not.toContain('讀取中…');
+    expect(text(el.querySelector('app-banner .banner-title'))).toBe('無法讀取國泰對帳單狀態');
+  });
+
   it('another source failing does not hide the card', () => {
     failedSources.set(['dividends']);
     const el = mount();

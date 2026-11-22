@@ -1,7 +1,6 @@
 <app-bento class="cathay-card" title="國泰每日對帳單">
-  @if (!center.loaded()) {
-    <small class="cathay-loading" role="status">讀取中…</small>
-  } @else if (failed()) {
+  <!-- Gated on the 國泰 source alone (not the whole round): its answer or failure shows as soon as it lands. -->
+  @if (failed()) {
     <app-banner
       tone="error"
       heading="無法讀取國泰對帳單狀態"

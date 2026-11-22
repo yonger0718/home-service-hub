@@ -77,7 +77,7 @@ O = owner, C = coordinator, P = planner (made where the others were silent).
 | Run task action | `查看` → 匯入 |
 | Truncation note on 通知 | `還有 {n} 天的國泰對帳單未列出 · 到匯入頁查看 ›` |
 | Card title | `國泰每日對帳單` |
-| Card run line (ok) | `{stamp} · 已匯入 {posted} 份` (spec); `{stamp} · 沒有新的對帳單` when `posted` is 0; plus ` · 收到 {files_seen} 份` when `files_seen > posted` |
+| Card run line (ok) | `{stamp} · 已匯入 {posted} 份` (spec); `{stamp} · 沒有新的對帳單` only when `files_seen` is 0 (a received but held statement reads `{stamp} · 已匯入 0 份 · 收到 {files_seen} 份`); plus ` · 收到 {files_seen} 份` when `files_seen > posted` |
 | Card banner (bad run) | heading = the run title; detail = when and meta joined with ` · `; tone error for failed, warn for latched / stale |
 | Card latest-run details (bad run, beside the banner) | `最近一次執行：{stamp} · {result} · 收到 {files_seen} 份 · 已匯入 {posted} 份`, `{result}` = `失敗` / `已停用` / `成功` (a stale run whose latest was ok); absent only when there is no run at all |
 | Card last success | `上次成功 {stamp}` (only under a bad run, when `latest_ok` exists) |

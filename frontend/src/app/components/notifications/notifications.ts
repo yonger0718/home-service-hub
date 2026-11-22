@@ -139,11 +139,11 @@ export class NotificationsComponent {
   private readonly pending = computed(
     () =>
       !this.center.loaded() ||
-      (this.center.loading() &&
-        this.center.tasks().length === 0 &&
-        this.center.failedSources().length === 0 &&
-        !this.center.truncated()),
+      (this.center.loading() && this.center.tasks().length === 0 && this.center.failedSources().length === 0 && !this.unlisted()),
   );
+
+  /** Some source left work out of its answer: the inbox's ask items, or 國泰 dates beyond those listed (C5). */
+  private readonly unlisted = computed(() => this.center.truncated() || this.center.cathayMore() > 0);
 
   /**
    * A source failed and nothing is counted: there is no number to stand behind (a zero would read as "nothing to do"
@@ -221,7 +221,8 @@ export class NotificationsComponent {
     if (this.pending()) {
       return 'loading';
     }
-    return this.center.failedSources().length === 0 && !this.center.truncated() ? 'empty' : 'list';
+    // 都處理好了 never stands beside a note saying something was not listed.
+    return this.center.failedSources().length === 0 && !this.unlisted() ? 'empty' : 'list';
   });
 
   /** 下一件: the nearest tracked bill, under the all-clear; ledger only, so absent under 投資 (P5). */

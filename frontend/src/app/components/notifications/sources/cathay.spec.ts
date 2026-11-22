@@ -147,9 +147,14 @@ describe('cathayView', () => {
       runDetails: null, lastOk: null, days: [], more: 0, dotLabel: null });
   });
 
-  it('posted 0 → 沒有新的對帳單; files_seen 3, posted 1 → … · 已匯入 1 份 · 收到 3 份', () => {
+  it('files_seen 0 → 沒有新的對帳單; files_seen 3, posted 1 → … · 已匯入 1 份 · 收到 3 份', () => {
     expect(cathayView(NONE, { latest: run({ files_seen: 0, posted: 0 }), latest_ok: null }, now).runLine).toBe('今天 06:41 · 沒有新的對帳單');
     expect(cathayView(NONE, { latest: run({ files_seen: 3, posted: 1 }), latest_ok: null }, now).runLine).toBe('今天 06:41 · 已匯入 1 份 · 收到 3 份');
+  });
+
+  it('a held statement (files_seen 1, posted 0) never reads as 沒有新的對帳單: … · 已匯入 0 份 · 收到 1 份', () => {
+    const line = cathayView(NONE, { latest: run({ files_seen: 1, posted: 0 }), latest_ok: null }, now).runLine;
+    expect(line).toBe('今天 06:41 · 已匯入 0 份 · 收到 1 份');
   });
 
   it('failed: error banner naming password_file, lastOk 上次成功 昨天 06:41, dotLabel 國泰對帳單匯入失敗', () => {
