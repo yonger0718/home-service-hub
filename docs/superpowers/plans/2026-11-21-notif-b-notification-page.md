@@ -55,7 +55,7 @@ R1–R29 are the controller's (2026-11-21; R25–R29 after the plan review); P1�
 | R22 | The page ends with 「提醒中心（借還款、週期與分期管理）」 → `/accounting/reminders` | The timeline bell was the only way in | — |
 | R23 | The new service keeps driving `BillingService` (`ensure` per change round and when the dues change, as `nav-badge.service.ts:105–119`); the re-read of a round is called per round and awaited (R27) | Timeline and reminders bill figures depend on it | Regression there |
 | R24 | Request load accepted: no aggregate endpoint; one read per source per refresh, one inbox read shared by the statement tasks and the e-invoice task. Noted in the PR body | Frontend-only PR | An endpoint later |
-| R25 | The inbox is read with `limit: 1000` (the API's maximum; default 500, no offset: `routers/reconciliation.py:69–70`, cut after the counts at `inbox_service.py:475–481`). Truncation is exact: `counts.ask_items` is the number of unfolded items in the whole set (`inbox_service.py:439–442`) and an item is unfolded exactly when its question is in the ask bucket (`FOLDED`, `:37`, `:420`), so `missing = counts.ask_items − (unfolded items received)`. When `missing > 0`: statement tasks are built from the received items as usual, plus one counted catch-all task 「還有對帳項目未列出」 with 「還有 N 筆要你決定」 → reminders 待處理; a statement cut in two shows its received count with no marker and its remainder is inside the catch-all's N; the bottom line adds 「對帳項目較多，僅列出部分」; 都處理好了 never shows | A statement beyond the cut would vanish and an inbox whose first 1000 items are all folded would read "all done" | Exact per-statement counts beyond the cap need an API change (per-statement counts or an offset) — follow-up, not B |
+| R25 | The inbox is read with `limit: 1000` (the API's maximum; default 500, no offset: `routers/reconciliation.py:69–70`, cut after the counts at `inbox_service.py:475–481`). Truncation is exact: `counts.ask_items` is the number of unfolded items in the whole set (`inbox_service.py:439–442`) and an item is unfolded exactly when its question is in the ask bucket (`FOLDED`, `:37`, `:420`), so `missing = counts.ask_items − (unfolded items received)`. When `missing > 0`: statement tasks are built from the received items as usual, plus an UNCOUNTED catch-all 「還有對帳項目未列出 · 還有 N 筆要你決定」 (owner fix 2026-11-22: the API gives only the global `counts.ask_items`, never a per-statement total, and a statement's `open_case_count` also counts folded questions, so the missing items cannot be attributed to a statement; each statement therefore counts once from what was listed, and the catch-all is `center.overflow()`, not a task: no page, chip, heading, sidebar or bell count includes it) shown as a plain note 「…（不計入數字）到提醒中心查看」 right under the sections (`p.notif-overflow`, ledger only); with nothing else counted the subtitle reads 「還有對帳項目未列出」; 都處理好了 never shows | A statement beyond the cut would vanish and an inbox whose first 1000 items are all folded would read "all done" | Exact per-statement counts beyond the cap need an API change (per-statement counts or an offset) — follow-up, not B |
 | R26 | Two calls. `refresh({ reason })` is for page open / focus / a timer: it never starts a round while one is in flight, and focus / timer are throttled. `invalidate()` is for after an in-app write (success or failure) and for `entriesChanged` / `accountsChanged`: it **supersedes** — it starts a new round at once and the older round's answers are dropped by the round-id guard. The row stays busy until a round started after the write's answer has settled | A forced refresh that is skipped while a read is in flight leaves pre-write data on screen with nothing to replace it | Supersede costs one duplicated set of reads when a write lands mid-round; the alternative (one trailing round) saves them and delays the fresh data by the old round's slowest read |
 | R27 | A round is a value: `round()` is the id of the newest started round, `settledRound()` the id of the newest round whose every task source (card statements included) has answered ok or failed; `loading = round() > settledRound()`, `loaded = settledRound() > 0`. `BillingService.ensure` and `refresh` return `Promise<void>` that resolves when no statement of the given dues has a read in flight; nothing else in that service changes and its other callers ignore the value | `refresh` returned void and kept old figures during a re-read, so "accounts answered" was mistaken for "bills answered" | One return type; if wrong the callers still compile |
 | R28 | Focus restoration targets the native control: `app-btn.notif-primary button` or `a.notif-primary`; the accessible name of a command goes through `app-btn`'s `ariaLabel` input | `app-btn`'s host has no tabindex (`btn.ts:6–20`) | Selector |
@@ -63,7 +63,7 @@ R1–R29 are the controller's (2026-11-21; R25–R29 after the plan review); P1�
 | P1 | A partial-only schedule task's primary is the link 逐期處理 (reminders 待完成交易); every schedule task has 逐期處理 as its secondary link | Accepting or re-posting a partial needs the reminders row's controls | One action |
 | P2 | Statement task title 「對帳 · <帳戶>（至 MM/DD）」 from `statement.period_end` | The artboard's 「9 月帳單」 needs the period start, which the inbox item does not carry | String |
 | P3 | With badges off the page keeps its subtitle and chip counts | They are the page's content, not badges; the spec scenario names the entry points | Two `@if`s |
-| P4 | The 「無法讀取：…」 line carries a 重試 button and stays in place through the retry; 都處理好了 is never shown while a source failed | "All done" would be false; PR A's rule for read failures | Markup |
+| P4 | The 「無法讀取：…」 line carries a 重試 button and stays in place through the retry; 都處理好了 is never shown while a source failed. Owner fix 2026-11-22: with ONE source failed the subtitle is 「N 件要處理 · 部分資料無法讀取」 (「部分資料無法讀取」 alone at zero) and chips and section headings keep their numbers, as the sidebar does; only when EVERY source failed are there no numbers | "All done" would be false; PR A's rule for read failures | Markup |
 | P5 | Count pill text uses a new token `--app-count-ink` (`#fff` light; the dark `--app-bg` value `#0f1218` dark) | White on dark `--c-red-ink` `#ff6369` is 2.9:1, on dark `--app-primary` 3.2:1 | Token value |
 | P6 | A row whose command answered (ok or failed) stays busy until a round started after that answer has settled (R26); if the row then leaves while focus is on `<body>`, focus goes to the native control of the row now at its place (R28), else to the 追蹤中 summary | A second press in the gap would post twice; focus must not fall out of the page | Two effects |
 | P7 | The facade gains one member, `summary`, read by `NavigationStateService` | The entry points need the count, and injecting the real service into nav components would pull `HttpClient` into specs that stub the facade | See Conflicts |
@@ -226,7 +226,7 @@ Copy and fields — bill (`from: 'bills'`, `source: 'ledger'`, `icon: 'pi-credit
 | `tier` | `payDate < today` overdue; `=== today` today; 1–7 days ahead tracking |
 | `title` | `${name}帳單` (artboard 「國泰 CUBE 卡帳單」) |
 | `when` | overdue `${shortDate(payDate)} 截止 · 逾期 ${n} 天` (artboard); today `今天截止` (copy: planner); tracking `${shortDate(payDate)} 截止` |
-| `meta` | `帳單 ${formatMoney(statement, currency)}`, plus ` · 已繳 ${formatMoney(paid, currency)}` when `paid > 0` |
+| `meta` | owner fix 2026-11-22: never repeats the row amount (the remaining): `帳單 ${statement}` only when it differs from the amount, plus `已繳 ${paid}` when `paid > 0`, joined with ` · `; null when nothing remains to say |
 | `amount` | `formatMoney(remaining, currency)` |
 | `primary` | `{ label: '記繳款', route: '/accounting/accounts/' + accountId }` |
 | `sortKey` / `fingerprint` | `payDate` / `${remaining}|${payDate}` |
@@ -256,7 +256,7 @@ Schedule (`from: 'schedules'`, `source: 'ledger'`). "Open" = `status === 'pendin
   it('a bill due in 8 days is absent', …);            // payDate 2026-11-01 → []
   it('a paid bill (remaining 0) and an unresolved bill (null) are absent', …);
   it('tiers by the debit day, keeps the printed due date in the id', …); // due 2026-10-24 (Sat), payDate 2026-10-26 → tier tracking, id bill:11:2026-10-24
-  it('meta names the payment only when something was paid', …);          // 帳單 $16,639 | 帳單 $16,639 · 已繳 $5,000
+  it('meta never repeats the row amount', …);          // nothing paid → null | 帳單 $16,639 · 已繳 $5,000 (amount $11,639)
   it('fingerprint changes with the remaining amount and the date', …);
   ```
   `schedules.spec.ts` (`makeInstance` from `accounting/testing/fixtures.ts:232`):
@@ -325,7 +325,7 @@ Copy and fields (all `source: 'ledger'`, `amount: null`, `secondary: []`):
 | Task | `id` | tier | `title` | `when` | `meta` | `primary` | `sortKey` / `fingerprint` |
 |---|---|---|---|---|---|---|---|
 | Statement (`from: 'recon'`, icon `pi-check-square`) | `recon:${statement.id}` | confirm | `對帳 · ${account.name}（至 ${shortDate(period_end)}）` (copy: planner, P2) | `${n} 筆要你決定` (spec) | `已對上 ${k} / ${n} 行` (artboard) when progress is known, else null | `{ label: '對帳', route: reconTaskRoute(account.id, statement.id) }` | `period_end` / `${n}` |
-| Not listed (R25; `from: 'recon'`, icon `pi-list`) | `recon:more` | confirm | `還有對帳項目未列出` (R25) | `還有 ${missing} 筆要你決定` (copy: planner) | `到提醒中心的待處理查看` (copy: planner) | `{ label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } }` | `9999-12-30` (after every statement, before the e-invoice task) / `${missing}` |
+| Not listed (R25; `from: 'recon'`, icon `pi-list`) | `recon:more` | confirm | `還有對帳項目未列出` (R25) | `還有 ${missing} 筆要你決定` (copy: planner) | `到提醒中心的待處理查看` (copy: planner) | `{ label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } }` | `9999-12-30` / `${missing}` — built by `reconOverflowTask`, but NOT a counted task (owner fix 2026-11-22; see R25) |
 | E-invoice (`from: 'recon'`, icon `pi-receipt`) | `einvoice` | confirm | `${n} 張發票要確認` (R5) | `電子發票` (copy: planner) | `到提醒中心的待處理回答` (copy: planner) | `{ label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } }` | `9999-12-31` (last in its section) / `${n}` |
 | Import review (`from: 'importReview'`, icon `pi-upload`) | `import:${run.id ?? run.started_at}` | confirm | `匯入紀錄 · ${n} 筆待確認` (copy: planner) | `started_at` as local `MM/DD HH:mm` | `run.file_name` | `{ label: '查看', route: '/accounting/accounts' }` | `started_at` / `${n}` |
 
@@ -702,15 +702,15 @@ Toasts (all through `this.toasts`; `name` = the command's `name`):
 |---|---|
 | 入帳 ok | `done('已入帳：' + name)` (copy: planner) |
 | 全部入帳 ok, `failed === null` | `done('已入帳 ' + posted.length + ' 期：' + name)` (copy: planner) |
-| 全部入帳 ok with `failed` | `error(name + '：已入帳 ' + posted.length + ' 期，之後的入帳失敗（' + failed.error + '）')` (copy: planner), no 重試 |
+| 全部入帳 ok with `failed` | `error(name + '：已入帳 ' + posted.length + ' 期，之後的入帳失敗，請再試一次')` (owner fix 2026-11-22: the server's reason goes to `console.error`, never the toast), no 重試 |
 | `import_running` (409) | `error(IMPORT_RUNNING_TOAST)`, no 重試 |
-| any other failure | `text = toastText(name + ' 入帳失敗', writeErrorMessage(err))`; `error(text, { retry: guardedRetry(err, this.toasts, text, () => this.isBusy(taskId), () => this.send(taskId, command)) })` — 重試 only for status 0 / ≥ 500 |
+| any other failure | owner fix 2026-11-22: `text = name + ' 入帳失敗，請再試一次'` (the error goes to `console.error`, never the toast); `error(text, { retry: guardedRetry(err, this.toasts, text, () => this.isBusy(taskId), () => this.send(taskId, command)) })` — 重試 only for status 0 / ≥ 500 |
 
 - [ ] **Step 1: Failing tests** (`notifications.spec.ts`; real `ToastService`, `AccountingService` stubbed with `Subject`s):
   ```ts
   it('入帳 posts the task\'s instance and shows 「已入帳：測試房租」', …);                 // postScheduleInstance called once with 7; current() = { kind: 'done', text: '已入帳：測試房租' }
   it('全部入帳 calls catch-up for the definition and shows 「已入帳 3 期：測試月費」', …);
-  it('a catch-up that stops midway shows 失敗 with the count and the reason, without 重試', …);   // { posted: [1, 2], failed: { instance_id: 3, error: '帳戶已封存' } } → '測試月費：已入帳 2 期，之後的入帳失敗（帳戶已封存）'
+  it('a catch-up that stops midway shows 失敗 with the count and no reason, without 重試', …);   // { posted: [1, 2], failed: { instance_id: 3, error: '帳戶已封存' } } → '測試月費：已入帳 2 期，之後的入帳失敗，請再試一次'
   it('the row is busy while the write runs and a second press sends nothing', …);
   it('after success the row stays busy until a round started after the answer settles', …); // round 4 at the answer; settledRound 4 → still disabled; round 5 started, settledRound 5 → enabled / gone
   it('after a failure the page invalidates and the row stays busy until that round settles', …);   // invalidate called once; settledRound reaches the returned id → enabled
@@ -764,7 +764,7 @@ tasks.md 2.3 (empty state, failed-source line), 2.5. R25, R26, R27, P4.
 | List | any counted task | Task 8's sections |
 | Failed source | `failedSources().length > 0`, in any state, as the last element of the page | `p.notif-failed` (`--app-text-muted`): `無法讀取：對帳` (spec) + `button.notif-retry` `重試`, disabled while `loading()`; the line stays in place during the retry and leaves only when no source is failed; after a retry that fails again focus returns to 重試 if it fell to `<body>` |
 
-| Truncated inbox | `truncated()`, as a bottom line before the failure line | `p.notif-partial` (`--app-text-muted`): `對帳項目較多，僅列出部分` (R25) |
+| Truncated inbox | `center.overflow()`, right under the sections (owner fix 2026-11-22) | `p.notif-overflow` (`--app-text-muted`): `還有對帳項目未列出 · 還有 N 筆要你決定（不計入數字）` + a `到提醒中心查看` link; not a row, in no section |
 
 With a failed source and no counted task the page shows neither 都處理好了 nor 讀取中…: only the chips, 追蹤中 (if any), the links and the failure line.
 
@@ -777,8 +777,8 @@ With a failed source and no counted task the page shows neither 都處理好了 
   - `two failed sources read 「無法讀取：帳單、對帳」`;
   - `a failed source with no task left: no 都處理好了, the failure line shows`;
   - `重試 calls invalidate(); the line stays and the button is disabled while loading; it leaves when the source recovers`;
-  - `truncated: 「對帳項目較多，僅列出部分」 shows above the failure line's place and the catch-all row 「還有對帳項目未列出」 is listed in 要你確認`;
-  - `truncated with no other task: the catch-all row shows, 都處理好了 does not`;
+  - `truncated: the catch-all note 「還有對帳項目未列出」 sits under the sections, in no section, and no count includes it`;
+  - `truncated with no counted task: the note shows, 都處理好了 does not, the subtitle is 「還有對帳項目未列出」`;
   - `not truncated: no such line`;
   - `a retry that fails again returns focus to 重試 when focus fell to <body>`;
   - `tasks arriving while another source is still loading render at once (no 讀取中… over a list)`;
@@ -828,7 +828,7 @@ Before / after at 1440 and 390, light and dark, unless the row says otherwise. "
 | 追蹤中 open | `/notifications` at 1440 and 390 | same, `details` opened |
 | Empty state | `/notifications` at 1440 and 390 (light / dark) | no counted task; 測試二卡 due 10/27; three debts |
 | A failed source | `/notifications` at 1440 and 390 | inbox → 500: 「無法讀取：對帳」 with 重試; a second shot with every source failing |
-| Truncated inbox | `/notifications` at 1440 and 390 | inbox with 6 items of one statement and `counts.ask_items` 10: the statement row, 「還有對帳項目未列出 · 還有 4 筆要你決定」, the bottom line 「對帳項目較多，僅列出部分」 |
+| Truncated inbox | `/notifications` at 1440 and 390 | inbox with 6 items of one statement and `counts.ask_items` 10: the statement row (counted once), the uncounted note 「還有對帳項目未列出 · 還有 4 筆要你決定（不計入數字）」 |
 | Slow card statement | `/notifications` at 1440 | the card's payments read delayed 3 s: 讀取中… first, never 都處理好了 |
 | In-place 入帳 | `/notifications` at 1440 and 390 | press 入帳 on 測試房租: busy row, then the 完成 toast; a 500 → 失敗 with 重試 |
 | Sidebar expanded | `/accounting` at 1440 (light / dark), before / after | count 7 red; a second shot with nothing overdue (primary pill); dots on 帳戶 (red) and 記帳記錄 (primary) |
