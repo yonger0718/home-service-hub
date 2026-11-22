@@ -21,10 +21,10 @@
 
 ## 3. Portfolio and system sources (PR C)
 
-- [ ] 3.1 Dividends past payment date (one batch) and 追蹤中 for the rest
-- [ ] 3.2 Import failure task (same signal as the 匯入 dot)
-- [ ] 3.3 國泰 daily statement: pending dates with 確認 (ack), run health rule; status card on `/portfolio/import`
-- [ ] 3.4 Tests: ack removes the task; stale run at 07:00 with latest at yesterday 06:41 creates a task
+- [x] 3.1 Dividends past payment date (one batch) and 追蹤中 for the rest (dividends are read by paging every row and filtering in the SPA — the API has no receipt_status filter; a scan that hits the 50-page cap or the 20 s limit fails the source instead of showing a partial result; a payment date of today counts as past; rows show symbols, not names; plus the 股利 dot from 2.4 and `?status=pending` on the 股利 page, read once when the page opens)
+- [x] 3.2 Import failure task (same signal as the 匯入 dot) (the recalc status is now read in every round as source 匯入. Known limit, unchanged: the server status is in-process and the last failure is per device, so the task can differ between devices and disappear after an API restart)
+- [x] 3.3 國泰 daily statement: pending dates with 確認 (ack), run health rule; status card on `/portfolio/import` (run rule in Asia/Taipei, evaluated once per round and always against the answer of that round; latched and stale are worded as warnings but 系統 rows and the 匯入 dot are red; pending dates do not light the 匯入 dot; beyond 50 dates one uncounted note. Not in C: 復原 for an ack — no endpoint; snooze — 5.3)
+- [x] 3.4 Tests: ack removes the task; stale run at 07:00 with latest at yesterday 06:41 creates a task (ack removes the task; 404 reads as done; one request per press; 07:00 / yesterday 06:41 with the 06:54 and 06:55 boundaries, the exact 06:40:00 boundary and a UTC-written variant)
 
 ## 4. Review flow (PR D)
 
