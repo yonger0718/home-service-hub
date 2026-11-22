@@ -13,6 +13,24 @@ function attempt(overrides: Partial<ImportAttempt> = {}): ImportAttempt {
 }
 
 describe('dividend builders', () => {
+  it('a payment_date carrying a time is compared by its date part: today counts as due', () => {
+    const { due, waiting } = splitPendingDividends([div(1, '9901', { payment_date: '2026-10-24T00:00:00' })], TODAY);
+    expect(due.map(d => d.id)).toEqual([1]);
+    expect(waiting).toEqual([]);
+  });
+
+  it('the batch fingerprint orders ids as numbers (2 before 10)', () => {
+    const { due } = splitPendingDividends(
+      [div(10, '9901', { payment_date: '2026-10-20' }), div(2, '9902', { payment_date: '2026-10-21' })],
+      TODAY,
+    );
+    expect(dividendBatch(due)?.fingerprint).toBe('2,10');
+  });
+
+  it('a failed quotes run does not hide a failed device import', () => {
+    expect(importFailureTask({ kind: 'quotes', state: 'failed' }, attempt())).toMatchObject({ title: '最近一次匯入失敗' });
+  });
+
   it('two pending dividends past their payment date form one 要你確認 task linking to 股利 待收', () => {
     const { due, waiting } = splitPendingDividends(
       [div(2, '9902', { payment_date: '2026-10-22' }), div(1, '9901', { payment_date: '2026-10-20' })],
