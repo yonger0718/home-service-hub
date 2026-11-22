@@ -8,7 +8,7 @@ import { NotifTask, NotifTrackingRow } from '../notif-task';
 const pad = (n: number): string => String(n).padStart(2, '0');
 
 /** `2026-10-24T09:05:00` → local `10/24 09:05`. */
-function localStamp(iso: string): string {
+export function localStamp(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
