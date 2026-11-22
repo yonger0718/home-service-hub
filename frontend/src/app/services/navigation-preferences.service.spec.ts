@@ -70,7 +70,15 @@ describe('NavigationPreferencesService', () => {
     localStorage.setItem('hh-nav-hidden', '["system","portfolio","bogus"]');
     expect(create().hiddenGroups()).toEqual(['portfolio']);
     TestBed.resetTestingModule();
+    // 通知 is outside NAV_GROUPS: a stored hidden / folded list naming it is dropped.
+    localStorage.setItem('hh-nav-hidden', '["notifications","portfolio"]');
+    localStorage.setItem('hh-nav-folded', '["notifications","accounting"]');
+    const prefs = create();
+    expect(prefs.hiddenGroups()).toEqual(['portfolio']);
+    expect(prefs.foldedGroups()).toEqual(['accounting']);
+    TestBed.resetTestingModule();
     localStorage.removeItem('hh-nav-hidden');
+    localStorage.removeItem('hh-nav-folded');
     localStorage.setItem('hh-nav-sidebar', 'wide');
     expect(create().sidebarDefault()).toBe('expanded');
   });

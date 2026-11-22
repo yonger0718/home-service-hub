@@ -7,14 +7,17 @@ import { MATCH_MEDIA, PANES_QUERY, PHONE_QUERY, SIDEBAR_WIDE_QUERY } from '../..
 import { NavBadgeService } from '../../services/nav-badge.service';
 import { NavigationPreferencesService } from '../../services/navigation-preferences.service';
 import { PaneStateService } from '../../services/pane-state.service';
+import { NO_TASKS, NotifSummary } from '../notifications/notif-task';
 import { NavBadge } from './navigation';
 import { NavigationStateService } from './navigation-state.service';
 
 @Component({ template: '' })
 class BlankPage {}
 
+const SUMMARY: NotifSummary = { total: 3, overdue: 1, tone: 'red', label: '通知，3 件要處理，1 件已逾期' };
+
 const BADGES: Record<string, NavBadge> = {
-  'accounting-timeline': { count: 2, label: '提醒中心 2 項' },
+  'accounting-timeline': { dot: true, label: '提醒中心 2 項' },
   import: { dot: true, label: '最近一次匯入失敗' },
 };
 
@@ -35,12 +38,15 @@ function fakeMatchMedia(width: number) {
     }) as unknown as MediaQueryList;
 }
 
+const summaryStub = signal<NotifSummary>(SUMMARY);
+
 function configure(width = 1440) {
+  summaryStub.set(SUMMARY);
   TestBed.configureTestingModule({
     providers: [
       provideRouter([{ path: '**', component: BlankPage }]),
       { provide: MATCH_MEDIA, useValue: fakeMatchMedia(width) },
-      { provide: NavBadgeService, useValue: { badges: signal(BADGES) } },
+      { provide: NavBadgeService, useValue: { badges: signal(BADGES), summary: summaryStub } },
     ],
   });
   return {
@@ -59,6 +65,14 @@ async function create(width = 1440, url = '/portfolio') {
 
 describe('NavigationStateService', () => {
   beforeEach(() => localStorage.clear());
+
+  it('on /notifications activeItem is 通知 and activeGroup is no visible group', async () => {
+    const { nav } = await create(1440, '/notifications');
+
+    expect(nav.activeItem().id).toBe('notifications');
+    expect(nav.activeGroup().id).toBe('notifications');
+    expect(nav.visibleGroups().some(group => group.id === nav.activeGroup().id)).toBe(false);
+  });
 
   it('tracks the active item and group from the router', async () => {
     const { nav, router } = await create(1440, '/portfolio/transactions');
@@ -188,6 +202,22 @@ describe('NavigationStateService', () => {
     await router.navigateByUrl('/accounting/entries/9');
 
     expect(TestBed.inject(NavigationStateService).sidebarMode()).toBe('rail');
+  });
+
+  it("notifications follows the facade's summary", async () => {
+    const { nav } = await create();
+    expect(nav.notifications()).toEqual(SUMMARY);
+
+    const next: NotifSummary = { total: 1, overdue: 0, tone: 'primary', label: '通知，1 件要處理' };
+    summaryStub.set(next);
+    expect(nav.notifications()).toEqual(next);
+  });
+
+  it('badges off → NO_TASKS and no badges', async () => {
+    const { nav, prefs } = await create();
+    prefs.setShowBadges(false);
+    expect(nav.notifications()).toEqual(NO_TASKS);
+    expect(nav.badges()).toEqual({});
   });
 
   it('badges off hides every badge', async () => {

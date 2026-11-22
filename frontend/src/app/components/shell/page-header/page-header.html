@@ -34,6 +34,15 @@
       }
     </div>
   }
+  @if (bell()) {
+    @let notif = nav.notifications();
+    <a class="header-bell" routerLink="/notifications" [attr.aria-label]="notif.label">
+      <i class="pi pi-bell" aria-hidden="true"></i>
+      @if (notif.total > 0) {
+        <span class="notif-count header-bell-count" [class.notif-count--red]="notif.tone === 'red'" aria-hidden="true">{{ notif.total }}</span>
+      }
+    </a>
+  }
   @if (gear()) {
     <ng-container *ngTemplateOutlet="gearLink" />
   }

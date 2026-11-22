@@ -1,5 +1,8 @@
 import {
   NAV_GROUPS,
+  NAV_ITEMS,
+  NOTIFICATIONS_GROUP,
+  NOTIFICATIONS_ITEM,
   NavBadge,
   NavGroupId,
   SidebarModeInput,
@@ -56,10 +59,34 @@ describe('navigation model', () => {
     expect(tabLabels(['supplies', 'portfolio'])).toEqual({ labels: ['財務', '+', '設定'], settingsInHeader: false });
   });
 
-  it('folded group sums counts and shows a dot', () => {
-    const badges: Record<string, NavBadge> = { dividends: { count: 2, label: '' }, import: { dot: true, label: '' } };
-    expect(summarizeGroupBadges(portfolio, badges)).toEqual({ count: 2, dot: true });
-    expect(summarizeGroupBadges(portfolio, {})).toEqual({ count: 0, dot: false });
+  it('a folded group shows one dot: red when any item is red, else primary, none without a dot', () => {
+    const red: Record<string, NavBadge> = { dividends: { dot: true, tone: 'primary', label: '' }, import: { dot: true, label: '' } };
+    expect(summarizeGroupBadges(portfolio, red)).toEqual({ dot: true, tone: 'red' });
+    const primary: Record<string, NavBadge> = { dividends: { dot: true, tone: 'primary', label: '' } };
+    expect(summarizeGroupBadges(portfolio, primary)).toEqual({ dot: true, tone: 'primary' });
+    expect(summarizeGroupBadges(portfolio, {})).toEqual({ dot: false, tone: 'primary' });
+  });
+
+  it('/notifications and anything under it resolve to the synthetic 通知 item', () => {
+    for (const url of ['/notifications', '/notifications?x=1', '/notifications/recon/5']) {
+      expect(navItemForUrl(url), url).toBe(NOTIFICATIONS_ITEM);
+    }
+    expect(navItemForUrl('/nowhere').id).toBe('inventory');
+    expect(navItemForUrl('/notifications/')).toBe(NOTIFICATIONS_ITEM);
+    // A longer first segment is not under /notifications.
+    expect(navItemForUrl('/notificationsfoo')).not.toBe(NOTIFICATIONS_ITEM);
+    expect(navItemForUrl('/notificationsfoo').id).toBe('inventory');
+  });
+
+  it('通知 sits outside the nav groups and items', () => {
+    expect(NAV_ITEMS).not.toContain(NOTIFICATIONS_ITEM);
+    expect(NAV_GROUPS).not.toContain(NOTIFICATIONS_GROUP);
+    expect(NOTIFICATIONS_ITEM).toEqual({
+      id: 'notifications', path: '/notifications', icon: 'pi-bell', label: '通知', sidebarLabel: '通知', title: '通知', group: 'notifications',
+    });
+    expect(NOTIFICATIONS_GROUP).toEqual({
+      id: 'notifications', label: '通知', icon: 'pi-bell', defaultPath: '/notifications', items: [NOTIFICATIONS_ITEM],
+    });
   });
 
   const base: SidebarModeInput = { wide: true, stored: 'expanded', autoCollapse: true, paneOpen: true, paneOverride: false };

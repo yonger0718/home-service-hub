@@ -15,6 +15,7 @@ import {
 } from '../../services/layout-mode.service';
 import { DirtyAware, DirtyFormRegistry } from '../accounting/dirty-form.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
+import { NO_TASKS, NotifSummary, notifLabel } from '../notifications/notif-task';
 import { NavigationPreferencesService } from '../../services/navigation-preferences.service';
 import { NAV_ITEMS, NavBadge } from '../shell/navigation';
 import { SidebarComponent } from './sidebar';
@@ -46,6 +47,7 @@ interface Rendered {
   host: HTMLElement;
   prefs: NavigationPreferencesService;
   badges: WritableSignal<Readonly<Record<string, NavBadge>>>;
+  summary: WritableSignal<NotifSummary>;
   update(): Promise<void>;
 }
 
@@ -54,14 +56,16 @@ async function render(
   url = '/portfolio',
   badgeValues: Record<string, NavBadge> = {},
   height?: number,
+  notif: NotifSummary = NO_TASKS,
 ): Promise<Rendered> {
+  const summary = signal<NotifSummary>(notif);
   const badges = signal<Readonly<Record<string, NavBadge>>>(badgeValues);
   TestBed.configureTestingModule({
     imports: [SidebarComponent],
     providers: [
       provideRouter([{ path: '**', component: BlankPage }]),
       { provide: MATCH_MEDIA, useValue: fakeMatchMedia(width, height) },
-      { provide: NavBadgeService, useValue: { badges } },
+      { provide: NavBadgeService, useValue: { summary, badges } },
     ],
   });
   await TestBed.inject(Router).navigateByUrl(url);
@@ -76,9 +80,18 @@ async function render(
     host: fixture.nativeElement as HTMLElement,
     prefs: TestBed.inject(NavigationPreferencesService),
     badges,
+    summary,
     update,
   };
 }
+
+const summaryOf = (total: number, overdue: number, tone: 'red' | 'primary'): NotifSummary => ({
+  total,
+  overdue,
+  tone,
+  label: notifLabel(total, overdue),
+});
+const RED_7 = summaryOf(7, 3, 'red');
 
 const text = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
 
@@ -112,7 +125,8 @@ describe('SidebarComponent', () => {
 
   it('rail at 1100 shows a tooltip per item', async () => {
     const { host } = await render(1100, '/portfolio', {
-      'accounting-timeline': { count: 2, label: '提醒中心 2 項' },
+      'accounting': { dot: true, tone: 'red', label: '有逾期的卡費' },
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
       import: { dot: true, label: '最近一次匯入失敗' },
     });
 
@@ -122,7 +136,7 @@ describe('SidebarComponent', () => {
     expect(host.querySelectorAll('.side-divider').length).toBe(3);
     expect(host.querySelector('.side-logo img')!.getAttribute('src')).toBe('assets/app-icon.svg');
 
-    const items = Array.from(host.querySelectorAll<HTMLAnchorElement>('a.side-item'));
+    const items = Array.from(host.querySelectorAll<HTMLAnchorElement>('a.side-item:not(.side-notif)'));
     expect(items.length).toBe(11);
     for (const item of items) {
       const navItem = NAV_ITEMS.find(candidate => item.getAttribute('href') === candidate.path)!;
@@ -132,10 +146,11 @@ describe('SidebarComponent', () => {
       expect(item.getAttribute('aria-label')!.startsWith(navItem.sidebarLabel)).toBe(true);
     }
     const label = (path: string) => items.find(item => item.getAttribute('href') === path)!.getAttribute('aria-label');
-    expect(label('/accounting')).toBe('記帳記錄，提醒中心 2 項');
+    expect(label('/accounting')).toBe('記帳記錄，有待確認的匯入紀錄');
     expect(label('/portfolio/import')).toBe('匯入，最近一次匯入失敗');
     expect(label('/portfolio/transactions')).toBe('交易紀錄');
-    expect(items.find(item => item.getAttribute('href') === '/accounting')!.querySelector('.item-count')!.textContent!.trim()).toBe('2');
+    expect(items.find(item => item.getAttribute('href') === '/accounting')!.querySelector('.item-dot')).not.toBeNull();
+    expect(host.querySelector('.item-count')).toBeNull();
     expect(items.find(item => item.getAttribute('href') === '/portfolio/import')!.querySelector('.item-dot')).not.toBeNull();
 
     // The fixed tooltip is placed at the item's centre when the pointer or focus reaches it.
@@ -156,17 +171,18 @@ describe('SidebarComponent', () => {
 
   it('folded group shows sum and dot', async () => {
     const onPortfolio = await render(1440, '/portfolio', {
-      'accounting-timeline': { count: 2, label: '提醒中心 2 項' },
-      accounting: { count: 1, label: '1 筆待確認' },
+      'accounting': { dot: true, tone: 'red', label: '有逾期的卡費' },
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
     });
     const finance = heading(onPortfolio.host, '財務');
     expect(finance.getAttribute('aria-expanded')).toBe('true');
-    expect(finance.querySelector('.group-count')).toBeNull();
+    expect(finance.querySelector('.group-dot')).toBeNull();
 
     finance.click();
     await onPortfolio.update();
     expect(finance.getAttribute('aria-expanded')).toBe('false');
-    expect(text(finance.querySelector('.group-count'))).toBe('3');
+    expect(finance.querySelectorAll('.group-dot').length).toBe(1);
+    expect(finance.querySelector('.group-count')).toBeNull();
     expect(onPortfolio.host.querySelector('a.side-item[href="/accounting"]')).toBeNull();
     expect(onPortfolio.prefs.foldedGroups()).toEqual(['accounting']);
 
@@ -226,15 +242,72 @@ describe('SidebarComponent', () => {
 
   it('badges off hides the item badges', async () => {
     const { host, prefs, update } = await render(1440, '/portfolio', {
-      'accounting-timeline': { count: 2, label: '提醒中心 2 項' },
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
     });
-    expect(host.querySelector('a.side-item[href="/accounting"] .item-count')).not.toBeNull();
+    expect(host.querySelector('a.side-item[href="/accounting"] .item-dot')).not.toBeNull();
 
     prefs.setShowBadges(false);
     await update();
     const timeline = host.querySelector('a.side-item[href="/accounting"]')!;
-    expect(timeline.querySelector('.item-count')).toBeNull();
+    expect(timeline.querySelector('.item-dot')).toBeNull();
     expect(timeline.getAttribute('aria-label')).toBe('記帳記錄');
+  });
+
+  it('no nav item renders a count (expanded and rail)', async () => {
+    // Fixture keys are nav item ids: `accounting` is the 帳戶 item, `accounting-timeline` is 記帳記錄 (href `/accounting`).
+    const badges: Record<string, NavBadge> = {
+      'accounting': { dot: true, tone: 'red', label: '有逾期的卡費' },
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
+    };
+    const expanded = await render(1440, '/portfolio', badges);
+    expect(expanded.host.querySelector('.item-count, .group-count')).toBeNull();
+    TestBed.resetTestingModule();
+    localStorage.clear();
+    const rail = await render(1100, '/portfolio', badges);
+    expect(rail.host.querySelector('.item-count, .group-count')).toBeNull();
+    expect(rail.host.querySelectorAll('.item-dot').length).toBe(2);
+  });
+
+  it('a primary dot carries item-dot--primary, a red one does not', async () => {
+    const { host } = await render(1440, '/portfolio', {
+      'accounting': { dot: true, tone: 'red', label: '有逾期的卡費' },
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
+      import: { dot: true, label: '最近一次匯入失敗' },
+    });
+    const dot = (path: string) => host.querySelector(`a.side-item[href="${path}"] .item-dot`)!;
+    expect(dot('/accounting').classList.contains('item-dot--primary')).toBe(true);
+    expect(dot('/accounting/accounts').classList.contains('item-dot--primary')).toBe(false);
+    expect(dot('/portfolio/import').classList.contains('item-dot--primary')).toBe(false);
+  });
+
+  it('a folded group shows one dot, red when any of its items is red', async () => {
+    const primaryOnly = await render(1440, '/portfolio', {
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
+    });
+    const head = heading(primaryOnly.host, '財務');
+    head.click();
+    await primaryOnly.update();
+    expect(head.querySelectorAll('.group-dot').length).toBe(1);
+    expect(head.querySelector('.group-dot')!.classList.contains('group-dot--primary')).toBe(true);
+    TestBed.resetTestingModule();
+    localStorage.clear();
+
+    const mixed = await render(1440, '/portfolio', {
+      'accounting': { dot: true, tone: 'red', label: '有逾期的卡費' },
+      'accounting-timeline': { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' },
+    });
+    const head2 = heading(mixed.host, '財務');
+    head2.click();
+    await mixed.update();
+    expect(head2.querySelectorAll('.group-dot').length).toBe(1);
+    expect(head2.querySelector('.group-dot')!.classList.contains('group-dot--primary')).toBe(false);
+  });
+
+  it('styles dots with the red-ink and primary tokens and has no count rule', () => {
+    const scss = readFileSync(join(process.cwd(), 'src/app/components/sidebar/sidebar.scss'), 'utf8');
+    expect(scss).toContain('var(--c-red-ink)');
+    expect(scss).toContain('var(--app-primary)');
+    expect(scss).not.toMatch(/\.item-count|\.group-count/);
   });
 
   it('marks the host compact on a short screen and keeps one scroll container', async () => {
@@ -264,7 +337,8 @@ describe('SidebarComponent 記一筆', () => {
     expect(entry.querySelector('.pi-plus')).not.toBeNull();
     const nav = host.querySelector('nav.side-nav')!;
     expect(nav.firstElementChild).toBe(entry);
-    expect(entry.nextElementSibling!.classList.contains('side-group')).toBe(true);
+    expect(entry.nextElementSibling!.classList.contains('side-notif')).toBe(true);
+    expect(entry.nextElementSibling!.nextElementSibling!.classList.contains('side-group')).toBe(true);
   });
 
   it('rail: the same link as an icon with a tooltip, no visible text, the accessible name 記一筆（快捷鍵 N）', async () => {
@@ -405,5 +479,111 @@ describe('SidebarComponent 記一筆', () => {
     expect(prevented).toBe(false);
     expect(navigate).not.toHaveBeenCalled();
     expect(router.url).toBe('/portfolio');
+  });
+});
+
+
+describe('SidebarComponent 通知', () => {
+  beforeEach(() => localStorage.clear());
+
+  const link = (host: HTMLElement) => host.querySelector<HTMLAnchorElement>('a.side-notif')!;
+
+  it.each([
+    ['expanded 1440', 1440],
+    ['rail 1100', 1100],
+  ])('%s: 通知 sits above the first group, after 記一筆, and links to /notifications', async (_name, width) => {
+    const { host } = await render(width);
+    const nav = host.querySelector('nav.side-nav')!;
+    const kids = Array.from(nav.children);
+    const notif = link(host);
+    expect(notif.getAttribute('href')).toBe('/notifications');
+    expect(notif.querySelector('i.pi-bell')).not.toBeNull();
+    const entry = nav.querySelector('a.sidebar-new-entry')!;
+    const firstGroup = nav.querySelector('.side-group')!;
+    expect(kids.indexOf(notif)).toBe(kids.indexOf(entry) + 1);
+    expect(kids.indexOf(notif)).toBeLessThan(kids.indexOf(firstGroup));
+  });
+
+  it('shows 7 in the red pill with the label 通知，7 件要處理，3 件已逾期, announced once', async () => {
+    const { host } = await render(1440, '/portfolio', {}, undefined, RED_7);
+    const notif = link(host);
+    expect(notif.getAttribute('aria-label')).toBe('通知，7 件要處理，3 件已逾期');
+    const pill = notif.querySelector('.notif-count')!;
+    expect(text(pill)).toBe('7');
+    expect(pill.classList.contains('notif-count--red')).toBe(true);
+    expect(pill.getAttribute('aria-hidden')).toBe('true');
+    expect(notif.querySelectorAll('.notif-count').length).toBe(1);
+    expect(text(notif.querySelector('.item-label'))).toBe('通知');
+    expect(notif.querySelector('.sr-only')).toBeNull();
+  });
+
+  it('a primary pill when nothing is overdue', async () => {
+    const { host } = await render(1440, '/portfolio', {}, undefined, summaryOf(2, 0, 'primary'));
+    const pill = link(host).querySelector('.notif-count')!;
+    expect(text(pill)).toBe('2');
+    expect(pill.classList.contains('notif-count--red')).toBe(false);
+    expect(link(host).getAttribute('aria-label')).toBe('通知，2 件要處理');
+  });
+
+  it('no pill at 0, and the label is 通知 (also while the first round has not settled)', async () => {
+    const { host } = await render(1440);
+    expect(link(host).querySelector('.notif-count')).toBeNull();
+    expect(link(host).getAttribute('aria-label')).toBe('通知');
+  });
+
+  it('badges off: no pill, label 通知', async () => {
+    const { host, prefs, update } = await render(1440, '/portfolio', {}, undefined, RED_7);
+    expect(link(host).querySelector('.notif-count')).not.toBeNull();
+    prefs.setShowBadges(false);
+    await update();
+    expect(link(host).querySelector('.notif-count')).toBeNull();
+    expect(link(host).getAttribute('aria-label')).toBe('通知');
+  });
+
+  it('hiding 財務 and 投資 keeps 通知', async () => {
+    localStorage.setItem('hh-nav-hidden', JSON.stringify(['accounting', 'portfolio']));
+    const { host } = await render(1440, '/settings');
+    expect(link(host)).not.toBeNull();
+    TestBed.resetTestingModule();
+    const rail = await render(1100, '/settings');
+    expect(link(rail.host)).not.toBeNull();
+  });
+
+  it('aria-current="page" on /notifications and no group head is current', async () => {
+    const { host } = await render(1440, '/notifications');
+    expect(link(host).getAttribute('aria-current')).toBe('page');
+    expect(host.querySelectorAll('[aria-current="page"]').length).toBe(1);
+    expect(host.querySelector('.group-head.current')).toBeNull();
+    expect(host.querySelector('a.side-item.active:not(.side-notif)')).toBeNull();
+  });
+
+  it('is not current on another page', async () => {
+    const { host } = await render(1440, '/portfolio');
+    expect(link(host).getAttribute('aria-current')).toBeNull();
+  });
+
+  it('rail: the pill sits on the icon and the tip reads 通知 and 7 件要處理，3 件已逾期', async () => {
+    const { host } = await render(1100, '/portfolio', {}, undefined, RED_7);
+    const notif = link(host);
+    expect(text(notif.querySelector('.item-icon .notif-count'))).toBe('7');
+    const tip = notif.querySelector('.side-tip')!;
+    expect(text(tip)).toBe('通知 7 件要處理，3 件已逾期');
+    expect(text(tip.querySelector('small'))).toBe('7 件要處理，3 件已逾期');
+    expect(notif.getAttribute('aria-label')).toBe('通知，7 件要處理，3 件已逾期');
+  });
+
+  it('rail: at 0 the tip reads 通知 alone and there is no pill', async () => {
+    const { host } = await render(1100);
+    const tip = link(host).querySelector('.side-tip')!;
+    expect(text(tip)).toBe('通知');
+    expect(tip.querySelector('small')).toBeNull();
+    expect(link(host).querySelector('.notif-count')).toBeNull();
+  });
+
+  it('follows the summary as it changes', async () => {
+    const { host, summary, update } = await render(1440);
+    summary.set(RED_7);
+    await update();
+    expect(text(link(host).querySelector('.notif-count'))).toBe('7');
   });
 });

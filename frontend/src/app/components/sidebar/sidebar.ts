@@ -39,11 +39,14 @@ export class SidebarComponent {
     return this.nav.badges()[item.id];
   }
 
-  /** The item's accessible name: its label, plus the badge when there is one (`記帳記錄，提醒中心 2 項`). */
+  /** The item's accessible name: its label, plus the badge when there is one (`帳戶，有逾期的卡費`). */
   protected itemLabel(item: NavItem): string {
     const badge = this.badge(item);
     return badge ? `${item.sidebarLabel}，${badge.label}` : item.sidebarLabel;
   }
+
+  /** The label's part after `通知，` (`7 件要處理，3 件已逾期`), for the rail tip. */
+  protected readonly notifDetail = computed(() => this.nav.notifications().label.replace(/^通知，/, ''));
 
   protected summary(group: NavGroup): GroupBadgeSummary {
     return summarizeGroupBadges(group, this.nav.badges());

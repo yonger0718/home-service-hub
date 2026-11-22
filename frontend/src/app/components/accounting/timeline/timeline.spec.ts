@@ -8,13 +8,12 @@ import { Location } from '@angular/common';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Counterparty, DailySummary, LedgerAccount, LedgerEntry, MonthSummary, Preference, ScheduleInstance } from '../../../models/accounting.model';
+import { DailySummary, LedgerAccount, LedgerEntry, MonthSummary, Preference, ScheduleInstance } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { currentMonth } from '../dates';
 import { AccountingOverviewService } from '../month-overview/overview.service';
-import { makeInbox } from '../inbox/testing';
 import { EMPTY_CALENDAR_DATA, CalendarDataService, CalendarMonthData } from '../calendar-month/calendar-data.service';
 import { makeAccount, makeCategory, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
 import { FALLBACK_COLOR } from './category-distribution';
@@ -64,10 +63,7 @@ describe('LedgerTimelineComponent', () => {
     preference: Preference = makePreference(),
     providers: Provider[] = [],
     accounts: LedgerAccount[] = ACCOUNTS,
-    counterparties: Counterparty[] = [],
     queue: ScheduleInstance[] = [],
-    inboxAsk = 0,
-    einvoiceAsk = 0,
   ) {
     TestBed.configureTestingModule({
       imports: [LedgerTimelineComponent],
@@ -85,7 +81,7 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
     httpMock.expectOne('/api/accounting/preference').flush(preference);
     httpMock.expectOne('/api/accounting/accounts').flush(accounts);
-    flushCounterparties(counterparties, queue, inboxAsk, einvoiceAsk);
+    flushQueue(queue);
     fixture.detectChanges();
     flushTodayRead(todayItems);
     return { fixture, el: fixture.nativeElement as HTMLElement };
@@ -105,18 +101,11 @@ describe('LedgerTimelineComponent', () => {
     return requests.length;
   }
 
-  /**
-   * The 🔔's counterparties, 待完成交易 queue and inbox ask count: read on init and again after every entry or account
-   * write.
-   */
-  function flushCounterparties(body: Counterparty[] = [], queue: ScheduleInstance[] = [], inboxAsk = 0, einvoiceAsk = 0): void {
-    httpMock!.expectOne('/api/accounting/counterparties').flush(body);
+  /** The 待完成交易 queue (feeds the overview's due list): read on init and again after every entry or account write. */
+  function flushQueue(queue: ScheduleInstance[] = []): void {
     const req = httpMock!.expectOne(r => r.url === '/api/accounting/schedules/instances');
     expect(req.request.params.get('queue')).toBe('true');
     req.flush(queue);
-    const inbox = httpMock!.expectOne(r => r.url === '/api/accounting/reconciliation/inbox');
-    expect(inbox.request.params.get('limit')).toBe('1');
-    inbox.flush(makeInbox([], { ask: inboxAsk, einvoice_ask: einvoiceAsk }));
   }
 
   function flushSummary(month: string, body?: Partial<MonthSummary>): void {
@@ -172,7 +161,7 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
     httpMock.expectOne('/api/accounting/preference').flush(makePreference());
     httpMock.expectOne('/api/accounting/accounts').flush(ACCOUNTS);
-    flushCounterparties();
+    flushQueue();
     fixture.detectChanges();
 
     flushSummary('2026-09');
@@ -603,7 +592,7 @@ describe('LedgerTimelineComponent', () => {
     TestBed.inject(AccountingService).deleteEntry(99).subscribe();
     httpMock!.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/99').flush(null);
     fixture.detectChanges();
-    flushCounterparties();
+    flushQueue();
     expect(Array.from(el.querySelectorAll('.entry-row .name')).map(text)).toEqual(['午餐']);
     expect(el.querySelector('app-skeleton')).toBeNull();
 
@@ -1181,7 +1170,7 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendar();
       TestBed.inject(AccountingService).deleteEntry(99).subscribe();
       httpMock!.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/99').flush(null);
-      fixture.detectChanges(); flushCounterparties();
+      fixture.detectChanges(); flushQueue();
       expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .net'))).toBe('−734');
       expect(text(el.querySelector('.daily-updating'))).toBe('更新中');
       expect(el.querySelector('app-calendar-month')!.getAttribute('aria-busy')).toBe('true');
@@ -1459,7 +1448,7 @@ describe('LedgerTimelineComponent', () => {
       TestBed.inject(AccountingService).deleteEntry(3).subscribe();
       httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
       fixture.detectChanges();
-      flushCounterparties();
+      flushQueue();
 
       flushSummary('2026-10');
       flushDaily('2026-10');
@@ -1583,7 +1572,7 @@ describe('LedgerTimelineComponent', () => {
     httpMock!.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/accounts').flush(makeAccount({ id: 9, name: '新卡' }));
     fixture.detectChanges();
     httpMock!.expectOne(r => r.method === 'GET' && r.url === '/api/accounting/accounts').flush([...ACCOUNTS, makeAccount({ id: 9, name: '新卡' })]);
-    flushCounterparties();
+    flushQueue();
     fixture.detectChanges();
 
     const options = Array.from(el.querySelectorAll('.filter-account option')).map(text);
@@ -1612,7 +1601,7 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
       httpMock.expectOne('/api/accounting/preference').flush(makePreference());
       httpMock.expectOne('/api/accounting/accounts').flush(ACCOUNTS);
-      flushCounterparties();
+      flushQueue();
       fixture.detectChanges();
       return { fixture, el: fixture.nativeElement as HTMLElement, router };
     }
@@ -1829,7 +1818,7 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
       httpMock.expectOne('/api/accounting/preference').flush(makePreference());
       httpMock.expectOne('/api/accounting/accounts').flush(ACCOUNTS);
-      flushCounterparties();
+      flushQueue();
       fixture.detectChanges();
       flushTodayRead(todayItems);
       const month = url.match(/month=(\d{4}-\d{2})/)?.[1] ?? '2026-10';
@@ -2716,7 +2705,7 @@ describe('LedgerTimelineComponent', () => {
       TestBed.inject(AccountingService).deleteEntry(3).subscribe();
       httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
       fixture.detectChanges();
-      flushCounterparties();
+      flushQueue();
       flushSummary('2026-10');
       flushDaily('2026-10');
       const requests = billRequests();
@@ -2793,151 +2782,50 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelector('app-calendar-day-panel .bill i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
     });
 
-    const ALAN: Counterparty = { id: 1, name: 'Alan', open_amounts: [{ currency: 'TWD', amount: '220.0000' }], open_count: 2 };
-    const SETTLED: Counterparty = { id: 2, name: 'Bea', open_amounts: [], open_count: 0 };
-    const bell = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('.bell')!;
+    const notifLink = (el: HTMLElement) => el.querySelector<HTMLAnchorElement>('a.bell');
 
-    it('counts e-invoice questions in the bell with the inbox asks', () => {
-      const rendered = render('phone', makePreference(), [], ACCOUNTS, [], [], 1, 2);
-      flushSummary('2026-10');
-      flushEntries([]);
-      rendered.fixture.detectChanges();
-      expect(bell(rendered.el).getAttribute('aria-label')).toBe('提醒中心，3 項');
-    });
-
-    it('shows the bell icon without a count when nothing is pending, in both views', () => {
-      const { fixture, el } = renderListWith(ACCOUNTS);
-      expect(bell(el).querySelector('i.pi-bell')).not.toBeNull();
-      expect(text(bell(el))).toBe('');
-      expect(bell(el).getAttribute('aria-label')).toBe('提醒中心，0 項');
-      expect(el.querySelector('.bell-count')).toBeNull();
-
-      viewButton(el, '日曆').click();
+    it('the month bar links to /notifications with the label 通知 and no count', () => {
+      const { fixture, el } = renderCalendarWith(ACCOUNTS, 'panes');
+      const link = notifLink(el)!;
+      expect(link).not.toBeNull();
+      expect(link.getAttribute('href')).toBe('/notifications');
+      expect(link.getAttribute('aria-label')).toBe('通知');
+      expect(link.querySelector('i.pi-bell')).not.toBeNull();
+      expect(text(link)).toBe('');
+      expect(el.querySelector('.bell-count, .notif-count')).toBeNull();
+      expect(el.querySelector('button.bell')).toBeNull();
       fixture.detectChanges();
-      flushDaily('2026-10');
-      fixture.detectChanges();
-      expect(bell(el)).not.toBeNull();
     });
 
-    it('counts unpaid cards and counterparties with an open amount, and opens the reminder centre', () => {
-      const rendered = render('phone', makePreference(), [], [...ACCOUNTS, CARD], [ALAN, SETTLED]);
-      flushSummary('2026-10');
-      flushEntries([]);
-      rendered.fixture.detectChanges();
-      const { fixture, el } = rendered;
-      // Before the statement lands only the counterparty counts.
-      expect(text(el.querySelector('.bell-count'))).toBe('1');
-
-      flushBill('-12345.0000');
-      fixture.detectChanges();
-      expect(text(el.querySelector('.bell-count'))).toBe('2');
-      expect(bell(el).getAttribute('aria-label')).toBe('提醒中心，2 項');
-
-      const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
-      bell(el).click();
-      expect(navigate).toHaveBeenCalledWith(['/accounting/reminders']);
+    it('no month-bar bell below 760 px', () => {
+      const { el } = renderListWith(ACCOUNTS);
+      expect(el.querySelector('.bell')).toBeNull();
     });
 
-    it('counts 待完成交易 items due today or earlier', () => {
-      // Spec "Bell includes due confirm items" (today here is 2026-10-02: 10-01 is due, 10-20 is not).
-      const queue = [makeInstance({ id: 1, due_date: '2026-10-01' }), makeInstance({ id: 2, due_date: '2026-10-20' })];
-      const rendered = render('phone', makePreference(), [], [...ACCOUNTS, CARD], [], queue);
-      flushSummary('2026-10');
-      flushEntries([]);
-      rendered.fixture.detectChanges();
-      flushBill('-12345.0000');
-      rendered.fixture.detectChanges();
-      expect(text(rendered.el.querySelector('.bell-count'))).toBe('2');
-      expect(bell(rendered.el).getAttribute('aria-label')).toBe('提醒中心，2 項');
-    });
-
-    it('counts a partial period until it is accepted', () => {
-      // Spec "Partial period counted until accepted".
-      const partial = makeInstance({ id: 5, status: 'posted', is_partial: true, due_date: '2026-11-09' });
-      const rendered = render('phone', makePreference(), [], ACCOUNTS, [], [partial]);
-      flushSummary('2026-10');
-      flushEntries([]);
-      rendered.fixture.detectChanges();
-      expect(text(rendered.el.querySelector('.bell-count'))).toBe('1');
-      TestBed.inject(AccountingService).acceptPartialScheduleInstance(5).subscribe();
-      httpMock!.expectOne(r => r.url.endsWith('/instances/5/accept-partial')).flush(partial);
-      rendered.fixture.detectChanges();
-      flushSummary('2026-10');
-      flushEntries([]);
-      flushCounterparties([], []);
-      rendered.fixture.detectChanges();
-      expect(rendered.el.querySelector('.bell-count')).toBeNull();
-    });
-
-    it('stops counting the item of a definition the owner paused', () => {
-      // Spec "Paused definition not counted".
-      const due = makeInstance({ id: 6, definition_id: 3, due_date: '2026-10-01' });
-      const rendered = render('phone', makePreference(), [], ACCOUNTS, [], [due]);
-      flushSummary('2026-10');
-      flushEntries([]);
-      rendered.fixture.detectChanges();
-      expect(text(rendered.el.querySelector('.bell-count'))).toBe('1');
-      TestBed.inject(AccountingService).pauseSchedule(3).subscribe();
-      httpMock!.expectOne(r => r.url.endsWith('/definitions/3/pause')).flush({});
-      rendered.fixture.detectChanges();
-      flushSummary('2026-10');
-      flushEntries([]);
-      flushCounterparties([], []);
-      rendered.fixture.detectChanges();
-      expect(rendered.el.querySelector('.bell-count')).toBeNull();
-    });
-
-    it('bell adds the inbox ask count', () => {
-      // Spec §7.1: one `GET /reconciliation/inbox?limit=1`; its counts are server-side whatever the limit.
-      const rendered = render('phone', makePreference(), [], ACCOUNTS, [], [], 2);
-      flushSummary('2026-10');
-      flushEntries([]);
-      rendered.fixture.detectChanges();
-      expect(text(rendered.el.querySelector('.bell-count'))).toBe('2');
-      expect(bell(rendered.el).getAttribute('aria-label')).toBe('提醒中心，2 項');
-    });
-
-    it('re-reads the counterparties after an entry write', () => {
-      const { fixture, el } = renderListWith(ACCOUNTS);
+    it('the timeline reads neither the counterparties nor the reconciliation inbox', () => {
+      const { fixture } = renderListWith(ACCOUNTS);
+      httpMock!.expectNone('/api/accounting/counterparties');
+      httpMock!.expectNone(r => r.url === '/api/accounting/reconciliation/inbox');
       TestBed.inject(AccountingService).deleteEntry(3).subscribe();
       httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
       fixture.detectChanges();
       flushSummary('2026-10');
       flushEntries([]);
-      flushCounterparties([ALAN]);
-      fixture.detectChanges();
-      expect(text(el.querySelector('.bell-count'))).toBe('1');
+      flushQueue();
+      httpMock!.expectNone('/api/accounting/counterparties');
+      httpMock!.expectNone(r => r.url === '/api/accounting/reconciliation/inbox');
     });
 
-    it('counts a counterparty whose receivable and payable net to zero, by its open rows', () => {
-      const { fixture, el } = renderListWith(ACCOUNTS);
+    it('a write still reloads the queue', () => {
+      const { fixture } = renderListWith(ACCOUNTS);
       TestBed.inject(AccountingService).deleteEntry(3).subscribe();
       httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
       fixture.detectChanges();
       flushSummary('2026-10');
       flushEntries([]);
-      flushCounterparties([{ id: 4, name: 'Dee', open_amounts: [], open_count: 2 }, SETTLED]);
-      fixture.detectChanges();
-      expect(text(el.querySelector('.bell-count'))).toBe('1');
-    });
-
-    it('leaves a card whose statement cannot be read out of the count', () => {
-      const { fixture, el } = renderListWith();
-      const requests = billRequests();
-      requests.summary.flush({
-        account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-100.0000', income: '0', rewards: '0',
-        net: '0', end_balance: '0', count: 1,
-      });
-      requests.payments.flush('boom', { status: 500, statusText: 'Server Error' });
-      fixture.detectChanges();
-      expect(el.querySelector('.bell-count')).toBeNull();
-    });
-
-    it('leaves a paid card out of the count', () => {
-      const { fixture, el } = renderListWith();
-      flushBill('-800.0000', ['800.0000']);
-      fixture.detectChanges();
-      expect(el.querySelector('.bell-count')).toBeNull();
+      const req = httpMock!.expectOne(r => r.url === '/api/accounting/schedules/instances');
+      expect(req.request.params.get('queue')).toBe('true');
+      req.flush([]);
     });
 
     it('badges the due day of a card whose statement is the calendar month', () => {
@@ -3246,7 +3134,7 @@ describe('LedgerTimelineComponent', () => {
 
     it('publishes month, summary and due items to AccountingOverviewService', () => {
       const queue = [makeInstance({ id: 1, due_date: '2026-10-05' })];
-      const { fixture } = render('sheet', makePreference(), [], ACCOUNTS, [], queue);
+      const { fixture } = render('sheet', makePreference(), [], ACCOUNTS, queue);
       flushSummary('2026-10', { expense: '-100.0000' });
       flushEntries([]);
       fixture.detectChanges();
@@ -3259,7 +3147,7 @@ describe('LedgerTimelineComponent', () => {
 
     it('clears the overview on destroy', () => {
       const queue = [makeInstance({ id: 1, due_date: '2026-10-05' })];
-      const { fixture } = render('sheet', makePreference(), [], ACCOUNTS, [], queue);
+      const { fixture } = render('sheet', makePreference(), [], ACCOUNTS, queue);
       flushSummary('2026-10');
       flushEntries([]);
       fixture.detectChanges();

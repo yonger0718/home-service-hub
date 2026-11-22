@@ -1,4 +1,4 @@
-export type NavGroupId = 'supplies' | 'portfolio' | 'accounting' | 'system';
+export type NavGroupId = 'supplies' | 'portfolio' | 'accounting' | 'system' | 'notifications';
 export type SidebarDefault = 'expanded' | 'rail';
 
 export interface NavItem {
@@ -76,6 +76,25 @@ export const NAV_GROUPS: NavGroup[] = [
 
 export const NAV_ITEMS = NAV_GROUPS.flatMap(group => group.items);
 
+/** 通知: a synthetic item outside the nav groups (no group head, no sub-nav, no tab, cannot be hidden). */
+export const NOTIFICATIONS_ITEM: NavItem = {
+  id: 'notifications',
+  path: '/notifications',
+  icon: 'pi-bell',
+  label: '通知',
+  sidebarLabel: '通知',
+  title: '通知',
+  group: 'notifications',
+};
+
+export const NOTIFICATIONS_GROUP: NavGroup = {
+  id: 'notifications',
+  label: '通知',
+  icon: 'pi-bell',
+  defaultPath: '/notifications',
+  items: [NOTIFICATIONS_ITEM],
+};
+
 /** Where the logo and the bare URL lead: the first visible group's page; `/settings` when only 系統 is left. */
 export function landingPathFor(hidden: readonly NavGroupId[]): string {
   return NAV_GROUPS.find(group => group.id !== 'system' && !hidden.includes(group.id))?.defaultPath ?? '/settings';
@@ -84,6 +103,7 @@ export function landingPathFor(hidden: readonly NavGroupId[]): string {
 export function navItemForUrl(url: string): NavItem {
   const cleanUrl = url.split('?')[0].split('#')[0];
   const under = (prefix: string): boolean => cleanUrl === prefix || cleanUrl.startsWith(`${prefix}/`);
+  if (under(NOTIFICATIONS_ITEM.path)) return NOTIFICATIONS_ITEM;
   return NAV_ITEMS.find(item => item.exact && item.path === cleanUrl)
     ?? NAV_ITEMS.find(item => item.also?.some(under))
     ?? [...NAV_ITEMS]
@@ -93,8 +113,9 @@ export function navItemForUrl(url: string): NavItem {
 }
 
 export interface NavBadge {
-  count?: number;
   dot?: boolean;
+  /** Dot colour: red (the default) or primary. */
+  tone?: 'red' | 'primary';
   label: string;
 }
 
@@ -118,20 +139,21 @@ export function buildTabBar(groups: readonly NavGroup[], hidden: readonly NavGro
 }
 
 export interface GroupBadgeSummary {
-  count: number;
   dot: boolean;
+  /** Red when any item's dot is red. */
+  tone: 'red' | 'primary';
 }
 
 export function summarizeGroupBadges(group: NavGroup, badges: Readonly<Record<string, NavBadge>>): GroupBadgeSummary {
-  let count = 0;
   let dot = false;
+  let red = false;
   for (const item of group.items) {
     const badge = badges[item.id];
-    if (!badge) continue;
-    count += badge.count ?? 0;
-    dot = dot || !!badge.dot;
+    if (!badge?.dot) continue;
+    dot = true;
+    red = red || badge.tone !== 'primary';
   }
-  return { count, dot };
+  return { dot, tone: red ? 'red' : 'primary' };
 }
 
 export interface SidebarModeInput {

@@ -9,6 +9,7 @@ import {
   cardTitle,
   inboxBellCount,
   inboxErrorMessage,
+  isAskQuestion,
   learnLabel,
   learnableAnswer,
   lineKind,
@@ -16,7 +17,7 @@ import {
   questionText,
   recordAnswer,
 } from './inbox-view';
-import { InboxAccount, InboxItem } from './inbox.model';
+import { InboxAccount, InboxItem, InboxQuestion } from './inbox.model';
 
 function makeItem(overrides: Partial<InboxItem> = {}): InboxItem {
   return {
@@ -266,4 +267,15 @@ describe('inboxBellCount', () => {
     expect(inboxBellCount({ ask: 2, einvoice_ask: 3 })).toBe(5);
     expect(inboxBellCount({ ask: 2 })).toBe(2);
   });
+});
+
+describe('isAskQuestion', () => {
+  it.each(['bank_only', 'transfer', 'ledger_only', 'amount_differs', 'date_differs', 'ambiguous'] as InboxQuestion[])(
+    '%s is a question the owner must answer',
+    (question) => expect(isAskQuestion(question)).toBe(true),
+  );
+  it.each(['proposed', 'balance_gap', 'settlement', 'dividend', 'other'] as InboxQuestion[])(
+    '%s is not',
+    (question) => expect(isAskQuestion(question)).toBe(false),
+  );
 });

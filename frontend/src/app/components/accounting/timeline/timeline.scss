@@ -339,38 +339,20 @@ app-split-folder {
   margin-left: 4px;
 }
 
-/* 🔔 提醒中心 with its pending count (hidden at 0). */
+/* 🔔 通知: a plain link (the count lives on the sidebar item and the phone header bell). */
 .bell {
-  background: none;
-  border: 0;
   color: inherit;
-  cursor: pointer;
   flex: none;
   font: inherit;
   font-size: 1.05rem;
   line-height: 1;
   padding: 4px;
-  position: relative;
+  text-decoration: none;
 
   &:focus-visible {
     outline: 2px solid var(--app-primary);
     outline-offset: 1px;
   }
-}
-
-.bell-count {
-  background: var(--c-red);
-  border-radius: var(--radius-pill);
-  color: #fff;
-  font-size: 0.72rem;
-  font-weight: 800;
-  line-height: 1;
-  min-width: 14px;
-  padding: 2px 4px;
-  position: absolute;
-  right: -4px;
-  text-align: center;
-  top: -2px;
 }
 
 /* Compact height (13-inch laptops): tighter month bar and totals card. */

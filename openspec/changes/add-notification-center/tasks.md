@@ -13,11 +13,11 @@
 
 ## 2. Notification page, ledger sources (PR B)
 
-- [ ] 2.1 `NotificationCenterService`: task model, stable ids, tiers, per-source failure, refresh triggers and 30 s throttle (fold `NavBadgeService` in)
-- [ ] 2.2 Sources: card bills, schedule queue grouped by definition, inbox grouped by statement, MOZE import review, debts (tracking)
-- [ ] 2.3 `/notifications` page: sections, chips, rows, 追蹤中, handled link, empty state, failed-source line
-- [ ] 2.4 Count and dots (D3, D8); sidebar 通知 item in both widths; phone header bell; timeline bell → link
-- [ ] 2.5 Tests: grouping (3 Netflix instances → 1 task), count excludes tracking and snoozed, badges off, failed source
+- [x] 2.1 `NotificationCenterService`: task model, stable ids, tiers, per-source failure, refresh triggers and 30 s throttle (fold `NavBadgeService` in) (`NavBadgeService` kept as a facade. Not in B: snooze and its exclusion from the count — 5.3)
+- [x] 2.2 Sources: card bills, schedule queue grouped by definition, inbox grouped by statement, MOZE import review, debts (tracking) (plus an interim e-invoice task; debts from `getCounterparties`; the inbox is read up to 1000 items; the rest is an uncounted catch-all note, since the API cannot attribute it to a statement. Not in B: the e-invoice task copy and flow — 6.2 / 6.3; dividends, import failure, 國泰, auto-pay sources — 3.x / 5.2)
+- [x] 2.3 `/notifications` page: sections, chips, rows, 追蹤中, handled link, empty state, failed-source line (statement rows open the existing statement page; the handled link counts reconciliation actions only; one column. Not in B: the review route and the right pane — 4.2; 系統 rows — 3.x)
+- [x] 2.4 Count and dots (D3, D8); sidebar 通知 item in both widths; phone header bell; timeline bell → link (Not in B: the 股利 dot — 3.1; the phone bell on the ten pages that draw their own header: 帳戶明細, 帳戶設定, 記一筆／編輯, 提醒中心, 記錄明細, 多類別群組, 自訂報表, 回饋規則, 對帳帳單, 對帳明細)
+- [x] 2.5 Tests: grouping (3 Netflix instances → 1 task), count excludes tracking and snoozed, badges off, failed source (grouping, tracking excluded, badges off, failed source. Not in B: snoozed — 5.4)
 
 ## 3. Portfolio and system sources (PR C)
 
@@ -58,7 +58,7 @@
   - 這家以後都不提醒 via `dismiss {mute_seller: true}`
   - toast 復原
 - [ ] 6.5 Entry invoice card and 記帳設定 › 發票 section (D12); the row for an entry without an invoice stays as `Calendar entry drawer invoice link` specifies (#408)
-- [ ] 6.6 Remove the inbox panel's 發票待對帳 section and the `ask + einvoice_ask` sums at every `inboxBellCount` call site (`nav-badge.service.ts`, `timeline.ts`, `inbox-panel.ts`, `reminders.ts`)
+- [ ] 6.6 Remove the inbox panel's 發票待對帳 section and the `ask + einvoice_ask` sums at every `inboxBellCount` call site (`inbox-panel.ts`, `reminders.ts`; `nav-badge.service.ts` and `timeline.ts` no longer sum them after PR B)
 - [ ] 6.7 Tests
   - one task in the count for three invoices
   - link and dismiss calls

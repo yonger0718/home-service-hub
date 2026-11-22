@@ -14,6 +14,7 @@ import { ShellComponent } from './components/shell/shell';
 import { SubNavComponent } from './components/shell/sub-nav/sub-nav';
 import { SidebarComponent } from './components/sidebar/sidebar';
 import { NavBadgeService } from './services/nav-badge.service';
+import { NO_TASKS } from './components/notifications/notif-task';
 import { LayoutModeService, MATCH_MEDIA, PANES_QUERY, PHONE_QUERY } from './services/layout-mode.service';
 
 const PAGES: [string, string][] = [
@@ -162,7 +163,7 @@ function stubViewport(width: number): void {
       provideRouter(routes),
       provideHttpClient(),
       provideHttpClientTesting(),
-      { provide: NavBadgeService, useValue: { badges: signal({}) } },
+      { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } },
       {
         provide: MATCH_MEDIA,
         useValue: (query: string) =>
@@ -189,6 +190,7 @@ const LIST_LEVEL: [string, string, string?][] = [
   ['/accounting/settings', '記帳設定'],
   ['/accounting/reports', '報表'],
   ['/settings', '設定'],
+  ['/notifications', '通知'],
 ];
 
 const DRILL_DOWN: [string, string][] = [
@@ -250,6 +252,13 @@ describe('phone route matrix (390 px)', () => {
         expect(root.querySelector('button.page-back[aria-label="返回"]')).not.toBeNull();
         expect(root.querySelector('app-sub-nav')).not.toBeNull();
         expect(root.querySelector('app-sub-nav')?.querySelector('a.active') ?? null).toBeNull();
+      } else if (url === '/notifications') {
+        // 通知 is a pushed screen too: ‹, no bell (it would link to itself), no tab highlighted. The gear stays, as on
+        // every list-level page (neither the brief nor the plan rulings take it away).
+        expect(root.querySelector('a[aria-label="設定"][href="/settings"]')).not.toBeNull();
+        expect(root.querySelector('button.page-back[aria-label="返回"]')).not.toBeNull();
+        expect(root.querySelector('a.header-bell')).toBeNull();
+        expect(root.querySelector('app-sub-nav a.active') ?? null).toBeNull();
       } else {
         expect(root.querySelector('a[aria-label="設定"][href="/settings"]')).not.toBeNull();
         expect(root.querySelector('button.page-back')).toBeNull();
@@ -421,6 +430,25 @@ describe('accounting navigation', () => {
     ['/accounting/settings', '記帳設定'],
   ];
 
+  it('/notifications highlights no tab and no sidebar group, and marks the 通知 item current', async () => {
+    const item = navItemForUrl('/notifications');
+    expect(item.id).toBe('notifications');
+    TestBed.configureTestingModule({ imports: [SidebarComponent, SubNavComponent],
+      providers: [provideRouter([{ path: '**', children: [] }]), { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } }],
+    });
+    await TestBed.inject(Router).navigateByUrl('/notifications');
+    const sub = TestBed.createComponent(SubNavComponent);
+    sub.detectChanges();
+    expect((sub.nativeElement as HTMLElement).querySelector('a.active')).toBeNull();
+    const sidebar = TestBed.createComponent(SidebarComponent);
+    sidebar.detectChanges();
+    const el = sidebar.nativeElement as HTMLElement;
+    const active = el.querySelectorAll('a[aria-current="page"]');
+    expect(active.length).toBe(1);
+    expect(active[0].getAttribute('href')).toBe('/notifications');
+    expect(el.querySelector('.group-head.current')).toBeNull();
+  });
+
   for (const [url, label] of HIGHLIGHT) {
     it(`highlights ${label} in the sidebar and the mobile sub-nav on ${url}`, async () => {
       const item = navItemForUrl(url);
@@ -428,7 +456,7 @@ describe('accounting navigation', () => {
       expect(item.label).toBe(label);
 
       TestBed.configureTestingModule({ imports: [SidebarComponent, SubNavComponent],
-        providers: [provideRouter([{ path: '**', children: [] }]), { provide: NavBadgeService, useValue: { badges: signal({}) } }],
+        providers: [provideRouter([{ path: '**', children: [] }]), { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } }],
       });
       await TestBed.inject(Router).navigateByUrl(url);
       const sidebar = TestBed.createComponent(SidebarComponent);

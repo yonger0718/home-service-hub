@@ -1,0 +1,231 @@
+/* One notification row. Colours: tokens only. Desktop (>= 760 px): one line; phone: the amount stays on the
+   title line and the actions wrap under the text, indented past the icon tile. */
+:host {
+  align-items: center;
+  border-top: 1px solid var(--app-border);
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap; /* the actions drop under the body before the body gets narrower than its min-width */
+  gap: 12px;
+  min-height: 68px;
+  padding: 12px 14px;
+}
+
+.notif-icon {
+  align-items: center;
+  background: var(--app-primary-soft);
+  border-radius: 12px;
+  color: var(--app-primary);
+  display: flex;
+  flex: none;
+  font-size: 1.25rem;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+
+  i {
+    font-size: 1.1rem;
+  }
+}
+
+:host(.notif-row--alert) .notif-icon {
+  background: var(--c-red-soft);
+  color: var(--c-red-ink);
+}
+
+.notif-body {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 280px;
+}
+
+.notif-head {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.notif-title {
+  color: var(--app-text);
+  flex: 0 1 auto;
+  font-size: 15px;
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Ink is --app-text, not --app-text-muted: muted on --app-surface-soft is 4.26:1 in the light theme (11 px text). */
+.notif-tag {
+  background: var(--app-surface-soft);
+  border-radius: var(--radius-pill);
+  color: var(--app-text);
+  flex: none;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 7px;
+}
+
+.notif-amount {
+  color: var(--app-text);
+  flex: 0 1 auto;
+  font-size: 15px;
+  font-weight: 700;
+  margin-left: auto;
+  max-width: 55%;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.notif-line {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.notif-when {
+  color: var(--app-text);
+  font-weight: 700;
+}
+
+:host(.notif-row--alert) .notif-when {
+  color: var(--c-red-ink);
+}
+
+.notif-meta {
+  color: var(--app-text-muted);
+}
+
+.notif-bar {
+  background: var(--app-surface-soft);
+  border-radius: 3px;
+  height: 6px;
+  max-width: 260px;
+  overflow: hidden;
+
+  span {
+    background: var(--app-primary);
+    display: block;
+    height: 6px;
+  }
+}
+
+.notif-actions {
+  align-items: center;
+  display: flex;
+  /* One width for every row, content at the right: the body (and so the amount) then ends at the same x on every
+     row. 200 px = the widest pair, 全部入帳 (4 x 13.6 px + 2 x 17.6 px padding = 90 px, +22 px for the busy spinner)
+     + 8 px gap + 逐期處理 (4 x 13 px + 2 x 12 px = 76 px) = 174 px idle / 196 px busy. */
+  flex: 0 0 200px;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+/* The link primary looks like app-btn's soft / primary variants. */
+.notif-primary--link {
+  align-items: center;
+  background: var(--app-primary-soft);
+  border-radius: 10px;
+  color: var(--app-primary);
+  display: inline-flex;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0.6rem 1.1rem;
+  text-decoration: none;
+  white-space: nowrap;
+
+  &.solid {
+    background: var(--app-primary-ink-bg, var(--app-primary));
+    color: var(--app-on-primary);
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
+}
+
+.notif-secondary {
+  align-items: center;
+  border-radius: 10px;
+  color: var(--app-text-muted);
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 700;
+  min-height: 36px;
+  padding: 0 12px;
+  text-decoration: none;
+  white-space: nowrap;
+
+  &:hover {
+    color: var(--app-text);
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
+}
+
+/* Dark: --app-primary on its own soft tint is 4.18:1 (13.6 px bold text); the ink is --app-text there (>= 13:1). */
+:host-context(.app-dark-mode) {
+  .notif-primary--link:not(.solid),
+  .notif-primary ::ng-deep .btn-soft {
+    color: var(--app-text);
+  }
+}
+
+@media (max-width: 759.98px) {
+  :host {
+    align-items: flex-start;
+  }
+
+  .notif-body {
+    min-width: 0;
+  }
+
+  /* Title first, then tag, then amount. The title's basis is its own text width (auto, with min-width 0): a short
+     title fits and keeps tag and amount beside it; a long one has a basis wider than the line, so tag and amount
+     wrap together to the second line (tag left, amount right via its auto margin) and the title takes the full
+     line, clamped to 2 lines. */
+  .notif-head {
+    flex-wrap: wrap;
+  }
+
+  .notif-title {
+    display: -webkit-box;
+    flex: 1 1 auto;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .notif-amount {
+    max-width: 100%;
+  }
+
+  .notif-actions {
+    flex: 0 0 100%;
+    justify-content: flex-start;
+    margin-left: 0;
+    padding-left: 52px;
+  }
+
+  /* Tap targets: 44 px high (the artboard draws 36). */
+  .notif-primary--link,
+  .notif-primary ::ng-deep .btn,
+  .notif-secondary {
+    min-height: 44px;
+  }
+}

@@ -48,6 +48,8 @@ export class PageHeaderComponent {
   readonly title = input<string>();
   /** Phones only: a ‹ 返回 button before the title. */
   readonly back = input(false);
+  /** Where ‹ goes when the app has no history to go back to; the landing path when unset. */
+  readonly backFallback = input<string | null>(null);
   /** Muted line under the h1 on every width (e.g. the dashboard's quote time). */
   readonly subtitle = input<string | null>(null);
 
@@ -75,6 +77,8 @@ export class PageHeaderComponent {
 
   protected readonly heading = computed(() => this.title() ?? this.nav.activeItem().title);
   protected readonly phone = computed(() => this.layout.mode() === 'phone');
+  /** The 通知 bell: phones only, on every page but 通知 itself (it would link to the page being viewed). */
+  protected readonly bell = computed(() => this.phone() && this.nav.activeItem().id !== 'notifications');
   /** No gear on 設定 itself: it would link to the page being viewed. */
   protected readonly gear = computed(
     () => this.phone() && this.nav.tabBar().settingsInHeader && this.nav.activeItem().id !== 'settings',
@@ -197,7 +201,7 @@ export class PageHeaderComponent {
     if (this.hasAppHistory()) {
       this.location.back();
     } else {
-      void this.router.navigateByUrl(this.nav.landingPath());
+      void this.router.navigateByUrl(this.backFallback() || this.nav.landingPath());
     }
   }
 }

@@ -18,6 +18,7 @@ import {
   SIDEBAR_WIDE_QUERY,
 } from '../../services/layout-mode.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
+import { NO_TASKS } from '../notifications/notif-task';
 import { PaneStateService } from '../../services/pane-state.service';
 import { FAB_RIGHT_BESIDE_CALENDAR_PANE, FAB_RIGHT_BESIDE_PANE } from '../accounting/accounting-layout/accounting-layout';
 import { DirtyAware, DirtyFormRegistry } from '../accounting/dirty-form.service';
@@ -93,7 +94,7 @@ async function render(
       provideRouter(options.routes ?? [{ path: '**', component: BlankPage }]),
       ...(options.http ? [provideHttpClient(), provideHttpClientTesting()] : []),
       { provide: MATCH_MEDIA, useValue: matchMedia },
-      { provide: NavBadgeService, useValue: { badges: signal({}), start: badgeStart } },
+      { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}), start: badgeStart } },
     ],
   });
   const fixture = TestBed.createComponent(ShellComponent);

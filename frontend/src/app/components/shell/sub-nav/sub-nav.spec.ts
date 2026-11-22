@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
@@ -5,6 +7,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { MATCH_MEDIA } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
+import { NO_TASKS } from '../../notifications/notif-task';
 import { NavBadge } from '../navigation';
 import { SubNavComponent } from './sub-nav';
 
@@ -17,7 +20,7 @@ async function render(url: string, badges: Record<string, NavBadge> = {}, showBa
     providers: [
       provideRouter([{ path: '**', component: BlankPage }]),
       { provide: MATCH_MEDIA, useValue: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }) },
-      { provide: NavBadgeService, useValue: { badges: signal(badges) } },
+      { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal(badges) } },
     ],
   });
   await TestBed.inject(Router).navigateByUrl(url);
@@ -47,12 +50,24 @@ describe('SubNavComponent', () => {
     expect(links[0].getAttribute('aria-current')).toBeNull();
   });
 
-  it('shows a count on the 帳戶 link and names it with the badge', async () => {
-    const el = await render('/accounting', { accounting: { count: 1, label: '1 筆待確認' } });
+  it('帳戶 shows a dot and is named 帳戶，有逾期的卡費; no .sub-count', async () => {
+    const el = await render('/accounting', { accounting: { dot: true, tone: 'red', label: '有逾期的卡費' } });
 
     const link = el.querySelectorAll('a')[1];
-    expect(link.textContent?.replace(/\s+/g, '')).toBe('帳戶1');
-    expect(link.getAttribute('aria-label')).toBe('帳戶，1 筆待確認');
+    expect(link.querySelector('.sub-dot')).not.toBeNull();
+    expect(link.querySelector('.sub-dot--primary')).toBeNull();
+    expect(el.querySelector('.sub-count')).toBeNull();
+    expect(link.getAttribute('aria-label')).toBe('帳戶，有逾期的卡費');
+  });
+
+  it('a primary dot carries sub-dot--primary', async () => {
+    const el = await render('/accounting', { accounting: { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' } });
+    expect(el.querySelector('.sub-dot--primary')).not.toBeNull();
+  });
+
+  it('no sub-nav on /notifications', async () => {
+    const el = await render('/notifications');
+    expect(el.querySelector('nav')).toBeNull();
   });
 
   it('renders portfolio as chips with a dot on a failed 匯入', async () => {
@@ -69,7 +84,7 @@ describe('SubNavComponent', () => {
   it('shows no count or dot when badges are off', async () => {
     const el = await render(
       '/portfolio',
-      { import: { dot: true, label: '最近一次匯入失敗' }, accounting: { count: 1, label: '1 筆待確認' } },
+      { import: { dot: true, label: '最近一次匯入失敗' }, accounting: { dot: true, label: '1 筆待確認' } },
       false,
     );
 
@@ -87,5 +102,12 @@ describe('SubNavComponent', () => {
     const el = await render('/settings');
 
     expect(el.querySelector('a')).toBeNull();
+  });
+
+  it('styles dots with the red-ink and primary tokens and has no count rule', () => {
+    const scss = readFileSync(join(process.cwd(), 'src/app/components/shell/sub-nav/sub-nav.scss'), 'utf8');
+    expect(scss).toContain('var(--c-red-ink)');
+    expect(scss).toContain('var(--app-primary)');
+    expect(scss).not.toMatch(/\.sub-count|\.item-count|\.group-count/);
   });
 });

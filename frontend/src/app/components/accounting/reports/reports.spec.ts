@@ -12,6 +12,7 @@ import { Project } from '../../../models/accounting.model';
 import { BreakdownQuery, BreakdownResponse, BreakdownRow, ReportCompare, ReportDimension, ReportMetric, TREND_ALL, TrendQuery, TrendResponse } from '../../../models/reports.model';
 import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
+import { NO_TASKS } from '../../notifications/notif-task';
 import { ReportsService } from '../../../services/reports.service';
 import { AccountingReportsComponent } from './reports';
 import { SampleBudgetStore, SampleSavedReportStore, sampleBreakdown, sampleTrend } from './sample-report-data';
@@ -65,7 +66,7 @@ describe('AccountingReportsComponent', () => {
         provideHttpClient(),
         provideHttpClientTesting(),
         { provide: MATCH_MEDIA, useValue: null },
-        { provide: NavBadgeService, useValue: { badges: signal({}) } },
+        { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } },
       ],
     });
     http = TestBed.inject(HttpTestingController);
@@ -668,7 +669,7 @@ describe('AccountingReportsComponent', () => {
         provideHttpClient(),
         provideHttpClientTesting(),
         { provide: MATCH_MEDIA, useValue: null },
-        { provide: NavBadgeService, useValue: { badges: signal({}) } },
+        { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } },
       ],
     });
     http = TestBed.inject(HttpTestingController);

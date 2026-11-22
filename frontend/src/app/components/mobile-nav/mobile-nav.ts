@@ -22,12 +22,12 @@ export class MobileNavComponent {
     this.nav.activeItem().id === 'settings' ? null : this.nav.activeGroup().id,
   );
 
-  /** A badge dot on a tab other than the one being viewed. */
-  protected hasDot(group: NavGroup): boolean {
+  /** The dot tone of a tab other than the one being viewed; null when it has no dot. */
+  protected dotTone(group: NavGroup): 'red' | 'primary' | null {
     if (group.id === this.nav.activeGroup().id) {
-      return false;
+      return null;
     }
     const sum = summarizeGroupBadges(group, this.nav.badges());
-    return sum.count > 0 || sum.dot;
+    return sum.dot ? sum.tone : null;
   }
 }

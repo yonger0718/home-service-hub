@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LayoutMode, LayoutModeService, MATCH_MEDIA, PHONE_QUERY } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
+import { NO_TASKS, NotifSummary, notifLabel } from '../../notifications/notif-task';
 import { PageHeaderComponent, PageMenuItem } from './page-header';
 
 @Component({ template: '' })
@@ -45,12 +46,14 @@ class MenuHost {
 
 @Component({
   imports: [PageHeaderComponent],
-  template: `<app-page-header [back]="true"></app-page-header>`,
+  template: `<app-page-header [back]="true" [backFallback]="fallback"></app-page-header>`,
 })
-class BackHost {}
+class BackHost {
+  fallback: string | null = null;
+}
 
 /** `/settings` reached by `urls` in order (the first is the router's first navigation); `/blocked` is always refused. */
-async function renderBack(urls: string[], opts: { mode?: LayoutMode; hidden?: string[] } = {}) {
+async function renderBack(urls: string[], opts: { mode?: LayoutMode; hidden?: string[]; fallback?: string } = {}) {
   if (opts.hidden) localStorage.setItem('hh-nav-hidden', JSON.stringify(opts.hidden));
   TestBed.configureTestingModule({
     providers: [
@@ -60,7 +63,7 @@ async function renderBack(urls: string[], opts: { mode?: LayoutMode; hidden?: st
       ]),
       provideLocationMocks(),
       { provide: MATCH_MEDIA, useValue: null },
-      { provide: NavBadgeService, useValue: { badges: signal({}) } },
+      { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } },
     ],
   });
   TestBed.inject(LayoutModeService).set(opts.mode ?? 'phone');
@@ -69,6 +72,7 @@ async function renderBack(urls: string[], opts: { mode?: LayoutMode; hidden?: st
   const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
   const navigate = vi.spyOn(router, 'navigateByUrl');
   const fixture = TestBed.createComponent(BackHost);
+  fixture.componentInstance.fallback = opts.fallback ?? null;
   fixture.detectChanges();
   const el = fixture.nativeElement as HTMLElement;
   return { el, back, navigate, button: el.querySelector<HTMLButtonElement>('button.page-back') };
@@ -79,6 +83,7 @@ async function render(
   url = '/accounting',
   hidden: string[] | null = null,
   title?: string,
+  notif: NotifSummary = NO_TASKS,
 ) {
   if (hidden) localStorage.setItem('hh-nav-hidden', JSON.stringify(hidden));
   TestBed.configureTestingModule({
@@ -93,7 +98,7 @@ async function render(
           removeEventListener: () => {},
         }),
       },
-      { provide: NavBadgeService, useValue: { badges: signal({}) } },
+      { provide: NavBadgeService, useValue: { summary: signal(notif), badges: signal({}) } },
     ],
   });
   await TestBed.inject(Router).navigateByUrl(url);
@@ -102,6 +107,8 @@ async function render(
   fixture.detectChanges();
   return fixture.nativeElement as HTMLElement;
 }
+
+const RED_7: NotifSummary = { total: 7, overdue: 3, tone: 'red', label: notifLabel(7, 3) };
 
 describe('PageHeaderComponent', () => {
   beforeEach(() => localStorage.removeItem('hh-nav-hidden'));
@@ -121,7 +128,7 @@ describe('PageHeaderComponent', () => {
         providers: [
           provideRouter([{ path: '**', component: BlankPage }]),
           { provide: MATCH_MEDIA, useValue: null },
-          { provide: NavBadgeService, useValue: { badges: signal({}) } },
+          { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } },
         ],
       });
       const fixture = TestBed.createComponent(SubtitleHost);
@@ -207,6 +214,40 @@ describe('PageHeaderComponent', () => {
       expect(navigate).not.toHaveBeenCalled();
     });
 
+    it('backFallback: without app history ‹ navigates to it', async () => {
+      const { button, back, navigate } = await renderBack(['/notifications'], { fallback: '/accounting' });
+
+      button!.click();
+
+      expect(navigate).toHaveBeenCalledWith('/accounting');
+      expect(back).not.toHaveBeenCalled();
+    });
+
+    it('backFallback is ignored when the app has history', async () => {
+      const { button, back, navigate } = await renderBack(['/portfolio', '/notifications'], { fallback: '/accounting' });
+
+      button!.click();
+
+      expect(back).toHaveBeenCalledTimes(1);
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('an empty backFallback is not a path: the landing path is used', async () => {
+      const { button, navigate } = await renderBack(['/notifications'], { fallback: '' });
+
+      button!.click();
+
+      expect(navigate).toHaveBeenCalledWith('/portfolio');
+    });
+
+    it('without backFallback the landing path is used (unchanged)', async () => {
+      const { button, navigate } = await renderBack(['/notifications']);
+
+      button!.click();
+
+      expect(navigate).toHaveBeenCalledWith('/portfolio');
+    });
+
     it('navigates to the landing path (/portfolio by default) on a first navigation to /settings', async () => {
       const { button, back, navigate } = await renderBack(['/settings']);
 
@@ -262,7 +303,7 @@ describe('PageHeaderComponent', () => {
         providers: [
           provideRouter([{ path: '**', component: BlankPage }]),
           { provide: MATCH_MEDIA, useValue: null },
-          { provide: NavBadgeService, useValue: { badges: signal({}) } },
+          { provide: NavBadgeService, useValue: { summary: signal(NO_TASKS), badges: signal({}) } },
         ],
       });
       TestBed.inject(LayoutModeService).set(mode);
@@ -302,7 +343,8 @@ describe('PageHeaderComponent', () => {
       const gear = el.querySelector('.header-gear')!;
       expect(gear).not.toBeNull();
       expect(actions.nextElementSibling).toBe(b.parentElement);
-      expect(b.parentElement!.nextElementSibling).toBe(gear);
+      expect(b.parentElement!.nextElementSibling).toBe(el.querySelector('.header-bell'));
+      expect(el.querySelector('.header-bell')!.nextElementSibling).toBe(gear);
       expect(panel()).toBeNull();
     });
 
@@ -312,7 +354,8 @@ describe('PageHeaderComponent', () => {
       TestBed.resetTestingModule();
       const empty = await renderMenu('phone', []);
       expect(empty.more()).toBeNull();
-      expect(empty.el.querySelector('.page-actions')!.nextElementSibling).toBe(empty.el.querySelector('.header-gear'));
+      expect(empty.el.querySelector('.page-actions')!.nextElementSibling).toBe(empty.el.querySelector('.header-bell'));
+      expect(empty.el.querySelector('.header-bell')!.nextElementSibling).toBe(empty.el.querySelector('.header-gear'));
     });
 
     it('opens on click, focuses the first item and lists the items in order', async () => {
@@ -562,5 +605,73 @@ describe('PageHeader phone stylesheet (polish-layout-v2 D9)', () => {
     expect(flat).toMatch(/ h1 \{[^}]*font-size: 20px;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
     expect(flat).toMatch(/\.page-subtitle \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
     expect(flat).toMatch(/\.page-actions \{[^}]*flex-wrap: nowrap;/);
+  });
+});
+
+
+describe('PageHeaderComponent bell', () => {
+  beforeEach(() => localStorage.clear());
+
+  const bell = (el: HTMLElement) => el.querySelector<HTMLAnchorElement>('a.header-bell');
+
+  it('phone: a bell before the gear links to /notifications with the count label', async () => {
+    const el = await render(375, '/accounting', null, undefined, RED_7);
+    const b = bell(el)!;
+    expect(b).not.toBeNull();
+    expect(b.getAttribute('href')).toBe('/notifications');
+    expect(b.getAttribute('aria-label')).toBe('通知，7 件要處理，3 件已逾期');
+    expect(b.querySelector('i.pi-bell')).not.toBeNull();
+    const pill = b.querySelector('.notif-count')!;
+    expect(pill.textContent!.trim()).toBe('7');
+    expect(pill.classList.contains('notif-count--red')).toBe(true);
+    expect(pill.getAttribute('aria-hidden')).toBe('true');
+    const gear = el.querySelector('.header-gear')!;
+    expect(gear).not.toBeNull();
+    expect(b.nextElementSibling).toBe(gear);
+  });
+
+  it('a primary pill when nothing is overdue', async () => {
+    const el = await render(375, '/accounting', null, undefined, { total: 2, overdue: 0, tone: 'primary', label: notifLabel(2, 0) });
+    expect(bell(el)!.querySelector('.notif-count')!.classList.contains('notif-count--red')).toBe(false);
+    expect(bell(el)!.getAttribute('aria-label')).toBe('通知，2 件要處理');
+  });
+
+  it('phone without the gear still shows the bell', async () => {
+    const el = await render(375, '/accounting', [], undefined, RED_7);
+    expect(el.querySelector('.header-gear')).toBeNull();
+    expect(bell(el)).not.toBeNull();
+  });
+
+  it('no pill and the label 通知 at 0 or while the first round has not settled', async () => {
+    const el = await render(375);
+    expect(bell(el)!.querySelector('.notif-count')).toBeNull();
+    expect(bell(el)!.getAttribute('aria-label')).toBe('通知');
+  });
+
+  it('no bell at 820 or 1440', async () => {
+    expect(bell(await render(820, '/accounting', null, undefined, RED_7))).toBeNull();
+    TestBed.resetTestingModule();
+    expect(bell(await render(1440, '/accounting', null, undefined, RED_7))).toBeNull();
+  });
+
+  it('no bell on /notifications', async () => {
+    const el = await render(375, '/notifications', null, undefined, RED_7);
+    expect(bell(el)).toBeNull();
+    expect(el.querySelector('.header-gear')).not.toBeNull();
+  });
+
+  it('badges off: bell without a pill, label 通知', async () => {
+    localStorage.setItem('hh-nav-badges', '0');
+    const el = await render(375, '/accounting', null, undefined, RED_7);
+    expect(bell(el)!.querySelector('.notif-count')).toBeNull();
+    expect(bell(el)!.getAttribute('aria-label')).toBe('通知');
+  });
+
+  it('the bell target is 44 × 44 px', () => {
+    const scss = readFileSync(join(process.cwd(), 'src/app/components/shell/page-header/page-header.scss'), 'utf8');
+    const rule = /\.header-bell[^{]*\{[^}]*\}/.exec(scss.replace(/\/\*[\s\S]*?\*\//g, ''))![0];
+    expect(rule).toContain('flex: 0 0 44px');
+    expect(rule).toContain('height: 44px');
+    expect(rule).toContain('width: 44px');
   });
 });
