@@ -554,7 +554,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(sub()).toContain('1 件');
     });
 
-    it('an inbox answering counts.ask_items 3 with 1000 folded items: the catch-all row and the partial line, no 都處理好了', async () => {
+    it('an inbox answering counts.ask_items 3 with 1000 folded items: the uncounted catch-all note and the partial line, no 都處理好了', async () => {
       const round = await openFresh();
       const folded = Array.from({ length: 1000 }, (_, i) => makeItem({ case_id: 5000 + i, folded: true, question: 'proposed' }));
       await answerReads(round, makeInbox([makeInboxAccount({ id: 12, name: '測試帳戶', items: folded })], { ask_items: 3, ask: 3 }));

@@ -1,6 +1,6 @@
 # Notification center PR B: 通知 page, count, entry points, ledger sources — Implementation Plan
 
-_Rev 2 (2026-11-21): plan review AGENT-553 (CHANGES REQUIRED, four findings accepted) folded with the coordinator's rulings R25–R29 — a truncated inbox is detected and shown as a catch-all task, never as an empty state; page-open de-duplication (`refresh`) is separated from post-write `invalidate()`, which always starts a round after the call; a round is a value with an id and a settled signal that includes the card statements (`BillingService.ensure / refresh` return a promise); focus restoration targets the inner native control; the handled link says it covers reconciliation; tasks.md ticks carry what B does not prove._
+_Rev 2 (2026-11-21): plan review AGENT-553 (CHANGES REQUIRED, four findings accepted) folded with the coordinator's rulings R25–R29 — a truncated inbox is detected and shown as an uncounted catch-all note, never as an empty state; page-open de-duplication (`refresh`) is separated from post-write `invalidate()`, which always starts a round after the call; a round is a value with an id and a settled signal that includes the card statements (`BillingService.ensure / refresh` return a promise); focus restoration targets the inner native control; the handled link says it covers reconciliation; tasks.md ticks carry what B does not prove._
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -82,7 +82,7 @@ R1–R29 are the controller's (2026-11-21; R25–R29 after the plan review); P1�
 | NC "E-invoice task": 「電子發票 · N 張要確認」 opening `/notifications/einvoices`; AL removal: "the `ask + einvoice_ask` sums on the timeline and the reminders page go with it" | The flow is PR F; the reminders page's sum is 6.6 | R5: interim task 「N 張發票要確認」 → reminders 待處理; the timeline's sum goes now, the reminders page's in F |
 | D2 "已逾期 after the due date" | The shipped bill rule uses the debit day | R6: `payDate` |
 | NC "a link to items handled in the last 7 days" (artboard: 「已處理（近 7 天）12 件」 across sources) | Only reconciliation has a handled feed | R12 + R29b: reconciliation actions only, labelled 已處理的對帳 |
-| NC "Statement to reconcile … 「10 筆要你決定」" for every statement | The inbox returns at most 1000 items and no per-statement totals | R25: exact up to the cap; beyond it one catch-all task with the exact number not listed |
+| NC "Statement to reconcile … 「10 筆要你決定」" for every statement | The inbox returns at most 1000 items and no per-statement totals | R25: exact up to the cap (one count per statement from what was listed); beyond it an uncounted note with the number not listed |
 | NC "Below 760 px every page header SHALL show a bell" | Ten pages draw their own header | R14: `PageHeaderComponent` only; gap list in Task 6 |
 | NC "It SHALL open in the right pane of `/notifications` at ≥ 1024 px" | No pane content in B | R20: one column |
 | Proposal Impact: "`NavBadgeService` folds into the notification service" | About 9 specs stub it | R21 + P7: facade kept, one new member `summary`; each stub gains one line |
@@ -93,7 +93,7 @@ R1–R29 are the controller's (2026-11-21; R25–R29 after the plan review); P1�
 
 ## Review Focus
 
-- Truncated inbox: more than 1000 open items — the statement at the cut shows a count that is low by the part beyond the cut, the catch-all carries the exact remainder, the count includes it once, and neither 都處理好了 nor a zero count can appear.
+- Truncated inbox: more than 1000 open items — the statement at the cut shows a count that is low by the part beyond the cut, the uncounted catch-all note carries the exact remainder (no count includes it), and neither 都處理好了 nor a zero count can appear.
 - Write / read interleaving: a queue GET in flight, then 入帳 commits on the server but answers 500 — the old GET's pre-write rows must not be shown after the newer round answers, the row is busy until that round settles, and the 失敗 toast with 重試 is still the visible toast.
 - A slow card statement: accounts answered, one card's payments read still pending — the page shows 讀取中…, not 都處理好了, and the count does not flash a lower number that then grows.
 - A late answer: 入帳 answers after the owner left the page — the toast still shows (no 重試), nothing throws, and the count updates because the write bumps `entriesChanged`.
@@ -310,7 +310,7 @@ tasks.md 2.2 (inbox by statement, MOZE import review, debts). R1, R2, R5, R8, R1
   export const INBOX_READ_LIMIT = 1000;
   /** R25: `counts.ask_items` minus the unfolded items received; 0 when everything is listed (never negative). */
   export function inboxMissing(inbox: InboxOut): number;
-  /** R25: the catch-all task for `missing > 0`, else null. */
+  /** R25: the uncounted catch-all (`recon:more`, exposed as `overflow()`, never in `tasks()`) for `missing > 0`, else null. */
   export function reconOverflowTask(missing: number): NotifTask | null;
   // sources/ledger-misc.ts
   export function importReviewTask(run: ImportRun | null): NotifTask | null;
@@ -484,8 +484,8 @@ Badges: `accounting` `{ dot: true, tone: 'red', label: '有逾期的卡費' }` w
   it('settledRound waits for the card statements, not just the accounts read', …);  // accounts answered, bill promise pending → 0; resolved → 1
   it('an entry write after start() invalidates (a new round id); before start() it does nothing', …);
   it('invalidate() does not read the recalc status', …);
-  it('truncated inbox: counts.ask_items 10 with 6 unfolded received → the statement task plus recon:more 「還有 4 筆要你決定」, total counts both, truncated() true', …);
-  it('truncated inbox with no statement received: recon:more alone, summary().total 1', …);
+  it('truncated inbox: counts.ask_items 10 with 6 unfolded received → one statement task counted; the catch-all is `overflow()`, not a task, so total is 1; truncated() true', …);
+  it('truncated inbox with no statement received: no counted task, summary().total 0, overflow() still names the rest', …);
   it('a complete inbox: no recon:more, truncated() false', …);
   it('a failed inbox read clears truncated', …);
   it('badges: overdue bill → accounting red dot 有逾期的卡費; a bill due today → no dot', …);
@@ -719,7 +719,7 @@ Toasts (all through `this.toasts`; `name` = the command's `name`):
   it('重試 pressed while that task is busy sends nothing and shows the toast again', …);
   it('重試 still sends after the row left the list', …);                                    // tasks.set([]) then runAction → call with the captured id
   it('a 409 import_running shows 「匯入進行中，請稍後再試」 without 重試', …);               // the exact text is IMPORT_RUNNING_TOAST
-  it('a 422 shows the server message without 重試', …);
+  it('a 422 shows the generic copy, not the server message, without 重試', …);
   it('a failed write reloads silently: the 失敗 toast with 重試 is still current after the newer round lands', …);   // invalidate called; after tasks.set(...) and settledRound.set(id): current() is the same toast, action.label 重試
   it('success calls neither refresh nor invalidate', …);
   it('a result landing after the page is destroyed still shows, without an action', …);     // fixture.destroy(); subject.error(500) → current().action null
@@ -755,12 +755,12 @@ tasks.md 2.3 (empty state, failed-source line), 2.5. R25, R26, R27, P4.
 
 **Interfaces:**
 - Consumes: `center.loaded()`, `loading()`, `truncated()`, `failedSources()`, `nextUpcoming()`, `trackingRows()`, `invalidate()`; `failureLine` (Task 1); `focusRetryIfLost` (`accounting/retry-focus.ts`).
-- Produces: `protected readonly state: Signal<'loading' | 'empty' | 'list'>`; `protected retry(): void` (`center.invalidate()`); `protected readonly notes: Signal<string[]>` (the bottom lines); `protected openTracking(event: Event): void`.
+- Produces: `protected readonly state: Signal<'loading' | 'empty' | 'list'>`; `protected retry(): void` (`center.invalidate()`); `protected readonly overflow: Signal<{ text: string; link: NotifLink } | null>` (the uncounted catch-all note under the sections, `p.notif-overflow`); `protected openTracking(event: Event): void`.
 
 | State | When | Markup and copy |
 |---|---|---|
 | Loading | `!loaded()` (no round has settled: some task source, card statements included, has not answered) and no task yet | `p.notif-loading[role="status"]` `讀取中…` (copy: planner); chips and links render |
-| Empty | `loaded()`, no counted task, no failed source, not `truncated()` (a truncated inbox always has the catch-all task, so this is a second guard) | `div.notif-empty`: icon `pi pi-check-circle`, `h2` `都處理好了` (artboard); `p.empty-next` `下一件：測試銀行卡帳單 · 10/27 截止 · $1,824` = `下一件：${title} · ${when} · ${amount}` of `nextUpcoming()` (artboard), absent without one; `a.empty-tracking` `看追蹤中的 ${n} 件 ›` (artboard; n = Σ `trackingRows().count`), absent without rows — it opens the `details`, scrolls it into view and focuses its `summary` |
+| Empty | `loaded()`, no counted task, no failed source, not `truncated()` (a truncated inbox is not empty: the uncounted catch-all note shows and `truncated()` is the second guard) | `div.notif-empty`: icon `pi pi-check-circle`, `h2` `都處理好了` (artboard); `p.empty-next` `下一件：測試銀行卡帳單 · 10/27 截止 · $1,824` = `下一件：${title} · ${when} · ${amount}` of `nextUpcoming()` (artboard), absent without one; `a.empty-tracking` `看追蹤中的 ${n} 件 ›` (artboard; n = Σ `trackingRows().count`), absent without rows — it opens the `details`, scrolls it into view and focuses its `summary` |
 | List | any counted task | Task 8's sections |
 | Failed source | `failedSources().length > 0`, in any state, as the last element of the page | `p.notif-failed` (`--app-text-muted`): `無法讀取：對帳` (spec) + `button.notif-retry` `重試`, disabled while `loading()`; the line stays in place during the retry and leaves only when no source is failed; after a retry that fails again focus returns to 重試 if it fell to `<body>` |
 
@@ -783,7 +783,7 @@ With a failed source and no counted task the page shows neither 都處理好了 
   - `a retry that fails again returns focus to 重試 when focus fell to <body>`;
   - `tasks arriving while another source is still loading render at once (no 讀取中… over a list)`;
   - `a later round keeps the list on screen while it loads`.
-  `notifications.integration.spec.ts` (real services, as Task 9): `first open with a slow card statement: 讀取中… until the card's last read lands, then the bill row — 都處理好了 never appears in between` (flush everything but the payments read → `.notif-loading` present, `.notif-empty` absent; flush it → the row); `first open with nothing to do: 都處理好了 only after the card statements answered`; `an inbox answering counts.ask_items 3 with 1000 folded items: the catch-all row and the partial line, no 都處理好了`.
+  `notifications.integration.spec.ts` (real services, as Task 9): `first open with a slow card statement: 讀取中… until the card's last read lands, then the bill row — 都處理好了 never appears in between` (flush everything but the payments read → `.notif-loading` present, `.notif-empty` absent; flush it → the row); `first open with nothing to do: 都處理好了 only after the card statements answered`; `an inbox answering counts.ask_items 3 with 1000 folded items: the uncounted catch-all note and the partial line, no 都處理好了`.
 - [ ] **Step 2: Run** `--include='src/app/components/notifications/*.spec.ts'` — Expected: the new cases FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** — Expected: PASS.
@@ -792,7 +792,7 @@ With a failed source and no counted task the page shows neither 都處理好了 
 ### Task 11: Tasks, design index, full suite, evidence
 
 **Files:**
-- Modify: `openspec/changes/add-notification-center/tasks.md` — tick 2.1–2.5, each with a note that says what PR B does NOT prove (R29c), so no tick reads as full spec acceptance: 2.1 「(`NavBadgeService` kept as a facade. Not in B: snooze and its exclusion from the count — 5.3)」; 2.2 「(plus an interim e-invoice task; debts from `getCounterparties`; the inbox is read up to 1000 items, the rest is one catch-all task. Not in B: the e-invoice task copy and flow — 6.2 / 6.3; dividends, import failure, 國泰, auto-pay sources — 3.x / 5.2)」; 2.3 「(statement rows open the existing statement page; the handled link counts reconciliation actions only; one column. Not in B: the review route and the right pane — 4.2; 系統 rows — 3.x)」; 2.4 「(Not in B: the 股利 dot — 3.1; the phone bell on the ten pages that draw their own header: 帳戶明細, 帳戶設定, 記一筆／編輯, 提醒中心, 記錄明細, 多類別群組, 自訂報表, 回饋規則, 對帳帳單, 對帳明細)」; 2.5 「(grouping, tracking excluded, badges off, failed source. Not in B: snoozed — 5.4)」. Edit 6.6 to name the two call sites that remain (`inbox-panel.ts`, `reminders.ts`).
+- Modify: `openspec/changes/add-notification-center/tasks.md` — tick 2.1–2.5, each with a note that says what PR B does NOT prove (R29c), so no tick reads as full spec acceptance: 2.1 「(`NavBadgeService` kept as a facade. Not in B: snooze and its exclusion from the count — 5.3)」; 2.2 「(plus an interim e-invoice task; debts from `getCounterparties`; the inbox is read up to 1000 items; the rest is an uncounted catch-all note, since the API cannot attribute it to a statement. Not in B: the e-invoice task copy and flow — 6.2 / 6.3; dividends, import failure, 國泰, auto-pay sources — 3.x / 5.2)」; 2.3 「(statement rows open the existing statement page; the handled link counts reconciliation actions only; one column. Not in B: the review route and the right pane — 4.2; 系統 rows — 3.x)」; 2.4 「(Not in B: the 股利 dot — 3.1; the phone bell on the ten pages that draw their own header: 帳戶明細, 帳戶設定, 記一筆／編輯, 提醒中心, 記錄明細, 多類別群組, 自訂報表, 回饋規則, 對帳帳單, 對帳明細)」; 2.5 「(grouping, tracking excluded, badges off, failed source. Not in B: snoozed — 5.4)」. Edit 6.6 to name the two call sites that remain (`inbox-panel.ts`, `reminders.ts`).
 - Modify: `design_handoff_v3/README.md` — **Colour mapping**: the count pill row becomes "background `--c-red-ink` / `--app-primary`, text `--app-count-ink` (white in light, the page background in dark: white is 2.9:1 on the dark red)"; add "navigation dots: `--c-red-ink` for overdue or failed, `--app-primary` otherwise".
 - Modify: `frontend/src/app/app.routes.ts` — the Caddy comment (`:8–12`) gains `/notifications`.
 
