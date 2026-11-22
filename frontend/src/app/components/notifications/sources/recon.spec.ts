@@ -115,6 +115,13 @@ describe('einvoiceTask', () => {
     });
   });
 
+  it('comes from counts.einvoice_ask alone: a truncated inbox (6 of 10 ask items listed) still gives 2, and the item list adds none', () => {
+    const inbox = inboxWith(items(6, 31), { ask_items: 10, einvoice_ask: 2 });
+    expect(inboxMissing(inbox)).toBe(4);
+    expect(einvoiceTask(inbox.counts)).toMatchObject({ id: 'einvoice', title: '2 張發票要確認', fingerprint: '2' });
+    expect(reconTasks(inbox, new Map()).map((t) => t.id)).toEqual(['recon:31']);
+  });
+
   it('0 or absent gives null', () => {
     expect(einvoiceTask({ einvoice_ask: 0 })).toBeNull();
     expect(einvoiceTask({})).toBeNull();

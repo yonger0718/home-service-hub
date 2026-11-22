@@ -593,6 +593,30 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(note?.closest('section')).toBeNull();
     });
 
+    it('a truncated inbox with counts.einvoice_ask 2: the 2 張發票要確認 task is counted (statement rows + 1) on page and facade, the overflow note stays uncounted', async () => {
+      const round = await openFresh();
+      const listed = Array.from({ length: 6 }, (_, i) =>
+        makeItem({ case_id: 7100 + i, question: 'bank_only', statement: { id: 31, period_end: '2026-10-05' } }),
+      );
+      await answerReads(round, makeInbox([makeInboxAccount({ id: 12, name: '測試銀行卡', items: listed })], { ask_items: 10, ask: 10, einvoice_ask: 2 }));
+      for (const req of http.match(get(`${API}/accounts/12/statements`))) {
+        req.flush([]);
+      }
+      await answerCard('0');
+      const nav = TestBed.inject(NavBadgeService);
+      expect(center.truncated()).toBe(true);
+      const rows = Array.from(root.querySelectorAll('app-notif-row'));
+      expect(rows.length).toBe(2);
+      expect(rows.some((row) => row.textContent?.includes('2 張發票要確認'))).toBe(true);
+      expect(root.querySelector('.notif-chips button')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('全部2');
+      expect(root.querySelector('.page-subtitle')?.textContent).toContain('2 件要處理');
+      expect(center.summary().total).toBe(2);
+      expect(nav.summary().total).toBe(2);
+      const note = root.querySelector('p.notif-overflow');
+      expect(note?.textContent?.replace(/\s+/g, ' ').trim()).toBe('還有 4 筆對帳項目未列出 · 到提醒中心查看 ›');
+      expect(note?.closest('section')).toBeNull();
+    });
+
     it('ONE failed source: page subtitle, chips, section heading and the sidebar facade all say 1', async () => {
       const round = await openFresh();
       round.accounts.flush([CARD]);
