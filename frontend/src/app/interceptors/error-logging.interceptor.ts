@@ -1,5 +1,5 @@
 import { HttpContextToken, HttpInterceptorFn, HttpErrorResponse } from '@angular/common/http';
-import { catchError, throwError, retry } from 'rxjs';
+import { catchError, identity, throwError, retry } from 'rxjs';
 import { trace, context } from '@opentelemetry/api';
 
 /**
@@ -8,12 +8,15 @@ import { trace, context } from '@opentelemetry/api';
  */
 export const SILENT_HTTP_ERRORS = new HttpContextToken<boolean>(() => false);
 
+/** Only reads are re-sent automatically. A write may have committed before its response was lost, so sending it again is the caller's (or the user's) decision. */
+const AUTO_RETRIED_METHODS = new Set(['GET', 'HEAD']);
+
 export const errorLoggingInterceptor: HttpInterceptorFn = (req, next) => {
   if (req.context.get(SILENT_HTTP_ERRORS)) {
     return next(req);
   }
   return next(req).pipe(
-    retry(1),
+    AUTO_RETRIED_METHODS.has(req.method) ? retry(1) : identity,
     catchError((error: HttpErrorResponse) => {
       // 獲取當前 OpenTelemetry 的 Context 與 Span
       const activeSpan = trace.getSpan(context.active());

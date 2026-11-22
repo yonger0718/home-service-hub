@@ -372,7 +372,7 @@ export class NotificationsComponent {
             stop !== null
               ? this.toastStopped(taskId, command.name, posted.length, stop)
               : posted.length === 0
-                ? // Nothing was pending (e.g. the interceptor's resend after a catch-up that had gone through).
+                ? // Nothing was pending (e.g. 重試 after a catch-up that had gone through).
                   this.toasts.done(`${command.name}：沒有待入帳的期數`)
                 : this.toasts.done(`已入帳 ${posted.length} 期：${command.name}`),
           ),
@@ -392,13 +392,13 @@ export class NotificationsComponent {
   }
 
   /**
-   * An error bumps nothing, and the write may still have committed (a 5xx after the commit; the interceptor's
-   * resend): re-read now. The reads raise no toast, so the 失敗 toast stays the visible one. `already_posted` takes
+   * An error bumps nothing, and the write may still have committed (a 5xx after the commit): re-read
+   * now. The reads raise no toast, so the 失敗 toast stays the visible one. `already_posted` takes
    * this path too (re-read, release, focus) but reads as done.
    */
   private failed(taskId: string, command: NotifCommand, err: unknown): void {
     if (isAlreadyPosted(err)) {
-      // The entry exists (a resend after a post that had gone through, #411): done, with the failure path's re-read.
+      // The entry exists (重試 after a post that had gone through, or posted elsewhere): done, with the failure path's re-read.
       this.toasts.done(`${command.name}：此期已入帳`);
     } else if (isImportRunning(err)) {
       this.toasts.error(IMPORT_RUNNING_TOAST);

@@ -18,8 +18,8 @@ import { NotificationsComponent } from './notifications';
 /**
  * The page over the REAL NotificationCenterService, BillingService, AccountingService, InboxService, StatementsService
  * and ToastService, with HttpTestingController: the write / read interleavings of the plan's Review Focus. The app's
- * error-logging interceptor (which resends a failed request once, #411) is installed only in its own describe block;
- * elsewhere one flush is one answer.
+ * error-logging interceptor (which re-sends a failed read once, never a write, #411) is installed only in its own describe
+ * block.
  */
 
 /** Saturday 2026-10-24. */
@@ -144,7 +144,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     return take();
   }
 
-  /** The app's own HTTP setup when `interceptor` (the error-logging interceptor resends a failed request once, #411). */
+  /** The app's own HTTP setup when `interceptor` (the error-logging interceptor re-sends a failed read once, never a write, #411). */
   function boot(interceptor: boolean): void {
     TestBed.configureTestingModule({
       providers: [
@@ -345,7 +345,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     expect(center.tasks().some(task => task.id === 'sched:1')).toBe(false);
   });
 
-  describe('with the app\'s error-logging interceptor (a failed request is sent once more, #411)', () => {
+  describe('with the app\'s error-logging interceptor (a failed write is sent once, #411)', () => {
     const posts: TestRequest[] = [];
     const takePost = () => {
       const req = http.expectOne(isPost);
@@ -361,32 +361,40 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     });
     afterEach(() => vi.restoreAllMocks());
 
-    it('POST 500, the automatic re-send answers 409 already_posted: one done toast, no 重試, released after the re-read, two POSTs', async () => {
+    it('POST 500 is not re-sent: one POST, 重試 offered; 重試 answered 409 already_posted (the first had committed) shows one done toast, two POSTs in all', async () => {
       await flushRound(await openThenFocus(true), [RENT]);
       expect(center.settledRound()).toBe(2);
       rentButton()!.click();
       await settle();
       takePost().flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
-      // The interceptor re-sends at once: the first had committed.
+      await settle();
+      http.expectNone(isPost);
+      expect(posts.length).toBe(1);
+      const failure = toasts.current()!;
+      expect(failure).toEqual(expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗', action: expect.objectContaining({ label: '重試' }) }));
+      // An error bumps nothing: the page's own re-read (round 3).
+      expect(center.round()).toBe(3);
+      await flushRound(take(), [RENT]);
+      expect(rentButton()!.disabled).toBe(false);
+
+      toasts.runAction(failure.id);
+      await settle();
       takePost().flush({ detail: 'already_posted' }, { status: 409, statusText: 'Conflict' });
       await settle();
       expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '測試房租：此期已入帳', action: null }));
-      // An error bumps nothing: the page's own re-read (round 3).
-      expect(center.round()).toBe(3);
-      const round3 = take();
+      const reread = take();
       expect(rentButton()!.disabled).toBe(true);
-      round3.queue.flush([RENT]); // even a list that still has it: the row waits for the round to settle
+      reread.queue.flush([RENT]); // even a list that still has it: the row waits for the round to settle
       await settle();
       expect(rentButton()!.disabled).toBe(true);
-      await flushRound(round3, [], ['queue']);
-      expect(center.settledRound()).toBe(3);
+      await flushRound(reread, [], ['queue']);
       expect(rentButton()!.disabled).toBe(false);
       http.expectNone(isPost);
       expect(posts.length).toBe(2);
       expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '測試房租：此期已入帳' }));
     });
 
-    it('catch-up 500, the re-send answers { posted: [], failed: null }: 「測試月費：沒有待入帳的期數」', async () => {
+    it('catch-up 500 is not re-sent: one POST, 重試 offered; 重試 answered { posted: [], failed: null } shows 「測試月費：沒有待入帳的期數」', async () => {
       const isCatchUp = (req: { method: string; url: string }) =>
         req.method === 'POST' && req.url === `${API}/schedules/definitions/3/catch-up`;
       await flushRound(await openThenFocus(true), FEE);
@@ -395,14 +403,19 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       button()!.click();
       await settle();
       http.expectOne(isCatchUp).flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
+      await settle();
+      http.expectNone(isCatchUp);
+      const failure = toasts.current()!;
+      expect(failure).toEqual(expect.objectContaining({ kind: 'error', action: expect.objectContaining({ label: '重試' }) }));
+      await flushRound(take(), FEE);
+
+      toasts.runAction(failure.id);
+      await settle();
       http.expectOne(isCatchUp).flush({ posted: [], failed: null, definition: {} });
       await settle();
       expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '測試月費：沒有待入帳的期數', action: null }));
-      // The answer bumped entriesChanged: the service started round 3.
-      expect(center.round()).toBe(3);
       expect(button()!.disabled).toBe(true);
       await flushRound(take(), []);
-      expect(center.settledRound()).toBe(3);
       expect(root.querySelector(FEE_ROW)).toBeNull();
       http.expectNone(isCatchUp);
     });
@@ -412,8 +425,8 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       rentButton()!.click();
       await settle();
       takePost().flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
-      takePost().flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
       await settle();
+      http.expectNone(isPost);
       const failure = toasts.current()!;
       expect(failure).toEqual(expect.objectContaining({ kind: 'error', action: expect.objectContaining({ label: '重試' }) }));
       await flushRound(take(), [RENT]);
@@ -424,11 +437,11 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       await settle();
       rentButton()!.click(); // the row is busy again
       await settle();
-      const third = takePost();
+      const second = takePost();
       http.expectNone(isPost);
-      third.flush({ ...RENT, status: 'posted' });
+      second.flush({ ...RENT, status: 'posted' });
       await settle();
-      expect(posts.length).toBe(3);
+      expect(posts.length).toBe(2);
       expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已入帳：測試房租' }));
       await flushRound(take(), []);
       expect(rentRow()).toBeNull();

@@ -418,7 +418,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     this.portfolioService.deleteTransaction(transaction.id).pipe(finalize(() => (this.deleting = false))).subscribe({
       next: () => this.deleted(),
       error: err => {
-        // The interceptor already retried once: a 404 here means the first attempt did commit, so the record is gone.
+        // A 404 means the record is already gone (an earlier attempt committed, or it was deleted elsewhere): done.
         if (err instanceof HttpErrorResponse && err.status === 404) {
           this.deleted();
           return;
