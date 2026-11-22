@@ -37,7 +37,8 @@ export function lastScheduledRun(now: Date): Date {
 export function cathayRunState(latest: CathayRun | null, now: Date): CathayRunState {
   if (latest?.result === 'latched') return 'latched';
   if (latest?.result === 'failed') return 'failed';
-  if (!latest || new Date(latest.run_at).getTime() < lastScheduledRun(now).getTime()) return 'stale';
+  // `!(a >= b)` rather than `a < b`: an unreadable run_at (NaN) is stale, never ok.
+  if (!latest || !(new Date(latest.run_at).getTime() >= lastScheduledRun(now).getTime())) return 'stale';
   return 'ok';
 }
 

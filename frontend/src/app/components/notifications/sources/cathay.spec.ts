@@ -45,6 +45,19 @@ describe('cathay run rule', () => {
     expect(lastScheduledRun(at('2026-10-28T00:10:00+08:00')).toISOString()).toBe('2026-10-26T22:40:00.000Z');
   });
 
+  it('a run exactly at the scheduled 06:40:00 is ok; one second earlier is stale (run_at < scheduled is strict)', () => {
+    expect(cathayRunState(run({ run_at: '2026-10-28T06:40:00+08:00' }), now)).toBe('ok');
+    expect(cathayRunState(run({ run_at: '2026-10-28T06:39:59+08:00' }), now)).toBe('stale');
+  });
+
+  it('latched yesterday and nothing since stays latched, not stale (notifier precedence)', () => {
+    expect(cathayRunState(run({ run_at: '2026-10-27T06:41:00+08:00', result: 'latched' }), now)).toBe('latched');
+  });
+
+  it('an unreadable run_at is stale, never ok', () => {
+    expect(cathayRunState(run({ run_at: 'not a time' }), now)).toBe('stale');
+  });
+
   it('no run at all is stale with 還沒有執行紀錄', () => {
     expect(cathayRunState(null, now)).toBe('stale');
     expect(cathayTasks(NONE, { latest: null, latest_ok: null }, now)).toEqual([
