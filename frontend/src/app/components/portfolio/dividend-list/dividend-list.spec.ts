@@ -3,7 +3,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { provideRouter } from '@angular/router';
+import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { ConfirmationService } from 'primeng/api';
 import { DatePicker } from 'primeng/datepicker';
 import { Paginator } from 'primeng/paginator';
@@ -706,6 +706,53 @@ describe('Dividend filter-wide summary', () => {
       expect(buttons.map(b => b.textContent?.trim())).toEqual(['全部', '待收', '已收款', '舊資料']);
       expect(buttons[0].getAttribute('aria-checked')).toBe('true');
       fixture.destroy();
+    });
+
+    describe('?status= query param', () => {
+      const p9901: Dividend = { ...due, id: 9901, symbol: '9901' };
+      const p9902: Dividend = { ...confirmed, id: 9902, symbol: '9902' };
+
+      function openWith(params: Record<string, string>): ComponentFixture<PortfolioDividendListComponent> {
+        TestBed.overrideProvider(ActivatedRoute, { useValue: { snapshot: { queryParamMap: convertToParamMap(params) } } });
+        const fixture = create();
+        respond(listCalls[0], { items: [p9901, p9902], total: 2 });
+        respond(summaryCalls[0], { items: [p9901, p9902], total: 2 });
+        fixture.detectChanges();
+        return fixture;
+      }
+
+      const checked = (fixture: ComponentFixture<PortfolioDividendListComponent>) =>
+        Array.from(el(fixture).querySelectorAll('app-seg-toggle button'))
+          .find(b => b.getAttribute('aria-checked') === 'true')?.textContent?.trim();
+
+      it('?status=pending opens on 待收: the toggle\'s value is pending and only the pending row is listed', () => {
+        const fixture = openWith({ status: 'pending' });
+        expect(fixture.componentInstance.status()).toBe('pending');
+        expect(checked(fixture)).toBe('待收');
+        expect(rowIds(fixture)).toEqual([9901]);
+        fixture.destroy();
+      });
+
+      it.each(['confirmed', 'legacy'])('?status=%s is honoured', value => {
+        const fixture = openWith({ status: value });
+        expect(fixture.componentInstance.status()).toBe(value);
+        fixture.destroy();
+      });
+
+      it.each<Record<string, string>>([{}, { status: 'nonsense' }, { status: 'all' }, { status: '' }])('no param, or ?status=nonsense, opens on 全部 (%j)', params => {
+        const fixture = openWith(params);
+        expect(fixture.componentInstance.status()).toBe('all');
+        expect(checked(fixture)).toBe('全部');
+        expect(rowIds(fixture)).toEqual([9901, 9902]);
+        fixture.destroy();
+      });
+
+      it('the toggle still works after opening with the param', () => {
+        const fixture = openWith({ status: 'pending' });
+        selectStatus(fixture, '全部');
+        expect(rowIds(fixture)).toEqual([9901, 9902]);
+        fixture.destroy();
+      });
     });
 
     it('lists only the pending rows of the filter-wide set with their count, without calling the API', () => {

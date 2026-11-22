@@ -1,5 +1,6 @@
 import { Component, ElementRef, Injector, OnDestroy, OnInit, afterNextRender, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { ActivatedRoute } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Subscription, catchError, finalize, of } from 'rxjs';
 import { LayoutModeService } from '../../../services/layout-mode.service';
@@ -75,6 +76,11 @@ const STATUS_OPTIONS: SegToggleOption[] = [
   { value: 'confirmed', label: '已收款' },
   { value: 'legacy', label: '舊資料' },
 ];
+
+/** `?status=` opens the page pre-filtered (read once); anything but a known status is 全部. */
+function initialStatus(param: string | null): DividendStatusFilter {
+  return param === 'pending' || param === 'confirmed' || param === 'legacy' ? param : 'all';
+}
 
 const SOURCE_OPTIONS = [
   { value: 'manual', label: '手動' },
@@ -171,7 +177,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   });
 
   /** Status SegToggle; any value but 全部 lists the filter-wide set (Decision 7), paged client-side from `statusOffset` (reset by every `loadAll`). */
-  readonly status = signal<DividendStatusFilter>('all');
+  readonly status = signal<DividendStatusFilter>(initialStatus(inject(ActivatedRoute).snapshot.queryParamMap.get('status')));
   private readonly statusOffset = signal(0);
   /** The selected status's rows of the filter-wide set; null on 全部 or while the set is not loaded. */
   readonly statusSet = computed(() => {
