@@ -829,6 +829,78 @@ describe('Portfolio import controls', () => {
     });
   });
 
+  describe('the 通知 centre after a write (the 匯入 task and dot follow at once)', () => {
+    it('pure reads never invalidate: a dry-run preview, a running → running poll', () => {
+      vi.useFakeTimers();
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+      const fixture = setup();
+      const component = fixture.componentInstance;
+      component.onSelect({ files: [new File(['x'], '測試匯入.csv')] });
+      component.preview();
+      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(5000);
+      expect(service.getRecalcStatus.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(center.invalidate).not.toHaveBeenCalled();
+      fixture.destroy();
+    });
+
+    it('opening the page on a failed recalc (a read) does not invalidate', () => {
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed' }));
+      setup();
+      expect(service.getRecalcStatus).toHaveBeenCalled();
+      expect(center.invalidate).not.toHaveBeenCalled();
+    });
+
+    it('a commit settling invalidates once: not before its answer, once on success, once on an error', () => {
+      const commit$ = new Subject<ImportResult>();
+      const fixture = setup();
+      const component = fixture.componentInstance;
+      component.onSelect({ files: [new File(['x'], '測試匯入.csv')] });
+      service.uploadCsv.mockReturnValue(commit$);
+      component.commit();
+      expect(center.invalidate).not.toHaveBeenCalled();
+      commit$.next({ ...preview, dry_run: false, recalc_scheduled: true }); commit$.complete();
+      expect(center.invalidate).toHaveBeenCalledTimes(1);
+
+      service.uploadCsv.mockReturnValue(of(preview));
+      component.onSelect({ files: [new File(['y'], '測試匯入.csv')] });
+      expect(center.invalidate).toHaveBeenCalledTimes(1);
+      service.uploadCsv.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 500 })));
+      component.commit();
+      expect(center.invalidate).toHaveBeenCalledTimes(2);
+    });
+
+    it('starting the recalc invalidates once when the trigger settles, ok or error', () => {
+      const fixture = setup();
+      const component = fixture.componentInstance;
+      const trigger$ = new Subject<unknown>();
+      service.triggerRecalc.mockReturnValueOnce(trigger$).mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 500 })));
+      component.retryRecalc();
+      expect(center.invalidate).not.toHaveBeenCalled();
+      trigger$.next({}); trigger$.complete();
+      expect(center.invalidate).toHaveBeenCalledTimes(1);
+
+      component.retryRecalc();
+      expect(center.invalidate).toHaveBeenCalledTimes(2);
+    });
+
+    it('the polled recalc leaving running invalidates once; the polls after it add nothing', () => {
+      vi.useFakeTimers();
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+      const fixture = setup();
+      vi.advanceTimersByTime(5000);
+      expect(center.invalidate).not.toHaveBeenCalled();
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', quote_refresh: { state: 'running' } }));
+      vi.advanceTimersByTime(5000);
+      expect(center.invalidate).toHaveBeenCalledTimes(1);
+      // Still polling for the quotes: the same failed import state again is not a change.
+      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(5000);
+      expect(center.invalidate).toHaveBeenCalledTimes(1);
+      fixture.destroy();
+    });
+  });
+
   describe('steps strip', () => {
     it('shows step 1 before a file, 2 after a dry-run result and 3 while committing or committed', () => {
       const fixture = setup();
@@ -1634,7 +1706,7 @@ describe('Portfolio import controls', () => {
       });
 
       for (const mode of ['sheet', 'phone'] as const) {
-        it(`${mode}: the two cards render under the footer in the main column`, () => {
+        it(`${mode}: the three side cards (two bentos and the 國泰 card) render under the footer in the main column`, () => {
           const fixture = inModeWithFile(mode);
           const side = aside(fixture)!;
           const footer = el(fixture).querySelector('.imp-footer')!;

@@ -17,6 +17,7 @@ import { TooltipModule } from 'primeng/tooltip';
 
 import { BrokerCsvImportResult, ImportResult, OverrideStatus, RecalcStatus, UnresolvedName } from '../../../models/portfolio.model';
 import { ImportHistoryService } from '../../../services/import-history.service';
+import { NotificationCenterService } from '../../../services/notification-center.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { injectToasts, toastText } from '../../../services/toast.service';
@@ -117,6 +118,13 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private route = inject(ActivatedRoute);
   private router = inject(Router);
   private history = inject(ImportHistoryService);
+  /**
+   * The 匯入 task and dot read the recalc status (and this device's last failure) in the centre's own rounds, and no
+   * change signal tells it about this page's writes: a settled commit, a settled recalc trigger and a polled recalc
+   * leaving `running` each call `invalidate()` once. Reads (dry runs, page open, a poll that sees no change) never do,
+   * and the centre's rounds never drive this page, so it cannot loop.
+   */
+  private readonly center = inject(NotificationCenterService);
   private layout = inject(LayoutModeService);
 
   readonly typeOptions: SegToggleOption[] = [
@@ -507,10 +515,13 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     this.recalcSubmitting.set(true);
     this.portfolioService.triggerRecalc().pipe(finalize(() => this.recalcSubmitting.set(false))).subscribe({
       next: () => {
+        this.center.invalidate();
         this.recalcToastId = this.toasts.progress('資料重算執行中…');
         this.startPolling();
       },
       error: err => {
+        // The trigger may have started the chain.
+        this.center.invalidate();
         this.recalcFailToastId = this.toasts.error(toastText('重算觸發失敗', importErrorDetail(err)), {
           retry: retryOnNetwork(err, () => this.retryRecalc()),
         });
@@ -586,6 +597,8 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private settle(dryRun: boolean): void {
     if (dryRun) return;
     this.committing.set(false);
+    // Success or error (it may have committed): the recalc chain and the device's last attempt changed.
+    this.center.invalidate();
     if (!this.urlTypeIgnored) return;
     this.urlTypeIgnored = false;
     if (typeFromQuery(this.route.snapshot.queryParamMap.get('type')) !== this.type()) {
@@ -716,6 +729,8 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
       next: status => {
         const prevState = this.recalcStatus().state;
         this.recalcStatus.set(status);
+        // The chain this page watched has ended (completed / partial / failed): the 匯入 task and dot follow now.
+        if (prevState === 'running' && status.state !== 'running') this.center.invalidate();
         // A newer status supersedes a 失敗 toast that still offers 重試; the same unresolved failure does not.
         const prevFailKey = this.recalcFailKey;
         const sameFailure = status.state === 'partial' && prevFailKey !== null
