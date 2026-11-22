@@ -43,6 +43,12 @@
     </p>
   }
 
+  @if (cathayMore() > 0) {
+    <p class="notif-overflow notif-overflow--portfolio">
+      還有 {{ cathayMore() }} 天的國泰對帳單未列出 · <a class="notif-foot-link" routerLink="/portfolio/import">到匯入頁查看&ngsp;<span aria-hidden="true">›</span></a>
+    </p>
+  }
+
   <!-- One element for "no task yet" and "partial list": the same @if spot, so the live region is announced once. -->
   @if (!center.loaded() || state() === 'loading') {
     <p class="notif-loading" role="status">讀取中…</p>

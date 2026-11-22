@@ -17,6 +17,7 @@ import { RouterLink } from '@angular/router';
 import { AccountingService } from '../../services/accounting.service';
 import { LayoutModeService } from '../../services/layout-mode.service';
 import { NotificationCenterService } from '../../services/notification-center.service';
+import { PortfolioService } from '../../services/portfolio.service';
 import { injectToasts, toastText } from '../../services/toast.service';
 import { guardedRetry } from '../../services/toast-retry';
 import { conflictReason, knownWriteReason } from '../accounting/http-errors';
@@ -60,6 +61,9 @@ const CHIPS: readonly ChipOption[] = [
   { key: 'portfolio', label: SOURCE_TAGS.portfolio },
 ];
 
+/** The 確認 of a 國泰 statement date. */
+type AckCommand = Extract<NotifCommand, { kind: 'ackCathay' }>;
+
 /** What the tracking summary counts, per row. */
 const TRACKING_UNIT: Record<NotifTrackingRow['id'], { name: string; unit: string }> = {
   debts: { name: '借還款', unit: '位' },
@@ -69,7 +73,7 @@ const TRACKING_UNIT: Record<NotifTrackingRow['id'], { name: string; unit: string
 
 /**
  * `/notifications`: one column (R20). Header with the count, source chips (a radiogroup, as 提醒中心's tabs), the
- * counted tasks by tier, the folded 追蹤中 (never counted) and the links out. 入帳 / 全部入帳 run in place (R4). Before the first round
+ * counted tasks by tier, the folded 追蹤中 (never counted) and the links out. 入帳 / 全部入帳 / 確認 run in place (R4). Before the first round
  * settles a 讀取中… row ends the page (the only one, whether or not tasks have arrived); then the empty state or the
  * failure line.
  */
@@ -84,6 +88,7 @@ export class NotificationsComponent {
   protected readonly center = inject(NotificationCenterService);
   private readonly layout = inject(LayoutModeService);
   private readonly accounting = inject(AccountingService);
+  private readonly portfolio = inject(PortfolioService);
   private readonly toasts = injectToasts();
   private readonly host: HTMLElement = inject(ElementRef).nativeElement;
   private readonly injector = inject(Injector);
@@ -188,10 +193,14 @@ export class NotificationsComponent {
     return parts.join(' · ');
   });
 
-  /** 追蹤中 is a ledger thing: hidden under 投資, and without rows. */
-  protected readonly trackingRows = computed(() =>
-    !this.pending() && this.chip() !== 'portfolio' ? this.center.trackingRows() : [],
-  );
+  /** 追蹤中: every row under 全部, the rows of that source under 財務 / 投資 (P5); none while pending. */
+  protected readonly trackingRows = computed(() => {
+    if (this.pending()) {
+      return [];
+    }
+    const chip = this.chip();
+    return this.center.trackingRows().filter(row => chip === 'all' || row.source === chip);
+  });
   protected readonly trackingSum = computed(() =>
     this.trackingRows()
       .map((row) => `${TRACKING_UNIT[row.id].name} ${row.count} ${TRACKING_UNIT[row.id].unit}`)
@@ -215,7 +224,7 @@ export class NotificationsComponent {
     return this.center.failedSources().length === 0 && !this.center.truncated() ? 'empty' : 'list';
   });
 
-  /** 下一件: the nearest tracked bill, under the all-clear (ledger only, as 追蹤中). */
+  /** 下一件: the nearest tracked bill, under the all-clear; ledger only, so absent under 投資 (P5). */
   protected readonly nextLine = computed<string | null>(() => {
     const next = this.chip() === 'portfolio' ? null : this.center.nextUpcoming();
     return next ? `下一件：${[next.title, next.when, next.amount].filter(Boolean).join(' · ')}` : null;
@@ -230,6 +239,14 @@ export class NotificationsComponent {
     const rest = !this.pending() && this.chip() !== 'portfolio' ? this.center.overflow() : null;
     return rest && !isCommand(rest.primary) ? { text: rest.title, link: rest.primary } : null;
   });
+
+  /**
+   * 國泰 pending dates the API did not list (C5): a second plain note after the ledger one, never counted. A 投資
+   * thing, hidden under 財務; 0 (no note) while no round has settled.
+   */
+  protected readonly cathayMore = computed(() =>
+    !this.pending() && this.chip() !== 'ledger' ? Math.max(0, this.center.cathayMore()) : 0,
+  );
 
   protected readonly failure = computed(() => failureLine(this.center.failedSources()));
   /** A 重試 of the reads is running: the line stays (same element) and the button waits. */
@@ -341,7 +358,7 @@ export class NotificationsComponent {
     return this.busy().has(id);
   }
 
-  /** A row's 入帳 / 全部入帳; ignored while that row is busy (one write per press). */
+  /** A row's 入帳 / 全部入帳 / 確認; ignored while that row is busy (one write per press). */
   protected onRun(task: NotifTask, command: NotifCommand): void {
     if (this.isBusy(task.id)) {
       return;
@@ -379,6 +396,15 @@ export class NotificationsComponent {
           ),
         error: failed,
       });
+    } else if (command.kind === 'ackCathay') {
+      this.portfolio.ackCathayDay(command.tradeDate).subscribe({
+        next: () => {
+          this.toasts.done(`已確認：${command.name}`);
+          // An ack bumps no change signal: the page re-reads itself, or the date would stay listed (spec 3.4).
+          this.reread(taskId);
+        },
+        error: (err: unknown) => this.ackFailed(taskId, command, err),
+      });
     }
   }
 
@@ -412,6 +438,33 @@ export class NotificationsComponent {
         retry: guardedRetry(err, this.toasts, text, () => this.isBusy(taskId), () => this.send(taskId, command)),
       });
     }
+    this.reread(taskId);
+  }
+
+  /**
+   * A failed 確認 (C6). 404: the date no longer needs the owner (acked elsewhere, or by an earlier send that had
+   * committed): done. Else 失敗, a reason only when the app words it, 重試 only for a network failure; the raw error
+   * goes to the console. No 復原 either way (there is no un-ack). The ack may have committed: re-read.
+   */
+  private ackFailed(taskId: string, command: AckCommand, err: unknown): void {
+    if (err instanceof HttpErrorResponse && err.status === 404) {
+      this.toasts.done(`${command.name}：已經不需要確認`);
+    } else {
+      console.error(`確認失敗 ${taskId}（${command.name}）`, err);
+      const reason = knownWriteReason(err);
+      const text = reason === null ? `${command.name} 確認失敗` : toastText(`${command.name} 確認失敗`, reason);
+      this.toasts.error(text, {
+        retry: guardedRetry(err, this.toasts, text, () => this.isBusy(taskId), () => this.send(taskId, command)),
+      });
+    }
+    this.reread(taskId);
+  }
+
+  /**
+   * The answer bumped no change signal: start the re-read now. The row waits for a round above the one current
+   * before this `invalidate()` (the release rule), i.e. for the re-read itself to settle.
+   */
+  private reread(taskId: string): void {
     this.markAnswered(taskId);
     const after = this.center.round();
     this.center.invalidate();
