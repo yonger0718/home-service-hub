@@ -101,7 +101,7 @@ export class NotificationCenterService {
   private readonly roundId = signal(0);
   private readonly settledId = signal(0);
   private readonly status = signal<Readonly<Record<NotifSourceKey, SourceStatus>>>({
-    bills: IDLE, schedules: IDLE, recon: IDLE, importReview: IDLE, debts: IDLE,
+    bills: IDLE, schedules: IDLE, recon: IDLE, importReview: IDLE, debts: IDLE, dividends: IDLE, imports: IDLE, cathay: IDLE,
   });
   /** Today as of the newest started round. */
   private readonly today = signal(todayIso());
@@ -366,6 +366,8 @@ export class NotificationCenterService {
     this.read(round, this.inbox.actions(HANDLED_LIMIT), actions => {
       this.actionsText.set(actions ? handledText(actions, new Date().toISOString(), HANDLED_LIMIT) : null);
     });
+    // Task 4 replaces this with the reads.
+    for (const key of ['dividends', 'imports', 'cathay'] as const) this.mark(key, round, 'ok');
     return round;
   }
 

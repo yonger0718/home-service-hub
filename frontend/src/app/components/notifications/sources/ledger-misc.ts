@@ -78,6 +78,7 @@ export function debtsRow(counterparties: readonly Counterparty[]): NotifTracking
   const meta = [sideText('應收', owed), sideText('應付', owing)].filter((s) => s !== null).join('· ');
   return {
     id: 'debts',
+    source: 'ledger',
     title: `借還款 · ${people.length} 位`,
     meta,
     count: people.length,
@@ -92,6 +93,7 @@ export function upcomingRow(trackingBills: readonly NotifTask[]): NotifTrackingR
   if (n > 3) parts.push(`等 ${n - 3} 件`);
   return {
     id: 'upcoming',
+    source: 'ledger',
     title: `即將到來 · ${n} 件`,
     meta: parts.join(' · '),
     count: n,

@@ -18,6 +18,25 @@ describe('PortfolioService', () => {
     httpMock = TestBed.inject(HttpTestingController);
   });
 
+  it('reads the 國泰 pending days and latest runs', () => {
+    service.getCathayPending().subscribe();
+    const pending = httpMock.expectOne('/api/portfolio/imports/cathay-statement/pending');
+    expect(pending.request.method).toBe('GET');
+    pending.flush({ items: [], total: 0, truncated: false });
+    service.getCathayRuns().subscribe();
+    const runs = httpMock.expectOne('/api/portfolio/imports/cathay-statement/runs/latest');
+    expect(runs.request.method).toBe('GET');
+    runs.flush({ latest: null, latest_ok: null });
+  });
+
+  it('acks a 國泰 day with a body-less POST', () => {
+    service.ackCathayDay('2026-10-28').subscribe();
+    const req = httpMock.expectOne('/api/portfolio/imports/cathay-statement/days/2026-10-28/ack');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toBeNull();
+    req.flush({ trade_date: '2026-10-28', ack_status: 'acked' });
+  });
+
   it('caches same-symbol holdings by composite key', () => {
     const tw = buildHolding({ symbol: 'AAPL', market: 'TW' });
     const us = buildHolding({ symbol: 'AAPL', market: 'US' });

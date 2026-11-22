@@ -64,6 +64,7 @@ const CHIPS: readonly ChipOption[] = [
 const TRACKING_UNIT: Record<NotifTrackingRow['id'], { name: string; unit: string }> = {
   debts: { name: '借還款', unit: '位' },
   upcoming: { name: '即將到來', unit: '件' },
+  dividends: { name: '股利', unit: '筆' },
 };
 
 /**
@@ -365,7 +366,7 @@ export class NotificationsComponent {
         next: () => this.succeeded(taskId, () => this.toasts.done(`已入帳：${command.name}`)),
         error: failed,
       });
-    } else {
+    } else if (command.kind === 'catchUp') {
       this.accounting.catchUpSchedule(command.definitionId).subscribe({
         next: ({ posted, failed: stop }) =>
           this.succeeded(taskId, () =>

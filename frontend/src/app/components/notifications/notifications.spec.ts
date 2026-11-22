@@ -48,8 +48,8 @@ const TASKS: NotifTask[] = [
   task('d1', 'system', { source: 'portfolio', from: 'importReview' }),
 ];
 const ROWS: NotifTrackingRow[] = [
-  { id: 'debts', title: '借還款 · 3 位', meta: '甲、乙、丙', count: 3, link: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'debts' } } },
-  { id: 'upcoming', title: '即將到來 · 2 件', meta: '', count: 2, link: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'cards' } } },
+  { id: 'debts', source: 'ledger', title: '借還款 · 3 位', meta: '甲、乙、丙', count: 3, link: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'debts' } } },
+  { id: 'upcoming', source: 'ledger', title: '即將到來 · 2 件', meta: '', count: 2, link: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'cards' } } },
 ];
 
 describe('NotificationsComponent', () => {

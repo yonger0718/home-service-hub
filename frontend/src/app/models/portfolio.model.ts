@@ -179,6 +179,12 @@ export interface RecalcStepStatus {
   error?: string | null;
 }
 
+export type CathayPendingStatus = 'held' | 'mismatch' | 'conflict';
+export interface CathayPendingDay { trade_date: string; status: CathayPendingStatus; reason: string | null; since: string | null; last_at: string | null; }
+export interface CathayPending { items: CathayPendingDay[]; total: number; truncated: boolean; }
+export interface CathayRun { run_at: string; result: 'ok' | 'latched' | 'failed'; code: string | null; files_seen: number; posted: number; }
+export interface CathayRuns { latest: CathayRun | null; latest_ok: CathayRun | null; }
+
 export interface RecalcStatus {
   kind?: 'import' | 'quotes';
   quote_refresh?: RecalcStatus;
