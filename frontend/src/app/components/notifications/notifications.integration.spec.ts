@@ -609,6 +609,47 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(root.querySelector('.notif-failed')?.textContent).toContain('無法讀取：借還款');
     });
 
+    it('FIVE failed sources with one bill row counted: the row shows with its numbers (page chips, heading, subtitle) equal to the facade count', async () => {
+      const round = await openFresh();
+      const cardB = makeAccount({ id: 12, name: '測試二號卡', is_credit: true, closing_day: 5, due_rule: 'fixed_day', due_value: 20 });
+      round.accounts.flush([CARD, cardB]);
+      round.counterparties.flush('boom', { status: 500, statusText: 'Server Error' });
+      round.queue.flush('boom', { status: 500, statusText: 'Server Error' });
+      round.inbox.flush('boom', { status: 500, statusText: 'Server Error' });
+      round.latest.flush('boom', { status: 500, statusText: 'Server Error' });
+      round.actions.flush([]);
+      await settle();
+      for (const req of http.match(get(`${API}/accounts/11/summary`))) {
+        req.flush('boom', { status: 500, statusText: 'Server Error' });
+      }
+      for (const req of http.match(get(`${API}/accounts/12/summary`))) {
+        req.flush({
+          account_id: 12, currency: 'TWD', date_from: '', date_to: '', spend: '-1000.0000', income: '0', rewards: '0',
+          net: '-1000.0000', end_balance: '-1000.0000', count: 1,
+        });
+      }
+      for (const req of http.match(get('/api/portfolio/imports/recalc/status'))) {
+        req.flush({ state: 'idle' });
+      }
+      await settle();
+      for (const req of http.match(get(`${API}/accounts/12/entries`))) {
+        req.flush({ items: [], total: 0, limit: 100, offset: 0 });
+      }
+      for (const req of http.match(get(`${API}/accounts/11/entries`))) {
+        req.flush('boom', { status: 500, statusText: 'Server Error' });
+      }
+      await settle();
+      const nav = TestBed.inject(NavBadgeService);
+      expect(center.failedSources().length).toBe(5);
+      expect(nav.summary().total).toBe(1);
+      expect(root.querySelectorAll('app-notif-row').length).toBe(1);
+      const chips = Array.from(root.querySelectorAll<HTMLElement>('.notif-chips button'));
+      expect(Array.from(root.querySelectorAll('.chip-count')).map(c => c.textContent?.trim())[0]).toBe(String(nav.summary().total));
+      expect(chips[0].getAttribute('aria-label')).toBe('全部，1 件');
+      expect(root.querySelector('section.notif-section h2 .sec-count')?.textContent?.trim()).toBe('1');
+      expect(root.querySelector('.page-subtitle')?.textContent?.trim()).toBe('1 件要處理 · 部分資料無法讀取');
+    });
+
     it('a failed inbox with nothing else: the failure line and no 都處理好了; 重試 re-reads and the all-clear returns when it answers', async () => {
       const round = await openFresh();
       round.accounts.flush([CARD]);

@@ -32,7 +32,6 @@ import {
   NotifTask,
   NotifTier,
   NotifTrackingRow,
-  SOURCE_NAMES,
   SOURCE_TAGS,
   TIER_LABELS,
   chipCounts,
@@ -60,9 +59,6 @@ const CHIPS: readonly ChipOption[] = [
   { key: 'ledger', label: SOURCE_TAGS.ledger },
   { key: 'portfolio', label: SOURCE_TAGS.portfolio },
 ];
-
-/** Every task source of a round. */
-const ALL_SOURCES = Object.keys(SOURCE_NAMES).length;
 
 /** What the tracking summary counts, per row. */
 const TRACKING_UNIT: Record<NotifTrackingRow['id'], { name: string; unit: string }> = {
@@ -143,27 +139,26 @@ export class NotificationsComponent {
         !this.center.truncated()),
   );
 
-  /** Every source of the round failed: nothing was read, so there is no number to show (a partial failure still has them). */
-  private readonly allFailed = computed(() => this.center.failedSources().length >= ALL_SOURCES);
-
   /**
-   * The counts are shown: a round settled and at least one source was read. With one source failed they are lower
-   * bounds, but they are the same numbers the sidebar shows (the banner says the list is partial); with every source
-   * failed there is nothing to count.
+   * A source failed and nothing is counted: there is no number to stand behind (a zero would read as "nothing to do"
+   * while part of the data is unread), so chips, section headings and subtitle show labels only. With tasks counted the
+   * numbers are the facade's (lower bounds the banner qualifies), the same the sidebar and the bell show.
    */
-  protected readonly countsFinal = computed(() => !this.pending() && !this.allFailed());
+  private readonly unreadAndEmpty = computed(
+    () => this.center.failedSources().length > 0 && this.center.summary().total === 0,
+  );
+
+  /** The counts are shown: a round settled and not (a source failed with nothing counted). */
+  protected readonly countsFinal = computed(() => !this.pending() && !this.unreadAndEmpty());
 
   /**
    * Never absent (the chips would shift down when it appeared). Before the first round settles `summary()` is
    * NO_TASKS, and with a source failed there is no all-clear: a partial read shows the count with the warning (or the
-   * warning alone at zero), every source failed shows the warning alone.
+   * warning alone when nothing is counted).
    */
   protected readonly subtitle = computed<string>(() => {
     if (this.pending()) {
       return '讀取中…';
-    }
-    if (this.allFailed()) {
-      return '部分資料無法讀取';
     }
     const { total, overdue } = this.center.summary();
     if (this.center.failedSources().length > 0) {

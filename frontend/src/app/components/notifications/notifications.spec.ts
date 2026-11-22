@@ -249,12 +249,11 @@ describe('NotificationsComponent', () => {
       const root = mount();
       expect(Array.from(root.querySelectorAll('section.notif-section h2')).map(h => text(h))).toEqual(['已逾期 2', '今天 1', '要你確認 1', '系統 1']);
     });
-    it('the section headings carry no number when EVERY source failed', () => {
+    it('the section headings keep their numbers with MANY sources failed while tasks are counted', () => {
       tasks.set(TASKS);
       failedSources.set(['bills', 'schedules', 'recon', 'importReview', 'debts']);
       const root = mount();
-      expect(Array.from(root.querySelectorAll('section.notif-section h2')).map(h => text(h))).toEqual(['已逾期', '今天', '要你確認', '系統']);
-      expect(root.querySelector('.sec-count')).toBeNull();
+      expect(Array.from(root.querySelectorAll('section.notif-section h2')).map(h => text(h))).toEqual(['已逾期 2', '今天 1', '要你確認 1', '系統 1']);
     });
     it('hides 追蹤中 that the service already holds', () => {
       loaded.set(false);
@@ -457,7 +456,8 @@ describe('NotificationsComponent', () => {
       expect(chips.map(c => c.getAttribute('aria-label'))).toEqual(['全部，5 件', '財務，4 件', '投資，1 件']);
     });
 
-    it('every source failed: no number anywhere, the subtitle is 「部分資料無法讀取」, chip names are bare labels', () => {
+    it('every source failed and nothing counted: no number anywhere, the subtitle is 「部分資料無法讀取」, chip names are bare labels', () => {
+      tasks.set([]);
       failedSources.set(['bills', 'schedules', 'recon', 'importReview', 'debts']);
       const root = mount();
       expect(subtitle(root)).toBe('部分資料無法讀取');
@@ -473,6 +473,20 @@ describe('NotificationsComponent', () => {
       const root = mount();
       expect(subtitle(root)).toBe('部分資料無法讀取');
       expect(root.textContent).not.toContain('0 件');
+      const chips = Array.from(root.querySelectorAll<HTMLButtonElement>('.notif-chips button'));
+      expect(root.querySelectorAll('.chip-count').length).toBe(0);
+      expect(chips.map(c => c.getAttribute('aria-label'))).toEqual(['全部', '財務', '投資']);
+      expect(root.querySelectorAll('.sec-count').length).toBe(0);
+    });
+
+    it('one failed source and tasks counted: subtitle, chip counts and section headings all carry the numbers', () => {
+      tasks.set([task('a1', 'today'), task('a2', 'overdue')]);
+      failedSources.set(['bills', 'schedules', 'recon', 'importReview']);
+      const root = mount();
+      expect(subtitle(root)).toContain('2 件要處理 · 部分資料無法讀取');
+      expect(Array.from(root.querySelectorAll('.chip-count')).map(c => text(c))[0]).toBe('2');
+      expect(root.querySelector('.notif-chips button')?.getAttribute('aria-label')).toBe('全部，2 件');
+      expect(root.querySelectorAll('.sec-count').length).toBeGreaterThan(0);
     });
 
     it('after a 重試 that succeeds the counts and the subtitle come back', async () => {
