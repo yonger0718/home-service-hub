@@ -52,30 +52,56 @@ const CONFLICT_MESSAGES: Record<string, string> = {
   cascade_unconfirmed: '附帶的手續費或折扣記在別的帳戶；請重新載入後再刪，或先刪那筆附帶記錄',
 };
 
+/** The owner's wording of a 409 conflict code, or `null` when the code is not one the app maps. */
+export function conflictReason(code: string): string | null {
+  return Object.hasOwn(CONFLICT_MESSAGES, code) ? CONFLICT_MESSAGES[code] : null;
+}
+
+/** shared_lib `message` (or a schedule's string `detail`) of an error body, else `null`. */
+function bodyText(err: HttpErrorResponse): string | null {
+  const body = err.error as { detail?: unknown; message?: unknown } | null;
+  return typeof body?.message === 'string' ? body.message : typeof body?.detail === 'string' ? body.detail : null;
+}
+
+/**
+ * The owner-worded line for the failures the app maps itself (import running, the cutover lock, the 409 codes in
+ * `CONFLICT_MESSAGES`, a missing group member), else `null`: raw server text, validation lists and network failures
+ * are not the app's words.
+ */
+export function knownWriteReason(err: unknown): string | null {
+  if (isImportRunning(err)) {
+    return IMPORT_RUNNING_TOAST;
+  }
+  if (!(err instanceof HttpErrorResponse)) {
+    return null;
+  }
+  // The business code is the message's prefix (`retry: member 7 changed`), never the generic HTTP `code`.
+  const code = bodyText(err)?.split(':', 1)[0].trim();
+  if (err.status === 409 && code === 'locked_until_cutover') {
+    return 'MOZE 匯入資料，切換後可編輯';
+  }
+  if (err.status === 409 && code) {
+    return conflictReason(code);
+  }
+  if (err.status === 404 && code === 'member_not_found') {
+    return '找不到群組中的子項，請重新載入';
+  }
+  return null;
+}
+
 /**
  * One human-readable line for a failed write. 404 / 409 bodies are shared_lib's `{"code", "message", "trace_id"}`
  * whose `message` starts with the business code (`locked_until_cutover`, `retry: …`, `member_locked: …`); 422
  * bodies carry a `detail` list.
  */
 export function writeErrorMessage(err: unknown): string {
-  if (isImportRunning(err)) {
-    return IMPORT_RUNNING_TOAST;
+  const known = knownWriteReason(err);
+  if (known !== null) {
+    return known;
   }
   if (err instanceof HttpErrorResponse) {
     const body = err.error as { detail?: unknown; message?: unknown } | null;
     const detail = body?.detail;
-    // The business code is the message's prefix (`retry: member 7 changed`), never the generic HTTP `code`.
-    const message = typeof body?.message === 'string' ? body.message : typeof detail === 'string' ? detail : null;
-    const messageCode = message?.split(':', 1)[0].trim();
-    if (err.status === 409 && messageCode === 'locked_until_cutover') {
-      return 'MOZE 匯入資料，切換後可編輯';
-    }
-    if (err.status === 409 && messageCode && Object.hasOwn(CONFLICT_MESSAGES, messageCode)) {
-      return CONFLICT_MESSAGES[messageCode];
-    }
-    if (err.status === 404 && messageCode === 'member_not_found') {
-      return '找不到群組中的子項，請重新載入';
-    }
     if (typeof body?.message === 'string' && body.message) {
       return body.message;
     }

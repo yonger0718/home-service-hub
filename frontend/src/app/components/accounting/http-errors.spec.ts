@@ -3,7 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { describe, expect, it } from 'vitest';
 
 import { ToastService, injectToasts } from '../../services/toast.service';
-import { fieldErrors, isNetworkFailure, retryOnNetwork, scheduleActionError, writeErrorMessage } from './http-errors';
+import { conflictReason, fieldErrors, isNetworkFailure, knownWriteReason, retryOnNetwork, scheduleActionError, writeErrorMessage } from './http-errors';
 
 function httpError(status: number, error: unknown): HttpErrorResponse {
   return new HttpErrorResponse({ status, error, url: '/api/accounting/x' });
@@ -118,5 +118,23 @@ describe('http error helpers', () => {
       expect(scheduleActionError(other, toasts)).toBe('排程已結束，無法編輯');
       expect(toast.current()).toBeNull();
     });
+  });
+
+  it('knownWriteReason words only what the app maps itself; everything else is null', () => {
+    expect(knownWriteReason(httpError(409, { code: 'conflict', message: 'skipped' }))).toBe('此期已略過');
+    expect(knownWriteReason(httpError(409, { detail: 'busy' }))).toBe('排程工作正在執行，請稍後再試');
+    expect(knownWriteReason(httpError(409, { message: 'locked_until_cutover' }))).toBe('MOZE 匯入資料，切換後可編輯');
+    expect(knownWriteReason(httpError(404, { message: 'member_not_found: 7' }))).toBe('找不到群組中的子項，請重新載入');
+    expect(knownWriteReason(httpError(500, { message: 'Internal Server Error: db down' }))).toBeNull();
+    expect(knownWriteReason(httpError(422, { detail: [{ loc: ['amount'], msg: 'bad amount' }] }))).toBeNull();
+    expect(knownWriteReason(httpError(409, { detail: 'some_unknown_code' }))).toBeNull();
+    expect(knownWriteReason(httpError(0, null))).toBeNull();
+    expect(knownWriteReason(new Error('x'))).toBeNull();
+  });
+
+  it('conflictReason maps a conflict code only', () => {
+    expect(conflictReason('skipped')).toBe('此期已略過');
+    expect(conflictReason('ledger locked: db 7')).toBeNull();
+    expect(conflictReason('toString')).toBeNull();
   });
 });

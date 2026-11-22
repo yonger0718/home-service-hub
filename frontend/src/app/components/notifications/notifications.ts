@@ -17,8 +17,9 @@ import { RouterLink } from '@angular/router';
 import { AccountingService } from '../../services/accounting.service';
 import { LayoutModeService } from '../../services/layout-mode.service';
 import { NotificationCenterService } from '../../services/notification-center.service';
-import { injectToasts } from '../../services/toast.service';
+import { injectToasts, toastText } from '../../services/toast.service';
 import { guardedRetry } from '../../services/toast-retry';
+import { conflictReason, knownWriteReason } from '../accounting/http-errors';
 import { IMPORT_RUNNING_TOAST, isImportRunning } from '../accounting/schedule-math';
 import { apiErrorText, splitApiCode } from '../accounting/statements/statement-view';
 import { focusPageIfLost, focusRetryIfLost } from '../accounting/retry-focus';
@@ -399,9 +400,10 @@ export class NotificationsComponent {
     } else if (isImportRunning(err)) {
       this.toasts.error(IMPORT_RUNNING_TOAST);
     } else {
-      // The server's text is for the console only; the owner reads a fixed line (a 500's body is not for them).
+      // Only a reason the app words itself reaches the owner; any other server text is for the console (a 500's body).
       console.error(`入帳失敗 ${taskId}（${command.name}）`, err);
-      const text = `${command.name} 入帳失敗，請再試一次`;
+      const reason = knownWriteReason(err);
+      const text = reason === null ? `${command.name} 入帳失敗，請再試一次` : toastText(`${command.name} 入帳失敗`, reason);
       this.toasts.error(text, {
         retry: guardedRetry(err, this.toasts, text, () => this.isBusy(taskId), () => this.send(taskId, command)),
       });
@@ -412,10 +414,15 @@ export class NotificationsComponent {
     this.setBusy(taskId, after);
   }
 
-  /** A 全部入帳 that posted some periods and then stopped: the count, never the server's reason (that goes to the console). */
+  /** A 全部入帳 that posted some periods and then stopped: the count, and the reason only when it is a conflict code the app words. */
   private toastStopped(taskId: string, name: string, posted: number, stop: { error: string }): void {
     console.error(`全部入帳中斷 ${taskId}（${name}）`, stop.error);
-    this.toasts.error(`${name}：已入帳 ${posted} 期，之後的入帳失敗，請再試一次`);
+    const reason = conflictReason(stop.error);
+    this.toasts.error(
+      reason === null
+        ? `${name}：已入帳 ${posted} 期，之後的入帳失敗，請再試一次`
+        : `${name}：已入帳 ${posted} 期，之後的入帳失敗（${reason}）`,
+    );
   }
 
   private setBusy(taskId: string, round: number | null): void {

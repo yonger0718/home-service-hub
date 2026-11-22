@@ -1054,6 +1054,27 @@ describe('NotificationsComponent', () => {
       logged.mockRestore();
     });
 
+    it('a failed 入帳 with a reason the app words itself keeps it: 409 skipped, no 「請再試一次」', async () => {
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const root = open();
+      await press(root, RENT.id);
+      await fail(posts[0], 409, { code: 'conflict', message: 'skipped' });
+      expect(toasts.current()?.text).toBe('測試房租 入帳失敗：此期已略過');
+      expect(root.textContent).not.toContain('請再試一次');
+      expect(logged.mock.calls[0][1]).toBeInstanceOf(HttpErrorResponse);
+      logged.mockRestore();
+    });
+
+    it('a 全部入帳 that stops with a conflict code names the reason; an unknown string stays out', async () => {
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const root = open();
+      await press(root, FEE.id);
+      await answer(catchUps[0], catchUp([31], { instance_id: 32, error: 'skipped' }));
+      expect(toasts.current()?.text).toBe('測試月費：已入帳 1 期，之後的入帳失敗（此期已略過）');
+      expect(logged.mock.calls.flat().map(String).join(' ')).toContain('skipped');
+      logged.mockRestore();
+    });
+
     it('a 全部入帳 that stops midway logs the reason to console.error and keeps it out of the toast', async () => {
       const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       const root = open();
@@ -1163,7 +1184,7 @@ describe('NotificationsComponent', () => {
       expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '測試房租：此期已入帳', action: null }));
       await press(root, LOAN.id);
       await fail(posts[1], 409, { detail: 'skipped' });
-      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '測試分期 入帳失敗，請再試一次', action: null }));
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '測試分期 入帳失敗：此期已略過', action: null }));
     });
 
     it('a 全部入帳 that posted nothing reads 「測試月費：沒有待入帳的期數」 and waits for the write\'s own round', async () => {
