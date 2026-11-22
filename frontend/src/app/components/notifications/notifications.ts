@@ -398,7 +398,7 @@ export class NotificationsComponent {
       // Only a reason the app words itself reaches the owner; any other server text is for the console (a 500's body).
       console.error(`入帳失敗 ${taskId}（${command.name}）`, err);
       const reason = knownWriteReason(err);
-      const text = reason === null ? `${command.name} 入帳失敗，請再試一次` : toastText(`${command.name} 入帳失敗`, reason);
+      const text = reason === null ? `${command.name} 入帳失敗` : toastText(`${command.name} 入帳失敗`, reason);
       this.toasts.error(text, {
         retry: guardedRetry(err, this.toasts, text, () => this.isBusy(taskId), () => this.send(taskId, command)),
       });
@@ -415,7 +415,7 @@ export class NotificationsComponent {
     const reason = conflictReason(stop.error);
     this.toasts.error(
       reason === null
-        ? `${name}：已入帳 ${posted} 期，之後的入帳失敗，請再試一次`
+        ? `${name}：已入帳 ${posted} 期，之後的入帳失敗`
         : `${name}：已入帳 ${posted} 期，之後的入帳失敗（${reason}）`,
     );
   }

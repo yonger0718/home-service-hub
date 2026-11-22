@@ -702,15 +702,15 @@ Toasts (all through `this.toasts`; `name` = the command's `name`):
 |---|---|
 | 入帳 ok | `done('已入帳：' + name)` (copy: planner) |
 | 全部入帳 ok, `failed === null` | `done('已入帳 ' + posted.length + ' 期：' + name)` (copy: planner) |
-| 全部入帳 ok with `failed` | `error(name + '：已入帳 ' + posted.length + ' 期，之後的入帳失敗（' + reason + '）')` when `stop.error` is a conflict code (`conflictReason`), else `…之後的入帳失敗，請再試一次` (owner fix 2026-11-22: raw server text goes to `console.error`, never the toast), no 重試 |
+| 全部入帳 ok with `failed` | `error(name + '：已入帳 ' + posted.length + ' 期，之後的入帳失敗（' + reason + '）')` when `stop.error` is a conflict code (`conflictReason`), else `…之後的入帳失敗` (no 「請再試一次」; owner fix 2026-11-22: raw server text goes to `console.error`, never the toast), no 重試 |
 | `import_running` (409) | `error(IMPORT_RUNNING_TOAST)`, no 重試 |
-| any other failure | owner fix 2026-11-22: `knownWriteReason(err)` non-null → `text = toastText(name + ' 入帳失敗', reason)`, else `name + ' 入帳失敗，請再試一次'` (the error goes to `console.error`, never the toast); `error(text, { retry: guardedRetry(err, this.toasts, text, () => this.isBusy(taskId), () => this.send(taskId, command)) })` — 重試 only for status 0 / ≥ 500 |
+| any other failure | owner fix 2026-11-22: `knownWriteReason(err)` non-null → `text = toastText(name + ' 入帳失敗', reason)`, else `name + ' 入帳失敗'` (no 「請再試一次」; the error goes to `console.error`, never the toast); `error(text, { retry: guardedRetry(err, this.toasts, text, () => this.isBusy(taskId), () => this.send(taskId, command)) })` — 重試 only for status 0 / ≥ 500 |
 
 - [ ] **Step 1: Failing tests** (`notifications.spec.ts`; real `ToastService`, `AccountingService` stubbed with `Subject`s):
   ```ts
   it('入帳 posts the task\'s instance and shows 「已入帳：測試房租」', …);                 // postScheduleInstance called once with 7; current() = { kind: 'done', text: '已入帳：測試房租' }
   it('全部入帳 calls catch-up for the definition and shows 「已入帳 3 期：測試月費」', …);
-  it('a catch-up that stops midway shows 失敗 with the count and no reason, without 重試', …);   // { posted: [1, 2], failed: { instance_id: 3, error: '帳戶已封存' } } → '測試月費：已入帳 2 期，之後的入帳失敗，請再試一次'
+  it('a catch-up that stops midway shows 失敗 with the count and no reason, without 重試', …);   // { posted: [1, 2], failed: { instance_id: 3, error: '帳戶已封存' } } → '測試月費：已入帳 2 期，之後的入帳失敗'
   it('the row is busy while the write runs and a second press sends nothing', …);
   it('after success the row stays busy until a round started after the answer settles', …); // round 4 at the answer; settledRound 4 → still disabled; round 5 started, settledRound 5 → enabled / gone
   it('after a failure the page invalidates and the row stays busy until that round settles', …);   // invalidate called once; settledRound reaches the returned id → enabled

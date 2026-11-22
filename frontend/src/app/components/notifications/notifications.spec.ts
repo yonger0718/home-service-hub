@@ -967,7 +967,7 @@ describe('NotificationsComponent', () => {
       await press(root, FEE.id);
       await answer(catchUps[0], catchUp([31, 32], { instance_id: 33, error: '帳戶已封存' }));
       expect(toasts.current()).toEqual(
-        expect.objectContaining({ kind: 'error', text: '測試月費：已入帳 2 期，之後的入帳失敗，請再試一次', action: null }),
+        expect.objectContaining({ kind: 'error', text: '測試月費：已入帳 2 期，之後的入帳失敗', action: null }),
       );
       // An answer, not a failure: no forced re-read; the row waits for the write's own round.
       expect(invalidate).not.toHaveBeenCalled();
@@ -1071,7 +1071,7 @@ describe('NotificationsComponent', () => {
       await press(root, RENT.id);
       await fail(posts[0], 500, { message: 'Internal Server Error: db down' });
       expect(toasts.current()).toEqual(
-        expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗，請再試一次', action: expect.objectContaining({ label: '重試' }) }),
+        expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗', action: expect.objectContaining({ label: '重試' }) }),
       );
       expect(root.textContent).not.toContain('Internal Server Error');
       expect(root.textContent).not.toContain('db down');
@@ -1110,7 +1110,7 @@ describe('NotificationsComponent', () => {
       const root = open();
       await press(root, FEE.id);
       await answer(catchUps[0], catchUp([31], { instance_id: 32, error: 'ledger locked: db 7' }));
-      expect(toasts.current()?.text).toBe('測試月費：已入帳 1 期，之後的入帳失敗，請再試一次');
+      expect(toasts.current()?.text).toBe('測試月費：已入帳 1 期，之後的入帳失敗');
       expect(logged.mock.calls.flat().map(String).join(' ')).toContain('ledger locked: db 7');
       logged.mockRestore();
     });
@@ -1120,7 +1120,7 @@ describe('NotificationsComponent', () => {
       await press(root, RENT.id);
       await fail(posts[0], 500);
       expect(toasts.current()).toEqual(
-        expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗，請再試一次', action: expect.objectContaining({ label: '重試' }) }),
+        expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗', action: expect.objectContaining({ label: '重試' }) }),
       );
       await settleRound(2);
       toasts.runAction(currentId());
@@ -1134,7 +1134,7 @@ describe('NotificationsComponent', () => {
       await press(root, FEE.id);
       await fail(catchUps[0], 0);
       expect(toasts.current()).toEqual(
-        expect.objectContaining({ kind: 'error', text: '測試月費 入帳失敗，請再試一次', action: expect.objectContaining({ label: '重試' }) }),
+        expect.objectContaining({ kind: 'error', text: '測試月費 入帳失敗', action: expect.objectContaining({ label: '重試' }) }),
       );
       await settleRound(2);
       toasts.runAction(currentId());
@@ -1151,7 +1151,7 @@ describe('NotificationsComponent', () => {
       await settle();
       expect(accounting.postScheduleInstance).toHaveBeenCalledTimes(1);
       expect(toasts.current()).toEqual(
-        expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗，請再試一次', action: expect.objectContaining({ label: '重試' }) }),
+        expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗', action: expect.objectContaining({ label: '重試' }) }),
       );
       expect(currentId()).not.toBe(first);
       expect(button(root, RENT.id).disabled).toBe(true);
@@ -1185,7 +1185,7 @@ describe('NotificationsComponent', () => {
       const root = open();
       await press(root, RENT.id);
       await fail(posts[0], 422, { code: 'VALIDATION', message: '帳戶已封存' });
-      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗，請再試一次', action: null }));
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗', action: null }));
     });
 
     it('a 409 already_posted reads as done: 「測試房租：此期已入帳」, no 重試, a re-read, released by the newer round', async () => {
@@ -1236,7 +1236,7 @@ describe('NotificationsComponent', () => {
       await press(root, FEE.id);
       await answer(catchUps[0], catchUp([], { instance_id: 31, error: '帳戶已封存' }));
       expect(toasts.current()).toEqual(
-        expect.objectContaining({ kind: 'error', text: '測試月費：已入帳 0 期，之後的入帳失敗，請再試一次', action: null }),
+        expect.objectContaining({ kind: 'error', text: '測試月費：已入帳 0 期，之後的入帳失敗', action: null }),
       );
     });
 
@@ -1282,7 +1282,7 @@ describe('NotificationsComponent', () => {
       fixture.destroy();
       expect(() => posts[0].error(new HttpErrorResponse({ status: 500, error: null }))).not.toThrow();
       expect(toasts.current()).toEqual(
-        expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗，請再試一次', action: null }),
+        expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗', action: null }),
       );
       // The re-read still starts: the write may have committed.
       expect(invalidate).toHaveBeenCalledTimes(1);
