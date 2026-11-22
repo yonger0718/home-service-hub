@@ -77,6 +77,11 @@ app-banner + .cathay-last-ok {
   flex: none;
 }
 
+/* Dark: --app-primary on its own soft tint is 4.2:1; the ink is --app-text there, as on the 通知 rows. */
+:host-context(.app-dark-mode) .cathay-day app-btn ::ng-deep .btn-soft {
+  color: var(--app-text);
+}
+
 @media (max-width: 760px) {
   /* Tap target: 44 px high on a phone (the kit's button is 38). */
   .cathay-day app-btn ::ng-deep .btn {
