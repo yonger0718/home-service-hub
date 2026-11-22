@@ -31,6 +31,7 @@ import {
   NotifTask,
   NotifTier,
   NotifTrackingRow,
+  SOURCE_NAMES,
   SOURCE_TAGS,
   TIER_LABELS,
   chipCounts,
@@ -58,6 +59,9 @@ const CHIPS: readonly ChipOption[] = [
   { key: 'ledger', label: SOURCE_TAGS.ledger },
   { key: 'portfolio', label: SOURCE_TAGS.portfolio },
 ];
+
+/** Every task source of a round. */
+const ALL_SOURCES = Object.keys(SOURCE_NAMES).length;
 
 /** What the tracking summary counts, per row. */
 const TRACKING_UNIT: Record<NotifTrackingRow['id'], { name: string; unit: string }> = {
@@ -138,21 +142,33 @@ export class NotificationsComponent {
         !this.center.truncated()),
   );
 
-  /** The counts are exact: a round settled and no source failed (a failed source's tasks are missing: lower bounds). */
-  protected readonly countsFinal = computed(() => !this.pending() && this.center.failedSources().length === 0);
+  /** Every source of the round failed: nothing was read, so there is no number to show (a partial failure still has them). */
+  private readonly allFailed = computed(() => this.center.failedSources().length >= ALL_SOURCES);
+
+  /**
+   * The counts are shown: a round settled and at least one source was read. With one source failed they are lower
+   * bounds, but they are the same numbers the sidebar shows (the banner says the list is partial); with every source
+   * failed there is nothing to count.
+   */
+  protected readonly countsFinal = computed(() => !this.pending() && !this.allFailed());
 
   /**
    * Never absent (the chips would shift down when it appeared). Before the first round settles `summary()` is
-   * NO_TASKS, and with a source failed the counts are lower bounds: neither claims an all-clear or a count.
+   * NO_TASKS, and with a source failed there is no all-clear: a partial read shows the count with the warning (or the
+   * warning alone at zero), every source failed shows the warning alone.
    */
   protected readonly subtitle = computed<string>(() => {
     if (this.pending()) {
       return '讀取中…';
     }
-    if (this.center.failedSources().length > 0) {
+    if (this.allFailed()) {
       return '部分資料無法讀取';
     }
     const { total, overdue } = this.center.summary();
+    if (this.center.failedSources().length > 0) {
+      // Partial read: the count the sidebar shows, then the warning; with nothing counted the warning alone.
+      return total > 0 ? `${total} 件要處理 · 部分資料無法讀取` : '部分資料無法讀取';
+    }
     if (total === 0) {
       // Nothing counted, but the inbox has items this page could not list: not an all-clear.
       return this.center.overflow() ? '還有對帳項目未列出' : '沒有要處理的事';

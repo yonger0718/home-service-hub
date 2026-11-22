@@ -243,9 +243,15 @@ describe('NotificationsComponent', () => {
       await settle();
       expect(Array.from(root.querySelectorAll('section.notif-section h2')).map(h => text(h))).toEqual(['已逾期 2', '今天 1', '要你確認 1', '系統 1']);
     });
-    it('the section headings carry no number while a source failed either', () => {
+    it('the section headings keep their numbers while ONE source failed (the sidebar says the same)', () => {
       tasks.set(TASKS);
       failedSources.set(['recon']);
+      const root = mount();
+      expect(Array.from(root.querySelectorAll('section.notif-section h2')).map(h => text(h))).toEqual(['已逾期 2', '今天 1', '要你確認 1', '系統 1']);
+    });
+    it('the section headings carry no number when EVERY source failed', () => {
+      tasks.set(TASKS);
+      failedSources.set(['bills', 'schedules', 'recon', 'importReview', 'debts']);
       const root = mount();
       expect(Array.from(root.querySelectorAll('section.notif-section h2')).map(h => text(h))).toEqual(['已逾期', '今天', '要你確認', '系統']);
       expect(root.querySelector('.sec-count')).toBeNull();
@@ -441,10 +447,19 @@ describe('NotificationsComponent', () => {
       expect(banner.querySelector('.banner-title')!.firstChild).toBe(node);
     });
 
-    it('a failed source: the rows render, the subtitle is 「部分資料無法讀取」 and there is no chip count (lower bounds), chip names are bare labels', () => {
+    it('one failed source: the rows render, the subtitle is 「5 件要處理 · 部分資料無法讀取」 and the chips carry their numbers', () => {
       failedSources.set(['recon']);
       const root = mount();
       expect(root.querySelectorAll('app-notif-row').length).toBe(5);
+      expect(subtitle(root)).toBe('5 件要處理 · 部分資料無法讀取');
+      const chips = Array.from(root.querySelectorAll<HTMLButtonElement>('.notif-chips button'));
+      expect(chips.map(c => text(c))).toEqual(['全部5', '財務4', '投資1']);
+      expect(chips.map(c => c.getAttribute('aria-label'))).toEqual(['全部，5 件', '財務，4 件', '投資，1 件']);
+    });
+
+    it('every source failed: no number anywhere, the subtitle is 「部分資料無法讀取」, chip names are bare labels', () => {
+      failedSources.set(['bills', 'schedules', 'recon', 'importReview', 'debts']);
+      const root = mount();
       expect(subtitle(root)).toBe('部分資料無法讀取');
       const chips = Array.from(root.querySelectorAll<HTMLButtonElement>('.notif-chips button'));
       expect(chips.map(c => text(c))).toEqual(['全部', '財務', '投資']);
@@ -452,12 +467,20 @@ describe('NotificationsComponent', () => {
       expect(q(root, '.chip-count')).toBeNull();
     });
 
+    it('one failed source and nothing counted: the subtitle is 「部分資料無法讀取」 alone (no 0 件, no all-clear)', () => {
+      tasks.set([]);
+      failedSources.set(['recon']);
+      const root = mount();
+      expect(subtitle(root)).toBe('部分資料無法讀取');
+      expect(root.textContent).not.toContain('0 件');
+    });
+
     it('after a 重試 that succeeds the counts and the subtitle come back', async () => {
       failedSources.set(['recon']);
       const root = mount();
       (q(root, '.notif-failed .banner-action') as HTMLButtonElement).click();
       await settle();
-      expect(q(root, '.chip-count')).toBeNull();
+      expect(subtitle(root)).toBe('5 件要處理 · 部分資料無法讀取');
       failedSources.set([]);
       settledRound.set(round());
       await settle();
@@ -564,7 +587,7 @@ describe('NotificationsComponent', () => {
       // Not a row and not inside a section: the numbers stay the rows' numbers.
       expect(note.closest('section.notif-section')).toBeNull();
       expect(root.querySelectorAll('app-notif-row').length).toBe(1);
-      expect(text(q(root, 'section.notif-section h2'))).toBe('今天');
+      expect(text(q(root, 'section.notif-section h2'))).toBe('今天 1');
       expect(note.querySelector('a')?.getAttribute('href')).toBe('/accounting/reminders?tab=todo');
     });
 

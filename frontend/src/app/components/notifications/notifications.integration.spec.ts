@@ -589,6 +589,26 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(note?.closest('section')).toBeNull();
     });
 
+    it('ONE failed source: page subtitle, chips, section heading and the sidebar facade all say 1', async () => {
+      const round = await openFresh();
+      round.accounts.flush([CARD]);
+      round.counterparties.flush('boom', { status: 500, statusText: 'Server Error' });
+      round.queue.flush([RENT]);
+      round.inbox.flush(makeInbox([]));
+      round.latest.flush('', { status: 404, statusText: 'Not Found' });
+      round.actions.flush([]);
+      await settle();
+      await answerCard('0');
+      expect(center.failedSources()).toEqual(['debts']);
+      const nav = TestBed.inject(NavBadgeService);
+      expect(nav.summary().total).toBe(1);
+      expect(root.querySelector('.page-subtitle')?.textContent?.trim()).toBe('1 件要處理 · 部分資料無法讀取');
+      expect(root.querySelector('.notif-chips button')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('全部1');
+      expect(root.querySelector('section.notif-section h2')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('今天 1');
+      expect(root.querySelectorAll('app-notif-row').length).toBe(nav.summary().total);
+      expect(root.querySelector('.notif-failed')?.textContent).toContain('無法讀取：借還款');
+    });
+
     it('a failed inbox with nothing else: the failure line and no 都處理好了; 重試 re-reads and the all-clear returns when it answers', async () => {
       const round = await openFresh();
       round.accounts.flush([CARD]);
