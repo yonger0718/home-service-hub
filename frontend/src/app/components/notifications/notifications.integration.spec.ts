@@ -191,7 +191,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     post.flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
     await settle();
     expect(toasts.current()).toEqual(
-      expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗：Internal Server Error', action: expect.objectContaining({ label: '重試' }) }),
+      expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗，請再試一次', action: expect.objectContaining({ label: '重試' }) }),
     );
     // The failure re-reads at once: round 3 supersedes round 2.
     expect(center.round()).toBe(3);
@@ -333,7 +333,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     fixture.destroy();
     post.flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
     await settle();
-    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗：Internal Server Error', action: null }));
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '測試房租 入帳失敗，請再試一次', action: null }));
     expect(center.round()).toBe(3);
     await flushRound(take(), []);
     expect(center.settledRound()).toBe(3);
