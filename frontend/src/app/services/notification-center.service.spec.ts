@@ -847,7 +847,7 @@ describe('NotificationCenterService', () => {
     expect(ids(svc)).toEqual(['recon:10']);
     expect(svc.tasks()[0].when).toBe('6 筆要你決定');
     expect(svc.summary().total).toBe(1);
-    expect(svc.overflow()).toMatchObject({ id: 'recon:more', when: '還有 4 筆要你決定' });
+    expect(svc.overflow()).toMatchObject({ id: 'recon:more', title: '還有 4 筆對帳項目未列出' });
     expect(svc.truncated()).toBe(true);
   });
 
