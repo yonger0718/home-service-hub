@@ -166,7 +166,7 @@ describe('ItemListComponent', () => {
       expect(toasts().current()?.text).toBe('物品已刪除');
     });
 
-    it('deleteItem answered 404 counts as done (the interceptor\'s own retry already committed it): 完成 and a reload', () => {
+    it('deleteItem answered 404 counts as done (already gone: an earlier attempt committed, or it was deleted elsewhere): 完成 and a reload', () => {
       vi.spyOn(window, 'confirm').mockReturnValue(true);
       itemServiceMock.delete.mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 404 })));
       const loads = itemServiceMock.getAllFiltered.mock.calls.length;

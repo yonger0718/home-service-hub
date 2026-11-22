@@ -1055,7 +1055,7 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
       expect(TestBed.inject(ToastService).current()).toEqual(expect.objectContaining({ kind: 'error', text: '帳戶更新失敗', action: null }));
     });
 
-    it('executeDelete answered 404 on the first attempt counts as done (the interceptor\'s own retry already committed it): 完成 and a reload', () => {
+    it('executeDelete answered 404 on the first attempt counts as done (already gone: an earlier attempt committed, or it was deleted elsewhere): 完成 and a reload', () => {
       const fixture = loaded(7);
       const component = fixture.componentInstance;
       component.executeDelete(component.transactions()[0], 7);

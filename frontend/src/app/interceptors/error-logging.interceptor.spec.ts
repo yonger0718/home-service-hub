@@ -29,7 +29,7 @@ describe('errorLoggingInterceptor', () => {
     vi.restoreAllMocks();
   });
 
-  it('by default a failing request is retried once, logged and propagated without a toast', () => {
+  it('a failing GET is retried once, logged and propagated without a toast', () => {
     const errors: unknown[] = [];
     http.get('/api/accounting/x').subscribe({ error: e => errors.push(e) });
     backend.expectOne('/api/accounting/x').flush({ message: 'nope' }, { status: 404, statusText: 'Not Found' });
@@ -39,6 +39,45 @@ describe('errorLoggingInterceptor', () => {
     expect(console.group).toHaveBeenCalledTimes(1);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(HttpErrorResponse);
+  });
+
+  it.each(['POST', 'PUT', 'PATCH', 'DELETE'])('a failing %s is sent once (never re-sent), logged and propagated', method => {
+    const errors: unknown[] = [];
+    http.request(method, '/api/accounting/x', { body: method === 'DELETE' ? undefined : { amount: 1 } }).subscribe({ error: e => errors.push(e) });
+    const sent = backend.expectOne('/api/accounting/x');
+    expect(sent.request.method).toBe(method);
+    sent.flush({ message: 'boom' }, { status: 500, statusText: 'Server Error' });
+    backend.expectNone('/api/accounting/x');
+    expect(console.group).toHaveBeenCalledTimes(1);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as HttpErrorResponse).status).toBe(500);
+  });
+
+  it('a write whose connection drops (status 0) is not re-sent either', () => {
+    const errors: unknown[] = [];
+    http.post('/api/accounting/x', { amount: 1 }).subscribe({ error: e => errors.push(e) });
+    backend.expectOne('/api/accounting/x').error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+    backend.expectNone('/api/accounting/x');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as HttpErrorResponse).status).toBe(0);
+  });
+
+  it('a HEAD is retried once like a GET', () => {
+    const errors: unknown[] = [];
+    http.head('/api/accounting/x').subscribe({ error: e => errors.push(e) });
+    backend.expectOne('/api/accounting/x').flush(null, { status: 503, statusText: 'Unavailable' });
+    backend.expectOne('/api/accounting/x').flush(null, { status: 503, statusText: 'Unavailable' });
+    backend.expectNone('/api/accounting/x');
+    expect(errors).toHaveLength(1);
+  });
+
+  it('a GET that fails once and then succeeds delivers the body without an error or a log', () => {
+    let body: unknown;
+    http.get('/api/accounting/x').subscribe(b => (body = b));
+    backend.expectOne('/api/accounting/x').flush({ message: 'nope' }, { status: 502, statusText: 'Bad Gateway' });
+    backend.expectOne('/api/accounting/x').flush({ ok: true });
+    expect(body).toEqual({ ok: true });
+    expect(console.group).not.toHaveBeenCalled();
   });
 
   it('with SILENT_HTTP_ERRORS the request is sent once, nothing is toasted and the error still propagates', () => {

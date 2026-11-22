@@ -629,7 +629,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
     this.portfolioService.deleteCashTransaction(accountId, txn.id).pipe(finalize(() => (this.deleting = false))).subscribe({
       next: () => this.deleted(),
       error: error => {
-        // The interceptor already retried once: a 404 here means the first attempt did commit, so the row is gone.
+        // A 404 means the row is already gone (an earlier attempt committed, or it was deleted elsewhere): done.
         if (error instanceof HttpErrorResponse && error.status === 404) {
           this.deleted();
           return;
