@@ -13,6 +13,15 @@ export interface BillTaskInput {
   readonly today: string;
 }
 
+/** The figures beside the row's own amount (the remaining): the statement total when it differs, and what was paid. Null when it would only repeat. */
+function billMeta(state: BillState, currency: string, amount: string): string | null {
+  const parts: string[] = [];
+  const statement = formatMoney(state.statement, currency);
+  if (statement !== amount) parts.push(`帳單 ${statement}`);
+  if (state.paid > 0) parts.push(`已繳 ${formatMoney(state.paid, currency)}`);
+  return parts.length ? parts.join(' · ') : null;
+}
+
 /** One task per due event whose bill is resolved with remaining > 0 and whose payDate is ≤ today + 7. */
 export function billTasks(input: BillTaskInput): NotifTask[] {
   const { dues, bill, today } = input;
@@ -32,6 +41,7 @@ export function billTasks(input: BillTaskInput): NotifTask[] {
           ? '今天截止'
           : `${shortDate(payDate)} 截止`;
     const { currency } = state;
+    const amount = formatMoney(state.remaining, currency);
     tasks.push({
       id: `bill:${state.accountId}:${state.due}`,
       source: 'ledger',
@@ -40,10 +50,8 @@ export function billTasks(input: BillTaskInput): NotifTask[] {
       icon: 'pi-credit-card',
       title: `${state.name}帳單`,
       when,
-      meta:
-        `帳單 ${formatMoney(state.statement, currency)}` +
-        (state.paid > 0 ? ` · 已繳 ${formatMoney(state.paid, currency)}` : ''),
-      amount: formatMoney(state.remaining, currency),
+      meta: billMeta(state, currency, amount),
+      amount,
       progress: null,
       primary: { label: '記繳款', route: `/accounting/accounts/${state.accountId}` },
       secondary: [],

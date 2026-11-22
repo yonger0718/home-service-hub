@@ -78,8 +78,10 @@ describe('billTasks', () => {
     expect(t.when).toBe('10/26 截止');
   });
 
-  it('meta names the payment only when something was paid', () => {
-    expect(run(due(), state())[0].meta).toBe('帳單 $16,639');
+  it('meta never repeats the row amount: nothing paid gives no meta in every tier; a different figure is kept', () => {
+    expect(run(due(), state())[0]).toMatchObject({ meta: null, amount: '$16,639', when: '10/20 截止 · 逾期 4 天' });
+    expect(run(due({ date: '2026-10-24' }), state({ due: '2026-10-24', payDate: '2026-10-24' }))[0]).toMatchObject({ tier: 'today', meta: null, amount: '$16,639' });
+    expect(run(due({ date: '2026-10-26' }), state({ due: '2026-10-26', payDate: '2026-10-26' }))[0]).toMatchObject({ tier: 'tracking', meta: null, amount: '$16,639' });
     expect(run(due(), state({ paid: 5000, remaining: 11639 }))[0]).toMatchObject({
       meta: '帳單 $16,639 · 已繳 $5,000',
       amount: '$11,639',
@@ -119,6 +121,10 @@ describe('billTasks', () => {
     const [t] = run(due(), state({ currency: 'USD', statement: 120.5, paid: 20.5, remaining: 100 }));
     expect(t.amount).toBe('US$100');
     expect(t.meta).toBe('帳單 US$120.5 · 已繳 US$20.5');
+  });
+
+  it('a bill whose statement equals the row amount but with something paid keeps only the paid figure', () => {
+    expect(run(due(), state({ paid: 100, remaining: 16639 }))[0].meta).toBe('已繳 $100');
   });
 
   it('float noise formats cleanly', () => {
