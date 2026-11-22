@@ -1,15 +1,21 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, Injector, computed, effect, inject, signal, untracked } from '@angular/core';
 
 import { NotificationCenterService } from '../../../../services/notification-center.service';
 import { PortfolioService } from '../../../../services/portfolio.service';
 import { guardedRetry } from '../../../../services/toast-retry';
 import { injectToasts, toastText } from '../../../../services/toast.service';
 import { knownWriteReason } from '../../../accounting/http-errors';
+import { focusPageIfLost, focusRetryIfLost } from '../../../accounting/retry-focus';
 import { CathayDayView } from '../../../notifications/sources/cathay';
 import { BannerComponent } from '../../../ui/banner/banner';
 import { BentoComponent } from '../../../ui/bento/bento';
 import { BtnComponent } from '../../../ui/btn/btn';
+
+/** A date's 確認 button. */
+const ackSelector = (tradeDate: string) => `li.cathay-day[data-trade-date="${tradeDate}"] button`;
+const NONE_SELECTOR = '.cathay-none';
+const RETRY_SELECTOR = '.banner-action';
 
 /**
  * 國泰每日對帳單 on the import page: the notification centre's `cathay()` view (the same answer as the 通知 tasks and
@@ -26,6 +32,8 @@ export class CathayStatusCardComponent {
   protected readonly center = inject(NotificationCenterService);
   private readonly portfolio = inject(PortfolioService);
   private readonly toasts = injectToasts();
+  private readonly host: HTMLElement = inject(ElementRef).nativeElement;
+  private readonly injector = inject(Injector);
 
   protected readonly view = this.center.cathay;
   protected readonly failed = computed(() => this.center.failedSources().includes('cathay'));
@@ -36,8 +44,39 @@ export class CathayStatusCardComponent {
    * releases it, and so does a later round M that superseded N (a superseded round never settles).
    */
   private readonly waiting = signal<ReadonlyMap<string, number | null>>(new Map());
+  /** The dates whose 確認 had focus when it was sent: their release may hand focus on. */
+  private readonly focusedAtSend = new Set<string>();
+  /** The round the unread banner's 重試 started, while its 重試 had focus; null otherwise. */
+  private retryRound: number | null = null;
 
   constructor() {
+    // A released 確認 (C14) whose button had focus: the disabled button may have dropped focus to <body>, and the row
+    // may be gone. Focus goes to the same row, else the next, else the previous, else the none text — only if it is
+    // still lost after the render (focus the owner moved elsewhere stays).
+    effect(() => {
+      const settled = this.center.settledRound();
+      for (const [tradeDate, round] of this.waiting()) {
+        if (round !== null && settled >= round && this.focusedAtSend.delete(tradeDate)) {
+          focusPageIfLost(this.host, this.injector, untracked(() => this.focusTarget(tradeDate)));
+        }
+      }
+    });
+    // The unread banner's 重試 settled: the banner is gone (first 確認, else the none text) or back (its 重試).
+    effect(() => {
+      const settled = this.center.settledRound();
+      if (this.retryRound === null || settled < this.retryRound) {
+        return;
+      }
+      this.retryRound = null;
+      untracked(() => {
+        if (this.failed()) {
+          focusRetryIfLost(this.host, this.injector, RETRY_SELECTOR);
+        } else {
+          const first = this.center.cathay()?.days[0];
+          focusPageIfLost(this.host, this.injector, first ? ackSelector(first.tradeDate) : NONE_SELECTOR);
+        }
+      });
+    });
     this.center.refresh({ reason: 'open' });
   }
 
@@ -54,7 +93,9 @@ export class CathayStatusCardComponent {
     if (this.center.loading()) {
       return;
     }
-    this.center.invalidate();
+    const focused = this.host.querySelector(RETRY_SELECTOR) === document.activeElement;
+    const round = this.center.invalidate();
+    this.retryRound = focused ? round : null;
   }
 
   /** 確認; ignored while that date is busy (one request per press). */
@@ -67,6 +108,11 @@ export class CathayStatusCardComponent {
 
   /** Sends the ack; the date and its name are captured for 重試 (the row may have left by then). */
   private send(tradeDate: string, name: string): void {
+    if (this.host.querySelector(ackSelector(tradeDate)) === document.activeElement) {
+      this.focusedAtSend.add(tradeDate);
+    } else {
+      this.focusedAtSend.delete(tradeDate);
+    }
     this.setWaiting(tradeDate, null);
     this.portfolio.ackCathayDay(tradeDate).subscribe({
       next: () => {
@@ -96,6 +142,22 @@ export class CathayStatusCardComponent {
   private reread(tradeDate: string): void {
     const round = this.center.invalidate();
     this.setWaiting(tradeDate, round);
+  }
+
+  /**
+   * Where a released date's focus goes, from the view about to render (dates sorted by trade date): its own 確認 if
+   * still listed, else the next date's, else the previous date's, else the none text; the 重試 when the read failed.
+   */
+  private focusTarget(tradeDate: string): string {
+    if (this.failed()) {
+      return RETRY_SELECTOR;
+    }
+    const days = this.center.cathay()?.days ?? [];
+    const target =
+      days.find(d => d.tradeDate === tradeDate) ??
+      days.find(d => d.tradeDate > tradeDate) ??
+      [...days].reverse().find(d => d.tradeDate < tradeDate);
+    return target ? ackSelector(target.tradeDate) : NONE_SELECTOR;
   }
 
   private setWaiting(tradeDate: string, round: number | null): void {

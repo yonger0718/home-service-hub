@@ -407,4 +407,173 @@ describe('CathayStatusCardComponent', () => {
     expect(toasts.current()?.text).toBe('國泰對帳單 10/28 確認失敗');
     http.verify();
   });
+
+  describe('focus after 確認 and 重試', () => {
+    const TWO = view([HELD, day('2026-10-30', { status: 'mismatch' })], { latest: run(), latest_ok: run() });
+    const ONLY_30 = view([day('2026-10-30', { status: 'mismatch' })], { latest: run(), latest_ok: run() });
+    let outside: HTMLButtonElement | null = null;
+
+    /** Mounted in the document (focus needs it), at round 3 settled. */
+    function attach(): HTMLElement {
+      round.set(3);
+      settledRound.set(3);
+      const el = mount();
+      document.body.appendChild(el);
+      return el;
+    }
+    /** Presses a row's 確認 from the keyboard's point of view: focused, then pressed. */
+    const press = async (label: string) => {
+      ackButton(label)!.focus();
+      expect(document.activeElement).toBe(ackButton(label));
+      ackButton(label)!.click();
+      await settle();
+    };
+    /**
+     * What a browser does with a focused button that turns disabled: focus falls to <body>. (jsdom keeps focus on a
+     * disabled button and ignores its blur(), so focus moves to a throwaway control that is then removed.)
+     */
+    const dropFocus = () => {
+      const t = document.createElement('button');
+      document.body.appendChild(t);
+      t.focus();
+      t.remove();
+      expect(document.activeElement).toBe(document.body);
+    };
+
+    afterEach(() => {
+      root()?.remove();
+      outside?.remove();
+      outside = null;
+    });
+
+    it('success with two rows: once round N settles without the date, focus goes to the next row’s 確認', async () => {
+      cathay.set(TWO);
+      attach();
+      await press('10/28');
+      dropFocus();
+      await answer();
+      cathay.set(ONLY_30);
+      settledRound.set(4);
+      await settle();
+      expect(ackButton('10/28')).toBeNull();
+      expect(document.activeElement).toBe(ackButton('10/30'));
+    });
+
+    it('success on the last row: focus goes to the previous row’s 確認', async () => {
+      cathay.set(TWO);
+      attach();
+      await press('10/30');
+      dropFocus();
+      await answer();
+      cathay.set(WITH_HELD);
+      settledRound.set(4);
+      await settle();
+      expect(ackButton('10/30')).toBeNull();
+      expect(document.activeElement).toBe(ackButton('10/28'));
+    });
+
+    it('success with one row: focus goes to 沒有需要確認的日期 (tabindex -1)', async () => {
+      cathay.set(WITH_HELD);
+      attach();
+      await press('10/28');
+      dropFocus();
+      await answer();
+      cathay.set(HEALTHY);
+      settledRound.set(4);
+      await settle();
+      const none = q('.cathay-none')!;
+      expect(none.getAttribute('tabindex')).toBe('-1');
+      expect(document.activeElement).toBe(none);
+    });
+
+    it('failed ack: focus comes back to the same 確認 once round N settles, not before', async () => {
+      cathay.set(WITH_HELD);
+      attach();
+      await press('10/28');
+      dropFocus();
+      await fail(500);
+      settledRound.set(3);
+      await settle();
+      expect(document.activeElement).toBe(document.body);
+      settledRound.set(4);
+      await settle();
+      expect(ackButton('10/28')!.disabled).toBe(false);
+      expect(document.activeElement).toBe(ackButton('10/28'));
+    });
+
+    it('focus the owner moved elsewhere before the round settled is left alone', async () => {
+      cathay.set(TWO);
+      attach();
+      outside = document.createElement('button');
+      document.body.appendChild(outside);
+      await press('10/28');
+      dropFocus();
+      outside.focus();
+      await answer();
+      cathay.set(ONLY_30);
+      settledRound.set(4);
+      await settle();
+      expect(document.activeElement).toBe(outside);
+    });
+
+    it('a 確認 sent from the toast’s 重試 (the button not focused) moves no focus', async () => {
+      cathay.set(WITH_HELD);
+      attach();
+      ackButton()!.click();
+      await settle();
+      await fail(500);
+      settledRound.set(4);
+      await settle();
+      dropFocus();
+      toasts.runAction(toasts.current()!.id);
+      await settle();
+      await answer(1);
+      cathay.set(HEALTHY);
+      settledRound.set(5);
+      await settle();
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    it('banner 重試 that reads: focus goes to the first 確認, or to 沒有需要確認的日期', async () => {
+      failedSources.set(['cathay']);
+      cathay.set(null);
+      attach();
+      button('重試')!.focus();
+      button('重試')!.click();
+      await settle();
+      dropFocus();
+      failedSources.set([]);
+      cathay.set(TWO);
+      settledRound.set(4);
+      await settle();
+      expect(document.activeElement).toBe(ackButton('10/28'));
+
+      // Again, with nothing pending.
+      failedSources.set(['cathay']);
+      cathay.set(null);
+      await settle();
+      button('重試')!.focus();
+      button('重試')!.click();
+      await settle();
+      dropFocus();
+      failedSources.set([]);
+      cathay.set(HEALTHY);
+      settledRound.set(5);
+      await settle();
+      expect(document.activeElement).toBe(q('.cathay-none'));
+    });
+
+    it('banner 重試 that fails again: focus goes back to 重試', async () => {
+      failedSources.set(['cathay']);
+      cathay.set(null);
+      attach();
+      button('重試')!.focus();
+      button('重試')!.click();
+      await settle();
+      dropFocus();
+      settledRound.set(4);
+      await settle();
+      expect(document.activeElement).toBe(button('重試'));
+    });
+  });
 });

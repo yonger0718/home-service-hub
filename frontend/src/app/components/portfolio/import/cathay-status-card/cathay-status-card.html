@@ -26,7 +26,7 @@
       <h3 class="cathay-days-title">需要你確認的日期</h3>
       <ul class="cathay-days">
         @for (day of v.days; track day.tradeDate) {
-          <li class="cathay-day">
+          <li class="cathay-day" [attr.data-trade-date]="day.tradeDate">
             <span class="cathay-day-text">
               <b>{{ day.label }}</b>
               <small>{{ day.text }}</small>
@@ -41,7 +41,7 @@
         }
       </ul>
     } @else {
-      <small class="cathay-none">沒有需要確認的日期</small>
+      <small class="cathay-none" tabindex="-1">沒有需要確認的日期</small>
     }
     @if (v.more > 0) {
       <small class="cathay-more">還有 {{ v.more }} 天未列出</small>
