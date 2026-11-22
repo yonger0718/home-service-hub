@@ -1,3 +1,4 @@
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
@@ -9,6 +10,8 @@ import { ToastService } from '../../../services/toast.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { BrokerCsvImportResult, ImportResult, ImportRow } from '../../../models/portfolio.model';
+import { NotificationCenterService } from '../../../services/notification-center.service';
+import { NO_TASKS } from '../../notifications/notif-task';
 import { PortfolioImportComponent } from './import';
 
 const preview: ImportResult = { parsed: 1, created: 1, skipped_duplicates: 0, dry_run: true, errors: [], created_ids: [], rows: [] };
@@ -48,6 +51,22 @@ describe('Portfolio import controls', () => {
   const service = { uploadCsv: vi.fn(), uploadBrokerCsv: vi.fn(), getRecalcStatus: vi.fn(), triggerRecalc: vi.fn(), verifyOverrideSymbol: vi.fn() };
   let query$: BehaviorSubject<ParamMap>;
   let navigate: ReturnType<typeof vi.spyOn>;
+  /**
+   * The notification centre's reads: the 國泰 card's answered as "before the first round" (the card shows 讀取中…),
+   * the phone header bell's as nothing to do.
+   */
+  const center = {
+    summary: signal(NO_TASKS),
+    badges: signal({}),
+    cathay: signal(null),
+    loaded: signal(false),
+    loading: signal(false),
+    round: signal(0),
+    settledRound: signal(0),
+    failedSources: signal([]),
+    refresh: vi.fn(),
+    invalidate: vi.fn(() => 1),
+  };
 
   function setup(query: Record<string, string> = {}) {
     query$ = new BehaviorSubject(convertToParamMap(query));
@@ -56,6 +75,7 @@ describe('Portfolio import controls', () => {
       providers: [
         provideRouter([]),
         { provide: PortfolioService, useValue: service },
+        { provide: NotificationCenterService, useValue: center },
         { provide: ActivatedRoute, useValue: { queryParamMap: query$, get snapshot() { return { queryParamMap: query$.value }; } } },
       ],
     });
@@ -1621,7 +1641,8 @@ describe('Portfolio import controls', () => {
           expect(side.parentElement).toBe(footer.parentElement);
           expect(footer.compareDocumentPosition(side) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
           expect(el(fixture).querySelector('.imp-layout > aside')).toBeNull();
-          expect(side.querySelectorAll('app-bento').length).toBe(2);
+          expect(side.querySelectorAll(':scope > app-bento').length).toBe(2);
+          expect(side.querySelectorAll(':scope > app-cathay-status-card').length).toBe(1);
         });
 
         it(`${mode}: with the recalc card visible the order is footer → 匯入並重算 → side cards`, () => {
@@ -1634,6 +1655,18 @@ describe('Portfolio import controls', () => {
           expect(footer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
           expect(card.compareDocumentPosition(side) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
           expect(side.contains(card)).toBe(false);
+        });
+      }
+
+      for (const mode of ['panes', 'sheet', 'phone'] as const) {
+        it(`${mode}: the 國泰每日對帳單 card is the side column's third card, after 最近匯入`, () => {
+          const fixture = inModeWithFile(mode);
+          const side = aside(fixture)!;
+          const cards = Array.from(side.children).map(c =>
+            c.tagName === 'APP-CATHAY-STATUS-CARD' ? 'cathay' : c.classList.contains('recent-card') ? 'recent' : c.classList.contains('after-card') ? 'after' : c.tagName);
+          expect(cards).toEqual(['after', 'recent', 'cathay']);
+          expect(norm(side.querySelector('app-cathay-status-card app-bento h2')?.textContent)).toBe('國泰每日對帳單');
+          expect(side.parentElement?.classList.contains('imp-layout')).toBe(mode === 'panes');
         });
       }
 

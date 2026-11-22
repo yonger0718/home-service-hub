@@ -1,0 +1,52 @@
+<app-bento class="cathay-card" title="國泰每日對帳單">
+  @if (!center.loaded()) {
+    <small class="cathay-loading" role="status">讀取中…</small>
+  } @else if (failed()) {
+    <app-banner
+      tone="error"
+      heading="無法讀取國泰對帳單狀態"
+      actionLabel="重試"
+      [actionDisabled]="center.loading()"
+      (action)="retry()"
+    />
+  } @else if (view(); as v) {
+    @if (v.banner; as banner) {
+      <app-banner [tone]="banner.tone" [heading]="banner.heading" [detail]="banner.detail" />
+      @if (v.runDetails) {
+        <p class="cathay-run-details">{{ v.runDetails }}</p>
+      }
+      @if (v.lastOk) {
+        <p class="cathay-last-ok">{{ v.lastOk }}</p>
+      }
+    } @else if (v.runLine) {
+      <p class="cathay-run-line">{{ v.runLine }}</p>
+    }
+
+    @if (v.days.length > 0) {
+      <h3 class="cathay-days-title">需要你確認的日期</h3>
+      <ul class="cathay-days">
+        @for (day of v.days; track day.tradeDate) {
+          <li class="cathay-day">
+            <span class="cathay-day-text">
+              <b>{{ day.label }}</b>
+              <small>{{ day.text }}</small>
+            </span>
+            <app-btn
+              variant="soft"
+              [loading]="isBusy(day.tradeDate)"
+              [ariaLabel]="'確認：國泰對帳單 ' + day.label"
+              (click)="ack(day)"
+            >確認</app-btn>
+          </li>
+        }
+      </ul>
+    } @else {
+      <small class="cathay-none">沒有需要確認的日期</small>
+    }
+    @if (v.more > 0) {
+      <small class="cathay-more">還有 {{ v.more }} 天未列出</small>
+    }
+  } @else {
+    <small class="cathay-loading" role="status">讀取中…</small>
+  }
+</app-bento>

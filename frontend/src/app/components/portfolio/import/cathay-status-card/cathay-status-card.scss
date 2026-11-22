@@ -1,0 +1,85 @@
+// The side column's type and row rhythm (import.scss `.imp-side`, `.recent-row`): this card's content lives in its
+// own view, so the column's rules do not reach it.
+:host {
+  display: block;
+}
+
+b {
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+small,
+.cathay-run-details,
+.cathay-last-ok {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+small {
+  display: block;
+}
+
+p {
+  margin: 0;
+}
+
+.cathay-run-line {
+  font-size: 0.875rem;
+}
+
+app-banner + .cathay-run-details,
+app-banner + .cathay-last-ok {
+  margin-top: var(--space-2);
+}
+
+.cathay-days-title {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  margin: 0.75rem 0 0;
+}
+
+.cathay-none,
+.cathay-more {
+  margin-top: 0.75rem;
+}
+
+.cathay-days {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.cathay-day {
+  align-items: center;
+  display: flex;
+  gap: 0.6rem;
+}
+
+.cathay-day + .cathay-day {
+  margin-top: 0.75rem;
+}
+
+.cathay-day-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+
+  small {
+    overflow-wrap: anywhere;
+  }
+}
+
+.cathay-day app-btn {
+  flex: none;
+}
+
+@media (max-width: 760px) {
+  /* Tap target: 44 px high on a phone (the kit's button is 38). */
+  .cathay-day app-btn ::ng-deep .btn {
+    min-height: 44px;
+  }
+}

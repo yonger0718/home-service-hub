@@ -30,6 +30,7 @@ import { SideTagComponent } from '../../ui/side-tag/side-tag';
 import { TagComponent } from '../../ui/tag/tag';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BannerComponent } from '../../ui/banner/banner';
+import { CathayStatusCardComponent } from './cathay-status-card/cathay-status-card';
 import {
   ImportRowError,
   ImportType,
@@ -94,6 +95,7 @@ interface UploadRequest {
     SegToggleComponent,
     SideTagComponent,
     TagComponent,
+    CathayStatusCardComponent,
   ],
   providers: [ConfirmationService],
   templateUrl: './import.html',
