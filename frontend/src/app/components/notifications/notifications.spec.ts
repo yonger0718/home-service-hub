@@ -446,11 +446,11 @@ describe('NotificationsComponent', () => {
       expect(banner.querySelector('.banner-title')!.firstChild).toBe(node);
     });
 
-    it('one failed source: the rows render, the subtitle is 「5 件要處理 · 2 件已逾期 · 部分資料無法讀取」 and the chips carry their numbers', () => {
+    it('one failed source: the rows render, the subtitle is 「部分資料無法讀取 · 5 件要處理 · 2 件已逾期」 and the chips carry their numbers', () => {
       failedSources.set(['recon']);
       const root = mount();
       expect(root.querySelectorAll('app-notif-row').length).toBe(5);
-      expect(subtitle(root)).toBe('5 件要處理 · 2 件已逾期 · 部分資料無法讀取');
+      expect(subtitle(root)).toBe('部分資料無法讀取 · 5 件要處理 · 2 件已逾期');
       const chips = Array.from(root.querySelectorAll<HTMLButtonElement>('.notif-chips button'));
       expect(chips.map(c => text(c))).toEqual(['全部5', '財務4', '投資1']);
       expect(chips.map(c => c.getAttribute('aria-label'))).toEqual(['全部，5 件', '財務，4 件', '投資，1 件']);
@@ -483,23 +483,23 @@ describe('NotificationsComponent', () => {
       tasks.set([task('a1', 'today'), task('a2', 'overdue')]);
       failedSources.set(['bills', 'schedules', 'recon', 'importReview']);
       const root = mount();
-      expect(subtitle(root)).toContain('2 件要處理 · 1 件已逾期 · 部分資料無法讀取');
+      expect(subtitle(root)).toContain('部分資料無法讀取 · 2 件要處理 · 1 件已逾期');
       expect(Array.from(root.querySelectorAll('.chip-count')).map(c => text(c))[0]).toBe('2');
       expect(root.querySelector('.notif-chips button')?.getAttribute('aria-label')).toBe('全部，2 件');
       expect(root.querySelectorAll('.sec-count').length).toBeGreaterThan(0);
     });
 
-    it('one failed source with overdue tasks: the overdue part stays, 「3 件要處理 · 2 件已逾期 · 部分資料無法讀取」', () => {
+    it('one failed source with overdue tasks: the overdue part stays, 「部分資料無法讀取 · 3 件要處理 · 2 件已逾期」', () => {
       tasks.set([task('a1', 'today'), task('a2', 'overdue'), task('a3', 'overdue')]);
       failedSources.set(['recon']);
       const root = mount();
-      expect(subtitle(root)).toBe('3 件要處理 · 2 件已逾期 · 部分資料無法讀取');
+      expect(subtitle(root)).toBe('部分資料無法讀取 · 3 件要處理 · 2 件已逾期');
     });
 
-    it('one failed source and no overdue task: no middle part, 「2 件要處理 · 部分資料無法讀取」', () => {
+    it('one failed source and no overdue task: no overdue part, 「部分資料無法讀取 · 2 件要處理」', () => {
       tasks.set([task('a1', 'today'), task('a2', 'confirm')]);
       failedSources.set(['recon']);
-      expect(subtitle(mount())).toBe('2 件要處理 · 部分資料無法讀取');
+      expect(subtitle(mount())).toBe('部分資料無法讀取 · 2 件要處理');
     });
 
     it('after a 重試 that succeeds the counts and the subtitle come back', async () => {
@@ -507,7 +507,7 @@ describe('NotificationsComponent', () => {
       const root = mount();
       (q(root, '.notif-failed .banner-action') as HTMLButtonElement).click();
       await settle();
-      expect(subtitle(root)).toBe('5 件要處理 · 2 件已逾期 · 部分資料無法讀取');
+      expect(subtitle(root)).toBe('部分資料無法讀取 · 5 件要處理 · 2 件已逾期');
       failedSources.set([]);
       settledRound.set(round());
       await settle();

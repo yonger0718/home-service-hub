@@ -630,7 +630,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(center.failedSources()).toEqual(['debts']);
       const nav = TestBed.inject(NavBadgeService);
       expect(nav.summary().total).toBe(1);
-      expect(root.querySelector('.page-subtitle')?.textContent?.trim()).toBe('1 件要處理 · 部分資料無法讀取');
+      expect(root.querySelector('.page-subtitle')?.textContent?.trim()).toBe('部分資料無法讀取 · 1 件要處理');
       expect(root.querySelector('.notif-chips button')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('全部1');
       expect(root.querySelector('section.notif-section h2')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('今天 1');
       expect(root.querySelectorAll('app-notif-row').length).toBe(nav.summary().total);
@@ -675,7 +675,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(Array.from(root.querySelectorAll('.chip-count')).map(c => c.textContent?.trim())[0]).toBe(String(nav.summary().total));
       expect(chips[0].getAttribute('aria-label')).toBe('全部，1 件');
       expect(root.querySelector('section.notif-section h2 .sec-count')?.textContent?.trim()).toBe('1');
-      expect(root.querySelector('.page-subtitle')?.textContent?.trim()).toBe('1 件要處理 · 1 件已逾期 · 部分資料無法讀取');
+      expect(root.querySelector('.page-subtitle')?.textContent?.trim()).toBe('部分資料無法讀取 · 1 件要處理 · 1 件已逾期');
     });
 
     it('a failed inbox with nothing else: the failure line and no 都處理好了; 重試 re-reads and the all-clear returns when it answers', async () => {
