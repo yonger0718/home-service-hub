@@ -840,23 +840,24 @@ describe('NotificationCenterService', () => {
 
   // ---- R25: a truncated inbox ------------------------------------------------------------------------------------
 
-  it('truncated inbox: counts.ask_items 10 with 6 unfolded received → the statement task plus recon:more 「還有 4 筆要你決定」, total counts both, truncated() true', async () => {
+  it('truncated inbox: counts.ask_items 10 with 6 unfolded received → one statement task counted; the catch-all is `overflow()`, not a task, so total is 1; truncated() true', async () => {
     const svc = service();
     svc.start();
     await answer(0, { inbox: inboxWith(6, { ask_items: 10 }) });
-    expect(ids(svc)).toEqual(['recon:10', 'recon:more']);
+    expect(ids(svc)).toEqual(['recon:10']);
     expect(svc.tasks()[0].when).toBe('6 筆要你決定');
-    expect(svc.tasks()[1].when).toBe('還有 4 筆要你決定');
-    expect(svc.summary().total).toBe(2);
+    expect(svc.summary().total).toBe(1);
+    expect(svc.overflow()).toMatchObject({ id: 'recon:more', when: '還有 4 筆要你決定' });
     expect(svc.truncated()).toBe(true);
   });
 
-  it('truncated inbox with no statement received: recon:more alone, summary().total 1', async () => {
+  it('truncated inbox with no statement received: no counted task, summary().total 0, overflow() still names the rest', async () => {
     const svc = service();
     svc.start();
     await answer(0, { inbox: inboxWith(0, { ask: 3, ask_items: 3 }) });
-    expect(ids(svc)).toEqual(['recon:more']);
-    expect(svc.summary().total).toBe(1);
+    expect(ids(svc)).toEqual([]);
+    expect(svc.summary().total).toBe(0);
+    expect(svc.overflow()).toMatchObject({ id: 'recon:more' });
     expect(svc.truncated()).toBe(true);
   });
 
@@ -866,6 +867,7 @@ describe('NotificationCenterService', () => {
     await answer(0, { inbox: inboxWith(3) });
     expect(ids(svc)).toEqual(['recon:10']);
     expect(svc.truncated()).toBe(false);
+    expect(svc.overflow()).toBeNull();
   });
 
   it('a failed inbox read clears truncated', async () => {
@@ -877,6 +879,7 @@ describe('NotificationCenterService', () => {
     svc.invalidate();
     await answer(1, { inbox: 'error' });
     expect(svc.truncated()).toBe(false);
+    expect(svc.overflow()).toBeNull();
     expect(ids(svc)).toEqual([]);
   });
 

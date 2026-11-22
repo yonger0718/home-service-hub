@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { makeInbox, makeInboxAccount, makeItem } from '../../accounting/inbox/testing';
 import { InboxCounts, InboxItem, InboxOut, InboxQuestion } from '../../accounting/inbox/inbox.model';
-import { sortTasks } from '../notif-task';
+import { sortTasks, summarize } from '../notif-task';
 import {
   INBOX_READ_LIMIT,
   askAccountIds,
@@ -222,12 +222,13 @@ describe('reconOverflowTask', () => {
     expect(reconOverflowTask(0)).toBeNull();
   });
 
-  it('sortTasks puts recon:more after the statements and before einvoice', () => {
-    const tasks = [
-      einvoiceTask({ einvoice_ask: 1 })!,
-      reconOverflowTask(2)!,
-      ...reconTasks(inboxWith(items(1, 31)), new Map()),
-    ];
-    expect(sortTasks(tasks).map((t) => t.id)).toEqual(['recon:31', 'recon:more', 'einvoice']);
+  it('a truncated inbox counts one per statement, whatever is cut: the catch-all is not among the counted tasks', () => {
+    const inbox = inboxWith([...items(6, 31), ...items(3, 32)], { ask_items: 15 });
+    const tasks = reconTasks(inbox, new Map());
+    expect(tasks.map((t) => t.id)).toEqual(['recon:31', 'recon:32']);
+    expect(summarize(tasks).total).toBe(2);
+    expect(inboxMissing(inbox)).toBe(6);
+    expect(reconOverflowTask(inboxMissing(inbox))).toMatchObject({ id: 'recon:more', when: '還有 6 筆要你決定' });
+    expect(tasks.some((t) => t.id === 'recon:more')).toBe(false);
   });
 });

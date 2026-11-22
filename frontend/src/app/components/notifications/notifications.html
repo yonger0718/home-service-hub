@@ -37,6 +37,12 @@
     </section>
   }
 
+  @if (overflow(); as rest) {
+    <p class="notif-overflow">
+      {{ rest.text }} <a [routerLink]="rest.link.route" [queryParams]="rest.link.queryParams ?? null">到提醒中心查看</a>
+    </p>
+  }
+
   <!-- One element for "no task yet" and "partial list": the same @if spot, so the live region is announced once. -->
   @if (!center.loaded() || state() === 'loading') {
     <p class="notif-loading" role="status">讀取中…</p>
@@ -70,9 +76,6 @@
   }
   <a class="notif-reminders" routerLink="/accounting/reminders">提醒中心（借還款、週期與分期管理）</a>
 
-  @for (note of notes(); track note) {
-    <p class="notif-partial">{{ note }}</p>
-  }
   @if (failure(); as line) {
     <app-banner class="notif-failed" tone="error" [heading]="line" actionLabel="重試" [actionDisabled]="center.loading()" (action)="retry()" />
   }

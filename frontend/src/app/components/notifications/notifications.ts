@@ -35,6 +35,7 @@ import {
   TIER_LABELS,
   chipCounts,
   failureLine,
+  isCommand,
 } from './notif-task';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
 
@@ -153,7 +154,8 @@ export class NotificationsComponent {
     }
     const { total, overdue } = this.center.summary();
     if (total === 0) {
-      return '沒有要處理的事';
+      // Nothing counted, but the inbox has items this page could not list: not an all-clear.
+      return this.center.overflow() ? '還有對帳項目未列出' : '沒有要處理的事';
     }
     const parts = [`${total} 件要處理`];
     if (overdue > 0) {
@@ -199,8 +201,14 @@ export class NotificationsComponent {
   });
   protected readonly trackingCount = computed(() => this.trackingRows().reduce((n, row) => n + row.count, 0));
 
-  /** The bottom lines before the failure line. */
-  protected readonly notes: Signal<string[]> = computed(() => (this.center.truncated() ? ['對帳項目較多，僅列出部分'] : []));
+  /**
+   * The inbox's unlisted rest (R25): a plain note under the sections, never a row, so no section number, chip, subtitle
+   * count or sidebar count includes it. A ledger thing, hidden under 投資. Null while no round has settled.
+   */
+  protected readonly overflow = computed(() => {
+    const rest = !this.pending() && this.chip() !== 'portfolio' ? this.center.overflow() : null;
+    return rest && !isCommand(rest.primary) ? { text: `${rest.title} · ${rest.when}（不計入數字）`, link: rest.primary } : null;
+  });
 
   protected readonly failure = computed(() => failureLine(this.center.failedSources()));
   /** A 重試 of the reads is running: the line stays (same element) and the button waits. */

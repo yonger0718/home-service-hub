@@ -155,10 +155,6 @@ export class NotificationCenterService {
     const inbox = this.inboxData();
     if (inbox) {
       tasks.push(...reconTasks(inbox, this.progress()));
-      const overflow = reconOverflowTask(inboxMissing(inbox, INBOX_READ_LIMIT));
-      if (overflow) {
-        tasks.push(overflow);
-      }
       const einvoice = einvoiceTask(inbox.counts);
       if (einvoice) {
         tasks.push(einvoice);
@@ -216,6 +212,15 @@ export class NotificationCenterService {
   });
   /** `handledText()` of the last applied actions read; null hides the row (none, or the read failed). */
   readonly handled: Signal<string | null> = this.actionsText.asReadonly();
+  /**
+   * R25: the catch-all for ask items the inbox page cut off, or null. NOT a task and never counted: the API gives only a
+   * global `counts.ask_items` (no per-statement total), so the missing items cannot be attributed to a statement and
+   * each statement counts once from what was listed. The page shows it as a plain note.
+   */
+  readonly overflow: Signal<NotifTask | null> = computed(() => {
+    const inbox = this.inboxData();
+    return inbox ? reconOverflowTask(inboxMissing(inbox, INBOX_READ_LIMIT)) : null;
+  });
   /** R25: the applied inbox answer left ask items out (`inboxMissing()` > 0 or unknown). */
   readonly truncated: Signal<boolean> = computed(() => {
     const inbox = this.inboxData();

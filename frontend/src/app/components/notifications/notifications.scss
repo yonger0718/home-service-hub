@@ -243,9 +243,17 @@
   padding: 8px;
 }
 
-.notif-partial {
+.notif-overflow {
   color: var(--app-text-muted);
   font-size: 0.8rem;
   margin: 0;
   padding: 0 6px;
+
+  a {
+    color: var(--app-primary);
+    display: inline-block;
+    font-weight: 700;
+    padding: 8px 4px;
+    text-decoration: none;
+  }
 }

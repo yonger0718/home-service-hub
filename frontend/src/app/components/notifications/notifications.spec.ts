@@ -60,6 +60,7 @@ describe('NotificationsComponent', () => {
   const round = signal(1);
   const settledRound = signal(1);
   const truncated = signal(false);
+  const overflow = signal<NotifTask | null>(null);
   const failedSources = signal<readonly NotifSourceKey[]>([]);
   const nextUpcoming = signal<NotifTask | null>(null);
   const refresh = vi.fn();
@@ -95,6 +96,7 @@ describe('NotificationsComponent', () => {
     round,
     settledRound,
     truncated,
+    overflow,
     failedSources,
     nextUpcoming,
     summary: computed<NotifSummary>(() => summarize(tasks())),
@@ -140,6 +142,7 @@ describe('NotificationsComponent', () => {
     round.set(1);
     settledRound.set(1);
     truncated.set(false);
+    overflow.set(null);
     failedSources.set([]);
     nextUpcoming.set(null);
     refresh.mockClear();
@@ -260,7 +263,7 @@ describe('NotificationsComponent', () => {
       when: '10/27 截止',
       amount: '$1,824',
     });
-    const CATCH_ALL = task('recon:more', 'confirm', { from: 'recon', title: '還有對帳項目未列出', when: '還有 12 筆要你決定' });
+    const CATCH_ALL = task('recon:more', 'confirm', { from: 'recon', title: '還有對帳項目未列出', when: '還有 12 筆要你決定', primary: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } } });
     const q = (root: HTMLElement, sel: string) => root.querySelector<HTMLElement>(sel);
 
     it('before the first answers: 讀取中… as a polite status, no 都處理好了, chips still there', () => {
@@ -547,38 +550,49 @@ describe('NotificationsComponent', () => {
       expect(document.activeElement).toBe(chip);
     });
 
-    it('truncated: 「對帳項目較多，僅列出部分」 comes before the failure line and the catch-all row is in 要你確認', () => {
-      tasks.set([CATCH_ALL]);
+    it('truncated: the catch-all is a plain note right under the sections, not a row, not in a numbered section, not counted', () => {
+      tasks.set([task('b1', 'today')]);
       truncated.set(true);
+      overflow.set(CATCH_ALL);
       failedSources.set(['bills']);
       const root = mount();
-      const partial = q(root, 'p.notif-partial')!;
-      expect(text(partial)).toBe('對帳項目較多，僅列出部分');
-      expect(partial.nextElementSibling).toBe(q(root, '.notif-failed'));
-      const confirm = root.querySelector('section.notif-section')!;
-      expect(text(confirm.querySelector('h2'))).toContain('要你確認');
-      expect(text(confirm)).toContain('還有對帳項目未列出');
-    });
-
-    it('truncated with no other task: the catch-all row shows, 都處理好了 does not', () => {
-      tasks.set([CATCH_ALL]);
-      truncated.set(true);
-      const root = mount();
+      const note = q(root, 'p.notif-overflow')!;
+      expect(text(note)).toContain('還有對帳項目未列出');
+      expect(text(note)).toContain('還有 12 筆要你決定');
+      expect(text(note)).toContain('不計入');
+      expect(note.previousElementSibling?.matches('section.notif-section')).toBe(true);
+      // Not a row and not inside a section: the numbers stay the rows' numbers.
+      expect(note.closest('section.notif-section')).toBeNull();
       expect(root.querySelectorAll('app-notif-row').length).toBe(1);
-      expect(q(root, '.notif-empty')).toBeNull();
+      expect(text(q(root, 'section.notif-section h2'))).toBe('今天');
+      expect(note.querySelector('a')?.getAttribute('href')).toBe('/accounting/reminders?tab=todo');
     });
 
-    it('truncated with nothing listed (a guard): still no 都處理好了', () => {
+    it('truncated with no counted task: the note shows, 都處理好了 does not, the subtitle does not claim an all-clear or a count', () => {
       tasks.set([]);
       truncated.set(true);
+      overflow.set(CATCH_ALL);
       const root = mount();
+      expect(root.querySelectorAll('app-notif-row').length).toBe(0);
       expect(q(root, '.notif-empty')).toBeNull();
-      expect(q(root, 'p.notif-partial')).not.toBeNull();
+      expect(q(root, 'p.notif-overflow')).not.toBeNull();
+      expect(subtitle(root)).toBe('還有對帳項目未列出');
+      expect(text(root.querySelector('.notif-chips button'))).toBe('全部0');
+    });
+
+    it('the catch-all is a ledger thing: hidden under 投資', async () => {
+      tasks.set([task('b1', 'today')]);
+      truncated.set(true);
+      overflow.set(CATCH_ALL);
+      const root = mount();
+      (root.querySelectorAll('.notif-chips button')[2] as HTMLButtonElement).click();
+      await settle();
+      expect(q(root, 'p.notif-overflow')).toBeNull();
     });
 
     it('not truncated: no such line', () => {
       const root = mount();
-      expect(q(root, '.notif-partial')).toBeNull();
+      expect(q(root, '.notif-overflow')).toBeNull();
     });
 
     it('tasks arriving while another source is still loading render at once, with 讀取中… after the sections (one element)', async () => {

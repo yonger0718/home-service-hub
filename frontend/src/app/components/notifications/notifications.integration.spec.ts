@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { errorLoggingInterceptor } from '../../interceptors/error-logging.interceptor';
 import { MATCH_MEDIA } from '../../services/layout-mode.service';
+import { NavBadgeService } from '../../services/nav-badge.service';
 import { NotificationCenterService } from '../../services/notification-center.service';
 import { ToastService } from '../../services/toast.service';
 import { makeInbox, makeInboxAccount, makeItem } from '../accounting/inbox/testing';
@@ -556,8 +557,36 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       await answerCard('0');
       expect(center.loaded()).toBe(true);
       expect(emptyBlock()).toBeNull();
-      expect(root.textContent).toContain('還有對帳項目未列出');
-      expect(root.querySelector('p.notif-partial')?.textContent?.trim()).toBe('對帳項目較多，僅列出部分');
+      // The catch-all is a plain note, not a counted row: nothing to do is counted, the all-clear still does not show.
+      expect(root.querySelector('p.notif-overflow')?.textContent).toContain('還有對帳項目未列出');
+      expect(root.querySelectorAll('app-notif-row').length).toBe(0);
+      expect(center.summary().total).toBe(0);
+      expect(root.querySelector('.page-subtitle')?.textContent?.trim()).toBe('還有對帳項目未列出');
+    });
+
+    it('a truncated inbox counts one per statement: page, section heading, chips and the sidebar facade all say 1 while the catch-all note shows', async () => {
+      const round = await openFresh();
+      const listed = Array.from({ length: 6 }, (_, i) =>
+        makeItem({ case_id: 7000 + i, question: 'bank_only', statement: { id: 31, period_end: '2026-10-05' } }),
+      );
+      await answerReads(round, makeInbox([makeInboxAccount({ id: 12, name: '測試銀行卡', items: listed })], { ask_items: 10, ask: 10 }));
+      for (const req of http.match(get(`${API}/accounts/12/statements`))) {
+        req.flush([]);
+      }
+      await answerCard('0');
+      const nav = TestBed.inject(NavBadgeService);
+      expect(center.truncated()).toBe(true);
+      expect(root.querySelectorAll('app-notif-row').length).toBe(1);
+      expect(root.querySelector('app-notif-row')?.textContent).toContain('6 筆要你決定');
+      expect(root.querySelector('section.notif-section h2')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('要你確認 1');
+      expect(root.querySelector('.notif-chips button')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('全部1');
+      expect(root.querySelector('.page-subtitle')?.textContent).toContain('1 件要處理');
+      expect(center.summary().total).toBe(1);
+      expect(nav.summary().total).toBe(1);
+      expect(nav.summary().label).toBe('通知，1 件要處理');
+      const note = root.querySelector('p.notif-overflow');
+      expect(note?.textContent).toContain('還有 4 筆要你決定');
+      expect(note?.closest('section')).toBeNull();
     });
 
     it('a failed inbox with nothing else: the failure line and no 都處理好了; 重試 re-reads and the all-clear returns when it answers', async () => {
