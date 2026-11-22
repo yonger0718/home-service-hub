@@ -39,14 +39,16 @@ function fakeMatchMedia(width: number) {
 }
 
 const summaryStub = signal<NotifSummary>(SUMMARY);
+const badgesStub = signal<Readonly<Record<string, NavBadge>>>(BADGES);
 
 function configure(width = 1440) {
   summaryStub.set(SUMMARY);
+  badgesStub.set(BADGES);
   TestBed.configureTestingModule({
     providers: [
       provideRouter([{ path: '**', component: BlankPage }]),
       { provide: MATCH_MEDIA, useValue: fakeMatchMedia(width) },
-      { provide: NavBadgeService, useValue: { badges: signal(BADGES), summary: summaryStub } },
+      { provide: NavBadgeService, useValue: { badges: badgesStub, summary: summaryStub } },
     ],
   });
   return {
@@ -223,6 +225,15 @@ describe('NavigationStateService', () => {
   it('badges off hides every badge', async () => {
     const { nav, prefs } = await create();
     expect(nav.badges()).toEqual(BADGES);
+
+    prefs.setShowBadges(false);
+    expect(nav.badges()).toEqual({});
+  });
+
+  it('badges off hides a 股利 badge from the facade too', async () => {
+    const { nav, prefs } = await create();
+    badgesStub.set({ dividends: { dot: true, tone: 'primary', label: '2 筆待確認收款' } });
+    expect(nav.badges()).toEqual({ dividends: { dot: true, tone: 'primary', label: '2 筆待確認收款' } });
 
     prefs.setShowBadges(false);
     expect(nav.badges()).toEqual({});

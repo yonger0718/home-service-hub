@@ -44,6 +44,11 @@ interface RoundRequests {
   inbox: TestRequest;
   latest: TestRequest;
   actions: TestRequest;
+  /** The portfolio and system reads (股利 first page, 國泰 pending + latest run, recalc status): see `flushPortfolio`. */
+  dividends: TestRequest;
+  cathayPending: TestRequest;
+  cathayRuns: TestRequest;
+  recalc: TestRequest;
 }
 
 async function microtasks(): Promise<void> {
@@ -74,6 +79,9 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
   function take(): RoundRequests {
     const queue = http.expectOne(get(`${API}/schedules/instances`));
     expect(queue.request.params.get('queue')).toBe('true');
+    const dividends = http.expectOne(get('/api/portfolio/dividends'));
+    expect(dividends.request.params.get('limit')).toBe('100');
+    expect(dividends.request.params.get('offset')).toBe('0');
     return {
       accounts: http.expectOne(get(`${API}/accounts`)),
       counterparties: http.expectOne(get(`${API}/counterparties`)),
@@ -81,10 +89,32 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       inbox: http.expectOne(get(`${API}/reconciliation/inbox`)),
       latest: http.expectOne(get(`${API}/imports/latest`)),
       actions: http.expectOne(get(`${API}/reconciliation/actions`)),
+      dividends,
+      cathayPending: http.expectOne(get('/api/portfolio/imports/cathay-statement/pending')),
+      cathayRuns: http.expectOne(get('/api/portfolio/imports/cathay-statement/runs/latest')),
+      recalc: http.expectOne(get('/api/portfolio/imports/recalc/status')),
     };
   }
 
-  /** Answers any open card-statement reads (1,000 spent, no payment) and the recalc status. */
+  const flushedPortfolio = new WeakSet<RoundRequests>();
+
+  /**
+   * The round's portfolio and system reads with the quiet answers (no dividend, no pending 國泰 date, a healthy run 5
+   * minutes before the clock, an idle recalc chain), once per round; a superseded round's are answered too.
+   */
+  function flushPortfolio(round: RoundRequests): void {
+    if (flushedPortfolio.has(round)) {
+      return;
+    }
+    flushedPortfolio.add(round);
+    const latest = { run_at: new Date(Date.now() - 5 * 60_000).toISOString(), result: 'ok', code: null, files_seen: 1, posted: 1 };
+    round.dividends.flush({ items: [], total: 0 });
+    round.cathayPending.flush({ items: [], total: 0, truncated: false });
+    round.cathayRuns.flush({ latest, latest_ok: latest });
+    round.recalc.flush({ state: 'idle' });
+  }
+
+  /** Answers any open card-statement reads (1,000 spent, no payment). */
   async function flushSide(): Promise<void> {
     await settle();
     for (const req of http.match(get(`${API}/accounts/11/summary`))) {
@@ -95,9 +125,6 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     }
     for (const req of http.match(get(`${API}/accounts/11/entries`))) {
       req.flush({ items: [], total: 0, limit: 100, offset: 0 });
-    }
-    for (const req of http.match(get('/api/portfolio/imports/recalc/status'))) {
-      req.flush({ state: 'idle' });
     }
     await settle();
   }
@@ -117,6 +144,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       }
     }
     if (open('actions')) round.actions.flush([]);
+    flushPortfolio(round);
     await flushSide();
   }
 
@@ -468,6 +496,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       round.inbox.flush(inbox);
       round.latest.flush('', { status: 404, statusText: 'Not Found' });
       round.actions.flush([]);
+      flushPortfolio(round);
       await settle();
     }
 
@@ -478,9 +507,6 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
           account_id: 11, currency: 'TWD', date_from: '', date_to: '', spend, income: '0', rewards: '0',
           net: spend, end_balance: spend, count: 1,
         });
-      }
-      for (const req of http.match(get('/api/portfolio/imports/recalc/status'))) {
-        req.flush({ state: 'idle' });
       }
       await settle();
       const held = holdPayments ? [] : http.match(get(`${API}/accounts/11/entries`));
@@ -531,6 +557,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       round1.inbox.flush(makeInbox([]));
       round1.latest.flush('', { status: 404, statusText: 'Not Found' });
       round1.actions.flush([]);
+      flushPortfolio(round1);
       await settle();
       expect(center.settledRound()).toBe(1);
       expect(emptyBlock()).not.toBeNull();
@@ -548,6 +575,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       round2.inbox.flush(makeInbox([]));
       round2.latest.flush('', { status: 404, statusText: 'Not Found' });
       round2.actions.flush([]);
+      flushPortfolio(round2);
       await settle();
       await answerCard('-1000.0000', true);
       expect(center.loading()).toBe(true);
@@ -638,6 +666,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       round.inbox.flush(makeInbox([]));
       round.latest.flush('', { status: 404, statusText: 'Not Found' });
       round.actions.flush([]);
+      flushPortfolio(round);
       await settle();
       await answerCard('0');
       expect(center.failedSources()).toEqual(['debts']);
@@ -659,6 +688,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       round.inbox.flush('boom', { status: 500, statusText: 'Server Error' });
       round.latest.flush('boom', { status: 500, statusText: 'Server Error' });
       round.actions.flush([]);
+      flushPortfolio(round);
       await settle();
       for (const req of http.match(get(`${API}/accounts/11/summary`))) {
         req.flush('boom', { status: 500, statusText: 'Server Error' });
@@ -668,9 +698,6 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
           account_id: 12, currency: 'TWD', date_from: '', date_to: '', spend: '-1000.0000', income: '0', rewards: '0',
           net: '-1000.0000', end_balance: '-1000.0000', count: 1,
         });
-      }
-      for (const req of http.match(get('/api/portfolio/imports/recalc/status'))) {
-        req.flush({ state: 'idle' });
       }
       await settle();
       for (const req of http.match(get(`${API}/accounts/12/entries`))) {
@@ -699,6 +726,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       round.inbox.flush('boom', { status: 500, statusText: 'Server Error' });
       round.latest.flush('', { status: 404, statusText: 'Not Found' });
       round.actions.flush([]);
+      flushPortfolio(round);
       await settle();
       await answerCard('0');
       expect(center.loaded()).toBe(true);

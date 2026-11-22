@@ -30,7 +30,16 @@ interface RoundRequests {
   inbox: TestRequest;
   latest: TestRequest;
   actions: TestRequest;
-  recalc: TestRequest | null;
+  dividends: TestRequest;
+  cathayPending: TestRequest;
+  cathayRuns: TestRequest;
+  recalc: TestRequest;
+}
+
+/** A healthy 國泰 run 5 minutes before the (fake) clock: no `cathay:run` task. */
+function healthyRuns(): { latest: object; latest_ok: object } {
+  const latest = { run_at: new Date(Date.now() - 5 * 60_000).toISOString(), result: 'ok', code: null, files_seen: 1, posted: 1 };
+  return { latest, latest_ok: latest };
 }
 
 async function microtasks(): Promise<void> {
@@ -62,14 +71,15 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
 
   const get = (url: string) => (req: { method: string; url: string }) => req.method === 'GET' && req.url === url;
 
-  /** The open reads of the round just started (one of each task source, the actions feed, the recalc status if any). */
+  /** The open reads of the round just started (one of each task source's first request, the actions feed). */
   function take(): RoundRequests {
     const queue = http.expectOne(get(`${API}/schedules/instances`));
     expect(queue.request.params.get('queue')).toBe('true');
     const inbox = http.expectOne(get(`${API}/reconciliation/inbox`));
     expect(inbox.request.params.get('limit')).toBe('1000');
-    const recalc = http.match(get('/api/portfolio/imports/recalc/status'));
-    expect(recalc.length).toBeLessThanOrEqual(1);
+    const dividends = http.expectOne(get('/api/portfolio/dividends'));
+    expect(dividends.request.params.get('limit')).toBe('100');
+    expect(dividends.request.params.get('offset')).toBe('0');
     return {
       accounts: http.expectOne(get(`${API}/accounts`)),
       counterparties: http.expectOne(get(`${API}/counterparties`)),
@@ -77,7 +87,10 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
       inbox,
       latest: http.expectOne(get(`${API}/imports/latest`)),
       actions: http.expectOne(get(`${API}/reconciliation/actions`)),
-      recalc: recalc[0] ?? null,
+      dividends,
+      cathayPending: http.expectOne(get('/api/portfolio/imports/cathay-statement/pending')),
+      cathayRuns: http.expectOne(get('/api/portfolio/imports/cathay-statement/runs/latest')),
+      recalc: http.expectOne(get('/api/portfolio/imports/recalc/status')),
     };
   }
 
@@ -92,14 +105,17 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
     values: { accounts?: unknown[]; queue?: unknown[] } = {},
     skip: readonly (keyof RoundRequests)[] = [],
   ): Promise<void> {
-    const open = (key: keyof RoundRequests) => !skip.includes(key) && round[key] !== null;
+    const open = (key: keyof RoundRequests) => !skip.includes(key) && !round[key].cancelled;
     if (open('accounts')) round.accounts.flush(values.accounts ?? []);
     if (open('counterparties')) round.counterparties.flush([]);
     if (open('queue')) round.queue.flush(values.queue ?? []);
     if (open('inbox')) round.inbox.flush(makeInbox([]));
     if (open('latest')) round.latest.flush('', { status: 404, statusText: 'Not Found' });
     if (open('actions')) round.actions.flush([]);
-    if (open('recalc')) round.recalc!.flush({ state: 'idle' });
+    if (open('dividends')) round.dividends.flush({ items: [], total: 0 });
+    if (open('cathayPending')) round.cathayPending.flush({ items: [], total: 0, truncated: false });
+    if (open('cathayRuns')) round.cathayRuns.flush(healthyRuns());
+    if (open('recalc')) round.recalc.flush({ state: 'idle' });
     await settle();
   }
 

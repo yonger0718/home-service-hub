@@ -67,6 +67,14 @@ describe('navigation model', () => {
     expect(summarizeGroupBadges(portfolio, {})).toEqual({ dot: false, tone: 'primary' });
   });
 
+  it('the 股利 dot (primary) folds into the 投資 group as primary; with a red 匯入 dot the group is red', () => {
+    const dividends: NavBadge = { dot: true, tone: 'primary', label: '2 筆待確認收款' };
+    expect(summarizeGroupBadges(portfolio, { dividends })).toEqual({ dot: true, tone: 'primary' });
+    expect(
+      summarizeGroupBadges(portfolio, { dividends, import: { dot: true, tone: 'red', label: '最近一次匯入失敗' } }),
+    ).toEqual({ dot: true, tone: 'red' });
+  });
+
   it('/notifications and anything under it resolve to the synthetic 通知 item', () => {
     for (const url of ['/notifications', '/notifications?x=1', '/notifications/recon/5']) {
       expect(navItemForUrl(url), url).toBe(NOTIFICATIONS_ITEM);
