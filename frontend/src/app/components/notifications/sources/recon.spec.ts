@@ -105,7 +105,7 @@ describe('einvoiceTask', () => {
       icon: 'pi-receipt',
       title: '3 張發票要確認',
       when: '電子發票',
-      meta: '到提醒中心的待處理回答',
+      meta: '到提醒中心回答',
       amount: null,
       progress: null,
       primary: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } },

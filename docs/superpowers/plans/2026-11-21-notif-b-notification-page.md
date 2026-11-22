@@ -326,7 +326,7 @@ Copy and fields (all `source: 'ledger'`, `amount: null`, `secondary: []`):
 |---|---|---|---|---|---|---|---|
 | Statement (`from: 'recon'`, icon `pi-check-square`) | `recon:${statement.id}` | confirm | `對帳 · ${account.name}（至 ${shortDate(period_end)}）` (copy: planner, P2) | `${n} 筆要你決定` (spec) | `已對上 ${k} / ${n} 行` (artboard) when progress is known, else null | `{ label: '對帳', route: reconTaskRoute(account.id, statement.id) }` | `period_end` / `${n}` |
 | Not listed (R25; `from: 'recon'`, icon `pi-list`) | `recon:more` | confirm | `還有對帳項目未列出` (R25) | `還有 ${missing} 筆要你決定` (copy: planner) | `到提醒中心的待處理查看` (copy: planner) | `{ label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } }` | `9999-12-30` / `${missing}` — built by `reconOverflowTask`, but NOT a counted task (owner fix 2026-11-22; see R25) |
-| E-invoice (`from: 'recon'`, icon `pi-receipt`) | `einvoice` | confirm | `${n} 張發票要確認` (R5) | `電子發票` (copy: planner) | `到提醒中心的待處理回答` (copy: planner) | `{ label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } }` | `9999-12-31` (last in its section) / `${n}` |
+| E-invoice (`from: 'recon'`, icon `pi-receipt`) | `einvoice` | confirm | `${n} 張發票要確認` (R5) | `電子發票` (copy: planner) | `到提醒中心回答` (copy: planner) | `{ label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } }` | `9999-12-31` (last in its section) / `${n}` |
 | Import review (`from: 'importReview'`, icon `pi-upload`) | `import:${run.id ?? run.started_at}` | confirm | `匯入紀錄 · ${n} 筆待確認` (copy: planner) | `started_at` as local `MM/DD HH:mm` | `run.file_name` | `{ label: '查看', route: '/accounting/accounts' }` | `started_at` / `${n}` |
 
 追蹤中 rows:

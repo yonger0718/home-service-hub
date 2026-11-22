@@ -78,7 +78,7 @@ export function einvoiceTask(counts: Pick<InboxCounts, 'einvoice_ask'>): NotifTa
     icon: 'pi-receipt',
     title: `${n} 張發票要確認`,
     when: '電子發票',
-    meta: '到提醒中心的待處理回答',
+    meta: '到提醒中心回答',
     amount: null,
     progress: null,
     primary: REMINDERS_TODO,

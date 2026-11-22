@@ -266,3 +266,23 @@
   margin: 0;
   padding: 0 6px;
 }
+
+/* The failure banner: a one-line heading sits centred on the 34px 重試 button. A heading that wraps is taller
+   than the button, so nothing below moves it: text, icon and button stay top-aligned as in the shared banner. */
+.notif-failed ::ng-deep {
+  .banner-body {
+    justify-content: center;
+    min-height: 34px;
+  }
+
+  /* The icon is stretched to the row; its glyph drops 7px in a 34px row and not at all once the row is 41px+. */
+  .banner-icon {
+    align-self: stretch;
+
+    &::before {
+      display: block;
+      position: relative;
+      top: clamp(0px, calc(41px - 100%), 7px);
+    }
+  }
+}
