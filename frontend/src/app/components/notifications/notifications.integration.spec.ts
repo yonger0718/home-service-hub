@@ -58,6 +58,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
   let toasts: ToastService;
   let fixture: ComponentFixture<NotificationsComponent>;
   let root: HTMLElement;
+  let quiet: { mockRestore(): void };
 
   const get = (url: string) => (req: { method: string; url: string }) => req.method === 'GET' && req.url === url;
   const isPost = (req: { method: string; url: string }) => req.method === 'POST' && req.url === `${API}/schedules/instances/7/post`;
@@ -163,6 +164,8 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
   }
 
   beforeEach(() => {
+    // Failed writes and reads log with console.error on purpose; keep the run quiet.
+    quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     vi.setSystemTime(new Date(2026, 9, 24, 10, 0, 0));
   });
@@ -174,6 +177,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       // A failed test must not leave the module instantiated for the next one.
       TestBed.resetTestingModule();
       vi.useRealTimers();
+      quiet.mockRestore();
     }
   });
 

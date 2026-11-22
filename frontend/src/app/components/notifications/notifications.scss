@@ -23,7 +23,8 @@
   }
 
   /* Tap target: 44 px high, as the rows' controls. */
-  .notif-foot-link {
+  .notif-foot-link,
+  .notif-overflow a {
     min-height: 44px;
   }
 }
@@ -210,7 +211,7 @@
 
   &:focus-visible {
     border-radius: 6px;
-    outline: 2px solid var(--app-primary);
+    outline: 2px solid var(--app-focus-ring);
     outline-offset: 2px;
   }
 }
@@ -272,5 +273,11 @@
     font-weight: 700;
     padding: 8px 4px;
     text-decoration: none;
+
+    &:focus-visible {
+      border-radius: 6px;
+      outline: 2px solid var(--app-focus-ring);
+      outline-offset: 2px;
+    }
   }
 }

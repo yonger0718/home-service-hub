@@ -870,6 +870,12 @@ describe('NotificationsComponent', () => {
   });
 
   describe('入帳 and 全部入帳 in place', () => {
+    // The failed-write paths log with console.error on purpose; keep the run quiet (tests assert on the spy themselves).
+    let quiet: { mockRestore(): void };
+    beforeEach(() => {
+      quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    });
+    afterEach(() => quiet.mockRestore());
     const FEE = task('sched:3', 'overdue', {
       from: 'schedules',
       title: '測試月費 · 3 期未入帳',
@@ -1083,9 +1089,9 @@ describe('NotificationsComponent', () => {
       const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       const root = open();
       await press(root, FEE.id);
-      await answer(catchUps[0], catchUp([31], { instance_id: 32, error: 'skipped' }));
-      expect(toasts.current()?.text).toBe('測試月費：已入帳 1 期，之後的入帳失敗（此期已略過）');
-      expect(logged.mock.calls.flat().map(String).join(' ')).toContain('skipped');
+      await answer(catchUps[0], catchUp([31], { instance_id: 32, error: 'import_running' }));
+      expect(toasts.current()?.text).toBe(`測試月費：已入帳 1 期，之後的入帳失敗（${IMPORT_RUNNING_TOAST}）`);
+      expect(logged.mock.calls.flat().map(String).join(' ')).toContain('import_running');
       logged.mockRestore();
     });
 
@@ -1457,7 +1463,21 @@ describe('NotificationsComponent', () => {
       expect(block).toMatch(/&:focus-visible/);
       expect(block).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(/i);
       const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
-      expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(/\.notif-foot-link\s*\{[^}]*min-height:\s*44px/);
+      expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(/\.notif-foot-link,\s*\.notif-overflow a\s*\{[^}]*min-height:\s*44px/);
+    });
+
+    it('the focus ring of the footer links and the overflow-note link is the --app-focus-ring token (as styles.scss)', () => {
+      const foot = css.slice(css.indexOf('\n.notif-foot-link {'));
+      expect(foot.slice(0, foot.indexOf('\n}\n'))).toMatch(/&:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--app-focus-ring\)/);
+      const note = css.slice(css.indexOf('\n.notif-overflow {'));
+      const block = note.slice(0, note.indexOf('\n}\n') + 3);
+      expect(block).toMatch(/a\s*\{/);
+      expect(block).toMatch(/&:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--app-focus-ring\)/);
+    });
+
+    it('the 到提醒中心查看 link in the overflow note is 44 px high on a phone', () => {
+      const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
+      expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(/\.notif-overflow a\s*\{[^}]*min-height:\s*44px/);
     });
 
     it('on a phone the header adds no bottom margin of its own: header to chips is the page gap (14 px), as chips to section', () => {
