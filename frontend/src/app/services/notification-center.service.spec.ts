@@ -380,6 +380,10 @@ describe('NotificationCenterService', () => {
     expect(accountingStub['getCounterparties']).toHaveBeenCalledTimes(2);
     expect(accountingStub['getScheduleInstances']).toHaveBeenCalledTimes(2);
     expect(accountingStub['getLatestImport']).toHaveBeenCalledTimes(2);
+    // P2: the portfolio and system reads are round reads too, so a write re-reads them with the rest.
+    for (const read of [getRecalcStatus, getDividends, getCathayPending, getCathayRuns]) {
+      expect(read).toHaveBeenCalledTimes(2);
+    }
 
     land(latest.subjects[1], importRun(3));
     TestBed.tick();
@@ -389,6 +393,9 @@ describe('NotificationCenterService', () => {
     TestBed.tick();
     expect(accountingStub['getCounterparties']).toHaveBeenCalledTimes(3);
     expect(accountingStub['getLatestImport']).toHaveBeenCalledTimes(3);
+    for (const read of [getRecalcStatus, getDividends, getCathayPending, getCathayRuns]) {
+      expect(read).toHaveBeenCalledTimes(3);
+    }
   });
 
   it('writes before start() load nothing', () => {
@@ -1459,5 +1466,144 @@ describe('NotificationCenterService', () => {
     expect(svc.cathay()?.more).toBe(23);
     // The note is not a task: 50 counted dates.
     expect(svc.summary().total).toBe(50);
+  });
+  // ---- PR C fix round 1 -------------------------------------------------------------------------------------------
+
+  it('a round started on a later clock does not re-judge the previous 國泰 answer: no stale task until its own answer lands', async () => {
+    const latestRun: CathayRun = { run_at: '2026-10-27T06:41:00+08:00', result: 'ok', code: null, files_seen: 1, posted: 1 };
+    const runs: CathayRuns = { latest: latestRun, latest_ok: latestRun };
+    clockNow = new Date('2026-10-27T22:00:00+08:00');
+    const svc = service();
+    svc.start();
+    await answer(0, { cathayRuns: runs });
+    expect(ids(svc)).toEqual([]);
+    expect(svc.cathay()?.state).toBe('ok');
+    const view = svc.cathay();
+
+    // The page stays open overnight; a focus the next morning at 07:30 starts round 2, nothing answered yet.
+    clockNow = new Date('2026-10-28T07:30:00+08:00');
+    vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
+    svc.refresh({ reason: 'focus' });
+    TestBed.tick();
+    expect(svc.round()).toBe(2);
+    expect(ids(svc)).toEqual([]);
+    expect(svc.summary().total).toBe(0);
+    expect(svc.summary().tone).toBe('primary');
+    expect('import' in svc.badges()).toBe(false);
+    expect(svc.cathay()).toEqual(view);
+
+    // Round 2's answer (still yesterday's run) is judged with round 2's clock: stale.
+    await answer(1, { cathayRuns: runs });
+    expect(ids(svc)).toEqual(['cathay:run']);
+    expect(svc.cathay()?.state).toBe('stale');
+    expect(svc.badges()['import']?.label).toBe('國泰對帳單今天沒有執行');
+  });
+
+  it('a round started on the next day does not re-split the previous dividends answer until its own answer lands', async () => {
+    clockNow = new Date(2026, 9, 24, 23, 0, 0);
+    const svc = service();
+    svc.start();
+    const rows = { items: [dividend(1, '9901', '2026-10-25')], total: 1 };
+    await answer(0, { dividends: rows });
+    expect(ids(svc)).toEqual([]);
+    expect(svc.trackingRows().map(row => row.id)).toEqual(['dividends']);
+
+    clockNow = new Date(2026, 9, 25, 8, 0, 0);
+    vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
+    svc.refresh({ reason: 'focus' });
+    TestBed.tick();
+    expect(ids(svc)).toEqual([]);
+    expect(svc.trackingRows().map(row => row.id)).toEqual(['dividends']);
+    expect('dividends' in svc.badges()).toBe(false);
+
+    await answer(1, { dividends: rows });
+    expect(ids(svc)).toEqual(['div:batch']);
+    expect(svc.badges()['dividends']?.label).toBe('1 筆待確認收款');
+  });
+
+  it('a superseded round stops its dividend scan: no further page is requested, the new round settles on its own reads', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { dividends: { items: dueDividends(100), total: 350 } });
+    expect(getDividends).toHaveBeenCalledTimes(2);
+    expect(dividends.subjects[1].observed).toBe(true);
+
+    svc.invalidate();
+    // Round 1's open page is unsubscribed; landing it starts no page 3.
+    expect(dividends.subjects[1].observed).toBe(false);
+    land(dividends.subjects[1], { items: dueDividends(100, 101), total: 350 });
+    expect(getDividends.mock.calls.map(([query]) => query.offset)).toEqual([0, 100, 0]);
+
+    await answer(1, { dividends: 'skip' });
+    expect(svc.settledRound()).toBe(0);
+    land(dividends.subjects[2], { items: dueDividends(2), total: 2 });
+    TestBed.tick();
+    expect(svc.settledRound()).toBe(2);
+    expect(svc.failedSources()).toEqual([]);
+    expect(svc.tasks().map(task => task.title)).toEqual(['股利待確認收款 · 2 筆']);
+  });
+
+  describe('a malformed 200 body fails its source (never throws in a computed)', () => {
+    const bad: readonly [string, unknown][] = [
+      ['null', null],
+      ['{}', {}],
+      ['items not an array', { items: {}, total: 1, truncated: false }],
+    ];
+
+    it.each(bad)('國泰 pending %s → cathay failed, the round settles', async (_name, body) => {
+      const svc = service();
+      svc.start();
+      await answer(0, { cathayPending: body as CathayPending });
+      expect(svc.settledRound()).toBe(1);
+      expect(svc.failedSources()).toEqual(['cathay']);
+      expect(svc.cathay()).toBeNull();
+      expect(svc.cathayMore()).toBe(0);
+      expect(ids(svc)).toEqual([]);
+      expect(svc.badges()).toEqual({});
+    });
+
+    it.each([
+      ['null', null],
+      ['{}', {}],
+      ['latest without run_at', { latest: { result: 'ok' }, latest_ok: null }],
+    ] as const)('國泰 runs %s → cathay failed, the round settles', async (_name, body) => {
+      const svc = service();
+      svc.start();
+      await answer(0, { cathayRuns: body as unknown as CathayRuns });
+      expect(svc.settledRound()).toBe(1);
+      expect(svc.failedSources()).toEqual(['cathay']);
+      expect(svc.cathay()).toBeNull();
+      expect(ids(svc)).toEqual([]);
+      expect(svc.badges()).toEqual({});
+    });
+
+    it.each(bad)('a dividends page %s → dividends failed, the round settles', async (_name, body) => {
+      const svc = service();
+      svc.start();
+      await answer(0, { dividends: body as Paged<Dividend> });
+      expect(svc.settledRound()).toBe(1);
+      expect(svc.failedSources()).toEqual(['dividends']);
+      expect(ids(svc)).toEqual([]);
+      expect(svc.trackingRows()).toEqual([]);
+      expect(svc.badges()).toEqual({});
+    });
+
+    it('a dividends page whose items hold a null row → dividends failed', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { dividends: { items: [null as unknown as Dividend], total: 1 } });
+      expect(svc.failedSources()).toEqual(['dividends']);
+      expect(ids(svc)).toEqual([]);
+    });
+  });
+
+  it('runs fails while pending is still open: the 國泰 source fails, the pending read is dropped, the round settles', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { cathayPending: 'skip', cathayRuns: 'error' });
+    expect(cathayPending.subjects[0].observed).toBe(false);
+    expect(svc.settledRound()).toBe(1);
+    expect(svc.failedSources()).toEqual(['cathay']);
+    expect(svc.cathay()).toBeNull();
   });
 });

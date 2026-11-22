@@ -511,4 +511,48 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
       await settle();
     });
   });
+  describe('portfolio reads over HTTP (fix round 1)', () => {
+    const dividendRows = (n: number, firstId = 1) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: firstId + i, symbol: '9901', amount: 100, ex_dividend_date: '2026-09-01', payment_date: '2026-10-20', receipt_status: 'pending',
+      }));
+    const page = (offset: number) => (req: { method: string; url: string; params: { get(name: string): string | null } }) =>
+      req.method === 'GET' && req.url === '/api/portfolio/dividends' && req.params.get('offset') === String(offset);
+
+    it('a write during round 1\'s dividend scan cancels its open page and requests no further one; round 2 settles on its own reads', async () => {
+      center.start();
+      TestBed.tick();
+      flushCalendar();
+      const first = take();
+      first.dividends.flush({ items: dividendRows(100), total: 350 });
+      const page2 = http.expectOne(page(100));
+      await flushRound(first);
+      expect(center.settledRound()).toBe(0);
+
+      accounting.postScheduleInstance(99).subscribe();
+      http.expectOne(req => req.method === 'POST' && req.url === `${API}/schedules/instances/99/post`).flush({});
+      TestBed.tick();
+      expect(center.round()).toBe(2);
+      expect(page2.cancelled).toBe(true);
+      http.expectNone(page(200));
+
+      await flushRound(take());
+      expect(center.settledRound()).toBe(2);
+      expect(center.failedSources()).toEqual([]);
+      http.expectNone(page(100));
+    });
+
+    it('runs answering 500 while pending is open: the pending request is cancelled, 國泰對帳單 fails, the round settles', async () => {
+      center.start();
+      TestBed.tick();
+      flushCalendar();
+      const first = take();
+      first.cathayRuns.flush('boom', { status: 500, statusText: 'Server Error' });
+      expect(first.cathayPending.cancelled).toBe(true);
+      await flushRound(first, {}, ['cathayRuns']);
+      expect(center.settledRound()).toBe(1);
+      expect(center.failedSources()).toEqual(['cathay']);
+      expect(center.cathay()).toBeNull();
+    });
+  });
 });
