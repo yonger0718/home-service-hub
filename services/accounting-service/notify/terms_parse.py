@@ -397,6 +397,12 @@ def parse_result(stdout: str, cards: tuple[CardEntry, ...]) -> TermsResult:
         data = None  # raised below, outside the except: no chained model text
     if not isinstance(data, dict) or not isinstance(data.get("cards"), list):
         raise _bad()
+    try:  # a lone surrogate escape is valid JSON, but the text can be neither archived nor sent
+        json.dumps(data, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        data = None
+    if data is None:
+        raise _bad()
     log = data.get("fetch_log")
     log, trunc, failed = _clean_log(log if isinstance(log, dict) else {}, cards)
     entries = {c.account_id: c for c in cards}

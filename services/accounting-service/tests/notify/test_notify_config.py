@@ -145,6 +145,7 @@ def _hub(tmp_path, value: str):
     '"https://hub.example.invalid/*x*"', '"https:///path"', '"https://hub.example.invalid/?q=1"',
     '"https://hub.example.invalid/#frag"', '"https://hub.example.invalid:port"', '"https://[::1"',
     '"https://hub.example.invalid/`x`"', '"https://hub.example.invalid/@everyone"',
+    '"https://."', '"https://a..b"', '"https://-x-"', '"https://hub.example.invalid:"', '"http://[::1]:18080"',
 ])
 def test_hub_base_url_must_be_a_printable_http_url(tmp_path, bad):
     with pytest.raises(ConfigError) as e:

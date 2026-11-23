@@ -53,8 +53,10 @@ def _make_archive(report_dir: Path, now: datetime) -> Path:
         # mkdir(parents=True) gives the parents the umask's mode; every directory this run creates is 0700
         for d in reversed([report_dir, *report_dir.parents]):
             if not d.exists():
-                d.mkdir(mode=0o700)
-                d.chmod(0o700)  # the umask may have cleared owner bits
+                try:
+                    d.mkdir(mode=0o700)
+                except FileExistsError:
+                    pass  # made by someone else since the check
     except OSError:
         raise TermsArchiveError(report_dir) from None
     archive = report_dir / now.strftime("%Y%m%dT%H%M%SZ")

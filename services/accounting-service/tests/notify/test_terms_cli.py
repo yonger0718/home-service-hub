@@ -527,3 +527,23 @@ def test_missing_parents_of_report_dir_are_created_0700(tmp_path):
     made = [kept / "a", kept / "a" / "b", kept / "a" / "b" / "reports", arch]
     assert [stat.S_IMODE(p.stat().st_mode) for p in made] == [0o700] * 4
     assert stat.S_IMODE(kept.stat().st_mode) == 0o755  # an existing directory is left as it is
+
+
+def test_a_directory_made_by_someone_else_meanwhile_is_fine(tmp_path, monkeypatch):
+    target = tmp_path / "a" / "reports"
+    real = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda self: False if self == tmp_path / "a" else real(self))
+    (tmp_path / "a").mkdir()  # "created by a concurrent run" between the check and the mkdir
+    arch = terms._make_archive(target, datetime(2026, 11, 3, 1, 0, 0, tzinfo=timezone.utc))
+    assert arch.is_dir() and arch.parent == target
+
+
+def test_os_error_notice_says_where_on_stderr_only(tenv, monkeypatch, capsys):
+    def boom(path, state):
+        raise PermissionError(errno.EACCES, "Permission denied", "/secret/place/terms-state.json")
+
+    monkeypatch.setattr(terms, "save_terms_state", boom)
+    assert tenv.run("--cause", "monthly", "--send") == 1
+    err = capsys.readouterr().err
+    assert "PermissionError EACCES" in err and "(at test_terms_cli.py:" in err and "/secret" not in err
+    assert tenv.failure.read_text() == "❌ 帳務通知失敗：terms 2026-11-03 PermissionError EACCES"

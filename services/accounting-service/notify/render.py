@@ -160,14 +160,12 @@ def render_failure(reason: str) -> str:
 
 
 def _cut(line: str, limit: int) -> int:
-    """Where to cut a line longer than ``limit``: at ``limit``, or just before a ``<…>`` token the cut would fall
-    inside, so a link is never sent in two halves (the first half would be a URL of its own). A token that does
-    not fit in one message is cut hard."""
+    """Where to cut a line longer than ``limit``: at ``limit``, or just before a ``<…`` token that is still open
+    there, so a link is never cut near its start (the first half would be a URL of another host). A token longer
+    than a message then starts its own piece and is cut a whole message in."""
     start = line.rfind("<", 0, limit)
     if start > 0 and ">" not in line[start:limit]:
-        end = line.find(">", limit)
-        if end != -1 and end - start < limit:
-            return start
+        return start
     return limit
 
 

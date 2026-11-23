@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import fields
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from notify.config import NotifyConfig
 from notify.render import _settings_link, split_blocks
-from decimal import Decimal
-
 from notify.terms_config import NUMBER_FIELDS, Dismissal, format_number
 from notify.terms_dismiss import EXPIRED, RULE_GONE, Applied
 from notify.terms_input import TermsInput

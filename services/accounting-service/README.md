@@ -291,7 +291,7 @@ delivered through `hermes send` to `discord_target`. It only issues GET requests
 Business days come from `GET /calendar/business-days`; a due date past its `last_known_day` is a failure.
 
 - Config: `~/.config/homehub-notify.toml` (mode 0600), copied from `deploy/notify/homehub-notify.example.toml`. Required keys
-  `api_base`, `token_file`, `hub_base_url`, `discord_target` (write `<discord target>` placeholders in anything committed); optional
+  `api_base`, `token_file`, `hub_base_url` (an `http`/`https` URL with a host name or IPv4 address and plain URL characters only, no userinfo, query or fragment; an IPv6 literal is refused: it is printed in every message), `discord_target` (write `<discord target>` placeholders in anything committed); optional
   `lead_business_days`, `weekly_open_case_limit`, `expected_statement_grace_days`, `min_buffer`, `state_file`
   (default `~/.local/state/homehub-notify/state.json`) and a `[lead_overrides]` table per account id.
   The 國泰證券 daily-statement status section is off unless `portfolio_base` is set (the portfolio API, e.g. `http://127.0.0.1:8001`);
@@ -362,7 +362,7 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
   `hermes_model` 為必填（設定繞過後沒有預設模型），`hermes_provider` 預設 `anthropic`；另有 `report_dir`、`hermes_toolsets`（必須是 `web`）、
   `hermes_timeout_seconds`、`max_output_bytes`、`terms_state_file`、`ignore_accounts`。每張卡需 `official`、`bank_domains`、
   `tier`（`precise` 或 `signal`），可選 `country`、`language`、`currency`、`aliases`、`year_end_window`。
-  卡的 key 必須是不含前導零的十進位帳號 id（`"101"`）；`bank_domains` 必須是至少含一個點的主機名稱（不含 scheme、路徑）。
+  卡的 key 必須是不含前導零的十進位帳號 id（`"101"`）；`bank_domains` 必須是至少含一個點的主機名稱（不含 scheme、路徑；最後一段不能全是數字，IP 位址不行）。
   `hermes_timeout_seconds` 只能是 1–1840：兩個 terms service 的 `TimeoutStartSec=1900`，systemd 要比 Hermes 晚 60 秒才中止，
   要調高就得同時改 unit。
 - CLI：

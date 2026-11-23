@@ -539,3 +539,10 @@ def test_demotion_names_the_real_reason(source, quote, reason):
     f = {"rule_id": 1, "field": "rate", "site": "1", "system": "2", "source": source, "quote": quote}
     (u,) = parse_result(fx.one_card({"account_id": 101, "status": "changed", "findings": [f]}), ONE).cards[0].unverified
     assert u.reason == reason
+
+
+def test_text_that_cannot_be_encoded_is_a_parse_error():
+    """A lone surrogate escape is valid JSON but cannot be written or sent: refuse the answer, no traceback."""
+    raw = '{"cards": [{"account_id": 101, "status": "signal", "notes": "\\ud83d"}], "fetch_log": {}}'
+    with pytest.raises(TermsParseError):
+        parse_result("```json\n" + raw + "\n```\n", ONE)

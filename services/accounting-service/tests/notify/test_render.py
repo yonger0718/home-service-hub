@@ -193,5 +193,16 @@ def test_split_lines_cuts_a_token_longer_than_a_message_hard():
     from notify.render import _split_lines
     long = "<" + "u" * 50 + ">"
     assert _split_lines(long, 30) == [long[:30], long[30:]]
-    assert _split_lines("a" + long, 30) == [("a" + long)[:30], ("a" + long)[30:]]
-    assert _split_lines("a" * 25 + "<no closing bracket here", 30) == ["a" * 25 + "<no c", "losing bracket here"]
+    # a token that does not fit starts its own piece, so its hard cut falls a whole message in, never near its start
+    assert _split_lines("a" + long, 30) == ["a", long[:30], long[30:]]
+    assert _split_lines("a" * 25 + "<no closing bracket here", 30) == ["a" * 25, "<no closing bracket here"]
+
+
+def test_split_lines_never_cuts_a_long_link_inside_its_host():
+    from notify.render import LIMIT, _split_lines
+    url = "<https://evil.co.example-bank.com/" + "a" * 1990 + ">"
+    for pad in (1, 500, 1975, 1985, 1999):
+        pieces = _split_lines("9" * pad + " — " + url, LIMIT)
+        assert all(0 < len(p) <= LIMIT for p in pieces) and "".join(pieces) == "9" * pad + " — " + url
+        (first,) = [p for p in pieces if "<https://" in p]
+        assert first.startswith("<https://evil.co.example-bank.com/a"), pad

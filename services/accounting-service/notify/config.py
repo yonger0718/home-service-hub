@@ -70,19 +70,22 @@ def _hhmm(raw: dict, key: str, default: time) -> time:
 # Printable-URL rule: RFC 3986 characters minus @ ' * and everything Discord can turn into a link or mention.
 # Every URL a message prints in full passes it (the terms source rule, and hub_base_url below).
 PRINTABLE_URL = re.compile(r"[A-Za-z0-9\-._~:/?#!$&+,;=%()]+")
+_HUB_LABEL = r"[a-z0-9]([a-z0-9-]*[a-z0-9])?"
+_HUB_HOST = re.compile(rf"{_HUB_LABEL}(\.{_HUB_LABEL})*")  # a name or an IPv4 address; no IPv6 literal
 
 
 def _hub_url(value: str) -> str:
-    """``hub_base_url`` is printed in every message as part of a settings link: an http(s) URL with a host, the
-    printable characters only, no userinfo, query or fragment."""
+    """``hub_base_url`` is printed in every message as part of a settings link: an http(s) URL with a host name
+    (or IPv4 address), the printable characters only, no userinfo, query or fragment."""
     url = value.strip().rstrip("/")
     try:
         parts = urlsplit(url)
         host, _ = parts.hostname, parts.port  # .port raises on a non-numeric port
     except ValueError:
         raise ConfigError("hub_base_url") from None
-    if (parts.scheme not in ("http", "https") or not host or "@" in parts.netloc or parts.query or parts.fragment
-            or "?" in url or "#" in url or not PRINTABLE_URL.fullmatch(url)):
+    if (parts.scheme not in ("http", "https") or not host or not _HUB_HOST.fullmatch(host)
+            or "@" in parts.netloc or parts.netloc.endswith(":") or "?" in url or "#" in url
+            or not PRINTABLE_URL.fullmatch(url)):
         raise ConfigError("hub_base_url")
     return url
 

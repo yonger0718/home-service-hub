@@ -36,7 +36,7 @@
 **Interfaces:** `run_hermes(...)` signature and the `runner(argv, env, cwd, out_fd, err_fd)` contract unchanged; `_default_runner` unchanged.
 
 - [ ] Tests: `test_overflowing_child_is_killed_and_file_stays_at_the_cap` (real `sh -c` child writing ~5 MB with a 1000-byte cap: `HermesError`, `hermes.out` is cap + marker, the run returns in under 5 s); `test_timed_out_run_leaves_capped_files`; `test_grandchild_holding_the_pipe_does_not_hang`; `test_unopenable_output_file_is_hermes_error`; the existing cap, timeout and stderr tests keep passing with pipe ends.
-- [ ] Run: FAIL. Implement (pipes, two reader threads, wait loop polling an `over` event, join with timeout). Run file, then suite: PASS.
+- [ ] Run: FAIL. Implement (pipes, two reader threads, wait loop polling an `over` event and killing only an unreaped child, join with timeout). Run file, then suite: PASS.
 - [ ] Commit `fix(notify): cap the Hermes output while it runs (#286)`.
 
 ### Task 2: `fetch_log.failed` by account
@@ -45,7 +45,7 @@
 
 **Interfaces:** `CardResult.failed: tuple[str, ...] = ()` (each `"<url>"` or `"<url> (status)"` text, URL already through `source_ok`); cleaned `fetch_log["failed"]` stays a list of those texts (Ruling during execution: the attribution lives in `CardResult.failed`, so the archived log keeps its shape and the existing parser tests stand; costs nothing, the card field is in `result.json`); `terms_render._block(card, d, head, rows)` reads `card.failed`.
 
-- [ ] Tests: object entry shown under its card only (two cards, one bank); object with a URL off the card's domains dropped; object naming a card outside the run dropped; non-int `account_id` dropped; bad `status` left out; string entry with one owner attributed; string entry with two owners under neither and archived with `account_id` null; non-list `failed` still a parse error; the prompt and contract name the object form.
+- [ ] Tests: object entry shown under its card only (two cards, one bank); object with a URL off the card's domains dropped; object naming a card outside the run dropped; non-int `account_id` dropped; bad `status` left out; string entry with one owner attributed; string entry with two owners under neither and still in the archived log; non-list `failed` still a parse error; the prompt and contract name the object form.
 - [ ] Run: FAIL. Implement. Suite: PASS.
 - [ ] Commit `fix(notify): attribute failed fetches to their card (#286)`.
 
@@ -53,7 +53,7 @@
 
 **Files:** Modify `notify/terms.py`, `notify/cli.py`; Test `tests/notify/test_terms_cli.py`, `tests/notify/test_cli.py`.
 
-- [ ] Tests: `OSError` from an archive write gives exit 1, one failure line `TermsArchiveError archive <path>`, no traceback; `report_dir` that cannot be created the same; `OSError` in a `daily` run gives exit 1 and a line with the class only; a failure file that cannot be written still exits 1.
+- [ ] Tests: `OSError` from an archive write gives exit 1, one failure line `TermsArchiveError archive <path>`, no traceback; `report_dir` that cannot be created the same; `OSError` in a `daily` run gives exit 1 and a line with the class and errno name only; a failure file that cannot be written still exits 1.
 - [ ] Run: FAIL. Implement. Suite: PASS.
 - [ ] Commit `fix(notify): file errors end in a failure notice (#286)`.
 
@@ -77,7 +77,7 @@
 
 ### Task 6: Config hygiene and spec wording
 
-**Files:** Modify `notify/config.py`, `notify/terms_config.py`, `notify/terms_parse.py` (import the shared rule), `docs/superpowers/specs/2026-11-03-reward-terms-check-design.md` (§4, §5 digest line), `services/accounting-service/README.md` if it lists the checks; Test `tests/notify/test_config.py`, `test_terms_config.py`.
+**Files:** Modify `notify/config.py`, `notify/terms_config.py`, `notify/terms_parse.py` (import the shared rule), `docs/superpowers/specs/2026-11-03-reward-terms-check-design.md` (§4, §5 digest line), `services/accounting-service/README.md` if it lists the checks; Test `tests/notify/test_notify_config.py`, `test_terms_config.py`.
 
 **Interfaces:** `config.PRINTABLE_URL: re.Pattern` (moved from `terms_parse._PRINTABLE`).
 
@@ -85,3 +85,16 @@
 - [ ] Run: FAIL. Implement. Suite: PASS.
 - [ ] Check the production configuration loads with this branch's code (pass / fail only).
 - [ ] Commit `fix(notify): check hub_base_url and numeric bank domains (#286)`.
+
+### Task 7: Final review fixes
+
+Whole-branch review on `bdf6c944`: no Critical; one Important (a link longer than a message was still cut inside its host: `_cut` moved only for tokens that fit). Fixed test-first, together with these minors, re-graded by effect:
+
+- The overflow kill ran in a reader thread and could fire after the child was reaped (pid reuse). The wait loop now polls and kills only an unreaped child, as the spec said.
+- A lone surrogate escape in the model's JSON raised `UnicodeEncodeError` outside the failure classes: now a parse error.
+- `_make_archive` tolerates a directory made between its check and its `mkdir`; the untested `chmod` is gone.
+- `hub_base_url` hosts: a host name or IPv4 only; an empty port is refused.
+- The `OSError` notice says the source file and line on stderr; the errno name only for built-in classes.
+- Tests: real child over the pipe buffer, real child timing out, the reader's write-failure branch; the grandchild test no longer depends on a 1 s margin.
+
+Deferred minors: a reader still alive after the drain time is taken as done (theoretical short read); `report_dir` prints raw in the message head (owner config, predates the branch); `_split_lines` can return an empty piece for a block ending in a blank line (unreachable from today's renderers, predates the branch).

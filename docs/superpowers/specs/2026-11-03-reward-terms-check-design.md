@@ -140,7 +140,7 @@ Validation: `official` non-empty, `bank_domains` non-empty list of hostnames, `t
 three upper-case letters, `aliases` list of strings, `year_end_window` bool (default derived
 from `country`); account ids must be ints. Card keys must be canonical decimal ids
 (`[1-9][0-9]*`, a duplicate id is refused), each `bank_domains` entry an LDH hostname with at
-least one dot, and `hermes_timeout_seconds` within 1..1840 so the units' `TimeoutStartSec=1900`
+least one dot whose last label is not all digits (#286), and `hermes_timeout_seconds` within 1..1840 so the units' `TimeoutStartSec=1900`
 outlasts Hermes (SDD final review). Loader errors name the key only.
 
 At run time the command reads, for each registered card, `GET /accounts/{id}/reward-rules`

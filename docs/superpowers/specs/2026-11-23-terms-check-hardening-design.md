@@ -52,8 +52,11 @@ into `hermes.out` / `hermes.err` and stop writing at `max_output_bytes`; the fir
 the cap appends the truncated marker, marks the stream as over, and the rest is read and
 dropped (so the child never blocks on a full pipe). The wait loop notices an over stream
 within a fraction of a second, kills the process group and raises `HermesError`. A timeout
-kills the group as before; the files are already bounded. After the process ends the readers
-are joined with a short timeout, so a grandchild that keeps a pipe open cannot hang the run.
+kills the group as before; the files are already bounded. The kill is sent by the waiting
+thread only, and only while the child has not been reaped (afterwards its pid can belong to
+another process). After the process ends the readers are joined with a short timeout, so a
+grandchild that keeps a pipe open cannot hang the run; if such a grandchild passes the cap
+later, the run fails and the grandchild is not signalled.
 
 The injected `runner(argv, env, cwd, out_fd, err_fd)` interface does not change: the fds are
 now pipe ends instead of files.
@@ -87,8 +90,10 @@ domain (it still applies the source rule before printing a link).
 - `run_hermes`: an `OSError` opening `hermes.out` / `hermes.err` or the pipes becomes
   `HermesError`.
 - `cli.FAILURES` gains `OSError` as the backstop for the remaining file work (state files of
-  `daily`, `weekly` and `terms`): the failure line carries the exception class and no path or
-  message text. `_fail` writing the failure file is guarded, so a full disk cannot turn the
+  `daily`, `weekly` and `terms`): the failure line carries the exception class and the errno
+  name, no path or message text; stderr also names the source file and line that raised.
+- A model answer whose text cannot be encoded (a lone surrogate escape) is a parse error: it
+  could be neither archived nor sent. `_fail` writing the failure file is guarded, so a full disk cannot turn the
   notice into a traceback.
 
 ### 4. Parent directories of `report_dir`
@@ -100,9 +105,10 @@ leaf). Existing directories are left as they are.
 
 The `if not line and out and not cur` branch has no effect (the assignment below it gives the
 same result) and its comment describes a case that cannot happen. It is removed. A hard cut no
-longer falls inside a `<…>` token: when the cut point is inside one that fits in a message,
-the cut moves to just before its `<`. So a URL is never sent in two halves (the first half
-would be a URL of another host).
+longer falls inside a `<…` token that is open at the cut point: the cut moves to just before
+its `<`. A link that fits in a message is never sent in two halves, and one that does not
+(a source URL may be 2048 characters, a message 2000) starts its own piece, so its cut falls a
+whole message in and never near its host (the first half would be a URL of another host).
 
 ### 6. Digest of unverified findings
 
@@ -128,9 +134,10 @@ block says `announced`", which is what the code does.
 
 ### 10. Config hygiene
 
-- `hub_base_url` must be an `http` / `https` URL with a host, made of the printable-URL
-  characters only (the rule every printed source URL passes), without userinfo. It is printed
-  in every message as part of the settings link.
+- `hub_base_url` must be an `http` / `https` URL with a host name or IPv4 address, made of the
+  printable-URL characters only (the rule every printed source URL passes), without userinfo,
+  query or fragment. An IPv6 literal is refused (its brackets are not printable-URL
+  characters). It is printed in every message as part of the settings link.
 - A `bank_domains` entry whose last label is all digits is refused (`10.0.0.1`, `example.123`).
 
 Both checks are verified against the production configuration before the release (pass /
@@ -148,7 +155,9 @@ text prints as it is.
   child may have written up to one pipe buffer more before it is killed; that data is dropped.
 - A model that keeps the old string form for `failed` loses the hint for banks with two
   registered cards.
-- A token longer than a whole message is still cut hard.
+- A token longer than a whole message is still cut, a whole message into it.
+- A reader still busy when the drain time is over is taken as done: the answer is read from
+  the file as it is then.
 
 ## Tests
 
