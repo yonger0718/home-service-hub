@@ -248,3 +248,47 @@ def test_missing_rule_and_next_terms_dismissals_need_no_rule():
     a = Dismissal("missing_rule", contains=("LINE Pay",), until=date(2026, 12, 31))
     b = Dismissal("next_terms", value="2027-03-31")
     assert _apply(_card(status="unchanged"), a, b, live=frozenset()).stale == ()
+
+
+# --- next_terms pinned on the announced rates and caps ---
+
+def _terms(*rows, end="2027-03-31") -> NextTerms:
+    rules = tuple({"name": f"r{i}", "rate": rate, "cap": cap, "notes": None} for i, (rate, cap) in enumerate(rows))
+    return NextTerms(announced=True, period=("2027-01-01", end), rules=rules, source=SRC, quote="q")
+
+
+RATES = (("0.88", None), ("1", "200"), ("3", "888"))
+
+
+def test_rates_pin_hides_the_same_numbers_in_any_order_and_spelling():
+    d = Dismissal("next_terms", value="2027-03-31", rates=RATES)
+    card = _card(status="announced", next_terms=_terms(("3.0000", "888"), ("0.88", None), ("1", "200.00")))
+    assert _apply(card, d).hidden_next_terms
+
+
+def test_rates_pin_shows_the_block_when_a_rate_or_cap_moved():
+    d = Dismissal("next_terms", value="2027-03-31", rates=RATES)
+    for rows in ((("3", "888"), ("0.88", None), ("1", "100")),      # a cap was cut
+                 (("2", "888"), ("0.88", None), ("1", "200")),      # a rate was cut
+                 (("3", "888"), ("0.88", None)),                    # a row is gone
+                 (("3", "888"), ("0.88", None), ("1", "200"), ("1", "200"))):  # a row was added
+        card = _card(status="announced", next_terms=_terms(*rows))
+        got = _apply(card, d)
+        assert not got.hidden_next_terms and got.card is card, rows
+
+
+def test_rates_pin_counts_repeated_rows():
+    d = Dismissal("next_terms", value="2027-03-31", rates=(("1", "200"), ("1", "200")))
+    assert _apply(_card(status="announced", next_terms=_terms(("1", "200"), ("1", "200"))), d).hidden_next_terms
+    assert not _apply(_card(status="announced", next_terms=_terms(("1", "200"))), d).hidden_next_terms
+
+
+def test_without_a_rates_pin_only_the_period_end_counts():
+    d = Dismissal("next_terms", value="2027-03-31")
+    assert _apply(_card(status="announced", next_terms=_terms(("9", None))), d).hidden_next_terms
+
+
+def test_terms_rates_reads_the_announced_rows():
+    from notify.terms_dismiss import terms_rates
+    assert terms_rates(_terms(("3.0000", "888"), (None, None), ("0.88", None))) == (
+        (None, None), ("0.88", None), ("3", "888"))

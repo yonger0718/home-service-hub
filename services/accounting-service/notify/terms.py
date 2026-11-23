@@ -60,6 +60,8 @@ def _dismissed_json(applied: dict[int, Applied]) -> dict:
         str(aid): {
             "hidden": [dataclasses.asdict(f) for f in a.hidden],
             "hidden_next_terms": a.hidden_next_terms,
+            # the `rates` pin a next_terms entry can carry, in the config's own spelling
+            "hidden_next_terms_rates": [f"{r or 'none'}/{c or 'none'}" for r, c in a.hidden_rates],
             "stale": [{"field": d.field, "rule": d.rule, "value": d.value, "contains": list(d.contains),
                        "reason": reason} for d, reason in a.stale],
         }

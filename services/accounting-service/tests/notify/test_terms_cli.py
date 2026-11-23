@@ -362,7 +362,8 @@ def test_dismissed_announced_block_is_hidden(tmp_path, monkeypatch):
     message = (arch / "message.md").read_text()
     assert "下期條款已公告" not in message and "【Gamma】" not in message
     assert "已忽略 1 項：Gamma 1" in message.split("\n")
-    assert json.loads((arch / "dismissed.json").read_text())["301"]["hidden_next_terms"] is True
+    hidden = json.loads((arch / "dismissed.json").read_text())["301"]
+    assert hidden["hidden_next_terms"] is True and hidden["hidden_next_terms_rates"] == ["1.5/3000"]
     assert json.loads((arch / "result.json").read_text())["cards"][2]["next_terms"]["announced"] is True
 
 
@@ -411,3 +412,22 @@ def test_year_end_run_does_not_judge_cards_outside_the_window(tmp_path, monkeypa
     monkeypatch.setattr(terms, "_utcnow", lambda: datetime(2026, 11, 10, 1, 0, 0, tzinfo=timezone.utc))
     assert env.run("--cause", "monthly") == 0
     assert "忽略清單失效：Gamma 規則 999 回饋率（規則已不在）" in (env.archives[-1] / "message.md").read_text()
+
+
+def _rates_env(tmp_path, monkeypatch, rates: str) -> TermsEnv:
+    return _denv(tmp_path, monkeypatch, '\n[[terms.cards."301".dismiss]]\nfield = "next_terms"\n'
+                                        f'value = "2027-03-31"\nrates = {rates}\n')
+
+
+def test_announced_block_comes_back_when_its_rates_moved(tmp_path, monkeypatch):
+    """FULL_STDOUT announces 1.5% cap 3000 for 301; the entry was written for 2% cap 3000."""
+    env = _rates_env(tmp_path, monkeypatch, '["2/3000"]')
+    assert env.run("--cause", "monthly") == 0
+    message = (env.archives[0] / "message.md").read_text()
+    assert "· 下期條款已公告 2027-01-01～2027-03-31：" in message and "已忽略" not in message
+
+
+def test_announced_block_with_the_pinned_rates_is_hidden(tmp_path, monkeypatch):
+    env = _rates_env(tmp_path, monkeypatch, '["1.5/3000.00"]')
+    assert env.run("--cause", "monthly") == 0
+    assert "下期條款已公告" not in (env.archives[0] / "message.md").read_text()

@@ -37,6 +37,29 @@ tier = "precise"                              # precise | signal
 # aliases = []                                # extra names to search (old names, English names)
 # year_end_window = true                      # default: true when country is TW, false otherwise
 
+# Dismiss list: findings the owner accepted, so they stop repeating. The notifier matches them itself; Hermes
+# never sees them. Hidden items stay in the run's result.json and are listed in dismissed.json.
+[[terms.cards."101".dismiss]]                 # one rule field, pinned to the value the bank publishes:
+field = "starts_on"                           # it comes back when the bank prints another value
+rule = 162                                    # the rule id (result.json: findings[].rule_id)
+value = "2026-07-01"                          # pin: dates, rate / fixed_amount / total_cap, is_basic, method, window
+note = "the bank prints the current period only"
+
+[[terms.cards."101".dismiss]]                 # no value = any value of that field of that rule
+field = "description"                         # name and description can only be dismissed whole
+rule = 163
+
+[[terms.cards."101".dismiss]]                 # a programme the owner does not want as a rule
+field = "missing_rule"
+contains = ["LINE Pay", "10%"]                # every string must occur in the finding's text or quote
+until = "2026-12-31"                          # required here: the last day the entry applies
+
+[[terms.cards."101".dismiss]]                 # announced terms the rules already cover
+field = "next_terms"
+value = "2027-03-31"                          # the announced period's end date
+rates = ["0.88/none", "3/888", "1/200", "1/200"]  # optional: the announced rows as "rate/cap"; when the bank
+                                              # revises a number within the same period the block shows again
+
 [terms.cards."102"]
 official = "國泰世華 CUBE 卡"
 bank_domains = ["cathaybk.com.tw", "cathay-cube.com.tw"]

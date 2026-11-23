@@ -9,11 +9,11 @@ import re
 import unicodedata
 from dataclasses import dataclass, replace
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from notify.terms_config import (DATE_FIELDS, NO_VALUE, NUMBER_FIELDS, TOKEN_FIELDS, CardEntry, Dismissal,
-                                 format_number)
-from notify.terms_parse import CardResult, Finding
+                                 format_number, sort_rates)
+from notify.terms_parse import CardResult, Finding, NextTerms
 
 EXPIRED = "expired"  # `until` is past, or the announced period a next_terms entry names has ended
 RULE_GONE = "rule"  # the rule a rule-field entry names is not among the card's live rules of this run
@@ -30,6 +30,7 @@ class Applied:
     hidden: tuple[Finding, ...] = ()
     hidden_next_terms: bool = False
     stale: tuple[tuple[Dismissal, str], ...] = ()
+    hidden_rates: tuple[tuple[str | None, str | None], ...] = ()  # of the hidden announced block
 
     @property
     def hidden_count(self) -> int:
@@ -60,6 +61,26 @@ def site_key(field: str, site: str | None) -> str | None:
         m = _TOKEN.match(text)
         return m.group(1) if m else None
     return None
+
+
+def _number(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        return format_number(Decimal(str(value)))
+    except InvalidOperation:
+        return str(value)
+
+
+def terms_rates(nt: NextTerms) -> tuple[tuple[str | None, str | None], ...]:
+    """The announced rows as sorted (rate, cap) pairs: the part of an announced block that is numbers, which the
+    model writes the same way from run to run (the row names and notes it words afresh each time)."""
+    return sort_rates((_number(r.get("rate")), _number(r.get("cap"))) for r in nt.rules)
+
+
+def _hides_terms(d: Dismissal, nt: NextTerms) -> bool:
+    return (d.field == "next_terms" and nt.period[1] == d.value
+            and (d.rates is None or terms_rates(nt) == d.rates))
 
 
 def _fold(text: str) -> str:
@@ -102,8 +123,7 @@ def apply_dismissals(card: CardResult, entry: CardEntry, live_rule_ids: frozense
     rule_entries = [d for d in active if d.field != "next_terms"]
     flags = [any(_hides(d, f) for d in rule_entries) for f in card.findings]
     nt = card.next_terms
-    hide_nt = bool(nt and nt.announced and any(
-        d.field == "next_terms" and nt.period[1] == d.value for d in active))
+    hide_nt = bool(nt and nt.announced and any(_hides_terms(d, nt) for d in active))
     if not any(flags) and not hide_nt:
         return Applied(card, stale=tuple(stale))
     kept = tuple(f for f, hide in zip(card.findings, flags) if not hide)
@@ -114,4 +134,5 @@ def apply_dismissals(card: CardResult, entry: CardEntry, live_rule_ids: frozense
         hidden=tuple(f for f, hide in zip(card.findings, flags) if hide),
         hidden_next_terms=hide_nt,
         stale=tuple(stale),
+        hidden_rates=terms_rates(nt) if hide_nt else (),
     )

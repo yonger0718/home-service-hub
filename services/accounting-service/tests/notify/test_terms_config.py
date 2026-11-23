@@ -294,3 +294,39 @@ def test_toml_date_literals_are_accepted(tmp_path):
     assert (d.value, d.until) == ("2026-07-01", date(2026, 12, 31))
     assert _dismiss_err(tmp_path, 'field = "rate"\nrule = 1\nuntil = 2026-12-31T00:00:00') == (
         "terms.cards.101.dismiss[0].until")
+
+
+def test_example_toml_documents_the_four_dismiss_shapes():
+    cards = {c.account_id: c for c in load_config(EXAMPLE_FILE, with_terms=True).terms.cards}
+    got = [(d.field, d.rule, d.value, d.contains, d.until is not None) for d in cards[101].dismiss]
+    assert got == [("starts_on", 162, "2026-07-01", (), False), ("description", 163, None, (), False),
+                   ("missing_rule", None, None, ("LINE Pay", "10%"), True), ("next_terms", None, "2027-03-31", (), False)]
+    assert cards[101].dismiss[3].rates == (("0.88", None), ("1", "200"), ("1", "200"), ("3", "888"))
+    assert cards[102].dismiss == () and cards[301].dismiss == ()
+
+
+# --- next_terms: pin on the announced rates and caps ---
+
+def test_next_terms_rates_pin_is_normalised_and_sorted(tmp_path):
+    (d,) = _dismiss(tmp_path, 'field = "next_terms"\nvalue = "2027-03-31"\n'
+                              'rates = ["3.0/888", "0.88/none", "1/200.00", "1/200", "none/none"]')
+    assert d.rates == ((None, None), ("0.88", None), ("1", "200"), ("1", "200"), ("3", "888"))
+
+
+def test_next_terms_without_rates_has_no_rates_pin(tmp_path):
+    (d,) = _dismiss(tmp_path, 'field = "next_terms"\nvalue = "2027-03-31"')
+    assert d.rates is None
+
+
+@pytest.mark.parametrize("entry", [
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = "3/888"',
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = []',
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = ["3"]',
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = ["3/888/1"]',
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = ["three/888"]',
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = [3]',
+    'field = "rate"\nrule = 1\nrates = ["3/888"]',
+    'field = "missing_rule"\ncontains = ["ab"]\nuntil = "2026-12-31"\nrates = ["3/888"]',
+])
+def test_rates_refusals(tmp_path, entry):
+    assert _dismiss_err(tmp_path, entry) == "terms.cards.101.dismiss[0].rates"
