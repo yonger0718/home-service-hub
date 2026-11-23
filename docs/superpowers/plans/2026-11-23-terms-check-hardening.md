@@ -43,7 +43,7 @@
 
 **Files:** Modify `notify/terms_parse.py`, `notify/terms_render.py`, `notify/terms_prompt.py`, `notify/terms_prompt.md`; Test `tests/notify/test_terms_parse.py`, `test_terms_render.py`, `test_terms_prompt.py`.
 
-**Interfaces:** `CardResult.failed: tuple[str, ...] = ()` (each `"<url>"` or `"<url> (status)"` text, URL already through `source_ok`); cleaned `fetch_log["failed"]` = list of `{"account_id": int | None, "url": str, "status": str}`; `terms_render._block(card, d, head, rows)` reads `card.failed`.
+**Interfaces:** `CardResult.failed: tuple[str, ...] = ()` (each `"<url>"` or `"<url> (status)"` text, URL already through `source_ok`); cleaned `fetch_log["failed"]` stays a list of those texts (Ruling during execution: the attribution lives in `CardResult.failed`, so the archived log keeps its shape and the existing parser tests stand; costs nothing, the card field is in `result.json`); `terms_render._block(card, d, head, rows)` reads `card.failed`.
 
 - [ ] Tests: object entry shown under its card only (two cards, one bank); object with a URL off the card's domains dropped; object naming a card outside the run dropped; non-int `account_id` dropped; bad `status` left out; string entry with one owner attributed; string entry with two owners under neither and archived with `account_id` null; non-list `failed` still a parse error; the prompt and contract name the object form.
 - [ ] Run: FAIL. Implement. Suite: PASS.

@@ -82,6 +82,7 @@ class CardResult:
     sources: tuple[str, ...]
     notes: str
     truncated: tuple[TruncatedSource, ...]
+    failed: tuple[str, ...] = ()  # this card's failed fetches: "url" or "url (status)", the URL through source_ok
 
 
 @dataclass(frozen=True)
@@ -263,7 +264,9 @@ def _next_terms(raw: object, domains: tuple[str, ...]) -> tuple[NextTerms | None
 
 
 _UNVERIFIED = "[unverified source]"
-_FAILED_SUFFIX = re.compile(r" ?\(([0-9]{3}|[A-Za-z0-9 _-]{1,40})\)")  # fullmatch; ASCII digits only
+_STATUS = r"[0-9]{3}|[A-Za-z0-9 _-]{1,40}"  # ASCII digits only
+_FAILED_SUFFIX = re.compile(rf" ?\(({_STATUS})\)")  # fullmatch
+_FAILED_STATUS = re.compile(_STATUS)  # fullmatch
 _READ = re.compile(r"(?:[^\W\d]|[0-9 ~%,+\-]){0,80}")  # fullmatch; letters of any script, ASCII digits only
 
 
@@ -271,8 +274,33 @@ def _read_text(value: object) -> str:
     return value if isinstance(value, str) and _READ.fullmatch(value) else ""
 
 
-def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> tuple[dict, dict[int, tuple[TruncatedSource, ...]]]:
-    """The archived log (allowlisted keys, failing URLs replaced or dropped) and each card's truncated sources."""
+def _failed_entry(entry: object, by_id: dict[int, tuple[str, ...]], allowed: tuple[str, ...]) -> tuple[str, list[int]]:
+    """(printable text, owning cards) of one ``fetch_log.failed`` entry; ("", []) when it is dropped.
+
+    An object names its card: the URL must pass that card's source rule. A string (the form before #286) is
+    attributed by domain only when exactly one card of the run owns it; on a shared domain it belongs to none."""
+    if isinstance(entry, dict):
+        aid, url, status = entry.get("account_id"), entry.get("url"), entry.get("status")
+        if isinstance(aid, bool) or not isinstance(aid, int) or aid not in by_id or not isinstance(url, str):
+            return "", []
+        url = url.strip()
+        if not source_ok(url, by_id[aid]):
+            return "", []
+        if isinstance(status, int) and not isinstance(status, bool):
+            status = str(status)
+        ok = isinstance(status, str) and _FAILED_STATUS.fullmatch(status)
+        return (f"{url} ({status})" if ok else url), [aid]
+    text = _clean_failed(entry, allowed)
+    if not text:
+        return "", []
+    owners = [aid for aid, doms in by_id.items() if source_ok(text.split(" ", 1)[0], doms)]
+    return text, owners if len(owners) == 1 else []
+
+
+def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> tuple[
+        dict, dict[int, tuple[TruncatedSource, ...]], dict[int, tuple[str, ...]]]:
+    """The archived log (allowlisted keys, failing URLs replaced or dropped), each card's truncated sources and
+    each card's failed fetches."""
     allowed = tuple(d for c in cards for d in c.bank_domains)
     by_id = {c.account_id: c.bank_domains for c in cards}
     out = {k: v for k, v in log.items() if k in ("tool_calls", "failed", "truncated")}
@@ -282,7 +310,13 @@ def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> tuple[dict, dict[int,
     failed = log.get("failed", [])
     if not isinstance(failed, list):
         raise _bad()
-    out["failed"] = [u for u in (_clean_failed(x, allowed) for x in failed) if u]
+    out["failed"], failed_by = [], {}
+    for x in failed:
+        text, owners = _failed_entry(x, by_id, allowed)
+        if text:
+            out["failed"].append(text)
+            for aid in owners:
+                failed_by.setdefault(aid, []).append(text)
     trunc = log.get("truncated", [])
     if not isinstance(trunc, list):
         raise _bad()
@@ -301,7 +335,7 @@ def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> tuple[dict, dict[int,
             shown = url.strip() if ok else (_safe_url(url) if isinstance(url, str) else "")
             per_card.setdefault(aid, []).append(TruncatedSource(shown, ok, read))
     out["truncated"] = clean
-    return out, {k: tuple(v) for k, v in per_card.items()}
+    return out, {k: tuple(v) for k, v in per_card.items()}, {k: tuple(v) for k, v in failed_by.items()}
 
 
 def _clean_failed(entry: object, allowed: tuple[str, ...]) -> str:
@@ -315,7 +349,8 @@ def _clean_failed(entry: object, allowed: tuple[str, ...]) -> str:
     return url + rest if _FAILED_SUFFIX.fullmatch(rest) else url
 
 
-def _card(raw: object, entry: CardEntry, trunc: tuple[TruncatedSource, ...]) -> CardResult:
+def _card(raw: object, entry: CardEntry, trunc: tuple[TruncatedSource, ...],
+          failed: tuple[str, ...] = ()) -> CardResult:
     if not isinstance(raw, dict):
         raise _bad()
     status = raw.get("status")
@@ -346,11 +381,11 @@ def _card(raw: object, entry: CardEntry, trunc: tuple[TruncatedSource, ...]) -> 
     return CardResult(entry.account_id, status, _period_end(raw.get("current_period_end"), doms),
                       tuple(ok), tuple(bad), nt, nt_url,
                       tuple(s.strip() for s in srcs if isinstance(s, str) and source_ok(s, doms)),
-                      notes, trunc)
+                      notes, trunc, failed)
 
 
-def _empty(entry: CardEntry, trunc: tuple[TruncatedSource, ...]) -> CardResult:
-    return CardResult(entry.account_id, "not_found", None, (), (), None, None, (), "", trunc)
+def _empty(entry: CardEntry, trunc: tuple[TruncatedSource, ...], failed: tuple[str, ...] = ()) -> CardResult:
+    return CardResult(entry.account_id, "not_found", None, (), (), None, None, (), "", trunc, failed)
 
 
 def parse_result(stdout: str, cards: tuple[CardEntry, ...]) -> TermsResult:
@@ -362,7 +397,7 @@ def parse_result(stdout: str, cards: tuple[CardEntry, ...]) -> TermsResult:
     if not isinstance(data, dict) or not isinstance(data.get("cards"), list):
         raise _bad()
     log = data.get("fetch_log")
-    log, trunc = _clean_log(log if isinstance(log, dict) else {}, cards)
+    log, trunc, failed = _clean_log(log if isinstance(log, dict) else {}, cards)
     entries = {c.account_id: c for c in cards}
     seen: dict[int, object] = {}
     for raw in data["cards"]:
@@ -370,8 +405,10 @@ def parse_result(stdout: str, cards: tuple[CardEntry, ...]) -> TermsResult:
         if isinstance(aid, bool) or not isinstance(aid, int) or aid not in entries or aid in seen:
             raise _bad()
         seen[aid] = raw
-    return TermsResult(tuple(_card(seen[c.account_id], c, trunc.get(c.account_id, ())) if c.account_id in seen
-                             else _empty(c, trunc.get(c.account_id, ())) for c in cards), log)
+    return TermsResult(tuple(
+        _card(seen[c.account_id], c, trunc.get(c.account_id, ()), failed.get(c.account_id, ()))
+        if c.account_id in seen else _empty(c, trunc.get(c.account_id, ()), failed.get(c.account_id, ()))
+        for c in cards), log)
 
 
 def _system_value(value: object) -> str | None:

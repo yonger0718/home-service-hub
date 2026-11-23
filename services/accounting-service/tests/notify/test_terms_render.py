@@ -28,7 +28,7 @@ def entry(aid, official, tier="precise"):
 
 def card(aid, status="unchanged", **kw):
     base = dict(account_id=aid, status=status, current_period_end=None, findings=(), unverified=(),
-                next_terms=None, next_terms_unverified_url=None, sources=(), notes="", truncated=())
+                next_terms=None, next_terms_unverified_url=None, sources=(), notes="", truncated=(), failed=())
     return CardResult(**{**base, **kw})
 
 
@@ -152,14 +152,14 @@ def test_unverified_prints_host_only(fx):
 
 
 def test_not_found_count_without_detail_when_digest_matches(fx):
-    c = card(101, "not_found", unverified=(finding(source=OFF), finding(source=OFF, field="rate")))
-    log = {"failed": [ON + " (403)"], "truncated": []}
-    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_not_found=True)}, log=log)
+    c = card(101, "not_found", unverified=(finding(source=OFF), finding(source=OFF, field="rate")),
+             failed=(ON + " (403)",))
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_not_found=True)})
     assert "· 找不到官網來源（2 項未驗證）" in msg and f"　- <{ON}> (403)" in msg
     assert "未驗證（來源不在銀行網域）" not in msg
     (m2,) = run(fx, [entry(101, "A")], [card(101, "not_found")], {101: show(show_not_found=True)})
     assert "· 找不到官網來源\n" in m2 + "\n"
-    (m3,) = run(fx, [entry(101, "A")], [c], {101: show(show_not_found=True, show_unverified=True)}, log=log)
+    (m3,) = run(fx, [entry(101, "A")], [c], {101: show(show_not_found=True, show_unverified=True)})
     assert "未驗證（來源不在銀行網域）：結束日" in m3
 
 
@@ -180,14 +180,17 @@ def test_next_terms_unverified_only_card_gets_block(fx):
 
 
 def test_failures_are_per_card(fx):
-    other = CardEntry(account_id=102, official="O", bank_domains=("other-bank.com",), tier="precise")
-    a, b = "https://www.example-bank.com/a", "https://www.other-bank.com/b"
-    log = {"failed": [a + " (403)", b + " (500)", "[unverified source]"], "truncated": []}
+    """Two cards of one bank: each shows its own failed fetches, whatever the domain (#286)."""
+    other = CardEntry(account_id=102, official="O", bank_domains=("example-bank.com",), tier="precise")
+    a, b = "https://www.example-bank.com/a", "https://www.example-bank.com/b"
     d = {101: show(show_not_found=True), 102: show(show_not_found=True)}
-    (msg,) = run(fx, [entry(101, "A"), other], [card(101, "not_found"), card(102, "not_found")], d, log=log)
+    cards = [card(101, "not_found", failed=(a + " (403)",)), card(102, "not_found", failed=(b + " (500)", b))]
+    log = {"failed": [a + " (403)", b + " (500)", "https://www.example-bank.com/shared (403)"], "truncated": []}
+    (msg,) = run(fx, [entry(101, "A"), other], cards, d, log=log)
     first, second = msg.split("【O】")
     assert f"　- <{a}> (403)" in first and b not in first
-    assert f"　- <{b}> (500)" in second and a not in second and "[unverified" not in msg
+    assert f"　- <{b}> (500)" in second and f"　- <{b}>\n" in second + "\n" and a not in second
+    assert "shared" not in msg  # an entry of the log that no card owns is not printed
 
 
 # --- C1: no smuggled link or mention on any print path (final fix A1) ------------------------------------------
@@ -222,10 +225,10 @@ def test_smuggled_urls_never_print_on_any_path(fx, tail):
 
 def test_verified_urls_print_in_angle_brackets(fx):
     from notify.terms_parse import TruncatedSource
-    c = card(101, "not_found", findings=(finding(),), truncated=(TruncatedSource(ON, True, "r"),))
-    log = {"failed": [ON + " (403)"], "truncated": []}
+    c = card(101, "not_found", findings=(finding(),), truncated=(TruncatedSource(ON, True, "r"),),
+             failed=(ON + " (403)",))
     (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True, show_not_found=True,
-                                                           show_truncated=True)}, log=log)
+                                                           show_truncated=True)})
     assert f"— <{ON}>" in msg and f"（<{ON}> (r)）" in msg and f"　- <{ON}> (403)" in msg
     assert "→ <https://example.invalid/hub/accounting/accounts/101/settings>" in msg
     assert f" {ON}" not in msg.replace(f"<{ON}>", "")
@@ -268,8 +271,8 @@ def test_markdown_and_angle_tokens_escaped(fx):
 
 
 def test_failed_suffix_goes_through_safe_text(fx):
-    log = {"failed": [ON + " (read_timeout)"], "truncated": []}
-    (msg,) = run(fx, [entry(101, "A")], [card(101, "not_found")], {101: show(show_not_found=True)}, log=log)
+    c = card(101, "not_found", failed=(ON + " (read_timeout)",))
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_not_found=True)})
     assert f"　- <{ON}> (read\\_timeout)" in msg
 
 

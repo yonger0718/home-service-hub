@@ -22,7 +22,7 @@ If the next period's terms are already announced on an official page, list them 
 - Every claim carries a source URL and a verbatim snippet (`source` and `quote`) from that page. If you cannot reach an official source, use status `not_found` for that card. Never fill a value from memory or guesswork.
 - Read-only: do not modify anything. Do not call any HomeHub API.
 - If a long document could not be read in full, record it in `fetch_log.truncated` with the account id, the URL and how much you read.
-- Record failed fetches in `fetch_log.failed`, and the number of tool calls in `fetch_log.tool_calls`.
+- Record each failed fetch in `fetch_log.failed` with the account id of the card you were fetching it for, the URL and the status (an HTTP code or a short word such as `timeout`). Record the number of tool calls in `fetch_log.tool_calls`.
 - Report a card's `status` as one of: unchanged, changed, announced, not_found, signal. Field rules: `changed` needs `findings`; `announced` needs `next_terms`; `not_found`, `unchanged` and `signal` may omit both. `rate` and `cap` are a number or a string. Dates are ISO `YYYY-MM-DD` or null. `current_period_end` is optional and, when present, needs its own `source` and `quote`.
 
 ## Output format

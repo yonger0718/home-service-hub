@@ -95,10 +95,11 @@ def _announced(card: CardResult) -> list[str]:
     return out
 
 
-def _card_failures(failed: list, domains: tuple[str, ...]) -> list[str]:
-    """fetch_log failures whose URL passes this card's own source rule (parser keeps a ' (NNN)' suffix)."""
+def _card_failures(card: CardResult, domains: tuple[str, ...]) -> list[str]:
+    """The card's own failed fetches (attributed by the parser, #286; a ' (status)' suffix may follow the URL).
+    The source rule is checked again here: nothing prints as a link without it."""
     out = []
-    for entry in failed:
+    for entry in card.failed:
         url, _, rest = str(entry).strip().partition(" ")
         if source_ok(url, domains):
             suffix = _safe_text(rest)
@@ -165,7 +166,6 @@ def render_terms(inp: TermsInput, result: TermsResult, decisions: dict[int, Show
                  cfg: NotifyConfig, archive: Path, applied: dict[int, Applied] | None = None) -> list[str]:
     """``result`` is what is shown (dismissed items already removed); ``applied`` says what the dismiss list hid."""
     by_id = {c.account_id: c for c in result.cards}
-    failed = list(result.fetch_log.get("failed", []))
     blocks: list[str] = []
     quiet: list[str] = []
     for ci in inp.cards:
@@ -175,7 +175,7 @@ def render_terms(inp: TermsInput, result: TermsResult, decisions: dict[int, Show
             continue
         rows = {r.get("id"): r for r in ci.rules}
         head = f"【{ci.card.official}】 → {_link(_settings_link(cfg, aid))}"
-        blocks.append(_block(card, d, head, rows, _card_failures(failed, ci.card.bank_domains)))
+        blocks.append(_block(card, d, head, rows, _card_failures(card, ci.card.bank_domains)))
     m = len(inp.cards)
     total, hidden, stale = _dismiss_lines(inp, applied or {})
     if not blocks and not inp.unregistered and not stale:

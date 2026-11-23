@@ -72,12 +72,12 @@ Parser, per entry:
   from the archived log (as today for a failing URL).
 - A string (the old form, `"https://… (403)"`): attributed by domain only when exactly one
   card of the run owns the URL's domain. With several, it is shown under none (my call: a
-  hint under the wrong card is worse than no hint; the entry stays in the archived log with
-  `account_id` null).
+  hint under the wrong card is worse than no hint; the entry stays in the archived log).
 
-The cleaned log stores objects `{account_id, url, status}`. `CardResult` gains
-`failed: tuple[str, ...]` (printable `<url> (status)` parts are built by the renderer from the
-card's own entries). The renderer no longer matches failures by domain.
+The cleaned log keeps each surviving entry as the text `url` or `url (status)`, as before.
+The attribution lives in the card: `CardResult` gains `failed: tuple[str, ...]`, which is in
+`result.json`. The renderer prints the card's own entries and no longer matches failures by
+domain (it still applies the source rule before printing a link).
 
 ### 3. OSError on archive writes
 
