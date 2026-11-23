@@ -27,7 +27,7 @@ CONTRACT_JSON = """{
       "notes": "free text, ≤ 500 chars"
     }
   ],
-  "fetch_log": {"tool_calls": 15, "failed": ["https://… (403)"],
+  "fetch_log": {"tool_calls": 15, "failed": [{"account_id": 101, "url": "https://…", "status": "403"}],
                 "truncated": [{"account_id": 101, "url": "https://…", "read": "first ~40k chars of ~130k"}]}
 }"""
 

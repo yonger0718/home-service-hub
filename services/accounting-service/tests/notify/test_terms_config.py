@@ -133,6 +133,17 @@ def test_bank_domains_must_be_ldh_hostnames(tmp_path, bad):
     assert _card_err(tmp_path, '["a.com"]', bad) == "terms.cards.101.bank_domains"
 
 
+@pytest.mark.parametrize("bad", ['["10.0.0.1"]', '["example.123"]', '["a.com", "1.2"]', '["bank.com.0"]'])
+def test_bank_domains_refuse_a_numeric_last_label(tmp_path, bad):
+    """An IP address or an all-digit top label is not a bank's domain (#286)."""
+    assert _card_err(tmp_path, '["a.com"]', bad) == "terms.cards.101.bank_domains"
+
+
+def test_bank_domains_accept_digits_elsewhere(tmp_path):
+    body = TERMS + CARD.replace('["a.com"]', '["1800flowers.com", "123.example.co", "a.c0m"]')
+    assert _load(tmp_path, body).terms.cards[0].bank_domains == ("1800flowers.com", "123.example.co", "a.c0m")
+
+
 def test_bank_domains_accepts_hostnames(tmp_path):
     body = TERMS + CARD.replace('["a.com"]', '["Bank-1.example.com.tw", "x.co"]')
     assert _load(tmp_path, body).terms.cards[0].bank_domains == ("bank-1.example.com.tw", "x.co")

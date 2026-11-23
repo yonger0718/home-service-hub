@@ -2,7 +2,7 @@
 # Placeholders only.
 api_base = "http://127.0.0.1:8000"
 token_file = "~/.config/homehub-notify-token"
-hub_base_url = "https://hub.example.invalid"       # for links in messages
+hub_base_url = "https://hub.example.invalid"       # for links in messages: http(s), a host name or IPv4, no query
 discord_target = "discord:<channel-id>"
 lead_business_days = 2                             # debit reminder window
 weekly_open_case_limit = 10                        # items listed per account before "+N more"

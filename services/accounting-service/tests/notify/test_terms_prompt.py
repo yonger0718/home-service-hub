@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from pathlib import Path
 
 from notify.terms_config import CardEntry
 from notify.terms_input import RULE_FIELDS, CardInput, TermsInput
@@ -103,3 +104,9 @@ def test_multiple_domains_listed_and_empty_aliases_pinned():
     p = build_prompt(_inp(TW, US))
     assert 'bank_domains: ["example-bank.com","cards.example-bank.com"]' in p
     assert "aliases: []" in p
+
+
+def test_failed_fetches_are_reported_per_account():
+    assert '"failed": [{"account_id": 101, "url": "https://…", "status": "403"}]' in CONTRACT_JSON
+    template = (Path(__file__).resolve().parents[2] / "notify" / "terms_prompt.md").read_text(encoding="utf-8")
+    assert "`fetch_log.failed` with the account id" in template

@@ -1,6 +1,7 @@
 """`notify terms`: archive, send ordering, failure path. API = MockTransport, hermes = recorder, run_hermes = fake."""
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -470,3 +471,79 @@ def test_a_digest_saved_before_the_change_is_news_once(tmp_path, monkeypatch):
     monkeypatch.setattr(terms, "_utcnow", lambda: datetime(2026, 11, 17, 1, 0, 0, tzinfo=timezone.utc))
     assert env.run("--cause", "monthly", "--send") == 0
     assert (env.archives[-1] / "message.md").read_text() == "📋 回饋條款查核 2026-11-03：3 張卡無變動"
+
+
+# --- #286: a file error is a failure notice, not a traceback ---
+
+def _fail_open_of(monkeypatch, name: str, code: int = errno.ENOSPC):
+    real = os.open
+
+    def fake(path, flags, mode=0o777, **kw):
+        if str(path).endswith(name):
+            raise OSError(code, os.strerror(code), str(path))
+        return real(path, flags, mode, **kw)
+
+    monkeypatch.setattr(os, "open", fake)
+
+
+@pytest.mark.parametrize("name", ["input.json", "result.json", "dismissed.json", "message.md"])
+def test_archive_write_error_is_a_failure_notice(tenv, monkeypatch, capsys, name):
+    _fail_open_of(monkeypatch, name)
+    assert tenv.run("--cause", "monthly", "--send") == 1
+    (arch,) = tenv.archives
+    assert tenv.failure.read_text() == f"❌ 帳務通知失敗：terms 2026-11-03 TermsArchiveError archive {arch}"
+    assert tenv.sent == [] and not tenv.tstate.exists()
+    assert "No space" not in capsys.readouterr().err
+
+
+def test_report_dir_that_cannot_be_created_is_a_failure_notice(tenv):
+    tenv.reports.write_text("a file where the directory should be")
+    assert tenv.run("--cause", "monthly", "--send") == 1
+    assert tenv.failure.read_text() == f"❌ 帳務通知失敗：terms 2026-11-03 TermsArchiveError archive {tenv.reports}"
+    assert tenv.hermes_calls == [] and tenv.sent == []
+
+
+def test_state_file_error_after_the_send_is_a_failure_notice(tenv, monkeypatch, capsys):
+    def boom(path, state):
+        raise PermissionError(errno.EACCES, "Permission denied", "/secret/place/terms-state.json")
+
+    monkeypatch.setattr(terms, "save_terms_state", boom)
+    assert tenv.run("--cause", "monthly", "--send") == 1
+    text = tenv.failure.read_text()
+    assert text == "❌ 帳務通知失敗：terms 2026-11-03 PermissionError EACCES"
+    assert "/secret" not in capsys.readouterr().err
+
+
+# --- #286: every directory the run creates is 0700 ---
+
+def test_missing_parents_of_report_dir_are_created_0700(tmp_path):
+    old = os.umask(0o022)
+    try:
+        kept = tmp_path / "kept"
+        kept.mkdir(mode=0o755)
+        arch = terms._make_archive(kept / "a" / "b" / "reports", datetime(2026, 11, 3, 1, 0, 0, tzinfo=timezone.utc))
+    finally:
+        os.umask(old)
+    made = [kept / "a", kept / "a" / "b", kept / "a" / "b" / "reports", arch]
+    assert [stat.S_IMODE(p.stat().st_mode) for p in made] == [0o700] * 4
+    assert stat.S_IMODE(kept.stat().st_mode) == 0o755  # an existing directory is left as it is
+
+
+def test_a_directory_made_by_someone_else_meanwhile_is_fine(tmp_path, monkeypatch):
+    target = tmp_path / "a" / "reports"
+    real = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda self: False if self == tmp_path / "a" else real(self))
+    (tmp_path / "a").mkdir()  # "created by a concurrent run" between the check and the mkdir
+    arch = terms._make_archive(target, datetime(2026, 11, 3, 1, 0, 0, tzinfo=timezone.utc))
+    assert arch.is_dir() and arch.parent == target
+
+
+def test_os_error_notice_says_where_on_stderr_only(tenv, monkeypatch, capsys):
+    def boom(path, state):
+        raise PermissionError(errno.EACCES, "Permission denied", "/secret/place/terms-state.json")
+
+    monkeypatch.setattr(terms, "save_terms_state", boom)
+    assert tenv.run("--cause", "monthly", "--send") == 1
+    err = capsys.readouterr().err
+    assert "PermissionError EACCES" in err and "(at test_terms_cli.py:" in err and "/secret" not in err
+    assert tenv.failure.read_text() == "❌ 帳務通知失敗：terms 2026-11-03 PermissionError EACCES"

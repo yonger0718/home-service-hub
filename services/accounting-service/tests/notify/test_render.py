@@ -168,3 +168,41 @@ def test_valuation_source_without_a_value_renders_市值暫不可得(fx):
     out = render_daily(replace(rep, blocks=[blank] + rep.blocks[1:]), fx.cfg())[0]
     head = next(line for line in out.split("\n") if line.startswith("**薪轉戶 A**"))
     assert head == "**薪轉戶 A**  餘額 市值暫不可得" and "扣款後" not in head
+
+
+# --- #286: _split_lines ---
+
+def test_split_lines_cuts_an_exact_multiple_into_full_pieces():
+    from notify.render import _split_lines
+    assert _split_lines("x" * 20, 10) == ["x" * 10, "x" * 10]
+    assert _split_lines("x" * 25 + "\n\ny", 10) == ["x" * 10, "x" * 10, "xxxxx\n\ny"]
+    assert _split_lines("ab\n\n" + "x" * 12 + "\n\ncd", 10) == ["ab\n", "x" * 10, "xx\n\ncd"]
+
+
+def test_split_lines_never_cuts_inside_a_link_token():
+    from notify.render import _split_lines
+    link = "<https://b.example/x>"
+    assert _split_lines("a" * 20 + link + "ccccc", 30) == ["a" * 20, link + "ccccc"]
+    assert _split_lines("a" * 9 + link + " " + link, 30) == ["a" * 9 + link, " " + link]  # a cut between tokens stays
+    pieces = _split_lines("、".join(f"卡{i} {link}" for i in range(6)), 40)
+    assert all(len(p) <= 40 for p in pieces) and all(p.count("<") == p.count(">") for p in pieces)
+    assert "".join(pieces) == "、".join(f"卡{i} {link}" for i in range(6))
+
+
+def test_split_lines_cuts_a_token_longer_than_a_message_hard():
+    from notify.render import _split_lines
+    long = "<" + "u" * 50 + ">"
+    assert _split_lines(long, 30) == [long[:30], long[30:]]
+    # a token that does not fit starts its own piece, so its hard cut falls a whole message in, never near its start
+    assert _split_lines("a" + long, 30) == ["a", long[:30], long[30:]]
+    assert _split_lines("a" * 25 + "<no closing bracket here", 30) == ["a" * 25, "<no closing bracket here"]
+
+
+def test_split_lines_never_cuts_a_long_link_inside_its_host():
+    from notify.render import LIMIT, _split_lines
+    url = "<https://evil.co.example-bank.com/" + "a" * 1990 + ">"
+    for pad in (1, 500, 1975, 1985, 1999):
+        pieces = _split_lines("9" * pad + " — " + url, LIMIT)
+        assert all(0 < len(p) <= LIMIT for p in pieces) and "".join(pieces) == "9" * pad + " — " + url
+        (first,) = [p for p in pieces if "<https://" in p]
+        assert first.startswith("<https://evil.co.example-bank.com/a"), pad

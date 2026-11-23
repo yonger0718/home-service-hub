@@ -452,3 +452,97 @@ def test_digest_ignores_period_end_source_and_quote():
     assert digest(card(source=ON + "?lang=zh"), "precise") == base
     assert digest(card(day="2027-03-31"), "precise") != base
     assert digest(replace(card(), current_period_end=None), "precise") != base
+
+
+# --- #286: failed fetches belong to the card that asked for them ---
+
+_A = CardEntry(account_id=101, official="A", bank_domains=("example-bank.com",), tier="precise")
+_B = CardEntry(account_id=102, official="B", bank_domains=("example-bank.com",), tier="precise")
+_C = CardEntry(account_id=301, official="C", bank_domains=("us-example.com",), tier="precise")
+_UA, _UB = "https://www.example-bank.com/a", "https://www.example-bank.com/b"
+
+
+def _two(failed, cards=(_A, _B)):
+    payload = {"cards": [{"account_id": c.account_id, "status": "unchanged"} for c in cards],
+               "fetch_log": {"tool_calls": 1, "failed": failed, "truncated": []}}
+    r = parse_result(fx._wrap(payload), cards)
+    return r, {c.account_id: c.failed for c in r.cards}
+
+
+def test_failed_object_goes_to_the_card_it_names():
+    r, by = _two([{"account_id": 101, "url": _UA, "status": "403"}, {"account_id": 102, "url": _UB, "status": 500},
+                  {"account_id": 102, "url": " " + _UA + " "}])
+    assert by == {101: (_UA + " (403)",), 102: (_UB + " (500)", _UA)}
+    assert r.fetch_log["failed"] == [_UA + " (403)", _UB + " (500)", _UA]
+
+
+@pytest.mark.parametrize("entry", [
+    {"account_id": 101, "url": "https://evil.com/x", "status": "403"},  # off the named card's domains
+    {"account_id": 301, "url": _UA, "status": "403"},                    # another card's bank
+    {"account_id": 999, "url": _UA}, {"account_id": "101", "url": _UA}, {"account_id": True, "url": _UA},
+    {"account_id": None, "url": _UA}, {"url": _UA}, {"account_id": 101, "url": None}, {"account_id": 101},
+    {"account_id": 101, "url": _UA + "/<@&1>"}, 42, None, ["x"],
+])
+def test_failed_object_that_cannot_be_attributed_is_dropped(entry):
+    r, by = _two([entry], cards=(_A, _B, _C))
+    assert by == {101: (), 102: (), 301: ()} and r.fetch_log["failed"] == []
+
+
+@pytest.mark.parametrize("status, shown", [("403", " (403)"), ("read_timeout", " (read_timeout)"), (404, " (404)"),
+                                            ("", ""), (None, ""), ("<@&1>", ""), ("x" * 41, ""), ("a\nb", ""),
+                                            (True, ""), (["403"], ""), (4.5, "")])
+def test_failed_object_status_is_kept_only_when_plain(status, shown):
+    _, by = _two([{"account_id": 101, "url": _UA, "status": status}])
+    assert by[101] == (_UA + shown,)
+
+
+def test_failed_string_with_one_owner_is_attributed():
+    r, by = _two(["https://www.us-example.com/t (403)", _UA + " (500)"], cards=(_A, _C))
+    assert by == {101: (_UA + " (500)",), 301: ("https://www.us-example.com/t (403)",)}
+
+
+def test_failed_string_on_a_shared_domain_is_shown_under_no_card():
+    r, by = _two([_UA + " (403)"])
+    assert by == {101: (), 102: ()}
+    assert r.fetch_log["failed"] == [_UA + " (403)"]  # still in the archived log
+
+
+def test_a_card_missing_from_the_answer_keeps_its_failed_fetches():
+    payload = {"cards": [], "fetch_log": {"failed": [{"account_id": 101, "url": _UA, "status": "403"}]}}
+    (c,) = parse_result(fx._wrap(payload), (_A,)).cards
+    assert c.status == "not_found" and c.failed == (_UA + " (403)",)
+
+
+# --- #286: the unverified digest, and why a finding was demoted ---
+
+def _dcard(**kw):
+    base = dict(account_id=101, status="changed", current_period_end=None, findings=(), unverified=(),
+                next_terms=None, next_terms_unverified_url=None, sources=(), notes="", truncated=())
+    return CardResult(**{**base, **kw})
+
+
+def test_unverified_digest_ignores_the_models_system_claim():
+    from notify.terms_parse import Finding
+    def f(system):
+        return Finding(162, "rate", "9", system, "https://evil.com/p", "q")
+    assert digest(_dcard(unverified=(f("3"),)), "precise") == digest(_dcard(unverified=(f("3.5"),)), "precise")
+    assert digest(_dcard(unverified=(f("3"),)), "precise") != digest(
+        _dcard(unverified=(replace(f("3"), site="10"),)), "precise")
+    # a verified finding's system side is the joined rule value: its change is news
+    assert digest(_dcard(findings=(f("3"),)), "precise") != digest(_dcard(findings=(f("3.5"),)), "precise")
+
+
+@pytest.mark.parametrize("source, quote, reason", [
+    (ON, "", "無引文"), (ON, "  \n", "無引文"), ("https://evil.com/p", "", ""), ("https://evil.com/p", "q", ""),
+])
+def test_demotion_names_the_real_reason(source, quote, reason):
+    f = {"rule_id": 1, "field": "rate", "site": "1", "system": "2", "source": source, "quote": quote}
+    (u,) = parse_result(fx.one_card({"account_id": 101, "status": "changed", "findings": [f]}), ONE).cards[0].unverified
+    assert u.reason == reason
+
+
+def test_text_that_cannot_be_encoded_is_a_parse_error():
+    """A lone surrogate escape is valid JSON but cannot be written or sent: refuse the answer, no traceback."""
+    raw = '{"cards": [{"account_id": 101, "status": "signal", "notes": "\\ud83d"}], "fetch_log": {}}'
+    with pytest.raises(TermsParseError):
+        parse_result("```json\n" + raw + "\n```\n", ONE)

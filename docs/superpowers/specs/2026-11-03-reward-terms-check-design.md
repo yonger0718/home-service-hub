@@ -140,7 +140,7 @@ Validation: `official` non-empty, `bank_domains` non-empty list of hostnames, `t
 three upper-case letters, `aliases` list of strings, `year_end_window` bool (default derived
 from `country`); account ids must be ints. Card keys must be canonical decimal ids
 (`[1-9][0-9]*`, a duplicate id is refused), each `bank_domains` entry an LDH hostname with at
-least one dot, and `hermes_timeout_seconds` within 1..1840 so the units' `TimeoutStartSec=1900`
+least one dot whose last label is not all digits (#286), and `hermes_timeout_seconds` within 1..1840 so the units' `TimeoutStartSec=1900`
 outlasts Hermes (SDD final review). Loader errors name the key only.
 
 At run time the command reads, for each registered card, `GET /accounts/{id}/reward-rules`
@@ -278,7 +278,7 @@ The final fenced JSON block:
       "notes": "free text, ≤ 500 chars"
     }
   ],
-  "fetch_log": {"tool_calls": 15, "failed": ["https://… (403)"],
+  "fetch_log": {"tool_calls": 15, "failed": [{"account_id": 101, "url": "https://…", "status": "403"}],
                 "truncated": [{"account_id": 101, "url": "https://…", "read": "first ~40k chars of ~130k"}]}
 }
 ```
@@ -307,7 +307,7 @@ The final fenced JSON block:
   dropped, a failing `truncated` entry keeps its card's truncation line with the host only
   (SDD final review). `quote` must be
   non-empty. A failing finding moves to `unverified`; a failing `next_terms` is dropped from
-  the rule-ready block and reported as `· 下期條款：來源未驗證` with its URL; a failing
+  the rule-ready block and reported as `· 下期條款：來源未驗證` with its host (and only when the block says `announced`); a failing
   `current_period_end` is nulled and the line omitted.
 - **Input join** (SDD final review): verified findings are joined to the frozen input rules
   of their card. A non-null `rule_id` that is not one of them, or a null `rule_id` with a
@@ -337,7 +337,8 @@ clobbering and a schema migration) —
 (UTF-8, `sort_keys`, compact separators) of: `status`, `current_period_end` (its date only
 since the dismiss list, 2026-11-23: the model quotes another sentence of the same page on most
 runs), `findings`
-sorted by `(rule_id, field, source)`, `unverified` sorted the same, `next_terms`,
+sorted by `(rule_id, field, source)`, `unverified` sorted the same (without the model's
+`system` claim since #286: it is never shown), `next_terms`,
 `next_terms_unverified_url` (normalised), with
 quotes whitespace-collapsed and decimals normalised; for `signal` cards the normalised
 `notes` text is hashed instead. A missing file is an empty state. An unreadable or corrupt

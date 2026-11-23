@@ -129,3 +129,35 @@ def test_cathay_invalid(tmp_path, line, key):
     with pytest.raises(ConfigError) as e:
         load_config(p)
     assert str(e.value) == key
+
+
+# --- #286: hub_base_url is printed in every message ---
+
+def _hub(tmp_path, value: str):
+    p = tmp_path / "c.toml"
+    p.write_text(MINIMAL.replace('"https://hub.example.invalid"', value))
+    return load_config(p)
+
+
+@pytest.mark.parametrize("bad", [
+    '"hub.example.invalid"', '"ftp://hub.example.invalid"', '"https://user@hub.example.invalid"',
+    '"https://user:pw@hub.example.invalid"', '"https://hub.example.invalid/a b"', '"https://hub.example.invalid/<x>"',
+    '"https://hub.example.invalid/*x*"', '"https:///path"', '"https://hub.example.invalid/?q=1"',
+    '"https://hub.example.invalid/#frag"', '"https://hub.example.invalid:port"', '"https://[::1"',
+    '"https://hub.example.invalid/`x`"', '"https://hub.example.invalid/@everyone"',
+    '"https://."', '"https://a..b"', '"https://-x-"', '"https://hub.example.invalid:"', '"http://[::1]:18080"',
+])
+def test_hub_base_url_must_be_a_printable_http_url(tmp_path, bad):
+    with pytest.raises(ConfigError) as e:
+        _hub(tmp_path, bad)
+    assert str(e.value) == "hub_base_url"
+
+
+@pytest.mark.parametrize("ok, stored", [
+    ('"https://hub.example.invalid"', "https://hub.example.invalid"),
+    ('" https://hub.example.invalid/hub/ "', "https://hub.example.invalid/hub"),
+    ('"http://127.0.0.1:18080"', "http://127.0.0.1:18080"),
+    ('"https://host.tailnet-name.ts.net"', "https://host.tailnet-name.ts.net"),
+])
+def test_hub_base_url_accepts_plain_urls(tmp_path, ok, stored):
+    assert _hub(tmp_path, ok).hub_base_url == stored

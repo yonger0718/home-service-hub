@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from notify.config import PRINTABLE_URL as _PRINTABLE
 from notify.terms_config import CardEntry
 
 STATUSES = ("unchanged", "changed", "announced", "not_found", "signal")
@@ -42,6 +43,7 @@ class Finding:
 
 
 UNKNOWN_RULE = "未知規則"
+NO_QUOTE = "無引文"  # the source passes the source rule but the finding quotes nothing from it
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,7 @@ class CardResult:
     sources: tuple[str, ...]
     notes: str
     truncated: tuple[TruncatedSource, ...]
+    failed: tuple[str, ...] = ()  # this card's failed fetches: "url" or "url (status)", the URL through source_ok
 
 
 @dataclass(frozen=True)
@@ -103,8 +106,6 @@ def _norm_domain(d: str) -> str:
 
 
 _BAD_CHARS = re.compile(r"[\s\x00-\x1f\x7f\\]")
-# Printable-URL rule: RFC 3986 characters minus @ ' * and everything Discord can turn into a link or mention.
-_PRINTABLE = re.compile(r"[A-Za-z0-9\-._~:/?#!$&+,;=%()]+")
 _DISCORD = re.compile(r"discord", re.IGNORECASE)  # invite hosts Discord renders without a scheme; no bank URL has it
 _LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _URL_MAX = 2048
@@ -213,8 +214,8 @@ def _finding(raw: object) -> Finding:
                    _text(raw.get("source")).strip(), _text(raw.get("quote")))
 
 
-def _demote(f: Finding) -> Finding:
-    return Finding(f.rule_id, f.field, f.site, f.system, _safe_url(f.source), f.quote)
+def _demote(f: Finding, reason: str = "") -> Finding:
+    return Finding(f.rule_id, f.field, f.site, f.system, _safe_url(f.source), f.quote, reason)
 
 
 def _period_end(raw: object, domains: tuple[str, ...]) -> PeriodEnd | None:
@@ -263,7 +264,9 @@ def _next_terms(raw: object, domains: tuple[str, ...]) -> tuple[NextTerms | None
 
 
 _UNVERIFIED = "[unverified source]"
-_FAILED_SUFFIX = re.compile(r" ?\(([0-9]{3}|[A-Za-z0-9 _-]{1,40})\)")  # fullmatch; ASCII digits only
+_STATUS = r"[0-9]{3}|[A-Za-z0-9 _-]{1,40}"  # ASCII digits only
+_FAILED_SUFFIX = re.compile(rf" ?\(({_STATUS})\)")  # fullmatch
+_FAILED_STATUS = re.compile(_STATUS)  # fullmatch
 _READ = re.compile(r"(?:[^\W\d]|[0-9 ~%,+\-]){0,80}")  # fullmatch; letters of any script, ASCII digits only
 
 
@@ -271,8 +274,33 @@ def _read_text(value: object) -> str:
     return value if isinstance(value, str) and _READ.fullmatch(value) else ""
 
 
-def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> tuple[dict, dict[int, tuple[TruncatedSource, ...]]]:
-    """The archived log (allowlisted keys, failing URLs replaced or dropped) and each card's truncated sources."""
+def _failed_entry(entry: object, by_id: dict[int, tuple[str, ...]], allowed: tuple[str, ...]) -> tuple[str, list[int]]:
+    """(printable text, owning cards) of one ``fetch_log.failed`` entry; ("", []) when it is dropped.
+
+    An object names its card: the URL must pass that card's source rule. A string (the form before #286) is
+    attributed by domain only when exactly one card of the run owns it; on a shared domain it belongs to none."""
+    if isinstance(entry, dict):
+        aid, url, status = entry.get("account_id"), entry.get("url"), entry.get("status")
+        if isinstance(aid, bool) or not isinstance(aid, int) or aid not in by_id or not isinstance(url, str):
+            return "", []
+        url = url.strip()
+        if not source_ok(url, by_id[aid]):
+            return "", []
+        if isinstance(status, int) and not isinstance(status, bool):
+            status = str(status)
+        ok = isinstance(status, str) and _FAILED_STATUS.fullmatch(status)
+        return (f"{url} ({status})" if ok else url), [aid]
+    text = _clean_failed(entry, allowed)
+    if not text:
+        return "", []
+    owners = [aid for aid, doms in by_id.items() if source_ok(text.split(" ", 1)[0], doms)]
+    return text, owners if len(owners) == 1 else []
+
+
+def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> tuple[
+        dict, dict[int, tuple[TruncatedSource, ...]], dict[int, tuple[str, ...]]]:
+    """The archived log (allowlisted keys, failing URLs replaced or dropped), each card's truncated sources and
+    each card's failed fetches."""
     allowed = tuple(d for c in cards for d in c.bank_domains)
     by_id = {c.account_id: c.bank_domains for c in cards}
     out = {k: v for k, v in log.items() if k in ("tool_calls", "failed", "truncated")}
@@ -282,7 +310,13 @@ def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> tuple[dict, dict[int,
     failed = log.get("failed", [])
     if not isinstance(failed, list):
         raise _bad()
-    out["failed"] = [u for u in (_clean_failed(x, allowed) for x in failed) if u]
+    out["failed"], failed_by = [], {}
+    for x in failed:
+        text, owners = _failed_entry(x, by_id, allowed)
+        if text:
+            out["failed"].append(text)
+            for aid in owners:
+                failed_by.setdefault(aid, []).append(text)
     trunc = log.get("truncated", [])
     if not isinstance(trunc, list):
         raise _bad()
@@ -301,7 +335,7 @@ def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> tuple[dict, dict[int,
             shown = url.strip() if ok else (_safe_url(url) if isinstance(url, str) else "")
             per_card.setdefault(aid, []).append(TruncatedSource(shown, ok, read))
     out["truncated"] = clean
-    return out, {k: tuple(v) for k, v in per_card.items()}
+    return out, {k: tuple(v) for k, v in per_card.items()}, {k: tuple(v) for k, v in failed_by.items()}
 
 
 def _clean_failed(entry: object, allowed: tuple[str, ...]) -> str:
@@ -315,7 +349,8 @@ def _clean_failed(entry: object, allowed: tuple[str, ...]) -> str:
     return url + rest if _FAILED_SUFFIX.fullmatch(rest) else url
 
 
-def _card(raw: object, entry: CardEntry, trunc: tuple[TruncatedSource, ...]) -> CardResult:
+def _card(raw: object, entry: CardEntry, trunc: tuple[TruncatedSource, ...],
+          failed: tuple[str, ...] = ()) -> CardResult:
     if not isinstance(raw, dict):
         raise _bad()
     status = raw.get("status")
@@ -331,10 +366,11 @@ def _card(raw: object, entry: CardEntry, trunc: tuple[TruncatedSource, ...]) -> 
         raise _bad()
     ok, bad = [], []
     for f in map(_finding, fl):
-        if f.quote.strip() and source_ok(f.source, doms):
+        on_domain = source_ok(f.source, doms)
+        if f.quote.strip() and on_domain:
             ok.append(f)
         else:
-            bad.append(_demote(f))
+            bad.append(_demote(f, NO_QUOTE if on_domain else ""))
     nt, nt_url = (None, None)
     if raw.get("next_terms") is not None:
         nt, nt_url = _next_terms(raw["next_terms"], doms)
@@ -346,11 +382,11 @@ def _card(raw: object, entry: CardEntry, trunc: tuple[TruncatedSource, ...]) -> 
     return CardResult(entry.account_id, status, _period_end(raw.get("current_period_end"), doms),
                       tuple(ok), tuple(bad), nt, nt_url,
                       tuple(s.strip() for s in srcs if isinstance(s, str) and source_ok(s, doms)),
-                      notes, trunc)
+                      notes, trunc, failed)
 
 
-def _empty(entry: CardEntry, trunc: tuple[TruncatedSource, ...]) -> CardResult:
-    return CardResult(entry.account_id, "not_found", None, (), (), None, None, (), "", trunc)
+def _empty(entry: CardEntry, trunc: tuple[TruncatedSource, ...], failed: tuple[str, ...] = ()) -> CardResult:
+    return CardResult(entry.account_id, "not_found", None, (), (), None, None, (), "", trunc, failed)
 
 
 def parse_result(stdout: str, cards: tuple[CardEntry, ...]) -> TermsResult:
@@ -361,8 +397,14 @@ def parse_result(stdout: str, cards: tuple[CardEntry, ...]) -> TermsResult:
         data = None  # raised below, outside the except: no chained model text
     if not isinstance(data, dict) or not isinstance(data.get("cards"), list):
         raise _bad()
+    try:  # a lone surrogate escape is valid JSON, but the text can be neither archived nor sent
+        json.dumps(data, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        data = None
+    if data is None:
+        raise _bad()
     log = data.get("fetch_log")
-    log, trunc = _clean_log(log if isinstance(log, dict) else {}, cards)
+    log, trunc, failed = _clean_log(log if isinstance(log, dict) else {}, cards)
     entries = {c.account_id: c for c in cards}
     seen: dict[int, object] = {}
     for raw in data["cards"]:
@@ -370,8 +412,10 @@ def parse_result(stdout: str, cards: tuple[CardEntry, ...]) -> TermsResult:
         if isinstance(aid, bool) or not isinstance(aid, int) or aid not in entries or aid in seen:
             raise _bad()
         seen[aid] = raw
-    return TermsResult(tuple(_card(seen[c.account_id], c, trunc.get(c.account_id, ())) if c.account_id in seen
-                             else _empty(c, trunc.get(c.account_id, ())) for c in cards), log)
+    return TermsResult(tuple(
+        _card(seen[c.account_id], c, trunc.get(c.account_id, ()), failed.get(c.account_id, ()))
+        if c.account_id in seen else _empty(c, trunc.get(c.account_id, ()), failed.get(c.account_id, ()))
+        for c in cards), log)
 
 
 def _system_value(value: object) -> str | None:
@@ -405,15 +449,20 @@ def _q(text: str) -> str:
     return " ".join(text.split())
 
 
-def _f(f: Finding) -> dict:
-    return {"rule_id": f.rule_id, "field": f.field, "site": f.site, "system": f.system,
-            "source": f.source, "quote": _q(f.quote), "reason": f.reason}
+def _f(f: Finding, system: bool) -> dict:
+    out = {"rule_id": f.rule_id, "field": f.field, "site": f.site, "source": f.source, "quote": _q(f.quote),
+           "reason": f.reason}
+    if system:
+        out["system"] = f.system
+    return out
 
 
-def _sorted(fs: tuple[Finding, ...]) -> list[dict]:
-    return sorted((_f(f) for f in fs), key=lambda d: (
+def _sorted(fs: tuple[Finding, ...], system: bool = True) -> list[dict]:
+    """``system`` False for unverified findings: there it is the model's claim, which is never shown, and its
+    drift alone must not make the card news (#286)."""
+    return sorted((_f(f, system) for f in fs), key=lambda d: (
         d["rule_id"] if d["rule_id"] is not None else -1, d["field"], d["source"],
-        d["site"] or "", d["system"] or "", d["quote"]))
+        d["site"] or "", d.get("system") or "", d["quote"]))
 
 
 def _canon(obj: object) -> str:
@@ -430,7 +479,7 @@ def digest(card: CardResult, tier: str) -> str:
             # the date only: the model quotes another sentence or URL form of the same page on most runs (#287)
             "current_period_end": None if pe is None else pe.date,
             "findings": _sorted(card.findings),
-            "unverified": _sorted(card.unverified),
+            "unverified": _sorted(card.unverified, system=False),
             "next_terms": None if nt is None else {
                 "announced": nt.announced, "period": list(nt.period),
                 "rules": sorted(({"name": r.get("name"), "rate": _dec(r.get("rate")),

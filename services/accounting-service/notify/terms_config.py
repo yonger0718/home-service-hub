@@ -232,7 +232,8 @@ def _card(key: str, raw: object) -> CardEntry:
     if not isinstance(language, str) or not _BCP47.fullmatch(language):
         raise ConfigError(f"{p}.language")
     domains = [d.lower().rstrip(".") for d in _str_list(raw, "bank_domains", f"{p}.bank_domains", non_empty=True)]
-    if not all(_HOSTNAME.fullmatch(d) for d in domains):
+    # an all-digit last label is an IP address or no domain at all, never a bank's
+    if not all(_HOSTNAME.fullmatch(d) and not d.rsplit(".", 1)[-1].isdigit() for d in domains):
         raise ConfigError(f"{p}.bank_domains")
     return CardEntry(
         account_id=account_id,
