@@ -1,6 +1,7 @@
 """CLI tests: the API is an httpx.MockTransport serving a fixture Snapshot; hermes is a recorder."""
 from __future__ import annotations
 
+import errno
 import stat
 import threading
 from pathlib import Path
@@ -459,3 +460,26 @@ def test_daily_ignores_a_broken_terms_block(cli_env, capsys):
         fh.write('\n[terms]\nreport_dir = "/r"\nhermes_model = "m"\nhermes_toolsets = "all"\n')
     rc = main(["daily", "--as-of", "2026-11-03", "--dry-run", "--config", cli_env.cfg])
     assert rc == 0 and "旅遊卡" in capsys.readouterr().out
+
+
+# --- #286: a file error is a failure notice, not a traceback ---
+
+def test_state_write_error_is_a_failure_notice(cli_env, monkeypatch, capsys):
+    def boom(path, state):
+        raise OSError(errno.ENOSPC, "No space left on device", "/secret/place/state.json")
+
+    monkeypatch.setattr(cli, "save_state", boom)
+    assert cli.main(["daily", "--send", "--as-of", "2026-11-03", "--config", cli_env.cfg]) == 1
+    assert cli_env.failure_file.read_text() == "❌ 帳務通知失敗：daily 2026-11-03 OSError ENOSPC"
+    err = capsys.readouterr().err
+    assert "/secret" not in err and "No space" not in err and "Traceback" not in err
+
+
+def test_unwritable_failure_file_still_exits_with_the_notice(cli_env_401, monkeypatch, capsys):
+    def boom(cfg, line):
+        raise OSError(errno.ENOSPC, "No space left on device", "/secret/place/last_failure.txt")
+
+    monkeypatch.setattr(cli, "_write_failure", boom)
+    assert cli.main(["daily", "--send", "--as-of", "2026-11-03", "--config", cli_env_401.cfg]) == 1
+    err = capsys.readouterr().err
+    assert "帳務通知失敗" in err and "failure file not written: OSError ENOSPC" in err and "/secret" not in err

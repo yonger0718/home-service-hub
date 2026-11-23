@@ -25,7 +25,8 @@ from .terms_state import (CardSeen, TermsStateError, decide, load_terms_state, s
 
 
 class TermsArchiveError(Exception):
-    """The run's archive dir already exists (timestamp collision); carries the path only."""
+    """The run's archive could not be created or written (a timestamp collision, no permission, a full disk);
+    carries the path only."""
 
     reason = "archive"
 
@@ -39,18 +40,26 @@ def _utcnow() -> datetime:
 
 
 def _write(path: Path, text: str) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(text)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError:
+        raise TermsArchiveError(path.parent) from None
 
 
 def _make_archive(report_dir: Path, now: datetime) -> Path:
-    report_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        report_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError:
+        raise TermsArchiveError(report_dir) from None
     archive = report_dir / now.strftime("%Y%m%dT%H%M%SZ")
     try:
         archive.mkdir(mode=0o700)
     except FileExistsError:
         raise TermsArchiveError(archive) from None  # never reuse or overwrite a run
+    except OSError:
+        raise TermsArchiveError(report_dir) from None
     return archive
 
 

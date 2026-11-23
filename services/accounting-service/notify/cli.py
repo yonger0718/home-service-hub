@@ -6,6 +6,7 @@ Exit codes: 0 sent or nothing to send, 1 failure, 2 bad arguments. A failing --s
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import sys
 from dataclasses import replace
@@ -30,8 +31,9 @@ from .terms_parse import TermsParseError
 from .terms_state import TermsStateError
 
 DEFAULT_CONFIG = "~/.config/homehub-notify.toml"
+# OSError last: the backstop for file work that has no error class of its own (state files, a full disk)
 FAILURES = (ApiError, CalendarExhausted, ConfigError, httpx.HTTPError, send.SendError,
-            HermesError, TermsParseError, TermsStateError, terms_cmd.TermsArchiveError)
+            HermesError, TermsParseError, TermsStateError, terms_cmd.TermsArchiveError, OSError)
 
 
 def failure_path(cfg: NotifyConfig) -> Path:
@@ -66,11 +68,18 @@ def _short(exc: Exception) -> str:
     config path, never a value) and CalendarExhausted (names the dates) the message itself."""
     if isinstance(exc, (HermesError, TermsParseError, TermsStateError, terms_cmd.TermsArchiveError)):
         return f"{type(exc).__name__} {exc.reason} {exc.archive}"  # stage + archive dir only, never output text
+    if isinstance(exc, OSError):
+        return _os_error(exc)
     if isinstance(exc, (ConfigError, CalendarExhausted)):
         detail = str(exc)
     else:
         detail = getattr(exc, "status", None) or getattr(exc, "reason", None) or ""
     return f"{type(exc).__name__} {detail}".strip()
+
+
+def _os_error(exc: OSError) -> str:
+    """Class and errno name only: the message and the filename of an OSError can hold a path."""
+    return f"{type(exc).__name__} {errno.errorcode.get(exc.errno or 0, '')}".strip()
 
 
 def _write_failure(cfg: NotifyConfig, line: str) -> None:
@@ -143,7 +152,10 @@ def _fail(args: argparse.Namespace, cfg: NotifyConfig | None, today: date, exc: 
     line = render_failure(f"{args.command} {today.isoformat()} {_short(exc)}")
     print(line, file=sys.stderr)
     if args.send and cfg is not None:
-        _write_failure(cfg, line)
+        try:
+            _write_failure(cfg, line)
+        except OSError as werr:  # a full disk must not turn the notice into a traceback
+            print(f"failure file not written: {_os_error(werr)}", file=sys.stderr)
     return 1
 
 
