@@ -1491,7 +1491,7 @@ describe('NotificationsComponent', () => {
     });
   });
 
-  describe('投資: 確認 for a 國泰 date, tracking rows by source, the 國泰 note', () => {
+  describe('投資: 已處理 for a 國泰 date, tracking rows by source, the 國泰 note', () => {
     let logged: { mock: { calls: unknown[][] }; mockRestore(): void };
     beforeEach(() => {
       logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -1509,8 +1509,8 @@ describe('NotificationsComponent', () => {
       when: '保留',
       meta: '自 10/28 起',
       amount: null,
-      primary: { label: '確認', command: { kind: 'ackCathay', tradeDate: '2026-10-28', name: '國泰對帳單 10/28' } },
-      secondary: [{ label: '查看', route: '/portfolio/import' }],
+      primary: { label: '已處理', command: { kind: 'ackCathay', tradeDate: '2026-10-28', name: '國泰對帳單 10/28' } },
+      secondary: [{ label: '查看', route: '/portfolio/import', fragment: 'cathay' }],
       sortKey: '2026-10-28',
     });
     const DIV = task('div:batch', 'confirm', {
@@ -1581,21 +1581,21 @@ describe('NotificationsComponent', () => {
       expect(chips(root)[0].getAttribute('aria-label')).toBe('全部，5 件');
     });
 
-    it('a 系統 section holds the 國泰 rows with 確認 as a button named 確認：國泰對帳單 10/28 and 查看 as a link', () => {
+    it('a 系統 section holds the 國泰 rows with 已處理 as a button named 已處理：國泰對帳單 10/28 and 查看 as a link to the card (#cathay)', () => {
       const root = open();
       const system = Array.from(root.querySelectorAll('section.notif-section')).find(s => text(s.querySelector('h2')).startsWith('系統'))!;
       expect(text(system.querySelector('h2'))).toBe('系統 2');
       const row = system.querySelector(`app-notif-row[data-task-id="${CATHAY.id}"]`)!;
       const button = row.querySelector(NOTIF_PRIMARY_CONTROL)!;
       expect(button.tagName).toBe('BUTTON');
-      expect(text(button)).toBe('確認');
-      expect(button.getAttribute('aria-label')).toBe('確認：國泰對帳單 10/28');
+      expect(text(button)).toBe('已處理');
+      expect(button.getAttribute('aria-label')).toBe('已處理：國泰對帳單 10/28');
       const look = row.querySelector('a.notif-secondary')!;
       expect(text(look)).toBe('查看');
-      expect(look.getAttribute('href')).toBe('/portfolio/import');
+      expect(look.getAttribute('href')).toBe('/portfolio/import#cathay');
     });
 
-    it('確認 calls ackCathayDay("2026-10-28") once, the row is busy, then 已確認：國泰對帳單 10/28 and one invalidate()', async () => {
+    it('已處理 calls ackCathayDay("2026-10-28") once, the row is busy, then 已處理：國泰對帳單 10/28 and one invalidate()', async () => {
       round.set(4);
       settledRound.set(4);
       const root = open();
@@ -1608,7 +1608,7 @@ describe('NotificationsComponent', () => {
       expect(ack(root).disabled).toBe(true);
       expect(invalidate).not.toHaveBeenCalled();
       await answer();
-      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已確認：國泰對帳單 10/28', action: null }));
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：國泰對帳單 10/28', action: null }));
       // An ack bumps no change signal: the page re-reads itself, once.
       expect(invalidate).toHaveBeenCalledTimes(1);
       expect(refresh).toHaveBeenCalledTimes(1); // the open only
@@ -1637,14 +1637,14 @@ describe('NotificationsComponent', () => {
       expect(portfolio.ackCathayDay).toHaveBeenCalledTimes(1);
     });
 
-    it('404 reads as done: 國泰對帳單 10/28：已經不需要確認, no 重試, invalidate() called', async () => {
+    it('404 reads as done: 國泰對帳單 10/28：已經不需要處理, no 重試, invalidate() called', async () => {
       round.set(4);
       settledRound.set(3);
       const root = open();
       ack(root).click();
       await settle();
       await fail(404, { detail: 'Not Found' });
-      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要確認', action: null }));
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要處理', action: null }));
       expect(invalidate).toHaveBeenCalledTimes(1);
       expect(round()).toBe(5);
       expect(logged.mock.calls.length).toBe(0);
@@ -1656,13 +1656,13 @@ describe('NotificationsComponent', () => {
       expect(ack(root).disabled).toBe(false);
     });
 
-    it('500: 失敗 toast 國泰對帳單 10/28 確認失敗 with 重試; the raw body goes to console.error, not the toast', async () => {
+    it('500: 失敗 toast 國泰對帳單 10/28 標記失敗 with 重試; the raw body goes to console.error, not the toast', async () => {
       const root = open();
       ack(root).click();
       await settle();
       await fail(500, { message: 'Internal Server Error: db down' });
       expect(toasts.current()).toEqual(
-        expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 確認失敗', action: expect.objectContaining({ label: '重試' }) }),
+        expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: expect.objectContaining({ label: '重試' }) }),
       );
       expect(root.textContent).not.toContain('db down');
       expect(document.body.textContent).not.toContain('db down');
@@ -1679,7 +1679,7 @@ describe('NotificationsComponent', () => {
       ack(root).click();
       await settle();
       await fail(403, { detail: 'write scope required' });
-      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 確認失敗', action: null }));
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: null }));
       expect(root.textContent).not.toContain('write scope');
       expect(invalidate).toHaveBeenCalledTimes(1);
     });
@@ -1690,7 +1690,7 @@ describe('NotificationsComponent', () => {
       await settle();
       await fail(409, { code: 'CONFLICT', message: 'import_running' });
       expect(toasts.current()).toEqual(
-        expect.objectContaining({ kind: 'error', text: `國泰對帳單 10/28 確認失敗：${IMPORT_RUNNING_TOAST}`, action: null }),
+        expect.objectContaining({ kind: 'error', text: `國泰對帳單 10/28 標記失敗：${IMPORT_RUNNING_TOAST}`, action: null }),
       );
     });
 
@@ -1704,7 +1704,7 @@ describe('NotificationsComponent', () => {
       await settle();
       expect(portfolio.ackCathayDay).toHaveBeenCalledTimes(1);
       expect(toasts.current()).toEqual(
-        expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 確認失敗', action: expect.objectContaining({ label: '重試' }) }),
+        expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: expect.objectContaining({ label: '重試' }) }),
       );
       expect(toasts.current()!.id).not.toBe(first);
       await settleRound(2);
@@ -1716,7 +1716,7 @@ describe('NotificationsComponent', () => {
       await settle();
       expect(portfolio.ackCathayDay.mock.calls).toEqual([['2026-10-28'], ['2026-10-28']]);
       await fail(404, null, 1);
-      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要確認', action: null }));
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要處理', action: null }));
     });
 
     it('the dividends tracking row shows under 全部 and 投資, the ledger rows under 全部 and 財務', async () => {
@@ -1749,16 +1749,12 @@ describe('NotificationsComponent', () => {
       expect(text(q(root, '.empty-tracking'))).toBe('看追蹤中的 3 件 ›');
     });
 
-    it('cathayMore 23: 還有 23 天的國泰對帳單未列出 · 到匯入頁查看 › under 全部 and 投資, not under 財務, and no count includes it', async () => {
+    it('cathayMore 23: 還有 23 天未列出，處理完上面的會接著顯示 (no link) under 全部 and 投資, not under 財務, and no count includes it', async () => {
       cathayMore.set(23);
       const root = open();
       const note = () => q(root, 'p.notif-overflow.notif-overflow--portfolio');
-      expect(text(note())).toBe('還有 23 天的國泰對帳單未列出 · 到匯入頁查看 ›');
-      const link = note()!.querySelector('a')!;
-      expect(link.classList.contains('notif-foot-link')).toBe(true);
-      expect(link.getAttribute('href')).toBe('/portfolio/import');
-      expect(text(link)).toBe('到匯入頁查看 ›');
-      expect(link.querySelector('span')?.getAttribute('aria-hidden')).toBe('true');
+      expect(text(note())).toBe('還有 23 天未列出，處理完上面的會接著顯示');
+      expect(note()!.querySelector('a')).toBeNull();
       expect(note()!.closest('section')).toBeNull();
       expect(note()!.previousElementSibling?.matches('section.notif-section')).toBe(true);
       // Never counted: chips, sections and subtitle are the rows' numbers.
@@ -1767,7 +1763,7 @@ describe('NotificationsComponent', () => {
       expect(root.querySelectorAll('app-notif-row').length).toBe(5);
       chips(root)[2].click();
       await settle();
-      expect(text(note())).toBe('還有 23 天的國泰對帳單未列出 · 到匯入頁查看 ›');
+      expect(text(note())).toBe('還有 23 天未列出，處理完上面的會接著顯示');
       chips(root)[1].click();
       await settle();
       expect(note()).toBeNull();
@@ -1779,7 +1775,7 @@ describe('NotificationsComponent', () => {
       overflow.set(task('recon:more', 'confirm', { from: 'recon', title: '還有 12 筆對帳項目未列出', when: '', primary: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } } }));
       const root = open();
       const notes = Array.from(root.querySelectorAll('p.notif-overflow'));
-      expect(notes.map(n => text(n))).toEqual(['還有 12 筆對帳項目未列出 · 到提醒中心查看 ›', '還有 23 天的國泰對帳單未列出 · 到匯入頁查看 ›']);
+      expect(notes.map(n => text(n))).toEqual(['還有 12 筆對帳項目未列出 · 到提醒中心查看 ›', '還有 23 天未列出，處理完上面的會接著顯示']);
     });
 
     it('cathayMore 0 or the page still pending: no portfolio note', async () => {
@@ -1793,7 +1789,7 @@ describe('NotificationsComponent', () => {
       expect(q(pendingRoot, '.notif-overflow--portfolio')).toBeNull();
       loaded.set(true);
       await settle();
-      expect(text(q(pendingRoot, '.notif-overflow--portfolio'))).toBe('還有 23 天的國泰對帳單未列出 · 到匯入頁查看 ›');
+      expect(text(q(pendingRoot, '.notif-overflow--portfolio'))).toBe('還有 23 天未列出，處理完上面的會接著顯示');
     });
   });
 

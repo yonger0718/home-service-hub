@@ -1323,14 +1323,42 @@ describe('NotificationCenterService', () => {
     expect(svc.tasks().map(task => task.title)).toEqual(['股利待確認收款 · 150 筆']);
   });
 
-  it('a pending 國泰 date is a counted 系統 task (red count) and does not light the 匯入 dot', async () => {
+  it('a pending 國泰 date is a counted 系統 task (red count) and lights the 匯入 dot primary: 1 天的國泰對帳單待處理', async () => {
     const svc = service();
     svc.start();
     await answer(0, { cathayPending: { items: [pendingDay('2026-10-23')], total: 1, truncated: false } });
     expect(svc.tasks().map(task => [task.id, task.tier, task.title])).toEqual([['cathay:2026-10-23', 'system', '國泰對帳單 10/23']]);
     expect(svc.summary()).toMatchObject({ total: 1, tone: 'red' });
-    expect('import' in svc.badges()).toBe(false);
+    expect(svc.badges()['import']).toEqual({ dot: true, tone: 'primary', label: '1 天的國泰對帳單待處理' });
     expect(svc.cathay()?.days.map(day => day.tradeDate)).toEqual(['2026-10-23']);
+  });
+
+  it('pending dates truncated by the server: the primary dot counts the server total (73), not the 50 listed', async () => {
+    const svc = service();
+    svc.start();
+    const items = Array.from({ length: 50 }, (_, i) => pendingDay(`2026-08-${String((i % 28) + 1).padStart(2, '0')}`));
+    await answer(0, { cathayPending: { items, total: 73, truncated: true } });
+    expect(svc.badges()['import']).toEqual({ dot: true, tone: 'primary', label: '73 天的國泰對帳單待處理' });
+  });
+
+  it('pending dates and a bad run: red wins, the label is the run title alone', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, {
+      cathayPending: { items: [pendingDay('2026-10-23')], total: 1, truncated: false },
+      cathayRuns: { latest: run(clockNow, 'latched'), latest_ok: null },
+    });
+    expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label: '國泰對帳單匯入已停用' });
+  });
+
+  it('pending dates and an import failure: red wins with 最近一次匯入失敗', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, {
+      recalc: { kind: 'import', state: 'failed', started_at: '2026-10-24T01:00:00Z' },
+      cathayPending: { items: [pendingDay('2026-10-23')], total: 1, truncated: false },
+    });
+    expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label: '最近一次匯入失敗' });
   });
 
   it.each([

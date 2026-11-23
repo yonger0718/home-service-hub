@@ -64,12 +64,13 @@ describe('dividend builders', () => {
     expect(waiting).toEqual([]);
   });
 
-  it('four symbols: meta 9901、9902、9903 等 1 檔; a symbol twice is listed once', () => {
-    const rows = [
-      div(1, '9901', { payment_date: '2026-10-01' }), div(2, '9902', { payment_date: '2026-10-02' }),
-      div(3, '9903', { payment_date: '2026-10-03' }), div(4, '9904', { payment_date: '2026-10-04' }),
-    ];
-    expect(dividendBatch(rows)?.meta).toBe('9901、9902、9903 等 1 檔');
+  it('five symbols: meta 9901、9902、9903 等 5 檔 (N = every distinct symbol); three: no 等; a symbol twice is listed once', () => {
+    const rows = [1, 2, 3, 4, 5].map(n => div(n, `990${n}`, { payment_date: `2026-10-0${n}` }));
+    expect(dividendBatch(rows)?.meta).toBe('9901、9902、9903 等 5 檔');
+    // Six rows over four distinct symbols: N counts symbols, not rows.
+    expect(dividendBatch([...rows.slice(0, 4), div(6, '9901', { payment_date: '2026-10-06' }), div(7, '9902', { payment_date: '2026-10-07' })])?.meta)
+      .toBe('9901、9902、9903 等 4 檔');
+    expect(dividendBatch(rows.slice(0, 3))?.meta).toBe('9901、9902、9903');
     const twice = [div(1, '9901', { payment_date: '2026-10-01' }), div(2, '9901', { payment_date: '2026-10-02' })];
     expect(dividendBatch(twice)).toMatchObject({ title: '股利待確認收款 · 2 筆', meta: '9901' });
   });
@@ -89,9 +90,9 @@ describe('dividend builders', () => {
     expect(dividendsRow([])).toBeNull();
   });
 
-  it('dividendsRow with five rows ends in 等 2 筆', () => {
+  it('dividendsRow with five rows lists three, then 等 5 筆 (N = every row, as the batch task counts every symbol)', () => {
     const rows = [1, 2, 3, 4, 5].map(n => div(n, `990${n}`, { payment_date: `2026-11-0${n}` }));
-    expect(dividendsRow(rows)?.meta).toBe('9901 11/01 · 9902 11/02 · 9903 11/03 · 等 2 筆');
+    expect(dividendsRow(rows)?.meta).toBe('9901 11/01 · 9902 11/02 · 9903 11/03 · 等 5 筆');
   });
 });
 

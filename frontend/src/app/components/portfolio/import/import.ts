@@ -1,5 +1,19 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  ElementRef,
+  Injector,
+  OnDestroy,
+  OnInit,
+  afterNextRender,
+  computed,
+  effect,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
@@ -31,6 +45,7 @@ import { SideTagComponent } from '../../ui/side-tag/side-tag';
 import { TagComponent } from '../../ui/tag/tag';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BannerComponent } from '../../ui/banner/banner';
+import { CATHAY_CARD_FRAGMENT } from '../../notifications/sources/cathay';
 import { CathayStatusCardComponent } from './cathay-status-card/cathay-status-card';
 import {
   ImportRowError,
@@ -126,6 +141,11 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
    */
   private readonly center = inject(NotificationCenterService);
   private layout = inject(LayoutModeService);
+  private readonly host: HTMLElement = inject(ElementRef).nativeElement;
+  private readonly injector = inject(Injector);
+  private readonly fragment = toSignal(this.route.fragment, { initialValue: this.route.snapshot.fragment });
+  /** The `#cathay` already acted on: a fragment acts once (a new 國泰 answer, or the same fragment again, does not). */
+  private shownFragment: string | null = null;
 
   readonly typeOptions: SegToggleOption[] = [
     { value: 'transactions', label: '交易' },
@@ -222,11 +242,36 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private urlTypeIgnored = false;
 
   constructor() {
+    // 查看 on a 國泰 row of 通知 (`#cathay`): once the card shows the 國泰 answer (or its failure), it scrolls into view
+    // and takes focus — once per fragment, as reward-rules' `#card-<id>`. On a phone the card is the page's last thing.
+    effect(() => {
+      const fragment = this.fragment();
+      if (fragment !== CATHAY_CARD_FRAGMENT) {
+        this.shownFragment = null;
+        return;
+      }
+      const answered = this.center.cathay() !== null || this.center.failedSources().includes('cathay');
+      if (!answered || fragment === this.shownFragment) {
+        return;
+      }
+      this.shownFragment = fragment;
+      afterNextRender(() => this.showCathayCard(), { injector: this.injector });
+    });
     // The instance is reused when the sidebar links to /portfolio/import without a query: follow ?type= for its whole life.
     this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe(params => {
       const next = typeFromQuery(params.get('type'));
       if (next !== this.type() && !this.applyType(next)) this.urlTypeIgnored = true;
     });
+  }
+
+  /** Scrolls the 國泰每日對帳單 card into view and focuses it (the host has tabindex -1). */
+  private showCathayCard(): void {
+    const card = this.host.querySelector<HTMLElement>(`app-cathay-status-card#${CATHAY_CARD_FRAGMENT}`);
+    if (!card) {
+      return;
+    }
+    card.scrollIntoView?.({ block: 'start' });
+    card.focus({ preventScroll: true });
   }
 
   detectedFormatLabel(): string | null {

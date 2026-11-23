@@ -4,14 +4,15 @@ import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } fr
 import { HttpErrorResponse } from '@angular/common/http';
 import { Confirmation, ConfirmationService } from 'primeng/api';
 import { BehaviorSubject, Observable, of, Subject, throwError } from 'rxjs';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ImportHistoryService } from '../../../services/import-history.service';
 import { ToastService } from '../../../services/toast.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { BrokerCsvImportResult, ImportResult, ImportRow } from '../../../models/portfolio.model';
 import { NotificationCenterService } from '../../../services/notification-center.service';
-import { NO_TASKS } from '../../notifications/notif-task';
+import { NO_TASKS, NotifSourceKey } from '../../notifications/notif-task';
+import { CathayView, cathayView } from '../../notifications/sources/cathay';
 import { PortfolioImportComponent } from './import';
 
 const preview: ImportResult = { parsed: 1, created: 1, skipped_duplicates: 0, dry_run: true, errors: [], created_ids: [], rows: [] };
@@ -50,6 +51,7 @@ const brokerNested: BrokerCsvImportResult = {
 describe('Portfolio import controls', () => {
   const service = { uploadCsv: vi.fn(), uploadBrokerCsv: vi.fn(), getRecalcStatus: vi.fn(), triggerRecalc: vi.fn(), verifyOverrideSymbol: vi.fn() };
   let query$: BehaviorSubject<ParamMap>;
+  let fragment$: BehaviorSubject<string | null>;
   let navigate: ReturnType<typeof vi.spyOn>;
   /**
    * The notification centre's reads: the 國泰 card's answered as "before the first round" (the card shows 讀取中…),
@@ -58,25 +60,33 @@ describe('Portfolio import controls', () => {
   const center = {
     summary: signal(NO_TASKS),
     badges: signal({}),
-    cathay: signal(null),
+    cathay: signal<CathayView | null>(null),
     loaded: signal(false),
     loading: signal(false),
     round: signal(0),
     settledRound: signal(0),
-    failedSources: signal([]),
+    failedSources: signal<readonly NotifSourceKey[]>([]),
     refresh: vi.fn(),
     invalidate: vi.fn(() => 1),
   };
 
-  function setup(query: Record<string, string> = {}) {
+  function setup(query: Record<string, string> = {}, fragment: string | null = null) {
     query$ = new BehaviorSubject(convertToParamMap(query));
+    fragment$ = new BehaviorSubject<string | null>(fragment);
     TestBed.configureTestingModule({
       imports: [PortfolioImportComponent],
       providers: [
         provideRouter([]),
         { provide: PortfolioService, useValue: service },
         { provide: NotificationCenterService, useValue: center },
-        { provide: ActivatedRoute, useValue: { queryParamMap: query$, get snapshot() { return { queryParamMap: query$.value }; } } },
+        {
+          provide: ActivatedRoute,
+          useValue: {
+            queryParamMap: query$,
+            fragment: fragment$,
+            get snapshot() { return { queryParamMap: query$.value, fragment: fragment$.value }; },
+          },
+        },
       ],
     });
     navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
@@ -107,6 +117,8 @@ describe('Portfolio import controls', () => {
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
+    center.cathay.set(null);
+    center.failedSources.set([]);
     service.uploadCsv.mockReturnValue(of(preview));
     service.uploadBrokerCsv.mockReturnValue(of(brokerPreview));
     service.getRecalcStatus.mockReturnValue(of({ state: 'idle' }));
@@ -1751,6 +1763,101 @@ describe('Portfolio import controls', () => {
         expect(aside(fixture)!.contains(card)).toBe(false);
         expect(aside(fixture)!.parentElement?.classList).toContain('imp-layout');
       });
+    });
+  });
+  describe('#cathay (查看 on a 國泰 row of 通知)', () => {
+    /** A healthy 國泰 answer (the card shows its run line). */
+    const ANSWER = cathayView(
+      { items: [], total: 0, truncated: false },
+      { latest: { run_at: '2026-10-28T22:41:00Z', result: 'ok', code: null, files_seen: 1, posted: 1 }, latest_ok: null },
+      new Date('2026-10-29T02:00:00Z'),
+    );
+    const card = (fixture: { nativeElement: HTMLElement }) => el(fixture).querySelector<HTMLElement>('app-cathay-status-card');
+
+    function spyScroll() {
+      const proto = Element.prototype as { scrollIntoView?: unknown };
+      const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+      proto.scrollIntoView = () => undefined;
+      const spy = vi.spyOn(Element.prototype, 'scrollIntoView');
+      onTestFinished(() => {
+        spy.mockRestore();
+        if (original) {
+          Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+        } else {
+          delete proto.scrollIntoView;
+        }
+      });
+      return spy;
+    }
+    const rendered = async (fixture: { detectChanges(): void; whenStable(): Promise<unknown> }) => {
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+    };
+
+    it('the card is the fragment target: id cathay, tabindex -1, a region named 國泰每日對帳單', () => {
+      const host = card(setup())!;
+      expect(host.id).toBe('cathay');
+      expect(host.getAttribute('tabindex')).toBe('-1');
+      expect(host.getAttribute('role')).toBe('region');
+      expect(host.getAttribute('aria-label')).toBe('國泰每日對帳單');
+    });
+
+    it('opened with #cathay: once the 國泰 answer is shown the card scrolls into view and takes focus, once', async () => {
+      const scroll = spyScroll();
+      center.cathay.set(ANSWER);
+      const fixture = setup({}, 'cathay');
+      await vi.waitFor(async () => {
+        await rendered(fixture);
+        expect(scroll).toHaveBeenCalledTimes(1);
+      });
+      const host = card(fixture)!;
+      expect(scroll.mock.contexts[0]).toBe(host);
+      expect(scroll.mock.calls[0][0]).toEqual({ block: 'start' });
+      expect(document.activeElement).toBe(host);
+      host.blur();
+
+      // A new 國泰 answer (a later round) and the same fragment again: no second scroll, no focus taken.
+      center.cathay.set({ ...ANSWER });
+      fragment$.next('cathay');
+      await rendered(fixture);
+      await new Promise<void>(r => setTimeout(r));
+      await rendered(fixture);
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).not.toBe(host);
+      fixture.nativeElement.remove();
+    });
+
+    it('#cathay before the 國泰 answer: nothing until it lands (or the source fails), then scroll and focus', async () => {
+      const scroll = spyScroll();
+      const fixture = setup({}, 'cathay');
+      await rendered(fixture);
+      await new Promise<void>(r => setTimeout(r));
+      await rendered(fixture);
+      expect(scroll).not.toHaveBeenCalled();
+
+      center.failedSources.set(['cathay']);
+      await vi.waitFor(async () => {
+        await rendered(fixture);
+        expect(scroll).toHaveBeenCalledTimes(1);
+      });
+      expect(document.activeElement).toBe(card(fixture));
+    });
+
+    it('without the fragment (or another one) nothing scrolls and focus stays', async () => {
+      const scroll = spyScroll();
+      center.cathay.set(ANSWER);
+      const before = document.activeElement;
+      const fixture = setup({}, null);
+      await rendered(fixture);
+      await new Promise<void>(r => setTimeout(r));
+      await rendered(fixture);
+      fragment$.next('other');
+      await rendered(fixture);
+      await new Promise<void>(r => setTimeout(r));
+      await rendered(fixture);
+      expect(scroll).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(before);
     });
   });
 });

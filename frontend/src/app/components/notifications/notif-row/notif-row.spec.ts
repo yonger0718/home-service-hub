@@ -165,6 +165,13 @@ describe('NotifRowComponent', () => {
     expect(q('app-btn')).toBeNull();
   });
 
+  it('a link with a fragment carries it on the primary and on a secondary (/portfolio/import#cathay)', () => {
+    const toCard = { label: '查看', route: '/portfolio/import', fragment: 'cathay' };
+    const { q } = setup({ ...linkTask, primary: toCard, secondary: [toCard] });
+    expect(q<HTMLAnchorElement>(NOTIF_PRIMARY_CONTROL)!.getAttribute('href')).toBe('/portfolio/import#cathay');
+    expect(q<HTMLAnchorElement>('a.notif-secondary')!.getAttribute('href')).toBe('/portfolio/import#cathay');
+  });
+
   it('secondary links follow the primary in the DOM with their query params', () => {
     const { q, root } = setup();
     const s = q<HTMLAnchorElement>('a.notif-secondary')!;

@@ -151,7 +151,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
   const rentRow = () => root.querySelector<HTMLElement>(RENT_ROW);
   const rentButton = () => rentRow()?.querySelector<HTMLButtonElement>(NOTIF_PRIMARY_CONTROL) ?? null;
 
-  /** The 國泰 date 10/28 held, `cathay:2026-10-28`, and its 確認 POST. */
+  /** The 國泰 date 10/28 held, `cathay:2026-10-28`, and its 已處理 POST. */
   const HELD = {
     items: [{ trade_date: '2026-10-28', status: 'held', reason: null, since: '2026-10-28T22:50:00Z', last_at: '2026-10-28T22:50:00Z' }],
     total: 1,
@@ -186,7 +186,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     flushPortfolioWith(round1, HELD);
     await flushRound(round1, []);
     expect(center.settledRound()).toBe(1);
-    expect(cathayButton()?.getAttribute('aria-label')).toBe('確認：國泰對帳單 10/28');
+    expect(cathayButton()?.getAttribute('aria-label')).toBe('已處理：國泰對帳單 10/28');
     expect(cathayButton()!.disabled).toBe(false);
   }
 
@@ -412,7 +412,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     expect(center.tasks().some(task => task.id === 'sched:1')).toBe(false);
   });
 
-  it('spec 3.4: 確認 posts the ack and the task disappears', async () => {
+  it('spec 3.4: 已處理 posts the ack and the task disappears', async () => {
     await openWithCathay();
     const before = center.summary().total;
     expect(before).toBeGreaterThan(0);
@@ -422,7 +422,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     expect(cathayButton()!.disabled).toBe(true);
     post.flush({ trade_date: '2026-10-28', ack_status: 'held' });
     await settle();
-    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已確認：國泰對帳單 10/28', action: null }));
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：國泰對帳單 10/28', action: null }));
     // No accounting write bumped a change signal: the round is the page's own invalidate().
     expect(center.round()).toBe(2);
     const round2 = take();
@@ -432,7 +432,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     expect(center.settledRound()).toBe(2);
     expect(cathayRow()).toBeNull();
     expect(center.summary().total).toBe(before - 1);
-    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已確認：國泰對帳單 10/28' }));
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：國泰對帳單 10/28' }));
     http.expectNone(isAck);
   });
 
@@ -448,7 +448,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     http.expectNone(isAck);
     const failure = toasts.current()!;
     expect(failure).toEqual(
-      expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 確認失敗', action: expect.objectContaining({ label: '重試' }) }),
+      expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: expect.objectContaining({ label: '重試' }) }),
     );
     // The failure re-reads; the ack had committed, so the date is gone.
     expect(center.round()).toBe(2);
@@ -461,7 +461,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     expect(second).toHaveLength(1);
     second[0].flush({ detail: 'Not Found' }, { status: 404, statusText: 'Not Found' });
     await settle();
-    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要確認', action: null }));
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要處理', action: null }));
     expect(center.round()).toBe(3);
     await flushRound(take(), []);
     expect(cathayRow()).toBeNull();
@@ -534,7 +534,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
 
     it('truncated with total 5 and no items: the note says 5 and the page does NOT say 都處理好了 beside it', async () => {
       await openWithPending({ items: [], total: 5, truncated: true });
-      expect(note()?.textContent?.replace(/\s+/g, ' ').trim()).toBe('還有 5 天的國泰對帳單未列出 · 到匯入頁查看 ›');
+      expect(note()?.textContent?.replace(/\s+/g, ' ').trim()).toBe('還有 5 天未列出，處理完上面的會接著顯示');
       expect(root.querySelector('.notif-empty')).toBeNull();
       expect(root.textContent).not.toContain('都處理好了');
     });
@@ -627,7 +627,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       http.expectNone(isAck);
       const failure = toasts.current()!;
       expect(failure).toEqual(
-        expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 確認失敗', action: expect.objectContaining({ label: '重試' }) }),
+        expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: expect.objectContaining({ label: '重試' }) }),
       );
       // Not committed: the re-read still lists the date, and the row is pressable again once it settles.
       expect(center.round()).toBe(2);
@@ -642,7 +642,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(second).toHaveLength(1);
       second[0].flush({ trade_date: '2026-10-28', ack_status: 'held' });
       await settle();
-      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已確認：國泰對帳單 10/28', action: null }));
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：國泰對帳單 10/28', action: null }));
       await flushRound(take(), []);
       expect(cathayRow()).toBeNull();
       http.expectNone(isAck);

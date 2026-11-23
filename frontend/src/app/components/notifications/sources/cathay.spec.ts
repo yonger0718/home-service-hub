@@ -1,5 +1,5 @@
 import { CathayPending, CathayRun, CathayRuns } from '../../../models/portfolio.model';
-import { cathayMore, cathayRunState, cathayTasks, cathayView, dayStatusText, lastScheduledRun, runStamp } from './cathay';
+import { cathayMore, cathayRunState, cathayTasks, cathayView, dayStatusText, lastScheduledRun, runCodeText, runStamp } from './cathay';
 
 const at = (s: string) => new Date(s);
 const run = (o: Partial<CathayRun> = {}): CathayRun => ({ run_at: '2026-10-28T06:41:00+08:00', result: 'ok', code: null, files_seen: 1, posted: 1, ...o });
@@ -17,7 +17,7 @@ describe('cathay run rule', () => {
     expect(cathayRunState(runs.latest, n)).toBe('stale');
     expect(cathayTasks(NONE, runs, n)).toEqual([expect.objectContaining({
       id: 'cathay:run', tier: 'system', source: 'portfolio', from: 'cathay', title: '國泰對帳單今天沒有執行',
-      when: '06:40 的排程沒有回報', meta: '上次執行 昨天 06:41', primary: { label: '查看', route: '/portfolio/import' },
+      when: '06:40 的排程沒有回報', meta: '上次執行 昨天 06:41', primary: { label: '查看', route: '/portfolio/import', fragment: 'cathay' },
       fingerprint: 'stale|2026-10-27T22:40:00.000Z' })]);
   });
 
@@ -64,10 +64,10 @@ describe('cathay run rule', () => {
       expect.objectContaining({ id: 'cathay:run', meta: '還沒有執行紀錄' })]);
   });
 
-  it('failed today: 國泰對帳單匯入失敗, when 今天 06:41, meta 錯誤代碼 password_file', () => {
+  it('failed today: 國泰對帳單匯入失敗, when 今天 06:41, meta 讀不到對帳單密碼檔 (password_file in plain words)', () => {
     const latest = run({ result: 'failed', code: 'password_file' });
     const [t] = cathayTasks(NONE, { latest, latest_ok: null }, now);
-    expect(t).toMatchObject({ id: 'cathay:run', title: '國泰對帳單匯入失敗', when: '今天 06:41', meta: '錯誤代碼 password_file',
+    expect(t).toMatchObject({ id: 'cathay:run', title: '國泰對帳單匯入失敗', when: '今天 06:41', meta: '讀不到對帳單密碼檔',
       icon: 'pi-exclamation-triangle', sortKey: '9999-12-31', fingerprint: `failed|${latest.run_at}`, amount: null, progress: null, secondary: [] });
   });
 
@@ -84,8 +84,35 @@ describe('cathay run rule', () => {
       title: '國泰對帳單匯入已停用', meta: '排程已停用，之後不會自動匯入', fingerprint: `latched|${latest.run_at}` });
   });
 
-  it('a failed run without a code has no meta', () => {
+  it('a failed run without a code has no meta; an unknown code reads 錯誤代碼 <code>', () => {
     expect(cathayTasks(NONE, { latest: run({ result: 'failed' }), latest_ok: null }, now)[0].meta).toBeNull();
+    expect(cathayTasks(NONE, { latest: run({ result: 'failed', code: 'drive:VerifyError' }), latest_ok: null }, now)[0].meta)
+      .toBe('錯誤代碼 drive:VerifyError');
+  });
+
+  it.each([
+    ['password_file', '讀不到對帳單密碼檔'],
+    ['state_file', '狀態檔損壞'],
+    ['decrypt', '密碼打不開對帳單'],
+    ['pdf_malformed', '對帳單 PDF 損壞'],
+    ['pdf_too_large', '對帳單 PDF 太大'],
+    ['extract', '讀不出對帳單文字'],
+    ['portfolio:body', '投資服務回應異常'],
+    ['portfolio:422', '投資服務拒絕匯入（422）'],
+    ['portfolio:500', '投資服務拒絕匯入（500）'],
+    ['portfolio:ConnectTimeout', '錯誤代碼 portfolio:ConnectTimeout'],
+    ['portfolio:4221', '錯誤代碼 portfolio:4221'],
+    ['portfolio:42', '錯誤代碼 portfolio:42'],
+    ['drive:VerifyError', '錯誤代碼 drive:VerifyError'],
+    ['unknown_row', '錯誤代碼 unknown_row'],
+    ['decrypt ', '錯誤代碼 decrypt '],
+  ])('runCodeText(%s) → %s', (code, text) => {
+    expect(runCodeText(code)).toBe(text);
+  });
+
+  it('runCodeText: no code (null or empty) → null', () => {
+    expect(runCodeText(null)).toBeNull();
+    expect(runCodeText('')).toBeNull();
   });
 
   it('runStamp: 今天 / 昨天 / MM/DD HH:mm by the Taipei calendar', () => {
@@ -97,11 +124,11 @@ describe('cathay run rule', () => {
 });
 
 describe('cathay pending dates', () => {
-  it('a held date: 確認 command, 查看 secondary, text from the reason', () => {
+  it('a held date: 已處理 command, 查看 secondary (to the card: #cathay), text from the reason', () => {
     const [t] = cathayTasks({ items: [{ trade_date: '2026-10-28', status: 'held', reason: 'unresolved_symbol:測試股票', since: '2026-10-29T06:41:00+08:00', last_at: '2026-10-29T06:41:00+08:00' }], total: 1, truncated: false }, okRuns, now);
     expect(t).toMatchObject({ id: 'cathay:2026-10-28', tier: 'system', source: 'portfolio', from: 'cathay', icon: 'pi-file', title: '國泰對帳單 10/28', when: '保留：名稱對不到代號 測試股票', meta: '自 10/29 起',
-      primary: { label: '確認', command: { kind: 'ackCathay', tradeDate: '2026-10-28', name: '國泰對帳單 10/28' } },
-      secondary: [{ label: '查看', route: '/portfolio/import' }], sortKey: '2026-10-28', fingerprint: 'held|unresolved_symbol:測試股票', amount: null, progress: null });
+      primary: { label: '已處理', command: { kind: 'ackCathay', tradeDate: '2026-10-28', name: '國泰對帳單 10/28' } },
+      secondary: [{ label: '查看', route: '/portfolio/import', fragment: 'cathay' }], sortKey: '2026-10-28', fingerprint: 'held|unresolved_symbol:測試股票', amount: null, progress: null });
   });
 
   it('no since → no meta; since is read by the Taipei calendar', () => {
@@ -144,7 +171,7 @@ describe('cathay pending dates', () => {
 describe('cathayView', () => {
   it('healthy: runLine 今天 06:41 · 已匯入 1 份, no banner, no days', () => {
     expect(cathayView(NONE, okRuns, now)).toEqual({ state: 'ok', runLine: '今天 06:41 · 已匯入 1 份', banner: null,
-      runDetails: null, lastOk: null, days: [], more: 0, dotLabel: null });
+      runDetails: null, lastOk: null, days: [], more: 0, dotLabel: null, pendingLabel: null });
   });
 
   it('files_seen 0 → 沒有新的對帳單; files_seen 3, posted 1 → … · 已匯入 1 份 · 收到 3 份', () => {
@@ -157,15 +184,15 @@ describe('cathayView', () => {
     expect(line).toBe('今天 06:41 · 已匯入 0 份 · 收到 1 份');
   });
 
-  it('failed: error banner naming password_file, lastOk 上次成功 昨天 06:41, dotLabel 國泰對帳單匯入失敗', () => {
+  it('failed: error banner with password_file in plain words, lastOk 上次成功 昨天 06:41, dotLabel 國泰對帳單匯入失敗', () => {
     const v = cathayView(NONE, { latest: run({ result: 'failed', code: 'password_file' }), latest_ok: run({ run_at: '2026-10-27T06:41:00+08:00' }) }, now);
     expect(v).toMatchObject({ state: 'failed', runLine: null, lastOk: '上次成功 昨天 06:41', dotLabel: '國泰對帳單匯入失敗',
-      banner: { tone: 'error', heading: '國泰對帳單匯入失敗', detail: '今天 06:41 · 錯誤代碼 password_file' } });
+      banner: { tone: 'error', heading: '國泰對帳單匯入失敗', detail: '今天 06:41 · 讀不到對帳單密碼檔' } });
   });
 
-  it('latched / stale: warn banner; ok: dotLabel null', () => {
+  it('latched: error banner; stale: warn banner; ok: dotLabel null', () => {
     const latched = cathayView(NONE, { latest: run({ result: 'latched' }), latest_ok: null }, now);
-    expect(latched.banner).toEqual({ tone: 'warn', heading: '國泰對帳單匯入已停用', detail: '今天 06:41 · 排程已停用，之後不會自動匯入' });
+    expect(latched.banner).toEqual({ tone: 'error', heading: '國泰對帳單匯入已停用', detail: '今天 06:41 · 排程已停用，之後不會自動匯入' });
     const stale = cathayView(NONE, { latest: null, latest_ok: null }, now);
     expect(stale.banner).toEqual({ tone: 'warn', heading: '國泰對帳單今天沒有執行', detail: '06:40 的排程沒有回報 · 還沒有執行紀錄' });
     expect(stale.dotLabel).toBe('國泰對帳單今天沒有執行');
@@ -190,5 +217,14 @@ describe('cathayView', () => {
     const v = cathayView({ items: [day({ trade_date: '2026-10-28', status: 'conflict' })], total: 5, truncated: true }, okRuns, now);
     expect(v.days).toEqual([{ tradeDate: '2026-10-28', label: '10/28', text: '收到不同版本的對帳單' }]);
     expect(v.more).toBe(4);
+  });
+
+  it('pendingLabel: N 天的國泰對帳單待處理, N = the dates listed, or the server total when truncated; null without dates', () => {
+    const two = [day({ trade_date: '2026-10-27' }), day({ trade_date: '2026-10-28' })];
+    expect(cathayView({ items: two, total: 2, truncated: false }, okRuns, now).pendingLabel).toBe('2 天的國泰對帳單待處理');
+    expect(cathayView({ items: two, total: 73, truncated: true }, okRuns, now).pendingLabel).toBe('73 天的國泰對帳單待處理');
+    // An inconsistent answer (truncated, total below the items listed) never counts fewer than the dates shown.
+    expect(cathayView({ items: two, total: 1, truncated: true }, okRuns, now).pendingLabel).toBe('2 天的國泰對帳單待處理');
+    expect(cathayView(NONE, okRuns, now).pendingLabel).toBeNull();
   });
 });

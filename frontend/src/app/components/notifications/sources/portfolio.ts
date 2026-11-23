@@ -39,7 +39,8 @@ export function dividendBatch(due: readonly Dividend[]): NotifTask | null {
   if (due.length === 0) return null;
   const sorted = [...due].sort(byPayment);
   const symbols = [...new Set(sorted.map(d => d.symbol))];
-  const more = symbols.length > 3 ? ` 等 ${symbols.length - 3} 檔` : '';
+  // Up to three symbols; with more, 「等 N 檔」 where N is every distinct symbol.
+  const more = symbols.length > 3 ? ` 等 ${symbols.length} 檔` : '';
   const earliest = dayOf(sorted[0]) ?? '';
   return {
     id: 'div:batch',
@@ -67,7 +68,8 @@ export function dividendsRow(waiting: readonly Dividend[]): NotifTrackingRow | n
     const day = dayOf(d);
     return `${d.symbol} ${day ? shortDate(day) : '日期未定'}`;
   });
-  if (sorted.length > 3) parts.push(`等 ${sorted.length - 3} 筆`);
+  // As the batch task: up to three, then 「等 N 筆」 where N is every row.
+  if (sorted.length > 3) parts.push(`等 ${sorted.length} 筆`);
   return {
     id: 'dividends',
     source: 'portfolio',

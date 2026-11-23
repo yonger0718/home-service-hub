@@ -14,6 +14,9 @@
       @if (v.runDetails) {
         <p class="cathay-run-details">{{ v.runDetails }}</p>
       }
+      @if (v.state === 'latched') {
+        <p class="cathay-unlatch">排除原因後，在主機執行：<code>python -m worker cathay --unlatch</code></p>
+      }
       @if (v.lastOk) {
         <p class="cathay-last-ok">{{ v.lastOk }}</p>
       }
@@ -22,7 +25,7 @@
     }
 
     @if (v.days.length > 0) {
-      <h3 class="cathay-days-title">需要你確認的日期</h3>
+      <h3 class="cathay-days-title">需要你處理的日期</h3>
       <ul class="cathay-days">
         @for (day of v.days; track day.tradeDate) {
           <li class="cathay-day" [attr.data-trade-date]="day.tradeDate">
@@ -33,17 +36,17 @@
             <app-btn
               variant="soft"
               [loading]="isBusy(day.tradeDate)"
-              [ariaLabel]="'確認：國泰對帳單 ' + day.label"
+              [ariaLabel]="'已處理：國泰對帳單 ' + day.label"
               (click)="ack(day)"
-            >確認</app-btn>
+            >已處理</app-btn>
           </li>
         }
       </ul>
     } @else {
-      <small class="cathay-none" tabindex="-1">沒有需要確認的日期</small>
+      <small class="cathay-none" tabindex="-1">沒有需要處理的日期</small>
     }
     @if (v.more > 0) {
-      <small class="cathay-more">還有 {{ v.more }} 天未列出</small>
+      <small class="cathay-more">還有 {{ v.more }} 天未列出，處理完上面的會接著顯示</small>
     }
   } @else {
     <small class="cathay-loading" role="status">讀取中…</small>

@@ -12,7 +12,9 @@ export type CathayRunState = 'ok' | 'failed' | 'latched' | 'stale';
 const TAIPEI_MS = 8 * 3600_000;
 const DAY_MS = 86_400_000;
 const IMPORT_PAGE = '/portfolio/import';
-const LOOK: NotifLink = { label: '查看', route: IMPORT_PAGE };
+/** The import page's 國泰每日對帳單 card: the page scrolls it into view and focuses it once (`#cathay`). */
+export const CATHAY_CARD_FRAGMENT = 'cathay';
+const LOOK: NotifLink = { label: '查看', route: IMPORT_PAGE, fragment: CATHAY_CARD_FRAGMENT };
 const RUN_TITLE = {
   failed: '國泰對帳單匯入失敗',
   latched: '國泰對帳單匯入已停用',
@@ -68,13 +70,37 @@ export function cathayMore(pending: CathayPending): number {
   return pending.truncated ? Math.max(0, pending.total - pending.items.length) : 0;
 }
 
+/** The worker's run codes in plain words (worker/cathay.py `CathayError`), exact match. */
+const RUN_CODE_TEXT: Readonly<Record<string, string>> = {
+  password_file: '讀不到對帳單密碼檔',
+  state_file: '狀態檔損壞',
+  decrypt: '密碼打不開對帳單',
+  pdf_malformed: '對帳單 PDF 損壞',
+  pdf_too_large: '對帳單 PDF 太大',
+  extract: '讀不出對帳單文字',
+  'portfolio:body': '投資服務回應異常',
+};
+
+/**
+ * A failed run's code for the owner: a known code in plain words, `portfolio:<3 digits>` as the HTTP status the
+ * portfolio answered, anything else (parser codes, drive errors, connection errors) as `錯誤代碼 <code>`; null when
+ * there is no code. The one mapping for the 通知 task's meta and the card banner.
+ */
+export function runCodeText(code: string | null): string | null {
+  if (!code) return null;
+  if (Object.hasOwn(RUN_CODE_TEXT, code)) return RUN_CODE_TEXT[code];
+  const status = /^portfolio:(\d{3})$/.exec(code);
+  if (status) return `投資服務拒絕匯入（${status[1]}）`;
+  return `錯誤代碼 ${code}`;
+}
+
 interface RunText { readonly title: string; readonly when: string; readonly meta: string | null }
 
 /** Title / when / meta of a bad run; null when the state is 'ok'. */
 function runText(state: CathayRunState, latest: CathayRun | null, now: Date): RunText | null {
   switch (state) {
     case 'failed':
-      return { title: RUN_TITLE.failed, when: runStamp(latest!.run_at, now), meta: latest!.code ? `錯誤代碼 ${latest!.code}` : null };
+      return { title: RUN_TITLE.failed, when: runStamp(latest!.run_at, now), meta: runCodeText(latest!.code) };
     case 'latched':
       return { title: RUN_TITLE.latched, when: runStamp(latest!.run_at, now), meta: '排程已停用，之後不會自動匯入' };
     case 'stale':
@@ -108,7 +134,7 @@ export function cathayTasks(pending: CathayPending, runs: CathayRuns, now: Date)
     meta: sinceMeta(d.since),
     amount: null,
     progress: null,
-    primary: { label: '確認', command: { kind: 'ackCathay', tradeDate: d.trade_date, name: `國泰對帳單 ${shortDate(d.trade_date)}` } },
+    primary: { label: '已處理', command: { kind: 'ackCathay', tradeDate: d.trade_date, name: `國泰對帳單 ${shortDate(d.trade_date)}` } },
     secondary: [LOOK],
     sortKey: d.trade_date,
     fingerprint: `${d.status}|${d.reason ?? ''}`,
@@ -151,6 +177,8 @@ export interface CathayView {
   readonly more: number;
   /** The 匯入 dot's label for a bad run (the run title), else null. */
   readonly dotLabel: string | null;
+  /** The 匯入 dot's label for pending dates alone (`N 天的國泰對帳單待處理`), else null. */
+  readonly pendingLabel: string | null;
 }
 
 const RESULT_TEXT = { ok: '成功', failed: '失敗', latched: '已停用' } as const;
@@ -162,6 +190,7 @@ export function cathayView(pending: CathayPending, runs: CathayRuns, now: Date):
   const days = [...pending.items]
     .sort((a, b) => a.trade_date.localeCompare(b.trade_date))
     .map(d => ({ tradeDate: d.trade_date, label: shortDate(d.trade_date), text: dayStatusText(d) }));
+  const more = cathayMore(pending);
   let runLine: string | null = null;
   if (state === 'ok' && latest) {
     // 沒有新的對帳單 only when nothing arrived: a statement received but held reads 已匯入 0 份 · 收到 N 份.
@@ -172,13 +201,16 @@ export function cathayView(pending: CathayPending, runs: CathayRuns, now: Date):
   return {
     state,
     runLine,
-    banner: text && { tone: state === 'failed' ? 'error' : 'warn', heading: text.title, detail: text.meta ? `${text.when} · ${text.meta}` : text.when },
+    // A latched job stays off until someone acts on the host: error, as failed; stale (and missing) stays a warning.
+    banner: text && { tone: state === 'stale' ? 'warn' : 'error', heading: text.title, detail: text.meta ? `${text.when} · ${text.meta}` : text.when },
     runDetails: text && latest
       ? `最近一次執行：${runStamp(latest.run_at, now)} · ${RESULT_TEXT[latest.result]} · 收到 ${latest.files_seen} 份 · 已匯入 ${latest.posted} 份`
       : null,
     lastOk: text && latest_ok ? `上次成功 ${runStamp(latest_ok.run_at, now)}` : null,
     days,
-    more: cathayMore(pending),
+    more,
     dotLabel: text?.title ?? null,
+    // The server's total when it truncated (the listed dates plus the unlisted rest), else the dates listed.
+    pendingLabel: days.length > 0 ? `${days.length + more} 天的國泰對帳單待處理` : null,
   };
 }

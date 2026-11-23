@@ -1,3 +1,7 @@
+/// <reference types="node" />
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { HttpErrorResponse, provideHttpClient, withInterceptors } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { computed, signal } from '@angular/core';
@@ -58,7 +62,7 @@ describe('CathayStatusCardComponent', () => {
     invalidate,
   };
 
-  /** One Subject per 確認, in call order. */
+  /** One Subject per 已處理, in call order. */
   let acks: Subject<{ trade_date: string; ack_status: string }>[] = [];
   const portfolio = {
     ackCathayDay: vi.fn((_tradeDate: string) => {
@@ -79,7 +83,7 @@ describe('CathayStatusCardComponent', () => {
     await fixture.whenStable();
     fixture.detectChanges();
   };
-  const ackButton = (label = '10/28') => q(`button[aria-label="確認：國泰對帳單 ${label}"]`) as HTMLButtonElement | null;
+  const ackButton = (label = '10/28') => q(`button[aria-label="已處理：國泰對帳單 ${label}"]`) as HTMLButtonElement | null;
   const button = (label: string) =>
     Array.from(root().querySelectorAll<HTMLButtonElement>('button')).find(b => text(b) === label) ?? null;
   const answer = async (index = 0) => {
@@ -125,26 +129,28 @@ describe('CathayStatusCardComponent', () => {
     expect(invalidate).not.toHaveBeenCalled();
   });
 
-  it('healthy, nothing pending: 今天 06:41 · 已匯入 1 份, no banner, 沒有需要確認的日期', () => {
+  it('healthy, nothing pending: 今天 06:41 · 已匯入 1 份, no banner, 沒有需要處理的日期', () => {
     const el = mount();
     expect(text(el.querySelector('app-bento h2'))).toBe('國泰每日對帳單');
     expect(text(el.querySelector('.cathay-run-line'))).toBe('今天 06:41 · 已匯入 1 份');
     expect(el.querySelector('app-banner')).toBeNull();
     expect(el.querySelector('.cathay-run-details')).toBeNull();
     expect(text(el)).not.toContain('上次成功');
-    expect(text(el.querySelector('.cathay-none'))).toBe('沒有需要確認的日期');
+    expect(text(el.querySelector('.cathay-none'))).toBe('沒有需要處理的日期');
     expect(el.querySelectorAll('.cathay-day').length).toBe(0);
     expect(text(el)).not.toContain('未列出');
+    expect(el.querySelector('.cathay-unlatch')).toBeNull();
   });
 
-  it('failed run with code password_file: an error banner naming the code, then 上次成功 昨天 06:41', () => {
+  it('failed run with code password_file: an error banner saying 讀不到對帳單密碼檔, then 上次成功 昨天 06:41', () => {
     cathay.set(view([], { latest: run({ result: 'failed', code: 'password_file', posted: 0 }), latest_ok: run({ run_at: YESTERDAY_0641 }) }));
     const el = mount();
     const banner = el.querySelector('app-banner')!;
     expect(banner).not.toBeNull();
     expect(banner.querySelector('.banner--error')).not.toBeNull();
     expect(text(banner.querySelector('.banner-title'))).toBe('國泰對帳單匯入失敗');
-    expect(text(banner.querySelector('.banner-detail'))).toBe('今天 06:41 · 錯誤代碼 password_file');
+    expect(text(banner.querySelector('.banner-detail'))).toBe('今天 06:41 · 讀不到對帳單密碼檔');
+    expect(el.querySelector('.cathay-unlatch')).toBeNull();
     // Not dismissible, no action.
     expect(banner.querySelector('button')).toBeNull();
     expect(text(el.querySelector('.cathay-last-ok'))).toBe('上次成功 昨天 06:41');
@@ -163,18 +169,38 @@ describe('CathayStatusCardComponent', () => {
     expect(el.querySelector('.cathay-last-ok')).toBeNull();
   });
 
-  it('latched and stale runs show a warn banner', async () => {
-    cathay.set(view([], { latest: run({ result: 'latched', code: 'password_file', posted: 0 }), latest_ok: run({ run_at: YESTERDAY_0641 }) }));
+  it('a latched run shows an error banner and how to recover: 排除原因後，在主機執行：python -m worker cathay --unlatch', () => {
+    cathay.set(view([], { latest: run({ result: 'latched', code: 'decrypt', posted: 0 }), latest_ok: run({ run_at: YESTERDAY_0641 }) }));
     const el = mount();
-    expect(el.querySelector('app-banner .banner--warn')).not.toBeNull();
-    expect(el.querySelector('app-banner .banner--error')).toBeNull();
+    expect(el.querySelector('app-banner .banner--error')).not.toBeNull();
+    expect(el.querySelector('app-banner .banner--warn')).toBeNull();
     expect(text(el.querySelector('app-banner .banner-title'))).toBe('國泰對帳單匯入已停用');
     expect(text(el.querySelector('app-banner .banner-detail'))).toBe('今天 06:41 · 排程已停用，之後不會自動匯入');
     expect(text(el.querySelector('.cathay-run-details'))).toBe('最近一次執行：今天 06:41 · 已停用 · 收到 1 份 · 已匯入 0 份');
+    const unlatch = el.querySelector('p.cathay-unlatch')!;
+    expect(text(unlatch)).toBe('排除原因後，在主機執行：python -m worker cathay --unlatch');
+    const code = unlatch.querySelector('code')!;
+    expect(code.textContent).toBe('python -m worker cathay --unlatch');
+    // Right under the banner's details, before 上次成功.
+    expect(el.querySelector('.cathay-run-details')?.nextElementSibling).toBe(unlatch);
+    expect(unlatch.nextElementSibling).toBe(el.querySelector('.cathay-last-ok'));
+  });
 
+  it('the recovery line\'s <code> wraps on a phone and stays selectable (source pin)', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app/components/portfolio/import/cathay-status-card/cathay-status-card.scss'), 'utf8');
+    const rule = css.slice(css.indexOf('.cathay-unlatch code {'));
+    const body = rule.slice(0, rule.indexOf('}'));
+    expect(body).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(body).toMatch(/white-space:\s*normal/);
+    expect(body).toMatch(/user-select:\s*text/);
+    expect(body).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(/i);
+  });
+
+  it('stale and missing runs show a warn banner, without the recovery line', async () => {
     cathay.set(view([], { latest: run({ run_at: YESTERDAY_0641 }), latest_ok: run({ run_at: YESTERDAY_0641 }) }));
-    await settle();
+    const el = mount();
     expect(el.querySelector('app-banner .banner--warn')).not.toBeNull();
+    expect(el.querySelector('.cathay-unlatch')).toBeNull();
     expect(text(el.querySelector('app-banner .banner-title'))).toBe('國泰對帳單今天沒有執行');
     expect(text(el.querySelector('app-banner .banner-detail'))).toBe('06:40 的排程沒有回報 · 上次執行 昨天 06:41');
     expect(text(el.querySelector('.cathay-run-details'))).toBe('最近一次執行：昨天 06:41 · 成功 · 收到 1 份 · 已匯入 1 份');
@@ -189,10 +215,10 @@ describe('CathayStatusCardComponent', () => {
     expect(el.querySelector('.cathay-last-ok')).toBeNull();
   });
 
-  it('a held date lists 10/28 保留：名稱對不到代號 測試股票 with a button named 確認：國泰對帳單 10/28', () => {
+  it('a held date lists 10/28 保留：名稱對不到代號 測試股票 with a button named 已處理：國泰對帳單 10/28', () => {
     cathay.set(view([day('2026-10-30', { status: 'mismatch' }), HELD], { latest: run(), latest_ok: run() }));
     const el = mount();
-    expect(text(el.querySelector('.cathay-days-title'))).toBe('需要你確認的日期');
+    expect(text(el.querySelector('.cathay-days-title'))).toBe('需要你處理的日期');
     const rows = Array.from(el.querySelectorAll('.cathay-day'));
     expect(rows.map(r => [text(r.querySelector('b')), text(r.querySelector('small'))])).toEqual([
       ['10/28', '保留：名稱對不到代號 測試股票'],
@@ -200,19 +226,19 @@ describe('CathayStatusCardComponent', () => {
     ]);
     const btn = ackButton()!;
     expect(btn).not.toBeNull();
-    expect(text(btn)).toBe('確認');
+    expect(text(btn)).toBe('已處理');
     expect(btn.disabled).toBe(false);
     expect(btn.closest('app-btn')?.querySelector('button.btn-soft')).toBe(btn);
     expect(rows[0].contains(btn)).toBe(true);
     expect(el.querySelector('.cathay-none')).toBeNull();
   });
 
-  it('more 23: 還有 23 天未列出', () => {
+  it('more 23: 還有 23 天未列出，處理完上面的會接著顯示', () => {
     const items = Array.from({ length: 50 }, (_, i) => day(`2026-0${1 + Math.floor(i / 28)}-${String(1 + (i % 28)).padStart(2, '0')}`));
     cathay.set(view(items, { latest: run(), latest_ok: run() }, { total: 73, truncated: true }));
     const el = mount();
     expect(el.querySelectorAll('.cathay-day').length).toBe(50);
-    expect(text(el.querySelector('.cathay-more'))).toBe('還有 23 天未列出');
+    expect(text(el.querySelector('.cathay-more'))).toBe('還有 23 天未列出，處理完上面的會接著顯示');
   });
 
   it('before the first round: 讀取中…; source failed: 無法讀取國泰對帳單狀態 and 重試 calls invalidate()', async () => {
@@ -272,7 +298,7 @@ describe('CathayStatusCardComponent', () => {
     expect(text(el)).not.toContain('無法讀取');
   });
 
-  it('確認 posts once, the button is busy, then 已確認：國泰對帳單 10/28 and invalidate()', async () => {
+  it('已處理 posts once, the button is busy, then 已處理：國泰對帳單 10/28 and invalidate()', async () => {
     cathay.set(WITH_HELD);
     round.set(3);
     settledRound.set(3);
@@ -286,7 +312,7 @@ describe('CathayStatusCardComponent', () => {
     expect(ackButton()!.getAttribute('aria-busy')).toBe('true');
     expect(invalidate).not.toHaveBeenCalled();
     await answer();
-    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已確認：國泰對帳單 10/28', action: null }));
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：國泰對帳單 10/28', action: null }));
     expect(invalidate).toHaveBeenCalledTimes(1);
     expect(refresh).toHaveBeenCalledTimes(1); // the open only
     expect(logged).not.toHaveBeenCalled();
@@ -307,10 +333,10 @@ describe('CathayStatusCardComponent', () => {
     settledRound.set(4);
     await settle();
     expect(ackButton()).toBeNull();
-    expect(text(q('.cathay-none'))).toBe('沒有需要確認的日期');
+    expect(text(q('.cathay-none'))).toBe('沒有需要處理的日期');
   });
 
-  it('404 → 國泰對帳單 10/28：已經不需要確認 as done; 500 → 國泰對帳單 10/28 確認失敗 with 重試', async () => {
+  it('404 → 國泰對帳單 10/28：已經不需要處理 as done; 500 → 國泰對帳單 10/28 標記失敗 with 重試', async () => {
     cathay.set(WITH_HELD);
     round.set(3);
     settledRound.set(3);
@@ -318,7 +344,7 @@ describe('CathayStatusCardComponent', () => {
     ackButton()!.click();
     await settle();
     await fail(404, { detail: 'Not Found' });
-    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要確認', action: null }));
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要處理', action: null }));
     expect(invalidate).toHaveBeenCalledTimes(1);
     expect(logged).not.toHaveBeenCalled();
     expect(ackButton()!.disabled).toBe(true);
@@ -330,7 +356,7 @@ describe('CathayStatusCardComponent', () => {
     await settle();
     await fail(500, { message: 'Internal Server Error: db down' }, 1);
     expect(toasts.current()).toEqual(
-      expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 確認失敗', action: expect.objectContaining({ label: '重試' }) }),
+      expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: expect.objectContaining({ label: '重試' }) }),
     );
     expect(document.body.textContent).not.toContain('db down');
     expect(root().textContent).not.toContain('db down');
@@ -339,17 +365,17 @@ describe('CathayStatusCardComponent', () => {
     expect(invalidate).toHaveBeenCalledTimes(2);
   });
 
-  it('403: 確認失敗 without 重試', async () => {
+  it('403: 標記失敗 without 重試', async () => {
     cathay.set(WITH_HELD);
     mount();
     ackButton()!.click();
     await settle();
     await fail(403, { detail: 'write scope required' });
-    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 確認失敗', action: null }));
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: null }));
     expect(invalidate).toHaveBeenCalledTimes(1);
   });
 
-  it('failed ack, invalidate() returned round N: while N is in flight 確認 is disabled and 重試 re-raises the toast; once settledRound() is N the button is enabled and 重試 posts again — no round N+1', async () => {
+  it('failed ack, invalidate() returned round N: while N is in flight 已處理 is disabled and 重試 re-raises the toast; once settledRound() is N the button is enabled and 重試 posts again — no round N+1', async () => {
     cathay.set(WITH_HELD);
     round.set(3);
     settledRound.set(3);
@@ -368,7 +394,7 @@ describe('CathayStatusCardComponent', () => {
     await settle();
     expect(portfolio.ackCathayDay).toHaveBeenCalledTimes(1);
     expect(toasts.current()).toEqual(
-      expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 確認失敗', action: expect.objectContaining({ label: '重試' }) }),
+      expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: expect.objectContaining({ label: '重試' }) }),
     );
     expect(toasts.current()!.id).not.toBe(first);
     // Round N itself settles: released.
@@ -426,11 +452,11 @@ describe('CathayStatusCardComponent', () => {
     posts[0].flush({ message: 'boom' }, { status: 500, statusText: 'Server Error' });
     await settle();
     expect(http.match(r => r.url.endsWith(url)).length).toBe(0);
-    expect(toasts.current()?.text).toBe('國泰對帳單 10/28 確認失敗');
+    expect(toasts.current()?.text).toBe('國泰對帳單 10/28 標記失敗');
     http.verify();
   });
 
-  describe('focus after 確認 and 重試', () => {
+  describe('focus after 已處理 and 重試', () => {
     const TWO = view([HELD, day('2026-10-30', { status: 'mismatch' })], { latest: run(), latest_ok: run() });
     const ONLY_30 = view([day('2026-10-30', { status: 'mismatch' })], { latest: run(), latest_ok: run() });
     let outside: HTMLButtonElement | null = null;
@@ -443,7 +469,7 @@ describe('CathayStatusCardComponent', () => {
       document.body.appendChild(el);
       return el;
     }
-    /** Presses a row's 確認 from the keyboard's point of view: focused, then pressed. */
+    /** Presses a row's 已處理 from the keyboard's point of view: focused, then pressed. */
     const press = async (label: string) => {
       ackButton(label)!.focus();
       expect(document.activeElement).toBe(ackButton(label));
@@ -468,7 +494,7 @@ describe('CathayStatusCardComponent', () => {
       outside = null;
     });
 
-    it('success with two rows: once round N settles without the date, focus goes to the next row’s 確認', async () => {
+    it('success with two rows: once round N settles without the date, focus goes to the next row’s 已處理', async () => {
       cathay.set(TWO);
       attach();
       await press('10/28');
@@ -481,7 +507,7 @@ describe('CathayStatusCardComponent', () => {
       expect(document.activeElement).toBe(ackButton('10/30'));
     });
 
-    it('success on the last row: focus goes to the previous row’s 確認', async () => {
+    it('success on the last row: focus goes to the previous row’s 已處理', async () => {
       cathay.set(TWO);
       attach();
       await press('10/30');
@@ -494,7 +520,7 @@ describe('CathayStatusCardComponent', () => {
       expect(document.activeElement).toBe(ackButton('10/28'));
     });
 
-    it('success with one row: focus goes to 沒有需要確認的日期 (tabindex -1)', async () => {
+    it('success with one row: focus goes to 沒有需要處理的日期 (tabindex -1)', async () => {
       cathay.set(WITH_HELD);
       attach();
       await press('10/28');
@@ -508,7 +534,7 @@ describe('CathayStatusCardComponent', () => {
       expect(document.activeElement).toBe(none);
     });
 
-    it('failed ack: focus comes back to the same 確認 once round N settles, not before', async () => {
+    it('failed ack: focus comes back to the same 已處理 once round N settles, not before', async () => {
       cathay.set(WITH_HELD);
       attach();
       await press('10/28');
@@ -538,7 +564,7 @@ describe('CathayStatusCardComponent', () => {
       expect(document.activeElement).toBe(outside);
     });
 
-    it('a 確認 sent from the toast’s 重試 (the button not focused) moves no focus', async () => {
+    it('an 已處理 sent from the toast’s 重試 (the button not focused) moves no focus', async () => {
       cathay.set(WITH_HELD);
       attach();
       ackButton()!.click();
@@ -556,7 +582,7 @@ describe('CathayStatusCardComponent', () => {
       expect(document.activeElement).toBe(document.body);
     });
 
-    it('banner 重試 that reads: focus goes to the first 確認, or to 沒有需要確認的日期', async () => {
+    it('banner 重試 that reads: focus goes to the first 已處理, or to 沒有需要處理的日期', async () => {
       failedSources.set(['cathay']);
       cathay.set(null);
       attach();

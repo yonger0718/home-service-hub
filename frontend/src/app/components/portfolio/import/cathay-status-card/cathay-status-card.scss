@@ -11,6 +11,7 @@ b {
 
 small,
 .cathay-run-details,
+.cathay-unlatch,
 .cathay-last-ok {
   color: var(--app-text-muted);
   font-size: 0.75rem;
@@ -30,8 +31,19 @@ p {
 }
 
 app-banner + .cathay-run-details,
+app-banner + .cathay-unlatch,
 app-banner + .cathay-last-ok {
   margin-top: var(--space-2);
+}
+
+/* The recovery command: wraps inside the card at 390 px (no horizontal scroll) and copies as one selection. */
+.cathay-unlatch code {
+  color: var(--app-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: inherit;
+  overflow-wrap: anywhere;
+  user-select: text;
+  white-space: normal;
 }
 
 .cathay-days-title {

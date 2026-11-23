@@ -6,6 +6,8 @@ export interface NotifLink {
   readonly label: string;
   readonly route: string;
   readonly queryParams?: Readonly<Record<string, string>>;
+  /** A `#fragment` on the route (never sent to the server). */
+  readonly fragment?: string;
 }
 
 export type NotifCommand =

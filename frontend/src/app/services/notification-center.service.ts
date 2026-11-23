@@ -368,12 +368,15 @@ export class NotificationCenterService {
       badges['dividends'] = dividendsDot;
     }
     // O2 / P6: an import failure (the recalc chain, or this device's last commit until its next successful one) and a
-    // bad 國泰 run share the red 匯入 dot; pending 國泰 dates never light it.
-    const importLabels = [this.importFailure() ? '最近一次匯入失敗' : null, this.cathay()?.dotLabel ?? null].filter(
+    // bad 國泰 run share the red 匯入 dot. Pending 國泰 dates alone light it primary (as 股利); red wins over them.
+    const cathay = this.cathay();
+    const importLabels = [this.importFailure() ? '最近一次匯入失敗' : null, cathay?.dotLabel ?? null].filter(
       (label): label is string => label !== null,
     );
     if (importLabels.length > 0) {
       badges['import'] = { dot: true, tone: 'red', label: importLabels.join('、') };
+    } else if (cathay?.pendingLabel) {
+      badges['import'] = { dot: true, tone: 'primary', label: cathay.pendingLabel };
     }
     return badges;
   });

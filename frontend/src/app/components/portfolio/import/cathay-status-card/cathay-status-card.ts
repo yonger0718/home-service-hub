@@ -12,14 +12,14 @@ import { BannerComponent } from '../../../ui/banner/banner';
 import { BentoComponent } from '../../../ui/bento/bento';
 import { BtnComponent } from '../../../ui/btn/btn';
 
-/** A date's 確認 button. */
+/** A date's 已處理 button. */
 const ackSelector = (tradeDate: string) => `li.cathay-day[data-trade-date="${tradeDate}"] button`;
 const NONE_SELECTOR = '.cathay-none';
 const RETRY_SELECTOR = '.banner-action';
 
 /**
  * 國泰每日對帳單 on the import page: the notification centre's `cathay()` view (the same answer as the 通知 tasks and
- * the 匯入 dot), with 確認 per pending date.
+ * the 匯入 dot), with 已處理 per pending date (it records the date as known; it imports nothing and changes no data).
  */
 @Component({
   selector: 'app-cathay-status-card',
@@ -39,18 +39,18 @@ export class CathayStatusCardComponent {
   protected readonly failed = computed(() => this.center.failedSources().includes('cathay'));
 
   /**
-   * Per trade date whose 確認 was sent: null while the ack is in flight, then the id `invalidate()` returned (the NEW
+   * Per trade date whose 已處理 was sent: null while the ack is in flight, then the id `invalidate()` returned (the NEW
    * round, started after the answer). The row is busy until `settledRound() >= ` that id (C14): round N settling
    * releases it, and so does a later round M that superseded N (a superseded round never settles).
    */
   private readonly waiting = signal<ReadonlyMap<string, number | null>>(new Map());
-  /** The dates whose 確認 had focus when it was sent: their release may hand focus on. */
+  /** The dates whose 已處理 had focus when it was sent: their release may hand focus on. */
   private readonly focusedAtSend = new Set<string>();
   /** The round the unread banner's 重試 started, while its 重試 had focus; null otherwise. */
   private retryRound: number | null = null;
 
   constructor() {
-    // A released 確認 (C14) whose button had focus: the disabled button may have dropped focus to <body>, and the row
+    // A released 已處理 (C14) whose button had focus: the disabled button may have dropped focus to <body>, and the row
     // may be gone. Focus goes to the same row, else the next, else the previous, else the none text — only if it is
     // still lost after the render (focus the owner moved elsewhere stays).
     effect(() => {
@@ -61,7 +61,7 @@ export class CathayStatusCardComponent {
         }
       }
     });
-    // The unread banner's 重試 settled: the banner is gone (first 確認, else the none text) or back (its 重試).
+    // The unread banner's 重試 settled: the banner is gone (first 已處理, else the none text) or back (its 重試).
     effect(() => {
       const settled = this.center.settledRound();
       if (this.retryRound === null || settled < this.retryRound) {
@@ -98,7 +98,7 @@ export class CathayStatusCardComponent {
     this.retryRound = focused ? round : null;
   }
 
-  /** 確認; ignored while that date is busy (one request per press). */
+  /** 已處理; ignored while that date is busy (one request per press). */
   protected ack(day: CathayDayView): void {
     if (this.isBusy(day.tradeDate)) {
       return;
@@ -116,18 +116,18 @@ export class CathayStatusCardComponent {
     this.setWaiting(tradeDate, null);
     this.portfolio.ackCathayDay(tradeDate).subscribe({
       next: () => {
-        this.toasts.done(`已確認：${name}`);
+        this.toasts.done(`已處理：${name}`);
         this.reread(tradeDate);
       },
       error: (err: unknown) => {
         if (err instanceof HttpErrorResponse && err.status === 404) {
           // The date no longer needs the owner (acked elsewhere, or by an earlier send that had committed).
-          this.toasts.done(`${name}：已經不需要確認`);
+          this.toasts.done(`${name}：已經不需要處理`);
         } else {
           // Only a reason the app words itself reaches the owner; the raw error is for the console.
-          console.error(`確認失敗 cathay:${tradeDate}（${name}）`, err);
+          console.error(`標記失敗 cathay:${tradeDate}（${name}）`, err);
           const reason = knownWriteReason(err);
-          const text = reason === null ? `${name} 確認失敗` : toastText(`${name} 確認失敗`, reason);
+          const text = reason === null ? `${name} 標記失敗` : toastText(`${name} 標記失敗`, reason);
           this.toasts.error(text, {
             retry: guardedRetry(err, this.toasts, text, () => this.isBusy(tradeDate), () => this.send(tradeDate, name)),
           });
@@ -145,7 +145,7 @@ export class CathayStatusCardComponent {
   }
 
   /**
-   * Where a released date's focus goes, from the view about to render (dates sorted by trade date): its own 確認 if
+   * Where a released date's focus goes, from the view about to render (dates sorted by trade date): its own 已處理 if
    * still listed, else the next date's, else the previous date's, else the none text; the 重試 when the read failed.
    */
   private focusTarget(tradeDate: string): string {
