@@ -2008,6 +2008,17 @@ describe('NotificationsComponent', () => {
       expect(text(rowControl('recon:12'))).toBe('對帳');
     });
 
+    it('closing replaces the flow\'s history entry: browser Back does not reopen it', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      const navigate = vi.spyOn(router, 'navigate');
+      (flow()!.querySelector('button.flow-close') as HTMLButtonElement).click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications');
+      });
+      expect(navigate).toHaveBeenCalledWith(['/notifications'], { replaceUrl: true });
+    });
+
     it('closing when the row has left the list focuses the page heading', async () => {
       await openAt('panes', '/notifications/recon/12');
       tasks.set(TASKS);

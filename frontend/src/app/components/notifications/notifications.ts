@@ -371,9 +371,12 @@ export class NotificationsComponent {
     });
   }
 
-  /** The flow's ✕, ‹ or Escape: back to the list (the flow itself does no navigation). */
+  /**
+   * The flow's ✕, ‹ or Escape: back to the list (the flow itself does no navigation). The flow's history entry is
+   * replaced, so browser Back after closing does not reopen it.
+   */
   protected closeFlow(): void {
-    void this.router.navigate(['/notifications']);
+    void this.router.navigate(['/notifications'], { replaceUrl: true });
   }
 
   /**
