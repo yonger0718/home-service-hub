@@ -117,7 +117,7 @@ The page SHALL also read portfolio and system sources: pending dividends past th
 
 #### Scenario: Held 國泰 date
 - **GIVEN** `pending` returns 2026-10-28 with status `held`
-- **WHEN** the owner presses 確認 on that task
+- **WHEN** the owner presses 已處理 on that task
 - **THEN** the SPA SHALL post the ack and the task SHALL disappear
 
 #### Scenario: Auto-pay over the cap

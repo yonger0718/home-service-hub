@@ -70,7 +70,7 @@ Run rule for 國泰 (Cathay design §7.2, `cathay_run_time` 06:40, grace 15 min)
 
 ### D8. Navigation dots
 
-Group items show a dot when their page has a task: 股利 (dividend batch), 匯入 (import or Cathay failure, red), 帳戶 (a card bill overdue, red), 記帳記錄 (MOZE import review). Counts appear only on 通知. The phone tab bar keeps group dots.
+Group items show a dot when their page has a task: 股利 (dividend batch), 匯入 (import or Cathay failure, red; pending 國泰 dates alone, primary), 帳戶 (a card bill overdue, red), 記帳記錄 (MOZE import review). Counts appear only on 通知. The phone tab bar keeps group dots.
 
 ### D9. Auto-pay surfaces
 

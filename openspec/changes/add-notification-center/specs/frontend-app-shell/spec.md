@@ -18,6 +18,10 @@ A `NavItem` MAY carry a dot (plus an accessible label) when its page has a count
 - **WHEN** `GET /api/portfolio/imports/recalc/status` reports the latest import chain as failed
 - **THEN** the 匯入 item SHALL show a red dot labelled 最近一次匯入失敗
 
+#### Scenario: Pending 國泰 dates dot
+- **GIVEN** two 國泰 statement dates need the owner and there is no import failure and no bad 國泰 run
+- **THEN** the 匯入 item SHALL show an `--app-primary` dot labelled 2 天的國泰對帳單待處理
+
 #### Scenario: Badges off
 - **GIVEN** badges are turned off in Settings
 - **WHEN** two dividends are pending
