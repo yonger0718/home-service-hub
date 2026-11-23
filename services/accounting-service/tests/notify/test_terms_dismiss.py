@@ -55,10 +55,16 @@ def _apply(card: CardResult, *dismiss: Dismissal, today=TODAY, live=LIVE) -> App
     ("rate", "9", "9"), ("rate", "9.0000", "9"), ("rate", "9%（國內外合計）", "9"), ("rate", "0.50", "0.5"),
     ("total_cap", "60,000", "60000"), ("total_cap", "60000.0000", "60000"), ("fixed_amount", "100 元", "100"),
     ("rate", "約 9%", None), ("rate", "NT$500", None), ("total_cap", "2026-12-31", None), ("rate", "1/2", None),
+    # a range, a fraction or a list is not one number: no prefix of it may stand in for the value
+    ("rate", "1.5-3%", None), ("rate", "1.5/2", None), ("rate", "9.55-10", None), ("rate", "1.5.2", None),
+    ("total_cap", "9,000-12,000", None), ("total_cap", "60,000/年", None), ("rate", "3,5%", None),
+    ("rate", "1,2,3", None), ("total_cap", "1,000,000", "1000000"), ("total_cap", "12,34", None),
+    ("total_cap", "500 點", "500"), ("total_cap", "500點", "500"), ("rate", "9.", None),
     ("is_basic", "false（基本為每滿 25 元）", "false"), ("is_basic", "TRUE", "true"), ("is_basic", "falsey", None),
     ("is_basic", "否", None),
     ("window", "calendar_month", "calendar_month"), ("window", "calendar_month（日曆月）", "calendar_month"),
-    ("method", "Percent", None),
+    ("method", "Percent", None), ("window", "calendar_monthX", None), ("window", "calendar_month2", None),
+    ("window", "calendar_month_", "calendar_month_"),  # a whole token, equal to no pin the loader accepts
     ("total_cap", None, "none"), ("total_cap", "", "none"), ("ends_on", "  ", "none"),
     # the model also spells a missing value out
     ("total_cap", "null（上限僅適用加碼哩）", "none"), ("total_cap", "None", "none"), ("ends_on", "null", "none"),
@@ -295,3 +301,34 @@ def test_terms_rates_reads_the_announced_rows():
     from notify.terms_dismiss import terms_rates
     assert terms_rates(_terms(("3.0000", "888"), (None, None), ("0.88", None))) == (
         (None, None), ("0.88", None), ("3", "888"))
+
+
+# --- review fixes ---
+
+def test_a_blank_site_value_never_matches_a_value_pin():
+    pin = Dismissal("total_cap", rule=162, value="500")
+    for site in ("", None, "  "):
+        assert _apply(_card(findings=(_f(field="total_cap", site=site),)), pin).hidden == (), site
+    day = Dismissal("starts_on", rule=162, value="2026-07-01")
+    assert _apply(_card(findings=(_f(site=""),)), day).hidden == ()
+
+
+def test_a_range_is_not_hidden_by_a_pin_on_its_first_digits():
+    pin = Dismissal("rate", rule=162, value="1")
+    for site in ("1.5-3%", "1.5/2", "1,5-2"):
+        assert _apply(_card(findings=(_f(field="rate", site=site),)), pin).hidden == (), site
+
+
+def test_hiding_the_announced_block_keeps_a_changed_card_without_findings_as_it_was():
+    """`changed` with no verified finding is the every-run 「找不到官網來源」 line: an accepted announcement
+    must not silence it."""
+    card = _card(status="changed", unverified=(_f(),), next_terms=_announced())
+    got = _apply(card, Dismissal("next_terms", value="2027-03-31"))
+    assert got.hidden_next_terms and got.card.next_terms is None
+    assert got.card.status == "changed" and got.card.unverified == card.unverified
+
+
+def test_a_not_found_card_stays_not_found():
+    card = _card(status="not_found", findings=(_f(),), next_terms=_announced())
+    got = _apply(card, Dismissal("starts_on", rule=162), Dismissal("next_terms", value="2027-03-31"))
+    assert got.hidden_count == 2 and got.card.status == "not_found"

@@ -27,6 +27,8 @@ DISMISS_RULE_FIELDS = DATE_FIELDS + NUMBER_FIELDS + TOKEN_FIELDS + TEXT_FIELDS +
 NO_VALUE = "none"  # pin: the bank gives no value (date and number fields)
 _DISMISS_KEYS = frozenset({"field", "rule", "value", "contains", "until", "note", "rates"})
 _NUMBER = re.compile(r"[0-9]+(\.[0-9]+)?")
+_SIGNED = re.compile(r"-?[0-9]+(\.[0-9]+)?")  # a `rates` side: whatever the parser keeps for an announced row
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")  # date.fromisoformat also takes 20260701 and 2026-W27-3
 _TOKEN = re.compile(r"[a-z_]+")
 _NOTE_MAX = 200
 
@@ -110,7 +112,7 @@ def _iso_date(value: object, path: str) -> date:
     """An ISO string or a TOML date literal; a datetime is refused."""
     if isinstance(value, date) and not isinstance(value, datetime):
         return value
-    if isinstance(value, str):
+    if isinstance(value, str) and _ISO_DATE.fullmatch(value.strip()):
         try:
             return date.fromisoformat(value.strip())
         except ValueError:
@@ -140,7 +142,7 @@ def _rates(value: object, path: str) -> tuple[tuple[str | None, str | None], ...
             raise ConfigError(path)
         pair = []
         for part in (x.strip() for x in parts):
-            if part != NO_VALUE and not _NUMBER.fullmatch(part):
+            if part != NO_VALUE and not _SIGNED.fullmatch(part):
                 raise ConfigError(path)
             pair.append(None if part == NO_VALUE else format_number(Decimal(part)))
         pairs.append(tuple(pair))

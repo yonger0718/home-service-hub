@@ -386,7 +386,8 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
   - 被忽略的項目仍在 `result.json`，另列於 `dismissed.json`；訊息尾端印 `已忽略 N 項：…`。到期、或所指規則已不是現行規則的項目不再生效，
     並列在 `忽略清單失效：…`，直到從設定檔移除。全部項目都被忽略的卡視同無差異。
   - 新增一項：讀最近一次封存的 `result.json`（該發現的 `rule_id`、`field`、`site`），加進設定檔，再跑一次 `--dry-run` 確認。
-  - 限制：釘值只比對 `site` 開頭的那個值（`9%（合計）` 視為 9），開頭不是值的文字不會被忽略；沒有 `value` 的項目會連之後的真實變動一起蓋掉；
+  - 限制：釘值只比對 `site` 開頭的那個值（`9%（合計）` 視為 9，後面的文字不看），開頭不是單一數值的文字（`約 9%`、區間 `1.5-3%`）不會被忽略；
+    釘的是官網的值，之後若改了規則自己的值而官網沒變，該差異仍被忽略；沒有 `value` 的項目會連之後的真實變動一起蓋掉；
     模型下次若把同一差異報在別的欄位或規則上，不會被比對到；訊號卡的摘要、「來源文件過長」、未驗證項目不在清單範圍內。
 - 隔離：Hermes 以固定參數呼叫（`hermes -z … -t web --ignore-user-config --ignore-rules --provider … -m …`），
   不給 HomeHub token，環境變數只有 PATH/HOME/LANG/TZ。**不得上線規則**：Hermes 升級後若

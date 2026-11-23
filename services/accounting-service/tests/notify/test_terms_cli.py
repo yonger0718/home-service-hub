@@ -400,6 +400,7 @@ def test_stale_dismissal_is_reported_and_hides_nothing(tmp_path, monkeypatch):
     assert "忽略清單失效：Alpha 規則 162 結束日（到期）、Alpha 規則 999 回饋率（規則已不在）" in message.split("\n")
     stale = json.loads((arch / "dismissed.json").read_text())["101"]["stale"]
     assert [(s["field"], s["rule"], s["reason"]) for s in stale] == [("ends_on", 162, "expired"), ("rate", 999, "rule")]
+    assert stale[0]["until"] == "2026-11-02" and stale[1]["until"] is None and stale[0]["rates"] is None
 
 
 def test_year_end_run_does_not_judge_cards_outside_the_window(tmp_path, monkeypatch):

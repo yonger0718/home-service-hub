@@ -236,6 +236,13 @@ def test_dismiss_pin_is_normalised(tmp_path, field, raw, stored):
     ('field = "starts_on"\nrule = 1\nvalue = "2026-13-01"', "value"),
     ('field = "starts_on"\nrule = 1\nvalue = "2026/07/01"', "value"),
     ('field = "starts_on"\nrule = 1\nvalue = 20260701', "value"),
+    ('field = "starts_on"\nrule = 1\nvalue = "20260701"', "value"),
+    ('field = "starts_on"\nrule = 1\nvalue = "2026-W27-3"', "value"),
+    ('field = "rate"\nrule = 1\nvalue = inf', "value"),
+    ('field = "rate"\nrule = 1\nvalue = nan', "value"),
+    ('field = "rate"\nrule = 1\nvalue = -1', "value"),
+    ('field = "rate"\nrule = 1\nvalue = [1]', "value"),
+    ('field = "rate"\nrule = 1\nuntil = 10:00:00', "until"),
     ('field = "rate"\nrule = 1\nvalue = "nine"', "value"),
     ('field = "rate"\nrule = 1\nvalue = true', "value"),
     ('field = "rate"\nrule = 1\nvalue = "1e3"', "value"),
@@ -330,3 +337,9 @@ def test_next_terms_without_rates_has_no_rates_pin(tmp_path):
 ])
 def test_rates_refusals(tmp_path, entry):
     assert _dismiss_err(tmp_path, entry) == "terms.cards.101.dismiss[0].rates"
+
+
+def test_rates_pin_takes_what_dismissed_json_prints(tmp_path):
+    """`hidden_next_terms_rates` is meant to be pasted back: a sign the parser keeps must load."""
+    (d,) = _dismiss(tmp_path, 'field = "next_terms"\nvalue = "2027-03-31"\nrates = ["-1/none", "1.5/3000"]')
+    assert d.rates == (("-1", None), ("1.5", "3000"))

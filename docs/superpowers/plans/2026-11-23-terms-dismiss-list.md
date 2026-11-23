@@ -21,7 +21,7 @@
 
 ## Review Focus
 
-- A site value that is not the leading token the pin expects (`約 9%`, `2026/07/01`, empty string) must show the finding, never hide it. Test in Task 2.
+- A site value that is not the leading token the pin expects (`約 9%`, `2026/07/01`, a range such as `1.5-3%`) must show the finding, never hide it; an empty site value matches only a `none` pin. Test in Task 2.
 - A dismissal on its last day (`today == until`) applies; the day after it is stale and hides nothing. Test in Task 2.
 - A card whose findings are all dismissed must not print 「找不到官網來源」 (the `changed` + no findings rule of `decide`). Test in Task 2 (status) and Task 4 (message).
 - A `--dry-run` must save no state, and a `--send` must save the digest of the filtered card. Test in Task 4.
@@ -144,3 +144,7 @@ Added during execution (a reviewer's note: the period end alone hides a revision
 - [ ] **Step 1:** Tests: the loader (normalised, sorted, refusals name `rates`), matching (same numbers in another order and spelling, a moved rate, a moved cap, a row gone, a row added, repeated rows, no pin), the run (block back when the numbers moved, hidden when they match).
 - [ ] **Step 2:** Run: FAIL. Implement. Run the suite: PASS.
 - [ ] **Step 3:** Commit `feat(notify): pin an announced-terms dismissal to its rates and caps (#287)`.
+
+### Task 7: Final review fixes
+
+Whole-branch review on `f9a0d150`: one Critical (a number pin matched the first digits of a range or fraction), one Important (hiding an item silenced the 「找不到官網來源」 line of a `changed` card without verified findings, or of a `not_found` card), minors (ISO dates stricter than `date.fromisoformat`, signed `rates` sides, `until` and `rates` in the stale records, the token regex stopping in front of `_`). Each fixed test-first in one pass.

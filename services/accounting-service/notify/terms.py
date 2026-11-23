@@ -63,6 +63,8 @@ def _dismissed_json(applied: dict[int, Applied]) -> dict:
             # the `rates` pin a next_terms entry can carry, in the config's own spelling
             "hidden_next_terms_rates": [f"{r or 'none'}/{c or 'none'}" for r, c in a.hidden_rates],
             "stale": [{"field": d.field, "rule": d.rule, "value": d.value, "contains": list(d.contains),
+                       "until": d.until.isoformat() if d.until else None,
+                       "rates": None if d.rates is None else [f"{r or 'none'}/{c or 'none'}" for r, c in d.rates],
                        "reason": reason} for d, reason in a.stale],
         }
         for aid, a in applied.items() if a.hidden_count or a.stale

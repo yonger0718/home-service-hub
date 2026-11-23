@@ -130,21 +130,24 @@ Site values are the model's text, so the pin compares the **leading token** only
 | field | token | examples that match the pin |
 |---|---|---|
 | `starts_on`, `ends_on` | `YYYY-MM-DD`, a valid date, not followed by a digit | `2026-07-01`, `2026-07-01（本期活動）` |
-| `rate`, `fixed_amount`, `total_cap` | a decimal number (thousands commas allowed), compared as a number | `9`, `9.0000`, `9%`, `60,000` |
+| `rate`, `fixed_amount`, `total_cap` | one decimal number (commas only as thousands separators), compared as a number, not followed by a digit, `.`, `,`, `-` or `/` | `9`, `9.0000`, `9%`, `60,000` |
 | `is_basic` | `true` / `false`, any case | `false（基本為每滿 25 元）` |
 | `method`, `window` | `[a-z_]+` | `calendar_month` |
 
 For the date and number fields a missing or blank site value normalises to `none`, and so
 does one the model spells out (a leading `null`, `none` or 「無」, as in `null（上限僅適用加碼哩）`). A site value with no such leading token
-matches no pin, so the finding is shown.
+matches no pin, so the finding is shown. A range, a fraction or a list (`1.5-3%`, `1.5/2`,
+`9,000-12,000`) has no token: its first digits never stand in for the value.
 
 ### 3. Effect on the card
 
 The matched findings are removed from the card and a matched announced block is dropped
 (`next_terms` becomes absent). When anything was removed the card's status is recomputed:
 `changed` if findings remain, else `announced` if an announced block remains, else
-`unchanged`. A card nothing was removed from is left exactly as parsed (so a `changed` card
-with no findings still renders 「找不到官網來源」).
+`unchanged`. Two statuses are never recomputed, because they are the every-run
+「找不到官網來源」 line of base spec §5 and an accepted item must not silence it: `not_found`,
+and `changed` with no verified finding before the filter (hiding that card's announced block
+leaves it `changed`). A card nothing was removed from is left exactly as parsed.
 
 The digest and the show rules then work on that card. So a card whose items are all
 dismissed renders like an unchanged one: the 「無差異，條款期間至 …」 line when its digest is
@@ -210,6 +213,13 @@ this recipe.
   merged, split or left without its rate). That is noise in the safe direction.
 - The model can report the same difference under another field or rule on another run; that
   finding is not matched and shows.
+- A pin reads the leading token and ignores what follows it: `9%（2027 起 5%）` matches a pin
+  on 9, and 「無上限，但每月 500」 matches `none`.
+- A pin is the bank's value, not the pair of values. If the rule's own value is later edited
+  to something else while the bank still publishes the pinned value, the finding stays
+  hidden.
+- The digest still takes the announced block's source and quote, so a card with a visible
+  announced block looks new on most runs. That block shows on every run anyway.
 - A pinned date dismissal for a bank that prints only the current period comes back when the
   period rolls over (the date changes). That is the intended notice.
 
@@ -223,7 +233,8 @@ this recipe.
   period end, after the period ended, and with a `rates` pin (same numbers in another order
   and spelling, a moved rate, a moved cap, a row gone, a row added, repeated rows); unverified findings untouched.
 - Status recompute for each combination; an untouched card keeps a `changed` status with no
-  findings.
+  findings; a `not_found` card and a `changed` card without verified findings keep their
+  status when something is hidden.
 - Stale: expired, rule gone, and a live one is not stale.
 - Digest: a different period-end quote or source gives the same digest; a different date
   does not.

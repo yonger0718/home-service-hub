@@ -19,9 +19,12 @@ EXPIRED = "expired"  # `until` is past, or the announced period a next_terms ent
 RULE_GONE = "rule"  # the rule a rule-field entry names is not among the card's live rules of this run
 
 _DATE = re.compile(r"(\d{4}-\d{2}-\d{2})(?!\d)")
-_NUMBER = re.compile(r"([0-9][0-9,]*(?:\.[0-9]+)?)(?![0-9\-/])")
+# One number, then something that cannot continue it. The lookahead holds every character a shorter prefix could
+# stop in front of, so a range, a fraction or a list ("1.5-3%", "9,000-12,000", "1.5/2") gives no token at all
+# instead of its first digits. Commas only as thousands separators.
+_NUMBER = re.compile(r"((?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)(?![0-9.,\-/])")
 _BOOL = re.compile(r"(true|false)(?![A-Za-z])", re.IGNORECASE)
-_TOKEN = re.compile(r"([a-z_]+)(?![A-Za-z0-9])")
+_TOKEN = re.compile(r"([a-z_]+)(?![A-Za-z0-9_])")
 _NONE = re.compile(r"(?:(?:null|none)(?![A-Za-z])|無)", re.IGNORECASE)  # the model spelling a missing value out
 
 
@@ -127,7 +130,12 @@ def apply_dismissals(card: CardResult, entry: CardEntry, live_rule_ids: frozense
         return Applied(card, stale=tuple(stale))
     kept = tuple(f for f, hide in zip(card.findings, flags) if not hide)
     next_terms = None if hide_nt else nt
-    status = "changed" if kept else ("announced" if next_terms and next_terms.announced else "unchanged")
+    # `not_found`, and `changed` with no verified finding, are the every-run 「找不到官網來源」 line (base spec §5):
+    # hiding an accepted item must not turn that into "no difference".
+    if card.status == "not_found" or (card.status == "changed" and not card.findings):
+        status = card.status
+    else:
+        status = "changed" if kept else ("announced" if next_terms and next_terms.announced else "unchanged")
     return Applied(
         card=replace(card, findings=kept, next_terms=next_terms, status=status),
         hidden=tuple(f for f, hide in zip(card.findings, flags) if hide),
