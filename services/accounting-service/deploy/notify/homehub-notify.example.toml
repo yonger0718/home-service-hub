@@ -46,8 +46,9 @@ value = "2026-07-01"                          # pin: dates, rate / fixed_amount 
 note = "the bank prints the current period only"
 
 [[terms.cards."101".dismiss]]                 # no value = any value of that field of that rule
-field = "description"                         # name and description can only be dismissed whole
-rule = 163
+field = "description"                         # name and description can only be dismissed whole,
+rule = 163                                    # so they need an end date
+until = "2026-12-31"
 
 [[terms.cards."101".dismiss]]                 # a programme the owner does not want as a rule
 field = "missing_rule"

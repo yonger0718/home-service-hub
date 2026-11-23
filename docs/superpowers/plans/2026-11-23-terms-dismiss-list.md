@@ -155,4 +155,8 @@ AGENT-572 on `8b415a41`, CHANGES-REQUESTED, one P1: a separator outside ASCII (`
 
 ### Task 9: Multica re-check fixes
 
-AGENT-574 on `9ed24edf`, CHANGES-REQUESTED: P1, NFKC fused a superscript or enclosed digit into the number (`1.5²%` read as 1.52); P2, `<` counted as a remark opener (`1.5 < 3%` matched a pin on 1.5). `site_key` now folds only the full-width forms, one for one, and `<` left the opener set. Test gap: the state-file test now starts from a digest in the shape `main` saved and asserts the first and the second run's messages. The review budget (one round, one re-check) is used up; these fixes carry the author's tests only.
+AGENT-574 on `9ed24edf`, CHANGES-REQUESTED: P1, NFKC fused a superscript or enclosed digit into the number (`1.5²%` read as 1.52); P2, `<` counted as a remark opener (`1.5 < 3%` matched a pin on 1.5). `site_key` now folds only the full-width forms, one for one, and `<` left the opener set. Test gap: the state-file test now starts from a digest in the shape `main` saved and asserts the first and the second run's messages. The owner then allowed one extra re-check on `97ec9cfd`.
+
+### Task 10: An end date for text-field entries
+
+A `name` or `description` entry cannot be pinned, so it hid every later wording difference of that rule for good (a bank changing its exclusions is usually reported as a description difference). The loader now requires `until` on these entries, as it does for `missing_rule`.

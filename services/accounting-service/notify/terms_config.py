@@ -195,8 +195,8 @@ def _dismissal(raw: object, p: str) -> Dismissal:
             or (field == "missing_rule" and not contains)
             or not all(isinstance(c, str) and len(c.strip()) >= 2 for c in contains)):
         raise ConfigError(f"{p}.contains")
-    if "until" not in raw and field == "missing_rule":
-        raise ConfigError(f"{p}.until")
+    if "until" not in raw and (field == "missing_rule" or field in TEXT_FIELDS):
+        raise ConfigError(f"{p}.until")  # nothing to pin: the entry must end on a date
     until = _iso_date(raw["until"], f"{p}.until") if "until" in raw else None
     note = raw.get("note", "")
     if not isinstance(note, str) or len(note) > _NOTE_MAX:

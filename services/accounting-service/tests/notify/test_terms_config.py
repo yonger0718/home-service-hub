@@ -197,13 +197,13 @@ def test_dismiss_four_shapes_load(tmp_path):
     got = _dismiss(
         tmp_path,
         'field = "starts_on"\nrule = 162\nvalue = "2026-07-01"\nnote = "current period only"',
-        'field = "description"\nrule = 163',
+        'field = "description"\nrule = 163\nuntil = "2026-12-31"',
         'field = "missing_rule"\ncontains = ["LINE Pay", "10%"]\nuntil = "2026-12-31"',
         'field = "next_terms"\nvalue = "2027-03-31"',
     )
     assert got == (
         Dismissal("starts_on", rule=162, value="2026-07-01", note="current period only"),
-        Dismissal("description", rule=163),
+        Dismissal("description", rule=163, until=date(2026, 12, 31)),
         Dismissal("missing_rule", contains=("LINE Pay", "10%"), until=date(2026, 12, 31)),
         Dismissal("next_terms", value="2027-03-31"),
     )
@@ -231,6 +231,9 @@ def test_dismiss_pin_is_normalised(tmp_path, field, raw, stored):
     ('field = "missing_rule"\nrule = 1\ncontains = ["ab"]\nuntil = "2026-12-31"', "rule"),
     ('field = "next_terms"\nrule = 1\nvalue = "2027-03-31"', "rule"),
     ('field = "name"\nrule = 1\nvalue = "x"', "value"),
+    # free text cannot be pinned, so such an entry must end on a date
+    ('field = "name"\nrule = 1', "until"),
+    ('field = "description"\nrule = 1', "until"),
     ('field = "description"\nrule = 1\nvalue = "x"', "value"),
     ('field = "missing_rule"\nvalue = "x"\ncontains = ["ab"]\nuntil = "2026-12-31"', "value"),
     ('field = "starts_on"\nrule = 1\nvalue = "2026-13-01"', "value"),
@@ -306,7 +309,7 @@ def test_toml_date_literals_are_accepted(tmp_path):
 def test_example_toml_documents_the_four_dismiss_shapes():
     cards = {c.account_id: c for c in load_config(EXAMPLE_FILE, with_terms=True).terms.cards}
     got = [(d.field, d.rule, d.value, d.contains, d.until is not None) for d in cards[101].dismiss]
-    assert got == [("starts_on", 162, "2026-07-01", (), False), ("description", 163, None, (), False),
+    assert got == [("starts_on", 162, "2026-07-01", (), False), ("description", 163, None, (), True),
                    ("missing_rule", None, None, ("LINE Pay", "10%"), True), ("next_terms", None, "2027-03-31", (), False)]
     assert cards[101].dismiss[3].rates == (("0.88", None), ("1", "200"), ("1", "200"), ("3", "888"))
     assert cards[102].dismiss == () and cards[301].dismiss == ()

@@ -65,6 +65,7 @@ note = "the bank prints the current period only"
 [[terms.cards."101".dismiss]]      # a rule field, any value
 field = "description"
 rule = 163
+until = "2026-12-31"
 
 [[terms.cards."101".dismiss]]      # a programme the owner does not want as a rule
 field = "missing_rule"
@@ -99,8 +100,8 @@ Keys:
   With it the entry applies only while the announced rows carry exactly these numbers. A
   list in which no row has a rate or a cap is refused: it would pin nothing but the number
   of rows.
-- `until` (ISO date): the last day the dismissal applies. Required for `missing_rule`,
-  optional otherwise.
+- `until` (ISO date): the last day the dismissal applies. Required for the entries that
+  cannot be pinned (`missing_rule`, `name`, `description`), optional otherwise.
 - `note` (string, at most 200 characters): the owner's reason. Kept in the config only.
 
 A `dismiss` list on a signal-tier card is refused (it has no findings). Unknown keys are
@@ -213,7 +214,8 @@ this recipe.
 - A dismissal without `value` hides every later change of that field of that rule. Use the
   pin wherever the field allows one.
 - `name` and `description` can only be dismissed whole: a later change in the bank's
-  conditions that the model reports as a description difference is hidden too.
+  conditions that the model reports as a description difference is hidden too, until the
+  entry's `until`. The entry then shows as stale and the difference shows again.
 - A `missing_rule` dismissal hides any programme whose text holds all its strings, until
   `until`.
 - A `next_terms` entry without `rates` looks at the period end only: a bank that revises the
