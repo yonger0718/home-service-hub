@@ -3,28 +3,42 @@ import { describe, expect, it } from 'vitest';
 import { formatMoney } from '../../accounting/format';
 import { questionText } from '../../accounting/inbox/inbox-view';
 import { InboxCandidate, InboxEntry } from '../../accounting/inbox/inbox.model';
-import { makeInboxAccount, makeItem } from '../../accounting/inbox/testing';
+import { makeInboxAccount, makeItem as baseItem } from '../../accounting/inbox/testing';
+import { InboxItem } from '../../accounting/inbox/inbox.model';
 import { compareRows, flowCard, flowChip, flowEntry, flowHeadline, flowLearnable, flowNote } from './recon-flow-view';
 
 const entry = (over: Partial<InboxEntry> = {}): InboxEntry => ({
   id: 7,
   date: '2026-09-20',
-  title: '星巴克',
+  title: '測試咖啡',
   amount: '-2066.0000',
   account_id: 1,
   ...over,
 });
-const line = (date: string, amount: string, merchant = '星巴克') => ({
+const line = (date: string, amount: string, merchant = '測試咖啡') => ({
   id: 5,
   date,
   merchant,
   amount,
   line_kind: 'purchase',
 });
+/** `makeItem` with a fictional merchant (its default is a real store name). */
+const makeItem = (over: Partial<InboxItem> = {}): InboxItem =>
+  baseItem({
+    line: { id: 5, date: '2026-09-03', merchant: '測試便利店', amount: '-120.0000', line_kind: 'purchase' },
+    rule_hint: {
+      merchant_pattern: '測試便利店',
+      line_kind: 'purchase',
+      flow_sign: '-',
+      amount: '120.0000',
+      default_category_id: null,
+    },
+    ...over,
+  });
 const candidate = (over: Partial<InboxCandidate> = {}): InboxCandidate => ({
   entry_id: 9,
   date: '2026-09-20',
-  title: '星巴克',
+  title: '測試咖啡',
   amount: '-2066.0000',
   reason: null,
   residual: null,
@@ -36,13 +50,13 @@ describe('recon-flow-view', () => {
   it('bank_only chip and headline', () => {
     const item = makeItem();
     expect(flowChip('bank_only')).toBe('銀行有，你沒記');
-    expect(flowHeadline(item, 'TWD')).toBe(`全家便利商店 ${formatMoney('-120', 'TWD', { sign: true })}`);
+    expect(flowHeadline(item, 'TWD')).toBe(`測試便利店 ${formatMoney('-120', 'TWD', { sign: true })}`);
   });
 
   it('ledger_only chip and headline', () => {
     const item = makeItem({ question: 'ledger_only', line: null, entry: entry() });
     expect(flowChip('ledger_only')).toBe('你記了，銀行沒有');
-    expect(flowHeadline(item, 'TWD')).toBe(`星巴克 ${formatMoney('-2066', 'TWD', { sign: true })}`);
+    expect(flowHeadline(item, 'TWD')).toBe(`測試咖啡 ${formatMoney('-2066', 'TWD', { sign: true })}`);
   });
 
   it('amount_differs chip and headline, expense', () => {
@@ -78,6 +92,43 @@ describe('recon-flow-view', () => {
     expect(flowHeadline(missing, 'TWD')).toBe('同一筆，日期不同');
   });
 
+  it('amount_differs without a line, without an entry, or with equal amounts: 金額不同', () => {
+    const noLine = makeItem({ question: 'amount_differs', line: null, entry: entry() });
+    expect(flowHeadline(noLine, 'TWD')).toBe('金額不同');
+    const noEntry = makeItem({ question: 'amount_differs', line: line('2026-09-20', '-2096'), entry: null });
+    expect(flowHeadline(noEntry, 'TWD')).toBe('金額不同');
+    const equal = makeItem({
+      question: 'amount_differs',
+      line: line('2026-09-20', '-2066.00'),
+      entry: entry({ amount: '-2066.0000' }),
+    });
+    expect(flowHeadline(equal, 'TWD')).toBe('金額不同');
+  });
+
+  it('date_differs: equal dates, entry only in candidates[0], no entry at all', () => {
+    const same = makeItem({ question: 'date_differs', line: line('2026-09-20', '-2066'), entry: entry() });
+    expect(flowHeadline(same, 'TWD')).toBe('同一筆，日期不同');
+    const viaCandidate = makeItem({
+      question: 'date_differs',
+      line: line('2026-09-28', '-2066'),
+      entry: null,
+      candidates: [candidate()],
+    });
+    expect(flowHeadline(viaCandidate, 'TWD')).toBe('同一筆，晚了 8 天入帳');
+    const none = makeItem({ question: 'date_differs', line: line('2026-09-28', '-2066'), entry: null });
+    expect(flowHeadline(none, 'TWD')).toBe('同一筆，日期不同');
+  });
+
+  it('ledger_only without an entry falls back to the question text', () => {
+    const item = makeItem({ question: 'ledger_only', line: null, entry: null });
+    expect(flowHeadline(item, 'TWD')).toBe('你記了，銀行沒有');
+  });
+
+  it('headline money keeps its sign (literal)', () => {
+    const item = makeItem({ question: 'ledger_only', line: null, entry: entry() });
+    expect(flowHeadline(item, 'TWD')).toBe('測試咖啡 \u2212$2,066');
+  });
+
   it('transfer and ambiguous', () => {
     expect(flowChip('transfer')).toBe('轉帳／繳費');
     expect(flowHeadline(makeItem({ question: 'transfer' }), 'TWD')).toBe('轉帳或繳費，你沒記');
@@ -88,7 +139,7 @@ describe('recon-flow-view', () => {
 
   it('flowEntry falls back to the first candidate for amount_differs', () => {
     const item = makeItem({ question: 'amount_differs', candidates: [candidate()] });
-    expect(flowEntry(item)).toEqual({ id: 9, date: '2026-09-20', title: '星巴克', amount: '-2066.0000' });
+    expect(flowEntry(item)).toEqual({ id: 9, date: '2026-09-20', title: '測試咖啡', amount: '-2066.0000' });
     expect(flowEntry(makeItem())).toBeNull();
     expect(flowEntry(makeItem({ question: 'amount_differs', entry: entry() }))?.id).toBe(7);
   });
@@ -99,7 +150,7 @@ describe('recon-flow-view', () => {
     expect(rows.every((r) => r.ledgerMissing && !r.bankMissing && !r.differs)).toBe(true);
     expect(rows[1].ledger).toBe('沒有對應記錄');
     expect(rows[0].ledger).toBe('—');
-    expect(rows[1].bank).toBe('全家便利商店');
+    expect(rows[1].bank).toBe('測試便利店');
     expect(rows[0].bank).toBe('2026/09/03');
   });
 
@@ -109,6 +160,15 @@ describe('recon-flow-view', () => {
     expect(rows.map((r) => r.differs)).toEqual([false, false, true]);
     expect(rows[2].bank).toBe(formatMoney('-2096', 'TWD', { sign: true }));
     expect(rows[2].ledger).toBe(formatMoney('-2066', 'TWD', { sign: true }));
+  });
+
+  it('compareRows compares amounts as numbers (-2066.00 equals -2066.0000)', () => {
+    const item = makeItem({
+      question: 'amount_differs',
+      line: line('2026-09-20', '-2066.00'),
+      entry: entry({ amount: '-2066.0000' }),
+    });
+    expect(compareRows(item, 'TWD')[2].differs).toBe(false);
   });
 
   it('compareRows marks 日期 for date_differs and handles a missing bank side', () => {

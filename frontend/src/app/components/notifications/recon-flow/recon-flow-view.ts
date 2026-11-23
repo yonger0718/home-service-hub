@@ -44,11 +44,15 @@ export function flowHeadline(item: InboxItem, currency: string): string {
       return `${item.line?.merchant ?? ''} ${formatMoney(item.line?.amount, currency, { sign: true })}`;
     case 'ledger_only': {
       const entry = flowEntry(item);
-      return `${entry?.title ?? ''} ${formatMoney(entry?.amount, currency, { sign: true })}`;
+      if (!entry) return questionText(item, currency);
+      return `${entry.title} ${formatMoney(entry.amount, currency, { sign: true })}`;
     }
     case 'amount_differs': {
-      const bank = Number(item.line?.amount ?? 0);
-      const entry = Number(flowEntry(item)?.amount ?? 0);
+      const ledger = flowEntry(item);
+      // Without both sides, or with no real difference, there is no sign to read and no amount to name.
+      if (!item.line || !ledger || Number(item.line.amount) === Number(ledger.amount)) return '金額不同';
+      const bank = Number(item.line.amount);
+      const entry = Number(ledger.amount);
       const diff = formatMoney(Math.abs(bank - entry), currency);
       const more = Math.abs(bank) > Math.abs(entry);
       if (bank < 0) return `銀行${more ? '多' : '少'}扣了 ${diff}`;
