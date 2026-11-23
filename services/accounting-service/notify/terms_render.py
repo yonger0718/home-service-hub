@@ -9,7 +9,9 @@ from urllib.parse import urlsplit
 
 from notify.config import NotifyConfig
 from notify.render import _settings_link, split_blocks
-from notify.terms_config import Dismissal
+from decimal import Decimal
+
+from notify.terms_config import NUMBER_FIELDS, Dismissal, format_number
 from notify.terms_dismiss import EXPIRED, RULE_GONE, Applied
 from notify.terms_input import TermsInput
 from notify.terms_parse import CardResult, TermsResult, TruncatedSource, source_ok
@@ -60,11 +62,23 @@ def _quote(text: str) -> str:
     return f"　「{q[:_QUOTE_MAX]}{'…' if len(q) > _QUOTE_MAX else ''}」"
 
 
+_PLAIN_DECIMAL = re.compile(r"[0-9]+(\.[0-9]+)?")
+
+
+def _value(field: str, value: object) -> str:
+    """A side of a finding. A plain decimal of a number field loses its trailing zeros (``0.2000`` → ``0.2``);
+    anything else is the text itself, defanged."""
+    text = _safe_text(value)
+    if field in NUMBER_FIELDS and _PLAIN_DECIMAL.fullmatch(text):
+        return format_number(Decimal(text))
+    return text
+
+
 def _finding_lines(card: CardResult, rows: dict, verified: bool) -> list[str]:
     """``rows`` maps rule id → the frozen input rule row; the 系統 side prints only for a field of that row."""
     out = []
     for f in (card.findings if verified else card.unverified):
-        site = _safe_text(f.site)
+        site = _value(f.field, f.site)
         zh = FIELD_ZH.get(f.field, _safe_text(f.field))
         if not verified:
             why = _safe_text(f.reason) or "來源不在銀行網域"
@@ -75,7 +89,7 @@ def _finding_lines(card: CardResult, rows: dict, verified: bool) -> list[str]:
         else:
             row = rows.get(f.rule_id) or {}
             name = _safe_text(row.get("name")) or "?"
-            system = f" / 系統 {_safe_text(f.system) or '無'}" if f.field in row else ""
+            system = f" / 系統 {_value(f.field, f.system) or '無'}" if f.field in row else ""
             out.append(f"· {name}：{zh} 官網 {site}{system} — {_link(f.source)}")
         out.append(_quote(f.quote))
     return out
@@ -157,8 +171,9 @@ def _dismiss_lines(inp: TermsInput, applied: dict[int, Applied]) -> tuple[int, l
             continue
         if a.hidden_count:
             total += a.hidden_count
-            hidden.append(f"{ci.card.official} {a.hidden_count}")
-        stale += [f"{ci.card.official} {_dismissal_label(d)}（{_STALE_ZH[reason]}）" for d, reason in a.stale]
+            hidden.append(f"{_safe_text(ci.card.official)} {a.hidden_count}")
+        stale += [f"{_safe_text(ci.card.official)} {_dismissal_label(d)}（{_STALE_ZH[reason]}）"
+                  for d, reason in a.stale]
     return total, hidden, stale
 
 
@@ -171,10 +186,10 @@ def render_terms(inp: TermsInput, result: TermsResult, decisions: dict[int, Show
     for ci in inp.cards:
         aid, d, card = ci.card.account_id, decisions.get(ci.card.account_id), by_id.get(ci.card.account_id)
         if card is None or not has_items(d):
-            quiet.append(ci.card.official)
+            quiet.append(_safe_text(ci.card.official))
             continue
         rows = {r.get("id"): r for r in ci.rules}
-        head = f"【{ci.card.official}】 → {_link(_settings_link(cfg, aid))}"
+        head = f"【{_safe_text(ci.card.official)}】 → {_link(_settings_link(cfg, aid))}"
         blocks.append(_block(card, d, head, rows, _card_failures(card, ci.card.bank_domains)))
     m = len(inp.cards)
     total, hidden, stale = _dismiss_lines(inp, applied or {})
@@ -182,7 +197,7 @@ def render_terms(inp: TermsInput, result: TermsResult, decisions: dict[int, Show
         return [f"📋 回饋條款查核 {inp.today}：{m} 張卡無變動" + (f"（已忽略 {total} 項）" if total else "")]
     out = [f"📋 回饋條款查核 {inp.today}（{m} 張卡，{len(blocks)} 張有事項）\narchive: {archive}"] + blocks
     if inp.unregistered:
-        out.append("未登錄：" + "、".join(f"{n}（{i}）" for i, n in inp.unregistered))
+        out.append("未登錄：" + "、".join(f"{_safe_text(n)}（{i}）" for i, n in inp.unregistered))
     if total:
         out.append(f"已忽略 {total} 項：" + "、".join(hidden))
     if stale:

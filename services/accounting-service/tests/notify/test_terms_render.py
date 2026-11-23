@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from notify.terms_config import CardEntry
+from notify.terms_config import CardEntry, Dismissal
 from notify.terms_input import CardInput, TermsInput
 from notify.terms_parse import CardResult, Finding, NextTerms, PeriodEnd, TermsResult, TruncatedSource
 from notify.terms_render import render_terms
@@ -384,3 +384,54 @@ def test_stale_alone_forces_the_long_form(fx):
     lines = _render(fx, entries, cards, {101: NO}, {101: _applied(cards[0], stale=stale)}).split("\n")
     assert lines[0] == "📋 回饋條款查核 2026-11-03（1 張卡，0 張有事項）"
     assert "忽略清單失效：範例 Live+ 規則 9 回饋率（規則已不在）" in lines and "無變動：範例 Live+" in lines
+
+
+# --- #286: reasons, names and numbers in the message ---
+
+def test_unverified_line_names_a_missing_quote(fx):
+    c = card(101, "changed", unverified=(finding(quote="", reason="無引文"), finding(source=OFF, field="rate")))
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_unverified=True)})
+    assert "· 未驗證（無引文）：結束日 2027-03-31 — www.example-bank.com" in msg
+    assert "· 未驗證（來源不在銀行網域）：回饋率" in msg
+
+
+NASTY = "A*b*_c @here [x](y) <@&1> discord.gg/z"
+
+
+def _clean(msg: str) -> None:
+    for bad in ("*b*", "@here", "](", "<@&", "discord.gg"):
+        assert bad not in msg, bad
+
+
+def test_unregistered_names_are_defanged(fx):
+    (msg,) = run(fx, [entry(101, "A")], [card(101)], {101: NO}, unregistered=((555, NASTY),))
+    assert "未登錄：A\\*b\\*\\_c" in msg and "（555）" in msg
+    _clean(msg)
+
+
+def test_official_names_are_defanged_wherever_they_print(fx):
+    stale = (Dismissal("starts_on", rule=7), "rule")
+    cards = [card(101, "changed", findings=(finding(),)), card(102)]
+    applied = {101: _applied(cards[0], hidden=1, stale=[stale]), 102: _applied(cards[1])}
+    d = {101: show(show_findings=True), 102: NO}
+    res = TermsResult(tuple(cards), {"failed": [], "truncated": []})
+    (msg,) = render_terms(inp([entry(101, NASTY), entry(102, NASTY + "2")], (), RULES), res, d, fx.cfg(), ARCHIVE,
+                          applied)
+    _clean(msg)
+    assert "【A\\*b\\*\\_c" in msg and "無變動：A\\*b\\*\\_c" in msg
+    assert "已忽略 1 項：A\\*b\\*\\_c" in msg and "忽略清單失效：A\\*b\\*\\_c" in msg
+
+
+@pytest.mark.parametrize("field, site, system, shown", [
+    ("rate", "0.2000", "1.2000", "官網 0.2 / 系統 1.2"), ("total_cap", "60000.0000", None, "官網 60000 / 系統 無"),
+    ("rate", "0.0000", "3", "官網 0 / 系統 3"), ("rate", "9%（合計）", "9.0000", "官網 9%（合計） / 系統 9"),
+    ("rate", "1,000.50", "1000.5000", "官網 1,000.50 / 系統 1000.5"),
+    ("ends_on", "2027-03-31", "2026-12-31", "官網 2027-03-31 / 系統 2026-12-31"),
+    ("name", "5.0000", "4.0000", "官網 5.0000 / 系統 4.0000"),
+])
+def test_number_sides_print_without_trailing_zeros(fx, field, site, system, shown):
+    rules = ({"id": 7, "name": "R", "ends_on": "2026-12-31", "rate": system, "total_cap": system, "name2": None,
+              **({"name": "R"} if field != "name" else {"name": system})},)
+    c = card(101, "changed", findings=(finding(field=field, site=site, system=system),))
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True)}, rules=rules)
+    assert f"{shown} — <" in msg

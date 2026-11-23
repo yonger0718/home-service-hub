@@ -511,3 +511,31 @@ def test_a_card_missing_from_the_answer_keeps_its_failed_fetches():
     payload = {"cards": [], "fetch_log": {"failed": [{"account_id": 101, "url": _UA, "status": "403"}]}}
     (c,) = parse_result(fx._wrap(payload), (_A,)).cards
     assert c.status == "not_found" and c.failed == (_UA + " (403)",)
+
+
+# --- #286: the unverified digest, and why a finding was demoted ---
+
+def _dcard(**kw):
+    base = dict(account_id=101, status="changed", current_period_end=None, findings=(), unverified=(),
+                next_terms=None, next_terms_unverified_url=None, sources=(), notes="", truncated=())
+    return CardResult(**{**base, **kw})
+
+
+def test_unverified_digest_ignores_the_models_system_claim():
+    from notify.terms_parse import Finding
+    def f(system):
+        return Finding(162, "rate", "9", system, "https://evil.com/p", "q")
+    assert digest(_dcard(unverified=(f("3"),)), "precise") == digest(_dcard(unverified=(f("3.5"),)), "precise")
+    assert digest(_dcard(unverified=(f("3"),)), "precise") != digest(
+        _dcard(unverified=(replace(f("3"), site="10"),)), "precise")
+    # a verified finding's system side is the joined rule value: its change is news
+    assert digest(_dcard(findings=(f("3"),)), "precise") != digest(_dcard(findings=(f("3.5"),)), "precise")
+
+
+@pytest.mark.parametrize("source, quote, reason", [
+    (ON, "", "無引文"), (ON, "  \n", "無引文"), ("https://evil.com/p", "", ""), ("https://evil.com/p", "q", ""),
+])
+def test_demotion_names_the_real_reason(source, quote, reason):
+    f = {"rule_id": 1, "field": "rate", "site": "1", "system": "2", "source": source, "quote": quote}
+    (u,) = parse_result(fx.one_card({"account_id": 101, "status": "changed", "findings": [f]}), ONE).cards[0].unverified
+    assert u.reason == reason

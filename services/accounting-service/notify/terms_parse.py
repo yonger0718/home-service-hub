@@ -42,6 +42,7 @@ class Finding:
 
 
 UNKNOWN_RULE = "未知規則"
+NO_QUOTE = "無引文"  # the source passes the source rule but the finding quotes nothing from it
 
 
 @dataclass(frozen=True)
@@ -214,8 +215,8 @@ def _finding(raw: object) -> Finding:
                    _text(raw.get("source")).strip(), _text(raw.get("quote")))
 
 
-def _demote(f: Finding) -> Finding:
-    return Finding(f.rule_id, f.field, f.site, f.system, _safe_url(f.source), f.quote)
+def _demote(f: Finding, reason: str = "") -> Finding:
+    return Finding(f.rule_id, f.field, f.site, f.system, _safe_url(f.source), f.quote, reason)
 
 
 def _period_end(raw: object, domains: tuple[str, ...]) -> PeriodEnd | None:
@@ -366,10 +367,11 @@ def _card(raw: object, entry: CardEntry, trunc: tuple[TruncatedSource, ...],
         raise _bad()
     ok, bad = [], []
     for f in map(_finding, fl):
-        if f.quote.strip() and source_ok(f.source, doms):
+        on_domain = source_ok(f.source, doms)
+        if f.quote.strip() and on_domain:
             ok.append(f)
         else:
-            bad.append(_demote(f))
+            bad.append(_demote(f, NO_QUOTE if on_domain else ""))
     nt, nt_url = (None, None)
     if raw.get("next_terms") is not None:
         nt, nt_url = _next_terms(raw["next_terms"], doms)
@@ -442,15 +444,20 @@ def _q(text: str) -> str:
     return " ".join(text.split())
 
 
-def _f(f: Finding) -> dict:
-    return {"rule_id": f.rule_id, "field": f.field, "site": f.site, "system": f.system,
-            "source": f.source, "quote": _q(f.quote), "reason": f.reason}
+def _f(f: Finding, system: bool) -> dict:
+    out = {"rule_id": f.rule_id, "field": f.field, "site": f.site, "source": f.source, "quote": _q(f.quote),
+           "reason": f.reason}
+    if system:
+        out["system"] = f.system
+    return out
 
 
-def _sorted(fs: tuple[Finding, ...]) -> list[dict]:
-    return sorted((_f(f) for f in fs), key=lambda d: (
+def _sorted(fs: tuple[Finding, ...], system: bool = True) -> list[dict]:
+    """``system`` False for unverified findings: there it is the model's claim, which is never shown, and its
+    drift alone must not make the card news (#286)."""
+    return sorted((_f(f, system) for f in fs), key=lambda d: (
         d["rule_id"] if d["rule_id"] is not None else -1, d["field"], d["source"],
-        d["site"] or "", d["system"] or "", d["quote"]))
+        d["site"] or "", d.get("system") or "", d["quote"]))
 
 
 def _canon(obj: object) -> str:
@@ -467,7 +474,7 @@ def digest(card: CardResult, tier: str) -> str:
             # the date only: the model quotes another sentence or URL form of the same page on most runs (#287)
             "current_period_end": None if pe is None else pe.date,
             "findings": _sorted(card.findings),
-            "unverified": _sorted(card.unverified),
+            "unverified": _sorted(card.unverified, system=False),
             "next_terms": None if nt is None else {
                 "announced": nt.announced, "period": list(nt.period),
                 "rules": sorted(({"name": r.get("name"), "rate": _dec(r.get("rate")),
