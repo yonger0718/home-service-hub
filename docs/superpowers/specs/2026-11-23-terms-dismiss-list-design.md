@@ -74,6 +74,7 @@ until = "2026-12-31"
 [[terms.cards."101".dismiss]]      # announced terms the rules already cover
 field = "next_terms"
 value = "2027-03-31"
+rates = ["0.88/none", "3/888", "1/200", "1/200"]
 ```
 
 Keys:
@@ -93,6 +94,9 @@ Keys:
   - `missing_rule`: refused.
 - `contains` (non-empty list of strings, each at least 2 characters): required for
   `missing_rule`, refused otherwise.
+- `rates` (non-empty list of `"rate/cap"` strings, `none` for a missing side): `next_terms`
+  only, optional. One string per announced row; order does not matter, repeated rows count.
+  With it the entry applies only while the announced rows carry exactly these numbers.
 - `until` (ISO date): the last day the dismissal applies. Required for `missing_rule`,
   optional otherwise.
 - `note` (string, at most 200 characters): the owner's reason. Kept in the config only.
@@ -112,7 +116,14 @@ also needs `today <= value` (the announced period has not ended).
   no `value` or the finding's site value normalises to it.
 - `missing_rule`: the finding's field is `missing_rule` and every `contains` string occurs in
   the finding's site text plus quote (both sides NFKC-normalised and case-folded).
-- `next_terms`: the card's `next_terms` is announced and its period end equals `value`.
+- `next_terms`: the card's `next_terms` is announced, its period end equals `value`, and,
+  when the entry has `rates`, the block's rows give the same (rate, cap) pairs as a multiset
+  (numbers normalised).
+
+The announced rows' names and notes are the model's wording and differ on every run; their
+rates and caps were the same on every production run looked at (4 runs of one card). So the
+numbers are what an entry can be pinned to. A bank that revises the announced terms within
+the same period changes a rate or a cap, and the block shows again.
 
 Site values are the model's text, so the pin compares the **leading token** only:
 
@@ -173,7 +184,8 @@ text.
 
 Archive: `result.json` stays the full joined result, hidden items included. A new
 `dismissed.json` (0600) lists, per card that has any, the hidden findings, whether the
-announced block was hidden, and the stale dismissals.
+announced block was hidden (with its rows as `rates` strings, ready to copy into the entry),
+and the stale dismissals.
 
 ### 6. Upkeep
 
@@ -189,6 +201,12 @@ this recipe.
   conditions that the model reports as a description difference is hidden too.
 - A `missing_rule` dismissal hides any programme whose text holds all its strings, until
   `until`.
+- A `next_terms` entry without `rates` looks at the period end only: a bank that revises the
+  announced rates or caps within the same period stays hidden until that period starts (the
+  revised terms are then the current ones and differ from the rules as ordinary findings).
+  With `rates` the revision shows, unless it changes conditions only and no number.
+- A `rates` pin shows the block again when the model reports the rows differently (a row
+  merged, split or left without its rate). That is noise in the safe direction.
 - The model can report the same difference under another field or rule on another run; that
   finding is not matched and shows.
 - A pinned date dismissal for a bank that prints only the current period comes back when the
@@ -201,7 +219,8 @@ this recipe.
 - Matching: each field kind with and without a pin; leading-token forms; `none`; a
   non-normalisable site value is shown; `missing_rule` with all / some strings, NFKC and
   case; `until` on the last day and the day after; `next_terms` with the same and another
-  period end, and after the period ended; unverified findings untouched.
+  period end, after the period ended, and with a `rates` pin (same numbers in another order
+  and spelling, a moved rate, a moved cap, a row gone, a row added, repeated rows); unverified findings untouched.
 - Status recompute for each combination; an untouched card keeps a `changed` status with no
   findings.
 - Stale: expired, rule gone, and a live one is not stale.

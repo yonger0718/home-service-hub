@@ -132,6 +132,9 @@ aliases = ["Freedom Flex", "Chase Freedom Flex Mastercard"]
 # year_end_window defaults to false for country != TW; the monthly run catches each quarter's categories
 ```
 
+A card may also hold `[[terms.cards."<id>".dismiss]]` entries (findings the owner accepted); see
+`docs/superpowers/specs/2026-11-23-terms-dismiss-list-design.md`.
+
 Validation: `official` non-empty, `bank_domains` non-empty list of hostnames, `tier` in
 {precise, signal}, `country` two upper-case letters, `language` a BCP-47 tag, `currency`
 three upper-case letters, `aliases` list of strings, `year_end_window` bool (default derived
@@ -331,7 +334,9 @@ State: its own file `terms_state_file` (my call: the daily and weekly timers rew
 shared `state.json` whole, and `State` is a typed dataclass; a separate file avoids both
 clobbering and a schema migration) —
 `{"<account_id>": {"digest": …, "seen_at": iso}}`. The digest is sha256 of canonical JSON
-(UTF-8, `sort_keys`, compact separators) of: `status`, `current_period_end`, `findings`
+(UTF-8, `sort_keys`, compact separators) of: `status`, `current_period_end` (its date only
+since the dismiss list, 2026-11-23: the model quotes another sentence of the same page on most
+runs), `findings`
 sorted by `(rule_id, field, source)`, `unverified` sorted the same, `next_terms`,
 `next_terms_unverified_url` (normalised), with
 quotes whitespace-collapsed and decimals normalised; for `signal` cards the normalised
@@ -339,6 +344,10 @@ quotes whitespace-collapsed and decimals normalised; for `signal` cards the norm
 file **fails the run** and is not replaced (unlike `load_state`'s empty-on-error path, which
 would silently reset the baseline). A card is **new news** when its digest differs from the stored
 one or has no stored one.
+
+The owner's dismiss list (`docs/superpowers/specs/2026-11-23-terms-dismiss-list-design.md`)
+removes accepted findings and announced blocks from a card before the digest and the rules
+below; they then apply to what is left.
 
 What the digest suppresses and what it does not (the owner must keep seeing open items):
 
@@ -389,7 +398,7 @@ the message is informational.
 ### 6. Archive and failure
 
 Each run creates `<report_dir>/<YYYYMMDDTHHMMSSZ>/` (0700) with `input.json`, `prompt.md`,
-`hermes.out`, `hermes.err`, `result.json`, `message.md` (0600). The CLI mirrors the other
+`hermes.out`, `hermes.err`, `result.json`, `dismissed.json` (what the dismiss list hid), `message.md` (0600). The CLI mirrors the other
 commands: `terms --cause {monthly,year-end} [--as-of D] [--dry-run | --send] [--config P]`,
 `--cause` required, `--dry-run` the default when neither mode flag is given; `--dry-run` writes the archive and prints the message, sends nothing,
 updates no state. If Hermes succeeds and the send fails, the archive is kept and the state

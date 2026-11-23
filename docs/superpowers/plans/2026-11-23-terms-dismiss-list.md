@@ -129,3 +129,18 @@
 - [ ] **Step 1:** Example TOML: the four entry shapes, commented, on the fictional card 101. A test loads the example file through `load_terms` with the comments stripped from the dismiss block (or the block left active) so the documented shape cannot drift.
 - [ ] **Step 2:** README: what a dismissal is, the keys, the upkeep recipe (read `result.json`, add the entry, `--dry-run`), the known limits.
 - [ ] **Step 3:** Run the suite: PASS. Commit `docs(notify): the terms dismiss list (#287)`.
+
+### Task 6: Pin an announced-terms entry to its rates and caps
+
+Added during execution (a reviewer's note: the period end alone hides a revision within the same period).
+
+**Files:**
+- Modify: `services/accounting-service/notify/terms_config.py`, `services/accounting-service/notify/terms_dismiss.py`, `services/accounting-service/notify/terms.py`
+- Test: `services/accounting-service/tests/notify/test_terms_config.py`, `test_terms_dismiss.py`, `test_terms_cli.py`
+
+**Interfaces:**
+- Produces: `Dismissal.rates: tuple[tuple[str | None, str | None], ...] | None`; `terms_config.sort_rates(pairs)`; `terms_dismiss.terms_rates(nt: NextTerms)`; `Applied.hidden_rates`; `dismissed.json` key `hidden_next_terms_rates` (`"rate/cap"` strings).
+
+- [ ] **Step 1:** Tests: the loader (normalised, sorted, refusals name `rates`), matching (same numbers in another order and spelling, a moved rate, a moved cap, a row gone, a row added, repeated rows, no pin), the run (block back when the numbers moved, hidden when they match).
+- [ ] **Step 2:** Run: FAIL. Implement. Run the suite: PASS.
+- [ ] **Step 3:** Commit `feat(notify): pin an announced-terms dismissal to its rates and caps (#287)`.
