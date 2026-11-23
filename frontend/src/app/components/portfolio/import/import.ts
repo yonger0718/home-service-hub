@@ -146,6 +146,9 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private readonly fragment = toSignal(this.route.fragment, { initialValue: this.route.snapshot.fragment });
   /** The `#cathay` already acted on: a fragment acts once (a new 國泰 answer, or the same fragment again, does not). */
   private shownFragment: string | null = null;
+  /** Listeners armed while `#cathay` waits for the 國泰 answer; `userMoved` is set by the first key, press or scroll. */
+  private userMoveWatch: AbortController | null = null;
+  private userMoved = false;
 
   readonly typeOptions: SegToggleOption[] = [
     { value: 'transactions', label: '交易' },
@@ -248,14 +251,24 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
       const fragment = this.fragment();
       if (fragment !== CATHAY_CARD_FRAGMENT) {
         this.shownFragment = null;
+        this.stopWatchingUserMove();
+        return;
+      }
+      if (fragment === this.shownFragment) {
         return;
       }
       const answered = this.center.cathay() !== null || this.center.failedSources().includes('cathay');
-      if (!answered || fragment === this.shownFragment) {
+      if (!answered) {
+        // The answer can take seconds: a user who starts using the page meanwhile keeps their place.
+        this.watchForUserMove();
         return;
       }
       this.shownFragment = fragment;
-      afterNextRender(() => this.showCathayCard(), { injector: this.injector });
+      const moved = this.userMoved;
+      this.stopWatchingUserMove();
+      if (!moved) {
+        afterNextRender(() => this.showCathayCard(), { injector: this.injector });
+      }
     });
     // The instance is reused when the sidebar links to /portfolio/import without a query: follow ?type= for its whole life.
     this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe(params => {
@@ -270,8 +283,36 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     if (!card) {
       return;
     }
+    // Focus that already sits on a control (moved without a key or pointer event) is the user's: leave it and the scroll.
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== card && !card.contains(active)) {
+      return;
+    }
     card.scrollIntoView?.({ block: 'start' });
     card.focus({ preventScroll: true });
+  }
+
+  /** While `#cathay` waits for the 國泰 answer: a key, a press or a scroll gesture anywhere cancels the jump. */
+  private watchForUserMove(): void {
+    if (this.userMoveWatch) {
+      return;
+    }
+    const watch = new AbortController();
+    this.userMoveWatch = watch;
+    this.userMoved = false;
+    const moved = () => {
+      this.userMoved = true;
+      watch.abort();
+    };
+    for (const type of ['pointerdown', 'keydown', 'wheel', 'touchmove']) {
+      document.addEventListener(type, moved, { capture: true, passive: true, signal: watch.signal });
+    }
+  }
+
+  private stopWatchingUserMove(): void {
+    this.userMoveWatch?.abort();
+    this.userMoveWatch = null;
+    this.userMoved = false;
   }
 
   detectedFormatLabel(): string | null {
@@ -289,6 +330,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.destroyed = true;
     this.stopPolling();
+    this.stopWatchingUserMove();
   }
 
   /** From the 匯入類型 toggle: switch, then mirror the choice into ?type=. */

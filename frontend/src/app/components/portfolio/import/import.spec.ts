@@ -1844,6 +1844,76 @@ describe('Portfolio import controls', () => {
       expect(document.activeElement).toBe(card(fixture));
     });
 
+    // The answer can take seconds (up to the 20 s limit): a user who starts using the page keeps their place.
+    it.each([
+      ['a key press', () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))],
+      ['a press', () => document.dispatchEvent(new Event('pointerdown', { bubbles: true }))],
+      ['a wheel scroll', () => document.dispatchEvent(new Event('wheel', { bubbles: true }))],
+      ['a touch scroll', () => document.dispatchEvent(new Event('touchmove', { bubbles: true }))],
+    ])('#cathay, then %s before the 國泰 answer: the late answer or failure neither scrolls nor takes focus', async (_name, act) => {
+      for (const land of [() => center.cathay.set(ANSWER), () => center.failedSources.set(['cathay'])]) {
+        const scroll = spyScroll();
+        const fixture = setup({}, 'cathay');
+        await rendered(fixture);
+        const other = el(fixture).querySelector<HTMLElement>('button, input, a')!;
+        act();
+        other.focus();
+        expect(document.activeElement).toBe(other);
+
+        land();
+        await rendered(fixture);
+        await new Promise<void>(r => setTimeout(r));
+        await rendered(fixture);
+        expect(scroll).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(other);
+
+        // Still once per fragment: a later answer does not jump either.
+        center.cathay.set({ ...ANSWER });
+        await rendered(fixture);
+        await new Promise<void>(r => setTimeout(r));
+        expect(scroll).not.toHaveBeenCalled();
+        scroll.mockRestore();
+        center.cathay.set(null);
+        center.failedSources.set([]);
+        fixture.destroy();
+        fixture.nativeElement.remove();
+        TestBed.resetTestingModule();
+      }
+    });
+
+    it('#cathay, focus moved to a control without any key or press: the late answer leaves focus and scroll alone', async () => {
+      const scroll = spyScroll();
+      const fixture = setup({}, 'cathay');
+      await rendered(fixture);
+      const other = el(fixture).querySelector<HTMLElement>('button, input, a')!;
+      other.focus();
+      center.cathay.set(ANSWER);
+      await rendered(fixture);
+      await new Promise<void>(r => setTimeout(r));
+      await rendered(fixture);
+      expect(scroll).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(other);
+      fixture.nativeElement.remove();
+    });
+
+    it('a key press AFTER the jump does not matter, and the listeners are gone once the answer landed', async () => {
+      const added = vi.spyOn(document, 'addEventListener');
+      const scroll = spyScroll();
+      const fixture = setup({}, 'cathay');
+      await rendered(fixture);
+      const signals = added.mock.calls.filter(c => c[0] === 'keydown').map(c => (c[2] as AddEventListenerOptions).signal!);
+      expect(signals.length).toBe(1);
+      expect(signals[0].aborted).toBe(false);
+      center.cathay.set(ANSWER);
+      await vi.waitFor(async () => {
+        await rendered(fixture);
+        expect(scroll).toHaveBeenCalledTimes(1);
+      });
+      expect(signals[0].aborted).toBe(true);
+      added.mockRestore();
+      fixture.nativeElement.remove();
+    });
+
     it('without the fragment (or another one) nothing scrolls and focus stays', async () => {
       const scroll = spyScroll();
       center.cathay.set(ANSWER);
