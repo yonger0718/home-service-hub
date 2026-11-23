@@ -73,7 +73,7 @@ O = owner, C = coordinator, P = planner (made where the others were silent).
 | Pending date meta | `自 {MM/DD} 起` (Taipei date of `since`); none when `since` is null |
 | Pending date actions | `已處理` (command; accessible name `已處理：國泰對帳單 {MM/DD}`) (owner); secondary `查看` → 匯入 `#cathay` |
 | Ack toasts | done `已處理：國泰對帳單 {MM/DD}`; 404 `國泰對帳單 {MM/DD}：已經不需要處理` (done); failed `國泰對帳單 {MM/DD} 標記失敗` (owner) |
-| Run failed (error) | title `國泰對帳單匯入失敗` (notifier); when `{stamp}`; meta the code in plain words (C15: `讀不到對帳單密碼檔` (owner) · `狀態檔損壞` · `密碼打不開對帳單` · `對帳單 PDF 損壞` · `對帳單 PDF 太大` · `讀不出對帳單文字` · `投資服務回應異常` · `投資服務拒絕匯入（{status}）`), else `錯誤代碼 {code}`, or none |
+| Run failed (error) | title `國泰對帳單匯入失敗` (notifier); when `{stamp}`; meta the code in plain words (C15: `讀不到對帳單密碼檔` (owner) · `狀態檔損壞` · `密碼打不開對帳單` · `對帳單 PDF 損壞` · `對帳單 PDF 太大` · `讀不出對帳單文字` · `投資服務回應異常` · `投資服務拒絕匯入（{status}）` for a 4xx other than 408 / 429, `投資服務暫時無法匯入（NNN）` for 5xx / 408 / 429), else `錯誤代碼 {code}`, or none |
 | Run latched (warning) | title `國泰對帳單匯入已停用` (notifier); when `{stamp}`; meta `排程已停用，之後不會自動匯入` |
 | Run stale (warning) | title `國泰對帳單今天沒有執行` (notifier); when `06:40 的排程沒有回報`; meta `上次執行 {stamp}` or `還沒有執行紀錄` |
 | Run task action | `查看` → 匯入 `#cathay` (the card) |

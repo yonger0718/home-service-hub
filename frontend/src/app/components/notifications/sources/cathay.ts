@@ -81,6 +81,10 @@ const RUN_CODE_TEXT: Readonly<Record<string, string>> = {
   'portfolio:body': '投資服務回應異常',
 };
 
+function isTemporaryStatus(status: string): boolean {
+  return status.startsWith('5') || status === '408' || status === '429';
+}
+
 /**
  * A failed run's code for the owner: a known code in plain words, `portfolio:<3 digits>` as the HTTP status the
  * portfolio answered, anything else (parser codes, drive errors, connection errors) as `錯誤代碼 <code>`; null when
@@ -90,7 +94,8 @@ export function runCodeText(code: string | null): string | null {
   if (!code) return null;
   if (Object.hasOwn(RUN_CODE_TEXT, code)) return RUN_CODE_TEXT[code];
   const status = /^portfolio:(\d{3})$/.exec(code);
-  if (status) return `投資服務拒絕匯入（${status[1]}）`;
+  // A failed (not latched) run carries only 5xx / 408 / 429 (worker/cathay.py): temporary, not a refusal.
+  if (status) return `${isTemporaryStatus(status[1]) ? '投資服務暫時無法匯入' : '投資服務拒絕匯入'}（${status[1]}）`;
   return `錯誤代碼 ${code}`;
 }
 

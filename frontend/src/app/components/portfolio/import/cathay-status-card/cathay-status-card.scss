@@ -2,6 +2,8 @@
 // own view, so the column's rules do not reach it.
 :host {
   display: block;
+  /* Opened with #cathay: leave a gap above the card, as the reward-rule cards do. */
+  scroll-margin-top: 12px;
 }
 
 b {
