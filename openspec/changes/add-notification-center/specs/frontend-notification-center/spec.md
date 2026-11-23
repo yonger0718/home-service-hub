@@ -62,11 +62,15 @@ Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and �
 
 ### Requirement: One case at a time reconciliation
 
-`/notifications/recon/:statementId` SHALL show a statement's open questions one at a time: a label and headline, a 日期 / 商家 / 金額 comparison of bank line and ledger entry with differing fields highlighted, the answers as full-width buttons (first one primary), 以後都這樣 as a switch where learning applies, 略過，稍後再看 and progress `n / total`. It SHALL open in the right pane of `/notifications` at ≥ 1024 px and full screen below.
+`/notifications/recon/:statementId` SHALL show a statement's open questions one inbox item at a time: a label and headline, a 日期 / 商家 / 金額 comparison of bank line and ledger entry with differing fields highlighted, the answers as full-width buttons (first one primary), 以後都這樣 as a switch where learning applies, 略過，稍後再看 and progress `n / total`. It SHALL open in the right pane of `/notifications` at ≥ 1024 px and full screen below, and SHALL read the list again after every answer.
 
 #### Scenario: Keyboard
 - **WHEN** the flow is open at 1440 px and no text field has focus
 - **THEN** keys 1–3 SHALL pick an answer, S SHALL skip, ← and → SHALL move without answering and Esc SHALL close
+
+#### Scenario: Keys while a sheet is open
+- **WHEN** the record or match sheet is open, or a held key repeats
+- **THEN** the flow's keys SHALL do nothing
 
 #### Scenario: Answering moves on
 - **WHEN** the owner presses 1 on the first question
@@ -78,16 +82,21 @@ Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and �
 
 #### Scenario: End state
 - **WHEN** the last open question is answered or skipped
-- **THEN** the screen SHALL show how many were handled and how many remain, with 繼續 and 回到通知
+- **THEN** the screen SHALL show how many were handled and how many remain, with 繼續對帳 and 回到通知
 
 ### Requirement: Related questions handled together
 
-When two open questions of a statement reference the same ledger entry, the flow SHALL show them once, with a note naming the other question, and SHALL apply the chosen answer with both cases in one request.
+When two open questions of a statement reference the same ledger entry (a bank-line question and the entry's own 你記了，銀行沒有), the flow SHALL show the bank-line question with a note naming the other one and SHALL apply the answer to that one case; the API rejects a request that mixes questions. The other question SHALL not be asked when the answer closed it, and SHALL be asked next when it is still open.
 
 #### Scenario: Amount difference and missing bank line on one entry
 - **GIVEN** an `amount_differs` question and a `ledger_only` question on entry 812
 - **WHEN** the owner chooses 改成銀行的金額
-- **THEN** one apply request SHALL carry both case ids and the sequence SHALL skip the second question
+- **THEN** one apply request SHALL carry the `amount_differs` case only, and after the list is read again the `ledger_only` question SHALL not be shown
+
+#### Scenario: Not the same entry
+- **GIVEN** the same pair
+- **WHEN** the owner chooses 不是同一筆
+- **THEN** the `ledger_only` question SHALL be the next one asked
 
 ### Requirement: Transfer and amount answers
 

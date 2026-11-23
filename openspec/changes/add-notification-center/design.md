@@ -52,12 +52,13 @@ Run rule for 國泰 (Cathay design §7.2, `cathay_run_time` 06:40, grace 15 min)
 
 ### D5. Review flow reuses the inbox contract
 
-- Order: the statement's `ask` items in inbox order. Progress `n / total` plus 已自動對上 `claimed / lines` from the statement.
+- Order: the statement's `ask` items in inbox order, one item per step (no merged cards), re-read after every answer. Progress `n / total` plus 已對上 `k / n 行` from the statement task (matched lines over matched plus open cases; the API has no `claimed / lines`).
 - Answers are the item's `actions` mapped to the existing labels (`inbox-panel.ts`), first one solid. `match_candidate` opens the existing match sheet; `record` the existing record sheet.
 - 以後都這樣 is a switch bound to `learn` (shown only where the panel offers learning today).
-- **Related cases**: when two `ask` items reference the same `entry.id` (e.g. `amount_differs` and `ledger_only`), the screen shows the first with the note 「這筆也出現在…，選了就一起處理」 and applies with both cases in `cases[]`; the second is skipped in the sequence.
+- **Related cases**: when two `ask` items reference the same `entry.id` (e.g. `amount_differs` and `ledger_only`), the screen shows the bank-line question with the note 「你這筆 … 也列在「你記了，銀行沒有」。這裡對上或改金額後，那一題會自動消失。」 and applies to that case only (the API rejects mixed questions in one request; an answer that writes coverage supersedes the entry's own case server-side). The second is ordered directly after the first and is asked only if it is still open after the re-read (不是同一筆, a refusal, or 對到 another entry).
+- **復原** (toast, 5 s, survives closing the flow): revert the answer's actions newest first, switch off the rule the answer taught (`PATCH /reconciliation/owner-rules/{id}`), then `POST /accounts/{id}/statements/{id}/reconcile` — a revert reopens only the answered case, and the reconcile, which also runs owner rules, brings back what the answer had superseded (#428 tracks doing this in the API).
 - **Transfers (#150)**: when `item.transfer.adjust_transfer` is set, offer 改成帳單的轉帳 (`POST /reconciliation/cases/{id}/actions`, `{action:'adjust_transfer', params:{entry_id, line_id}}`; on an ambiguous case the owner first picks one of `candidate_entry_ids`). When `pair_transfer.peer_candidates` is non-empty, offer 配成轉帳 with a picker of the candidates (`params:{peer_line_id}`). On `ambiguous` cases where `adjust_amount` is allowed, offer 改金額. Refusal codes show as an inline error under the buttons.
-- Keys 1–3 answer, S skips (stays open, moves on), ← → move without answering, Esc closes. Global shortcuts stay off while a text field has focus.
+- Keys 1–3 answer, S skips (stays open, moves on), ← → move without answering, Esc closes. Global shortcuts stay off while a text field has focus, a sheet or dialog is open, an answer is being sent, or a key is auto-repeating.
 - Leaving mid-way is fine; the end state says how many were handled and how many remain.
 
 ### D6. One toast

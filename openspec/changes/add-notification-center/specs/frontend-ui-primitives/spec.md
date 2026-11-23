@@ -6,7 +6,7 @@ The SPA SHALL show transient feedback through one shell-level `ToastService`: on
 
 #### Scenario: Success with undo
 - **WHEN** a reconciliation answer is applied
-- **THEN** a 完成 toast SHALL offer 復原, which calls the action's revert endpoint
+- **THEN** a 完成 toast SHALL offer 復原, which calls the action's revert endpoint, switches off a rule the same answer taught, and asks the server to reconcile the statement again
 
 #### Scenario: Failure stays
 - **WHEN** a save fails with a network error
