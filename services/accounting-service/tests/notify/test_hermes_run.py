@@ -1,6 +1,7 @@
 import os
 import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -45,7 +46,8 @@ def _prompt(tmp_path, text="hello 你好"):
 
 def _run(tmp_path, runner, **kw):
     args = dict(prompt_path=_prompt(tmp_path), toolsets="web", timeout_s=30, model="m", provider="p",
-                env={"PATH": "/bin"}, cwd=tmp_path, max_output_bytes=1000, archive=tmp_path, runner=runner)
+                env={"PATH": "/bin"}, cwd=tmp_path, max_output_bytes=1000, archive=tmp_path, runner=runner,
+                kill=lambda pg, sig: None)  # a fake handle's pid must never reach the real os.killpg
     args.update(kw)
     return run_hermes(**args)
 
@@ -191,3 +193,74 @@ def test_oversized_prompt_is_hermes_error_and_runner_never_called(tmp_path):
     with pytest.raises(HermesError):
         _run(tmp_path, make_runner(calls=calls), prompt_path=p)
     assert calls == []
+
+
+# --- #286: the cap holds while the child runs ---
+
+def sh_runner(script: str, handles: list | None = None):
+    """A real child in its own session, wired to the fds run_hermes hands over."""
+    def runner(argv, env, cwd, out_fd, err_fd):
+        h = subprocess.Popen(["sh", "-c", script], stdin=subprocess.DEVNULL, stdout=out_fd, stderr=err_fd,
+                             start_new_session=True)
+        if handles is not None:
+            handles.append(h)
+        return h
+    return runner
+
+
+def test_overflowing_child_is_killed_and_file_stays_at_the_cap(tmp_path):
+    handles: list = []
+    start = time.monotonic()
+    with pytest.raises(HermesError):
+        _run(tmp_path, sh_runner("yes aaaaaaa | head -c 5000000; sleep 8", handles), timeout_s=60, kill=os.killpg)
+    assert time.monotonic() - start < 5  # killed at the cap, not waited out
+    assert handles[0].returncode == -signal.SIGKILL
+    data = (tmp_path / "hermes.out").read_bytes()
+    assert data == (b"aaaaaaa\n" * 125)[:1000] + b"\n[truncated]\n"
+
+
+def test_overflow_on_stderr_kills_too(tmp_path):
+    handles: list = []
+    with pytest.raises(HermesError):
+        _run(tmp_path, sh_runner("yes eeeeeee | head -c 5000000 >&2; sleep 8", handles), timeout_s=60,
+             kill=os.killpg)
+    assert handles[0].returncode == -signal.SIGKILL
+    assert (tmp_path / "hermes.err").stat().st_size == 1000 + len(b"\n[truncated]\n")
+
+
+def test_overflow_asks_for_the_kill_once_the_cap_is_passed(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid + 1)
+    kills = []
+    with pytest.raises(HermesError):
+        _run(tmp_path, make_runner(out=b"x" * 11), max_output_bytes=10, kill=lambda pg, sig: kills.append((pg, sig)))
+    assert kills == [(4243, signal.SIGKILL)]
+
+
+def test_timed_out_run_leaves_capped_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid + 1)
+    with pytest.raises(HermesError):
+        _run(tmp_path, make_runner(out=b"x" * 11, err=b"y" * 3, timeout=True), max_output_bytes=10)
+    assert (tmp_path / "hermes.out").read_bytes() == b"x" * 10 + b"\n[truncated]\n"
+    assert (tmp_path / "hermes.err").read_bytes() == b"yyy"
+
+
+def test_grandchild_holding_the_pipe_does_not_hang(tmp_path):
+    start = time.monotonic()
+    res = _run(tmp_path, sh_runner("(sleep 6 &); echo done"), timeout_s=60, kill=os.killpg)
+    assert res.stdout == "done\n" and time.monotonic() - start < 5
+
+
+def test_real_child_output_and_exit_code(tmp_path):
+    res = _run(tmp_path, sh_runner("printf out; printf err >&2"), kill=os.killpg)
+    assert (res.stdout, res.stderr, res.returncode) == ("out", "err", 0)
+    assert oct((tmp_path / "hermes.out").stat().st_mode & 0o777) == "0o600"
+    with pytest.raises(HermesError):
+        _run(tmp_path, sh_runner("exit 3"), kill=os.killpg)
+
+
+def test_unopenable_output_file_is_hermes_error(tmp_path):
+    (tmp_path / "hermes.err").mkdir()
+    calls = []
+    with pytest.raises(HermesError) as ei:
+        _run(tmp_path, make_runner(calls=calls))
+    assert str(ei.value) == f"hermes {tmp_path}" and calls == []
