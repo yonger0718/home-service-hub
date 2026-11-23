@@ -438,3 +438,17 @@ def test_discord_failed_dropped_truncated_unverified():
     (t,) = r.cards[0].truncated
     assert t.verified is False and t.read == "r1"
     assert r.fetch_log["truncated"][0]["url"] == "[unverified source]"
+
+
+def test_digest_ignores_period_end_source_and_quote():
+    """The model quotes another sentence (or URL form) of the same page on most runs; only a moved date is news."""
+    def card(day="2026-12-31", source=ON, quote="valid until 2026-12-31"):
+        raw = {"account_id": 101, "status": "unchanged",
+               "current_period_end": {"date": day, "source": source, "quote": quote}}
+        return parse_result(fx.one_card(raw), ONE).cards[0]
+
+    base = digest(card(), "precise")
+    assert digest(card(quote="the programme ends on 31 December 2026"), "precise") == base
+    assert digest(card(source=ON + "?lang=zh"), "precise") == base
+    assert digest(card(day="2027-03-31"), "precise") != base
+    assert digest(replace(card(), current_period_end=None), "precise") != base
