@@ -66,11 +66,13 @@ import {
   progress,
   resume,
   skip,
+  SavedAnswer,
+  itemKey,
+  restore,
   startFlow,
-  steps,
 } from './recon-flow-state';
 import { compareRows, flowCard, flowChip, flowEntry, flowHeadline, flowLearnable, flowNote } from './recon-flow-view';
-import { ReconUndoService } from './recon-undo.service';
+import { ReconReverted, ReconUndoService } from './recon-undo.service';
 
 /** Above this many cases the bar is one plain fill instead of one segment per case. */
 const MAX_SEGMENTS = 20;
@@ -184,9 +186,10 @@ export class ReconFlowComponent {
   private gen = 0;
   private reading: Subscription | null = null;
   private pending: PendingAnswer | null = null;
-  private pendingGoTo: number | null = null;
-  /** The queued goTo already had its one extra read (its case was not back yet). */
-  private goToRetried = false;
+  /** Per applied answer (its case id at answer time): what 復原 must find again after the reconcile. */
+  private readonly saved = new Map<number, SavedAnswer>();
+  /** A 復原 of this statement finished: the next read restores that answer's question. */
+  private pendingRevert: number | null = null;
   private destroyed = false;
 
   readonly item = computed<InboxItem | null>(() => {
@@ -284,7 +287,7 @@ export class ReconFlowComponent {
         return;
       }
       lastSeq = reverted.seq;
-      untracked(() => this.onReverted(reverted.caseId));
+      untracked(() => this.onReverted(reverted));
     });
 
     inject(DestroyRef).onDestroy(() => {
@@ -435,7 +438,8 @@ export class ReconFlowComponent {
   private restart(): void {
     this.gen += 1;
     this.pending = null;
-    this.pendingGoTo = null;
+    this.pendingRevert = null;
+    this.saved.clear();
     this.account.set(null);
     this.periodEnd.set(null);
     this.flow.set(startFlow([]));
@@ -472,7 +476,7 @@ export class ReconFlowComponent {
           return;
         }
         this.busy.set(false);
-        this.pendingGoTo = null;
+        this.pendingRevert = null;
         if (this.pending) {
           this.rereadFailed.set(true);
         }
@@ -503,18 +507,12 @@ export class ReconFlowComponent {
     if (state.cursor !== null && !state.open.has(state.cursor)) {
       state = advance(state);
     }
-    // A read issued before the 復原 finished may not have the case yet: read once more, then give up.
-    let readAgain = false;
-    if (this.pendingGoTo !== null) {
-      if (steps(state).includes(this.pendingGoTo)) {
-        state = goTo(state, this.pendingGoTo);
-        this.pendingGoTo = null;
-      } else if (!this.goToRetried) {
-        this.goToRetried = true;
-        readAgain = true;
-      } else {
-        this.pendingGoTo = null;
-      }
+    // After 復原 the question is back under a new case id: find it by its line / entry, put it at its old place.
+    if (this.pendingRevert !== null) {
+      const saved = this.saved.get(this.pendingRevert);
+      state = saved ? restore(state, saved) : goTo(state, this.pendingRevert);
+      this.saved.delete(this.pendingRevert);
+      this.pendingRevert = null;
     }
     const focus = pending !== null || this.hasFocus();
     this.flow.set(state);
@@ -525,9 +523,6 @@ export class ReconFlowComponent {
     this.rereadFailed.set(false);
     if (focus && state.cursor !== before) {
       this.focusStep();
-    }
-    if (readAgain) {
-      this.read(false);
     }
   }
 
@@ -568,14 +563,17 @@ export class ReconFlowComponent {
     });
   }
 
-  private onReverted(caseId: number): void {
-    if (this.load() !== 'ready') {
-      return; // the first read (or its 重試) brings the case back anyway
+  private onReverted(reverted: ReconReverted): void {
+    if (reverted.statementId !== this.statementId() || this.load() !== 'ready') {
+      return; // another statement; or the first read (or its 重試) is still to come and brings the question anyway
     }
-    this.pendingGoTo = caseId;
-    this.goToRetried = false;
+    if (!this.account()) {
+      this.restart(); // opened on a finished statement: only a full read can find the account again
+      return;
+    }
+    this.pendingRevert = reverted.caseId;
     if (this.busy()) {
-      return; // the answer's own re-read lands after the revert and goes to the case
+      return; // the answer's own re-read lands after the revert and restores the question
     }
     this.read(false);
   }
@@ -604,6 +602,7 @@ export class ReconFlowComponent {
     }
     const gen = this.gen;
     const statementId = this.statementId();
+    const saved = this.snapshot(item);
     this.busy.set(true);
     this.inlineError.set(null);
     // A background read (after 復原) must not land mid-apply and clear `busy`; `pendingGoTo` stays queued for the
@@ -617,6 +616,9 @@ export class ReconFlowComponent {
         if (this.destroyed || gen !== this.gen) {
           return;
         }
+        if (out.results.some((r) => r.case_id === item.case_id && r.status !== 'refused')) {
+          this.saved.set(item.case_id, saved);
+        }
         this.pending = { caseId: item.case_id, out };
         this.read(false);
       },
@@ -626,7 +628,7 @@ export class ReconFlowComponent {
         }
         this.busy.set(false);
         this.inlineError.set(FAILED_PREFIX + plainError(err));
-        if (this.pendingGoTo !== null) {
+        if (this.pendingRevert !== null) {
           this.read(false); // the 復原 read this press cancelled
         }
       },
@@ -634,6 +636,21 @@ export class ReconFlowComponent {
   }
 
   // ----- helpers ---------------------------------------------------------------------------------------------------
+
+  /** The answered item's place and, by line / entry, it and the followers that close with it. */
+  private snapshot(item: InboxItem): SavedAnswer {
+    const state = this.flow();
+    const keys = new Map<number, string>();
+    const riders = [...followers(state)].filter(([, leader]) => leader === item.case_id).map(([id]) => id);
+    for (const id of [item.case_id, ...riders]) {
+      const it = state.open.get(id);
+      const key = it ? itemKey(it) : null;
+      if (key !== null) {
+        keys.set(id, key);
+      }
+    }
+    return { position: state.order.indexOf(item.case_id), keys };
+  }
 
   /** A step change the owner asked for in the flow: focus follows it. */
   private owned(change: (state: FlowState) => FlowState): boolean {

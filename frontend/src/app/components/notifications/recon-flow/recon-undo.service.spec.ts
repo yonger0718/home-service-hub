@@ -64,7 +64,7 @@ describe('ReconUndoService', () => {
     http.expectNone(isRule);
     reconcile.flush({});
     expect(toast.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已復原', action: null }));
-    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1 });
+    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1, statementId: 10 });
     expect(changed).toHaveBeenCalledTimes(1);
   });
 
@@ -83,7 +83,7 @@ describe('ReconUndoService', () => {
     expect(toast.current()).toEqual(
       expect.objectContaining({ kind: 'done', text: '已復原，並停用「測試超市」的規則', action: null }),
     );
-    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1 });
+    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1, statementId: 10 });
     expect(changed).toHaveBeenCalledTimes(1);
   });
 
@@ -100,7 +100,7 @@ describe('ReconUndoService', () => {
         action: null,
       }),
     );
-    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1 });
+    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1, statementId: 10 });
     expect(changed).toHaveBeenCalledTimes(1);
   });
 
@@ -116,8 +116,30 @@ describe('ReconUndoService', () => {
         action: null,
       }),
     );
-    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1 });
+    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1, statementId: 10 });
     expect(changed).toHaveBeenCalledTimes(1);
+  });
+
+  it('a reconcile that answers 200 with skipped did not re-derive anything: the same error as a failed one', () => {
+    svc.offer(offerOf());
+    runUndo();
+    http.expectOne(`${BASE}/901/revert`).flush({});
+    http.expectOne(isReconcile).flush({
+      claims: 0,
+      cases_opened: [],
+      explained: 0,
+      unmatched_entries: 0,
+      skipped: 'parse_review',
+      policy: { applied: 0, proposed: 0 },
+    });
+    expect(toast.current()).toEqual(
+      expect.objectContaining({
+        kind: 'error',
+        text: '已復原，但帳單沒有重新對過，相關的題目可能晚一點才出現',
+        action: null,
+      }),
+    );
+    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1, statementId: 10 });
   });
 
   it('a failed revert: no rule switch, no reconcile', () => {
@@ -129,7 +151,7 @@ describe('ReconUndoService', () => {
     expect(toast.current()).toEqual(
       expect.objectContaining({ kind: 'error', text: '復原沒成功：之後已有其他變更，無法復原', action: null }),
     );
-    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1 });
+    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1, statementId: 10 });
     expect(changed).toHaveBeenCalledTimes(1);
   });
 
@@ -144,7 +166,7 @@ describe('ReconUndoService', () => {
     expect(toast.current()).toEqual(
       expect.objectContaining({ kind: 'error', text: '復原沒成功：之後已有其他變更，無法復原', action: null }),
     );
-    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1 });
+    expect(svc.reverted()).toEqual({ caseId: 5, seq: 1, statementId: 10 });
     expect(changed).toHaveBeenCalledTimes(1);
   });
 

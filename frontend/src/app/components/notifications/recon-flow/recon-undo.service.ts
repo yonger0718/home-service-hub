@@ -7,6 +7,16 @@ import { isNotRevertable } from '../../accounting/inbox/handled-list/handled-lis
 import { InboxService } from '../../accounting/inbox/inbox.service';
 import { StatementsService } from '../../accounting/statements/statements.service';
 
+/**
+ * A finished 復原. `caseId` is the answered case's id at answer time: after the reconcile the question comes back
+ * under a new id, so a flow finds it by what it is about (`itemKey`), not by this id.
+ */
+export interface ReconReverted {
+  readonly caseId: number;
+  readonly statementId: number;
+  readonly seq: number;
+}
+
 /** One applied reconciliation answer that 復原 can take back. */
 export interface UndoOffer {
   readonly answer: string;
@@ -35,11 +45,10 @@ export class ReconUndoService {
   private readonly statements = inject(StatementsService);
   private readonly accounting = inject(AccountingService);
   private readonly toasts = inject(ToastService).scope(inject(DestroyRef));
-  private readonly revertedState = signal<{ readonly caseId: number; readonly seq: number } | null>(null);
+  private readonly revertedState = signal<ReconReverted | null>(null);
 
-  /** Bumped after a 復原 finished (success or not): the case to show again. */
-  readonly reverted: Signal<{ readonly caseId: number; readonly seq: number } | null> =
-    this.revertedState.asReadonly();
+  /** Bumped after a 復原 finished (success or not): the answered case and its statement. */
+  readonly reverted: Signal<ReconReverted | null> = this.revertedState.asReadonly();
 
   /** Raise 完成 with 復原 for one applied answer (no 復原 without an action id). */
   offer(offer: UndoOffer): void {
@@ -87,15 +96,17 @@ export class ReconUndoService {
   }
 
   private reconcile(offer: UndoOffer, doneText: string): void {
+    const notRederived = '已復原，但帳單沒有重新對過，相關的題目可能晚一點才出現';
     this.statements.reconcile(offer.accountId, offer.statementId).subscribe({
-      next: () => this.finish(offer, 'done', doneText),
-      error: () => this.finish(offer, 'error', '已復原，但帳單沒有重新對過，相關的題目可能晚一點才出現'),
+      // A 200 with `skipped` (parse_review, no_current_revision, retired) re-derived nothing either.
+      next: (result) => this.finish(offer, result?.skipped ? 'error' : 'done', result?.skipped ? notRederived : doneText),
+      error: () => this.finish(offer, 'error', notRederived),
     });
   }
 
   private finish(offer: UndoOffer, kind: 'done' | 'error', text: string): void {
     this.accounting.markEntriesChanged();
-    this.revertedState.update((v) => ({ caseId: offer.caseId, seq: (v?.seq ?? 0) + 1 }));
+    this.revertedState.update((v) => ({ caseId: offer.caseId, statementId: offer.statementId, seq: (v?.seq ?? 0) + 1 }));
     if (kind === 'done') {
       this.toasts.done(text);
     } else {

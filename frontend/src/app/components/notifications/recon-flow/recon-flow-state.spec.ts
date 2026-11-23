@@ -7,8 +7,10 @@ import {
   askItems,
   followers,
   goTo,
+  itemKey,
   move,
   progress,
+  restore,
   resume,
   skip,
   startFlow,
@@ -149,9 +151,12 @@ describe('recon-flow-state', () => {
     const at3 = goTo(startFlow(list), 3);
     const next = advance(afterRead(at3, without(list, 3)));
     expect(next.cursor).toBe(4);
-    // Earlier items 1 and 2 are still open; the last one leaving ends the walk instead of going back.
+    // The last one leaving with earlier steps still open and not skipped: wrap to the first of them, not the end.
     const atLast = goTo(startFlow(list), 5);
-    expect(advance(afterRead(atLast, without(list, 5))).cursor).toBeNull();
+    expect(advance(afterRead(atLast, without(list, 5))).cursor).toBe(1);
+    // Skipped earlier steps are not wrapped to: then it is the end state.
+    const skippedFirst = goTo(skip(skip(startFlow(items(3)))), 3);
+    expect(advance(afterRead(skippedFirst, without(items(3), 3))).cursor).toBeNull();
   });
 
   it('skipping to the end with items left: no cursor, remaining > 0', () => {
@@ -186,6 +191,84 @@ describe('recon-flow-state', () => {
     const s = startFlow([followerItem(5), makeItem({ case_id: 3 }), leaderItem(1), followerItem(4)]);
     expect(s.order).toEqual([3, 1, 5, 4]);
     expect(steps(s)).toEqual([3, 1]);
+  });
+
+  describe('restore after 復原 (the question returns under a new case id)', () => {
+    const linesOf = (n: number) =>
+      Array.from({ length: n }, (_, i) =>
+        makeItem({ case_id: i + 1, line: { id: 100 + i + 1, date: '2026-09-03', merchant: `測試小店 ${i + 1}`, amount: '-100.0000', line_kind: 'purchase' } }),
+      );
+
+    it('itemKey: the bank line, else the ledger entry, else null', () => {
+      expect(itemKey(linesOf(1)[0])).toBe('line:101');
+      expect(itemKey(followerItem(2))).toBe('entry:812');
+      expect(itemKey(makeItem({ line: null, entry: null }))).toBeNull();
+    });
+
+    it('a plain answer comes back at its old place with the cursor on it; numbers as before the answer', () => {
+      const list = linesOf(3);
+      const answered = advance(afterRead(startFlow(list), without(list, 1)));
+      expect(answered.cursor).toBe(2);
+      const fresh = { ...list[0], case_id: 11, case_version: 1 };
+      const read = afterRead(answered, [fresh, list[1], list[2]]);
+      const s = restore(read, { position: 0, keys: new Map([[1, 'line:101']]) });
+      expect(s.order).toEqual([11, 2, 3]);
+      expect(s.cursor).toBe(11);
+      expect(progress(s)).toEqual({ position: 1, total: 3, handled: 0, remaining: 3 });
+    });
+
+    it('a pair comes back leader first even when the server lists the follower first', () => {
+      const list = [leaderItem(1), followerItem(2), linesOf(3)[2]];
+      const answered = advance(afterRead(startFlow(list), [list[2]]));
+      expect(answered.cursor).toBe(3);
+      const leader = { ...leaderItem(21), line: list[0].line };
+      const read = afterRead(answered, [followerItem(22), leader, list[2]]);
+      const s = restore(read, { position: 0, keys: new Map([[1, itemKey(list[0])!], [2, 'entry:812']]) });
+      expect(s.order).toEqual([21, 22, 3]);
+      expect(s.cursor).toBe(21);
+      expect(steps(s)).toEqual([21, 3]);
+      expect(progress(s)).toMatchObject({ total: 3, handled: 0 });
+    });
+
+    it('from the end state the returned question becomes the cursor', () => {
+      const list = linesOf(2);
+      const done = advance(afterRead(advance(afterRead(startFlow(list), [list[1]])), []));
+      expect(done.cursor).toBeNull();
+      const s = restore(afterRead(done, [{ ...list[1], case_id: 12, case_version: 1 }]), {
+        position: 1,
+        keys: new Map([[2, 'line:102']]),
+      });
+      expect(s.order).toEqual([1, 12]);
+      expect(s.cursor).toBe(12);
+    });
+
+    it('the old id itself back open (no reconcile) is moved to the cursor in place', () => {
+      const list = linesOf(3);
+      const answered = advance(afterRead(startFlow(list), without(list, 1)));
+      const s = restore(afterRead(answered, list), { position: 0, keys: new Map([[1, 'line:101']]) });
+      expect(s.order).toEqual([1, 2, 3]);
+      expect(s.cursor).toBe(1);
+    });
+
+    it('nothing came back: the state is returned unchanged', () => {
+      const list = linesOf(3);
+      const read = afterRead(advance(afterRead(startFlow(list), without(list, 1))), without(list, 1));
+      expect(restore(read, { position: 0, keys: new Map([[1, 'line:101']]) })).toBe(read);
+    });
+
+    it('a follower that did not come back stays counted as handled', () => {
+      const list = [leaderItem(1), followerItem(2), linesOf(3)[2]];
+      const answered = advance(afterRead(startFlow(list), [list[2]]));
+      // Reconcile failed: the revert reopened the leader under its old id; the follower stays closed.
+      const s = restore(afterRead(answered, [list[0], list[2]]), {
+        position: 0,
+        keys: new Map([[1, itemKey(list[0])!], [2, 'entry:812']]),
+      });
+      expect(s.order).toEqual([1, 2, 3]);
+      expect(s.cursor).toBe(1);
+      expect(progress(s)).toMatchObject({ total: 3, handled: 1 });
+    });
+
   });
 
   it('does not mutate the input state', () => {

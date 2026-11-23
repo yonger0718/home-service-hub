@@ -50,23 +50,77 @@ export function steps(state: FlowState): number[] {
  * follower is the next question, not one behind the cursor. Stable otherwise.
  */
 export function startFlow(items: readonly InboxItem[]): FlowState {
-  const draft: FlowState = {
-    order: items.map((i) => i.case_id),
-    open: toMap(items),
+  const open = toMap(items);
+  const state: FlowState = {
+    order: leadersFirst(items.map((i) => i.case_id), open),
+    open,
     skipped: new Set(),
     cursor: null,
   };
-  const leaderOf = followers(draft);
+  return { ...state, cursor: steps(state)[0] ?? null };
+}
+
+/** `ids` with each follower moved directly after its leader (followers among `ids` only); stable otherwise. */
+function leadersFirst(ids: readonly number[], open: ReadonlyMap<number, InboxItem>): number[] {
+  const leaderOf = followers({ order: ids, open, skipped: new Set(), cursor: null });
   const order: number[] = [];
-  for (const id of draft.order) {
+  for (const id of ids) {
     if (leaderOf.has(id)) continue;
     order.push(id);
     for (const [follower, leader] of leaderOf) {
       if (leader === id) order.push(follower);
     }
   }
-  const state = { ...draft, order };
-  return { ...state, cursor: steps(state)[0] ?? null };
+  return order;
+}
+
+/**
+ * What a question is about, stable across case ids: its bank line, else its ledger entry. A 復原 followed by the
+ * statement reconcile brings an answered question back under a NEW case id (the server does not recognise the
+ * reopened case and writes a fresh one), so the flow finds it again by this key.
+ */
+export function itemKey(item: InboxItem): string | null {
+  if (item.line) return `line:${item.line.id}`;
+  if (item.entry) return `entry:${item.entry.id}`;
+  return null;
+}
+
+/** An applied answer as the flow remembers it for 復原: its place in `order`, and the key of each case it closed. */
+export interface SavedAnswer {
+  readonly position: number;
+  /** Old case id → `itemKey`: the answered item and the followers that rode along. */
+  readonly keys: ReadonlyMap<number, string>;
+}
+
+/**
+ * After the read that follows a 復原: the open items whose key matches a saved one are the questions that came back.
+ * They replace the old ids (an old id is dropped only when its key came back under another id), at the answer's old
+ * place, leader before follower, and the cursor goes to the first of them. Nothing came back → `state` unchanged.
+ */
+export function restore(state: FlowState, saved: SavedAnswer): FlowState {
+  const wanted = new Set(saved.keys.values());
+  const keyOf = (id: number): string | null => {
+    const item = state.open.get(id);
+    return item ? itemKey(item) : null;
+  };
+  const returned = state.order.filter((id) => {
+    const key = keyOf(id);
+    return key !== null && wanted.has(key);
+  });
+  if (returned.length === 0) return state;
+  const back = new Set(returned.map(keyOf));
+  const dropped = new Set(
+    [...saved.keys].filter(([id, key]) => !state.open.has(id) && back.has(key)).map(([id]) => id),
+  );
+  const moving = new Set([...returned, ...dropped]);
+  const rest = state.order.filter((id) => !moving.has(id));
+  const at = state.order.slice(0, saved.position).filter((id) => !moving.has(id)).length;
+  const group = leadersFirst(returned, state.open);
+  const order = [...rest.slice(0, at), ...group, ...rest.slice(at)];
+  const skipped = new Set([...state.skipped].filter((id) => !moving.has(id)));
+  const next: FlowState = { ...state, order, skipped };
+  const cursor = group.find((id) => steps(next).includes(id)) ?? state.cursor;
+  return { ...next, cursor };
 }
 
 export function afterRead(state: FlowState, items: readonly InboxItem[]): FlowState {
@@ -77,10 +131,15 @@ export function afterRead(state: FlowState, items: readonly InboxItem[]): FlowSt
   return { order, open, skipped, cursor: state.cursor };
 }
 
+/**
+ * The next open, unskipped step after the cursor's place; past the last one, wrap to the first open unskipped step
+ * before it. The end state only when none is left.
+ */
 export function advance(state: FlowState): FlowState {
   if (state.cursor === null) return state;
   const at = state.order.indexOf(state.cursor);
-  const next = steps(state).find((id) => state.order.indexOf(id) > at && !state.skipped.has(id));
+  const candidates = steps(state).filter((id) => id !== state.cursor && !state.skipped.has(id));
+  const next = candidates.find((id) => state.order.indexOf(id) > at) ?? candidates[0];
   return { ...state, cursor: next ?? null };
 }
 

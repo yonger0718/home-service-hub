@@ -22,6 +22,7 @@ import {
 import { makeCategory } from '../../accounting/testing/fixtures';
 import { NotifTask } from '../notif-task';
 import { ReconFlowComponent } from './recon-flow';
+import { ReconUndoService } from './recon-undo.service';
 
 const INBOX_URL = '/api/accounting/reconciliation/inbox';
 const APPLY_URL = '/api/accounting/reconciliation/inbox/apply';
@@ -45,6 +46,11 @@ function line(caseId: number, overrides: Partial<InboxItem> = {}): InboxItem {
     },
     ...overrides,
   });
+}
+
+/** Case `old`'s bank line back under a fresh case id (version 1), as the reconcile after 復原 returns it. */
+function fresh(old: number, caseId: number): InboxItem {
+  return { ...line(old), case_id: caseId, case_version: 1 };
 }
 
 function ten(): InboxItem[] {
@@ -472,7 +478,7 @@ describe('ReconFlowComponent', () => {
     detect();
     http.expectNone((r) => r.method === 'POST' && r.url === APPLY_URL);
     post.flush(applied(2));
-    reread().flush(inbox([line(1), ...ten().slice(2)]));
+    reread().flush(inbox([fresh(1, 11), ...ten().slice(2)]));
     detect();
     // The queued 復原 target is shown, and the second answer got its own 復原.
     expect(headline()).toBe('測試商家 1 −$101');
@@ -493,7 +499,7 @@ describe('ReconFlowComponent', () => {
     expect(stale.cancelled).toBe(true);
     apply().flush({ detail: 'case_closed' }, { status: 409, statusText: 'Conflict' });
     detect();
-    reread().flush(inbox(ten()));
+    reread().flush(inbox([fresh(1, 11), ...ten().slice(1)]));
     detect();
     expect(headline()).toBe('測試商家 1 −$101');
   });
@@ -813,7 +819,7 @@ describe('ReconFlowComponent', () => {
     // Focus is outside the flow (the toast's 復原): the background re-read must not pull it in.
     (document.activeElement as HTMLElement | null)?.blur();
     undoLast(901);
-    reread().flush(inbox(ten()));
+    reread().flush(inbox([fresh(1, 11), ...ten().slice(1)]));
     detect();
     expect(headline()).toBe('測試商家 1 −$101');
     expect(progressText()).toBe('第 1 / 10 筆');
@@ -837,30 +843,136 @@ describe('ReconFlowComponent', () => {
     http.expectOne(RECONCILE_URL).flush({});
     detect();
     expect(toasts.current()?.text).toBe('已復原，並停用「測試商家 1」的規則');
-    reread().flush(inbox(ten()));
+    reread().flush(inbox([fresh(1, 11), ...ten().slice(1)]));
     detect();
     expect(headline()).toBe('測試商家 1 −$101');
   });
 
-  it('a 復原 read that lands before the case is back reads once more; never a third time', () => {
-    open(ten());
-    answerWith1(1, ten().slice(1));
-    undoLast(901);
-    reread().flush(inbox(ten().slice(1)));
-    detect();
-    reread().flush(inbox(ten()));
-    detect();
-    expect(headline()).toBe('測試商家 1 −$101');
+  describe('復原 brings the question back under a new case id', () => {
+    const three = () => [line(1), line(2), line(3)];
+    const doneSegments = () => el.querySelectorAll('.flow-bar [data-state="done"]').length;
 
-    // The case never comes back: one extra read, then the goTo is dropped.
-    answerWith1(1, ten().slice(1));
-    undoLast(901);
-    reread().flush(inbox(ten().slice(1)));
-    detect();
-    reread().flush(inbox(ten().slice(1)));
-    detect();
-    http.expectNone((r) => r.url === INBOX_URL);
-    expect(headline()).toBe('測試商家 2 −$102');
+    it('plain: lands on the returned question at its old place; 第 1 / 3 筆, nothing handled', () => {
+      open(three());
+      answerWith1(1, three().slice(1));
+      expect(progressText()).toBe('第 2 / 3 筆');
+      undoLast(901);
+      reread().flush(inbox([fresh(1, 11), line(2), line(3)]));
+      detect();
+      http.expectNone((r) => r.url === INBOX_URL);
+      expect(headline()).toBe('測試商家 1 −$101');
+      expect(progressText()).toBe('第 1 / 3 筆');
+      expect(el.querySelectorAll('.flow-bar [data-seg]').length).toBe(3);
+      expect(doneSegments()).toBe(0);
+      // Answering it again posts the new case id and version.
+      key('1');
+      expect((apply().request.body as InboxApplyBody).cases).toEqual([{ case_id: 11, case_version: 1 }]);
+    });
+
+    it('a pair answered with 改成銀行的: both return (follower listed first); leader shown with the note, then the follower', () => {
+      open([ledgerOnly(2), differs(1), line(3)]);
+      key('1');
+      apply().flush(applied(1));
+      reread().flush(inbox([line(3)]));
+      detect();
+      expect(progressText()).toBe('第 3 / 3 筆');
+      undoLast(901);
+      reread().flush(inbox([{ ...ledgerOnly(22), case_version: 1 }, { ...differs(1), case_id: 21, case_version: 1 }, line(3)]));
+      detect();
+      expect(text(el.querySelector('.flow-chip'))).toBe('金額不同');
+      expect(progressText()).toBe('第 1 / 3 筆');
+      expect(text(el.querySelector('.flow-pair'))).toBe(
+        '你這筆 −$2,066 也列在「你記了，銀行沒有」。這裡對上或改金額後，那一題會自動消失。',
+      );
+      expect(doneSegments()).toBe(0);
+      // 不是同一筆: the leader leaves, the follower is a real question and comes next.
+      key('3');
+      const req = apply();
+      expect((req.request.body as InboxApplyBody).cases).toEqual([{ case_id: 21, case_version: 1 }]);
+      req.flush(applied(21));
+      reread().flush(inbox([{ ...ledgerOnly(22), case_version: 1 }, line(3)]));
+      detect();
+      expect(text(el.querySelector('.flow-chip'))).toBe('你記了，銀行沒有');
+      expect(progressText()).toBe('第 2 / 3 筆');
+    });
+
+    it('from the end state: the returned question is shown directly', () => {
+      open([line(1), line(2)]);
+      answerWith1(1, [line(2)]);
+      answerWith1(2, []);
+      expect(text(el.querySelector('.flow-end h2'))).toBe('這張帳單都決定好了');
+      undoLast(902);
+      reread().flush(inbox([fresh(2, 12)]));
+      detect();
+      expect(el.querySelector('.flow-end')).toBeNull();
+      expect(headline()).toBe('測試商家 2 −$102');
+      expect(progressText()).toBe('第 2 / 2 筆');
+    });
+
+    it('nothing came back: one read, the cursor stays, the numbers stay', () => {
+      open(three());
+      answerWith1(1, three().slice(1));
+      undoLast(901);
+      reread().flush(inbox(three().slice(1)));
+      detect();
+      http.expectNone((r) => r.url === INBOX_URL);
+      expect(headline()).toBe('測試商家 2 −$102');
+      expect(progressText()).toBe('第 2 / 3 筆');
+      expect(doneSegments()).toBe(1);
+    });
+
+    it('while 重試 (re-read failed) is showing: the 復原 read settles it and lands on the returned question', () => {
+      open(three());
+      key('1');
+      apply().flush(applied(1));
+      reread().flush('boom', { status: 500, statusText: 'Server Error' });
+      detect();
+      expect(text(el.querySelector('.flow-error'))).toContain('答案已送出，但清單讀取失敗');
+      undoLast(901);
+      reread().flush(inbox([fresh(1, 11), line(2), line(3)]));
+      detect();
+      expect(el.querySelector('.flow-error')).toBeNull();
+      expect(headline()).toBe('測試商家 1 −$101');
+      expect(progressText()).toBe('第 1 / 3 筆');
+      expect(answers()[0].disabled).toBe(false);
+    });
+
+    it('a 復原 of another statement is ignored', () => {
+      open(three());
+      const undo = TestBed.inject(ReconUndoService);
+      undo.offer({ answer: '忽略', caseId: 70, actionIds: [970], accountId: 1, statementId: 99, rule: null });
+      const toasts = TestBed.inject(ToastService);
+      toasts.runAction(toasts.current()!.id);
+      http.expectOne('/api/accounting/reconciliation/actions/970/revert').flush({});
+      http.expectOne('/api/accounting/accounts/1/statements/99/reconcile').flush({});
+      detect();
+      http.expectNone((r) => r.url === INBOX_URL);
+      expect(headline()).toBe('測試商家 1 −$101');
+    });
+
+    it('a flow with no account yet (a finished statement) restarts its read on a 復原 of its statement', () => {
+      render();
+      firstRead().flush(inbox([line(1, { statement: { id: 99, period_end: '2026-08-31' } })]));
+      detect();
+      expect(text(el.querySelector('.flow-end h2'))).toBe('這張帳單沒有要你決定的了');
+      const undo = TestBed.inject(ReconUndoService);
+      undo.offer({ answer: '忽略', caseId: 1, actionIds: [901], accountId: 1, statementId: STATEMENT, rule: null });
+      undoLast(901);
+      firstRead().flush(inbox([fresh(1, 11)]));
+      detect();
+      expect(headline()).toBe('測試商家 1 −$101');
+      expect(progressText()).toBe('第 1 / 1 筆');
+    });
+  });
+
+  it('→ to the last question and answering it wraps to question 1, not the end state', () => {
+    open([line(1), line(2), line(3)]);
+    key('ArrowRight');
+    key('ArrowRight');
+    expect(headline()).toBe('測試商家 3 −$103');
+    answerWith1(3, [line(1), line(2)]);
+    expect(el.querySelector('.flow-end')).toBeNull();
+    expect(headline()).toBe('測試商家 1 −$101');
   });
 
   it('read failure: banner with 重試', () => {
