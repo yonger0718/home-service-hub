@@ -152,3 +152,7 @@ Whole-branch review on `f9a0d150`: one Critical (a number pin matched the first 
 ### Task 8: Multica PR round fixes
 
 AGENT-572 on `8b415a41`, CHANGES-REQUESTED, one P1: a separator outside ASCII (`1.5～3%`, `1.5－3%`, `1.5／2`, `9，000`) passed the lookahead, so a number pin matched the first number of a range. `site_key` now reads the text NFKC-normalised and accepts one value followed only by the end of the text or an opening bracket (a whitelist instead of a list of separators). Tests: the ranges through `parse_result → join_rules → apply_dismissals`, a matrix of every pinnable field with and without a pin, a state file from before the digest change. Also: a `rates` pin whose rows hold no number is refused (a miles card's announced rows have neither rate nor cap).
+
+### Task 9: Multica re-check fixes
+
+AGENT-574 on `9ed24edf`, CHANGES-REQUESTED: P1, NFKC fused a superscript or enclosed digit into the number (`1.5²%` read as 1.52); P2, `<` counted as a remark opener (`1.5 < 3%` matched a pin on 1.5). `site_key` now folds only the full-width forms, one for one, and `<` left the opener set. Test gap: the state-file test now starts from a digest in the shape `main` saved and asserts the first and the second run's messages. The review budget (one round, one re-check) is used up; these fixes carry the author's tests only.

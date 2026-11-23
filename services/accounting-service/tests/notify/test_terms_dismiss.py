@@ -74,6 +74,12 @@ def _apply(card: CardResult, *dismiss: Dismissal, today=TODAY, live=LIVE) -> App
     # a footnote mark or another compatibility digit must not fuse into the number when the text is normalised
     ("rate", "1.5²", None), ("rate", "5¹", None), ("rate", "①", None), ("rate", "⑨%", None), ("rate", "9½", None),
     ("starts_on", "2026-07-0①", None), ("total_cap", "5㎝", None),
+    ("rate", "1.5²%", None), ("rate", "10²%", None), ("rate", "①.⑤％", None), ("rate", "1⑵", None),
+    ("rate", "1₂", None), ("rate", "𝟗%", None), ("rate", "9㌫", None), ("is_basic", "ｔｒｕｅ", "true"),
+    # only the full-width forms are folded; a comparison sign is not a remark
+    ("rate", "1.5 < 3%", None), ("rate", "1.5<3", None), ("rate", "1.5 ＜ 3%", None), ("rate", "1.5 <note>", None),
+    ("rate", "1.5 〈註〉", "1.5"), ("rate", "1.5《註》", "1.5"), ("rate", "9%\u3000（合計）", "9"),
+    ("rate", "9%\u00a0(total)", "9"), ("rate", "1.5…", None),
     ("is_basic", "false（基本為每滿 25 元）", "false"), ("is_basic", "TRUE", "true"), ("is_basic", "falsey", None),
     ("is_basic", "true/false", None), ("is_basic", "true 或 false", None), ("is_basic", "false [x]", "false"),
     ("is_basic", "否", None),
@@ -396,3 +402,12 @@ def test_text_fields_are_dismissed_whole(field):
     card = _card(findings=(_f(field=field, site="any wording"), _f(rule_id=163, field=field, site="any wording")))
     got = _apply(card, Dismissal(field, rule=162))
     assert got.hidden_count == 1 and got.card.findings[0].rule_id == 163
+
+
+@pytest.mark.parametrize("site, pin", [("1.5²%", "1.52"), ("10²%", "102"), ("5¹", "51"), ("①.⑤％", "1.5"),
+                                       ("1⑵", "1"), ("1.5 < 3%", "1.5"), ("1.5 ＜ 3%", "1.5")])
+def test_a_value_the_text_does_not_spell_is_never_matched(site, pin):
+    """Folding compatibility characters must not make a number, and `<` is a comparison, not a remark."""
+    card = _through_the_parser(site)
+    got = _apply(card, Dismissal("rate", rule=162, value=pin))
+    assert got.hidden == () and got.card is card and got.card.status == "changed", site

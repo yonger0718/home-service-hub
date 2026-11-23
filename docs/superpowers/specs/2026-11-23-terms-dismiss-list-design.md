@@ -136,14 +136,14 @@ Site values are the model's text, so the pin compares the **leading token** only
 | `is_basic` | `true` / `false`, any case | `false（基本為每滿 25 元）` |
 | `method`, `window` | `[a-z_]+` | `calendar_month` |
 
-The text is read NFKC-normalised (full-width digits, commas, percent signs and brackets
-become their ASCII forms), and the value must be followed by the end of the text or by an
-opening bracket, i.e. a remark. Anything else after it means the text is not that one value:
+The text is read with its full-width forms folded to ASCII one for one (digits, commas,
+percent signs, brackets) and nothing else: a general compatibility fold would make numbers
+the text does not spell (`5¹` as 51). The value must be followed by the end of the text or
+by an opening bracket, i.e. a remark (`<` is a comparison, not a bracket). Anything else after it means the text is not that one value:
 a range or a fraction in any script (`1.5-3%`, `1.5～3%`, `1.5 - 3`, `1.5／2`, `1.5至3`), a
-list, a second value, loose words (`9% 起`). A text holding a superscript, circled or
-fraction digit (`5¹`, `①`, `9½`) is not read at all, because normalising would fuse that
-digit into the number. Such a site value has no key, matches no pin, and the finding is
-shown. This is a whitelist on purpose: a new way of writing a range is
+list, a second value, a comparison (`1.5 < 3%`), a footnote mark or another digit form
+(`5¹`, `①`, `9½`), loose words (`9% 起`). Such a site value has no key, matches no pin, and
+the finding is shown. This is a whitelist on purpose: a new way of writing a range is
 shown, not hidden.
 
 For the date and number fields a missing or blank site value normalises to `none`, and so

@@ -18,12 +18,14 @@ from notify.terms_parse import CardResult, Finding, NextTerms
 EXPIRED = "expired"  # `until` is past, or the announced period a next_terms entry names has ended
 RULE_GONE = "rule"  # the rule a rule-field entry names is not among the card's live rules of this run
 
-# A pin compares one leading value of the model's site text. The text is read NFKC-normalised (full-width digits,
-# commas and brackets become their ASCII forms), and the value must be followed by the end of the text or by an
-# opening bracket (a remark). Anything else after it — a range or fraction in any script ("1.5～3%", "1.5 - 3",
-# "1.5／2", "1.5至3"), a list, a second value, loose words — means the text is not that one value: no key, so the
-# finding is shown.
-_OPEN = "([{<【「『〔《〈"
+# A pin compares one leading value of the model's site text. Full-width forms are folded to ASCII one for one
+# (digits, comma, percent sign, brackets) and nothing else is: a general compatibility fold (NFKC) would make
+# numbers the text does not spell ("5¹" -> 51, "1.5²" -> 1.52). The value must be followed by the end of the text
+# or by an opening bracket (a remark). Anything else after it — a range, fraction or comparison in any script
+# ("1.5～3%", "1.5 - 3", "1.5／2", "1.5至3", "1.5 < 3"), a list, a second value, a footnote mark, loose words —
+# means the text is not that one value: no key, so the finding is shown.
+_FULL_WIDTH = {cp: cp - 0xFEE0 for cp in range(0xFF01, 0xFF5F)} | {0x3000: 0x20}
+_OPEN = "([{【「『〔《〈"  # no "<": that is a comparison
 _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 # commas only as thousands separators; an optional percent sign or unit belongs to the value
 _NUMBER = re.compile(r"((?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)\s*(?:%|元|點|哩)?")
@@ -57,10 +59,7 @@ class Applied:
 def site_key(field: str, site: str | None) -> str | None:
     """The comparable form of a site value for ``field``: its one leading value, ``none`` for a missing value, and
     None when the text is not one value (or the field takes no pin)."""
-    raw = site or ""
-    if any(unicodedata.category(ch) == "No" for ch in raw):
-        return None  # a footnote mark or circled digit ("5¹", "①") would fuse into the number when normalised
-    text = unicodedata.normalize("NFKC", raw).strip()
+    text = (site or "").translate(_FULL_WIDTH).strip()
     if field in DATE_FIELDS or field in NUMBER_FIELDS:
         if not text or _lead(_NONE, text):
             return NO_VALUE

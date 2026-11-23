@@ -1,6 +1,7 @@
 """`notify terms`: archive, send ordering, failure path. API = MockTransport, hermes = recorder, run_hermes = fake."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -10,7 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from notify import cli, hermes_run, send, terms
+from notify import cli, hermes_run, send, terms, terms_parse
 from notify.hermes_run import HermesError, HermesResult
 from notify.terms_state import load_terms_state
 from tests.notify.notify_fakes import make_client
@@ -434,11 +435,38 @@ def test_announced_block_with_the_pinned_rates_is_hidden(tmp_path, monkeypatch):
     assert "下期條款已公告" not in (env.archives[0] / "message.md").read_text()
 
 
-def test_a_state_file_from_before_the_digest_change_loads_and_is_replaced(tenv):
-    """Old digests are just strings that no longer match: every card is news once, then the file holds new ones."""
-    tenv.tstate.parent.mkdir(parents=True)
-    old = {str(i): {"digest": "0" * 64, "seen_at": "2026-11-02T01:00:00+00:00"} for i in (101, 102, 301)}
-    tenv.tstate.write_text(json.dumps(old))
-    assert tenv.run("--cause", "monthly", "--send") == 0
-    saved = load_terms_state(tenv.tstate).cards
-    assert set(saved) == {101, 102, 301} and all(c.digest != "0" * 64 and len(c.digest) == 64 for c in saved.values())
+def _legacy_digest(day: str, source: str, quote: str) -> str:
+    """What main saved for an unchanged precise card before #287: the period end as date, source and quote."""
+    obj = {"status": "unchanged",
+           "current_period_end": {"date": day, "source": source, "quote": terms_parse._q(quote)},
+           "findings": [], "unverified": [], "next_terms": None, "next_terms_unverified_url": None}
+    return hashlib.sha256(terms_parse._canon(obj).encode("utf-8")).hexdigest()
+
+
+def test_a_digest_saved_before_the_change_is_news_once(tmp_path, monkeypatch):
+    """The state file of the release before this one: the card whose digest shape changed shows once, the cards
+    whose digest did not change stay quiet (so the old file is read, not thrown away), then everything is quiet."""
+    quote = "valid until the end of 2026"
+    env = _denv(tmp_path, monkeypatch, "", stdout=_stdout(
+        {"account_id": 101, "status": "unchanged",
+         "current_period_end": {"date": "2026-12-31", "source": ON_BANK, "quote": quote}},
+        {"account_id": 102, "status": "signal", "notes": "same as before"},
+        {"account_id": 301, "status": "unchanged"}))
+    assert env.run("--cause", "monthly", "--send") == 0
+    state = json.loads(env.tstate.read_text())
+    new = state["101"]["digest"]
+    legacy = _legacy_digest("2026-12-31", ON_BANK, quote)
+    assert legacy != new
+    state["101"]["digest"] = legacy
+    env.tstate.write_text(json.dumps(state))
+
+    monkeypatch.setattr(terms, "_utcnow", lambda: datetime(2026, 11, 10, 1, 0, 0, tzinfo=timezone.utc))
+    assert env.run("--cause", "monthly", "--send") == 0
+    first = (env.archives[-1] / "message.md").read_text()
+    assert "【Alpha】" in first and "· 無差異，條款期間至 2026-12-31" in first
+    assert "【Beta】" not in first and "【Gamma】" not in first
+    assert load_terms_state(env.tstate).cards[101].digest == new
+
+    monkeypatch.setattr(terms, "_utcnow", lambda: datetime(2026, 11, 17, 1, 0, 0, tzinfo=timezone.utc))
+    assert env.run("--cause", "monthly", "--send") == 0
+    assert (env.archives[-1] / "message.md").read_text() == "📋 回饋條款查核 2026-11-03：3 張卡無變動"
