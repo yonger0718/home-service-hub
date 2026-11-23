@@ -22,6 +22,7 @@ _DATE = re.compile(r"(\d{4}-\d{2}-\d{2})(?!\d)")
 _NUMBER = re.compile(r"([0-9][0-9,]*(?:\.[0-9]+)?)(?![0-9\-/])")
 _BOOL = re.compile(r"(true|false)(?![A-Za-z])", re.IGNORECASE)
 _TOKEN = re.compile(r"([a-z_]+)(?![A-Za-z0-9])")
+_NONE = re.compile(r"(?:(?:null|none)(?![A-Za-z])|無)", re.IGNORECASE)  # the model spelling a missing value out
 
 
 @dataclass(frozen=True)
@@ -41,17 +42,15 @@ def site_key(field: str, site: str | None) -> str | None:
     """The comparable form of a site value for ``field``: its leading token, ``none`` for a missing value, and None
     when the text has no such token (or the field takes no pin)."""
     text = (site or "").strip()
+    if (field in DATE_FIELDS or field in NUMBER_FIELDS) and (not text or _NONE.match(text)):
+        return NO_VALUE
     if field in DATE_FIELDS:
-        if not text:
-            return NO_VALUE
         m = _DATE.match(text)
         try:
             return date.fromisoformat(m.group(1)).isoformat() if m else None
         except ValueError:
             return None
     if field in NUMBER_FIELDS:
-        if not text:
-            return NO_VALUE
         m = _NUMBER.match(text)
         return format_number(Decimal(m.group(1).replace(",", ""))) if m else None
     if field == "is_basic":

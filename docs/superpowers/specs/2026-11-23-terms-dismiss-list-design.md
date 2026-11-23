@@ -134,7 +134,8 @@ Site values are the model's text, so the pin compares the **leading token** only
 | `is_basic` | `true` / `false`, any case | `false（基本為每滿 25 元）` |
 | `method`, `window` | `[a-z_]+` | `calendar_month` |
 
-A missing or blank site value normalises to `none`. A site value with no such leading token
+For the date and number fields a missing or blank site value normalises to `none`, and so
+does one the model spells out (a leading `null`, `none` or 「無」, as in `null（上限僅適用加碼哩）`). A site value with no such leading token
 matches no pin, so the finding is shown.
 
 ### 3. Effect on the card

@@ -60,6 +60,9 @@ def _apply(card: CardResult, *dismiss: Dismissal, today=TODAY, live=LIVE) -> App
     ("window", "calendar_month", "calendar_month"), ("window", "calendar_month（日曆月）", "calendar_month"),
     ("method", "Percent", None),
     ("total_cap", None, "none"), ("total_cap", "", "none"), ("ends_on", "  ", "none"),
+    # the model also spells a missing value out
+    ("total_cap", "null（上限僅適用加碼哩）", "none"), ("total_cap", "None", "none"), ("ends_on", "null", "none"),
+    ("total_cap", "無上限", "none"), ("total_cap", "nullable", None), ("is_basic", "null", None),
     ("description", "anything", None), ("name", "x", None),
 ])
 def test_site_key(field, site, key):
