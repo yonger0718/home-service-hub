@@ -113,9 +113,10 @@ describe('ReconFlowComponent', () => {
   });
 
   afterEach(() => {
-    http.verify();
-    document.querySelectorAll('.spec-extra').forEach((node) => node.remove());
+    // Destroy first: a failed verify must not leave this flow's document key listener to the next test.
     fixture?.destroy();
+    document.querySelectorAll('.spec-extra').forEach((node) => node.remove());
+    http.verify();
   });
 
   function render(mode: LayoutMode = 'panes', statementId = STATEMENT): void {
@@ -138,7 +139,9 @@ describe('ReconFlowComponent', () => {
   }
 
   function reread(): TestRequest {
-    return http.expectOne((r) => r.url === INBOX_URL && r.params.get('account_id') === '1');
+    return http.expectOne(
+      (r) => r.url === INBOX_URL && r.params.get('account_id') === '1' && r.params.get('limit') === '1000',
+    );
   }
 
   function open(items: InboxItem[], mode: LayoutMode = 'panes'): void {
@@ -151,8 +154,8 @@ describe('ReconFlowComponent', () => {
     return http.expectOne((r) => r.method === 'POST' && r.url === APPLY_URL);
   }
 
-  function key(k: string, target: EventTarget = document): KeyboardEvent {
-    const event = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true });
+  function key(k: string, target: EventTarget = document, init: KeyboardEventInit = {}): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...init });
     target.dispatchEvent(event);
     detect();
     return event;
@@ -245,7 +248,8 @@ describe('ReconFlowComponent', () => {
   it('answering advances: key 1 posts one case with the button label, then shows 第 2 / 10 筆', () => {
     const marked = vi.spyOn(TestBed.inject(AccountingService), 'markEntriesChanged');
     open(ten());
-    expect(text(el.querySelector('.flow-loading'))).toBe('');
+    expect(el.querySelector('.flow-loading')).toBeNull();
+    expect(answers().length).toBe(3);
     expect(headline()).toBe('測試商家 1 −$101');
     key('1');
     const req = apply();
@@ -313,6 +317,20 @@ describe('ReconFlowComponent', () => {
       expect(progressText()).toBe('3 / 3 筆');
     });
 
+    it('a follower listed before its leader: opens on the leader as 第 1 / 3 筆; after 不是同一筆 the follower is next', () => {
+      open([ledgerOnly(2), differs(1), line(3)]);
+      expect(text(el.querySelector('.flow-chip'))).toBe('金額不同');
+      expect(progressText()).toBe('第 1 / 3 筆');
+      key('3');
+      const req = apply();
+      expect((req.request.body as InboxApplyBody).action).toBe('dismiss');
+      req.flush(applied(1));
+      reread().flush(inbox([ledgerOnly(2), line(3)]));
+      detect();
+      expect(text(el.querySelector('.flow-chip'))).toBe('你記了，銀行沒有');
+      expect(progressText()).toBe('第 2 / 3 筆');
+    });
+
     it('a re-read that still has the follower shows it next', () => {
       open(pair());
       key('3');
@@ -357,14 +375,78 @@ describe('ReconFlowComponent', () => {
     detect();
     const alert = el.querySelector('.flow-error[role="alert"]')!;
     expect(text(alert)).toContain('答案已送出，但清單讀取失敗');
-    // The answer is in: pressing again must not post it twice.
-    key('1');
+    // The answer is in: pressing again must not post it twice, and keys that do nothing are not consumed.
+    for (const k of ['1', '2', 's', 'ArrowRight']) {
+      expect(key(k).defaultPrevented).toBe(false);
+    }
+    expect(headline()).toBe('測試商家 1 −$101');
     button(el, '重試').click();
     detect();
     reread().flush(inbox(ten().slice(1)));
     detect();
     expect(headline()).toBe('測試商家 2 −$102');
     expect(el.querySelector('.flow-error')).toBeNull();
+    expect(TestBed.inject(ToastService).current()).toEqual(
+      expect.objectContaining({ kind: 'done', text: '已處理：忽略', action: expect.objectContaining({ label: '復原' }) }),
+    );
+  });
+
+  it('refused case_closed and gone after the re-read: plain 這筆已經處理過了 toast, then the next question', () => {
+    open(ten());
+    key('1');
+    apply().flush(refused(1, 'case_closed'));
+    reread().flush(inbox(ten().slice(1)));
+    detect();
+    expect(headline()).toBe('測試商家 2 −$102');
+    expect(el.querySelector('.flow-error')).toBeNull();
+    expect(TestBed.inject(ToastService).current()).toEqual(
+      expect.objectContaining({ kind: 'done', text: '這筆已經處理過了', action: null }),
+    );
+  });
+
+  it('a revert read in flight when an answer is pressed is cancelled; busy holds until the answer re-read', () => {
+    open(ten());
+    answerWith1(1, ten().slice(1));
+    const toasts = TestBed.inject(ToastService);
+    toasts.runAction(toasts.current()!.id);
+    http.expectOne('/api/accounting/reconciliation/actions/901/revert').flush({});
+    detect();
+    const stale = reread();
+    key('1');
+    const post = apply();
+    expect(stale.cancelled).toBe(true);
+    expect(answers().every((b) => b.disabled)).toBe(true);
+    answers()[0].click();
+    detect();
+    http.expectNone((r) => r.method === 'POST' && r.url === APPLY_URL);
+    post.flush(applied(2));
+    reread().flush(inbox([line(1), ...ten().slice(2)]));
+    detect();
+    // The queued 復原 target is shown, and the second answer got its own 復原.
+    expect(headline()).toBe('測試商家 1 −$101');
+    expect(answers()[0].disabled).toBe(false);
+    expect(toasts.current()).toEqual(
+      expect.objectContaining({ kind: 'done', text: '已處理：忽略', action: expect.objectContaining({ label: '復原' }) }),
+    );
+    toasts.runAction(toasts.current()!.id);
+    http.expectOne('/api/accounting/reconciliation/actions/902/revert');
+  });
+
+  it('a revert read pending when the apply fails is restarted so the case still shows', () => {
+    open(ten());
+    answerWith1(1, ten().slice(1));
+    const toasts = TestBed.inject(ToastService);
+    toasts.runAction(toasts.current()!.id);
+    http.expectOne('/api/accounting/reconciliation/actions/901/revert').flush({});
+    detect();
+    const stale = reread();
+    key('1');
+    expect(stale.cancelled).toBe(true);
+    apply().flush({ detail: 'case_closed' }, { status: 409, statusText: 'Conflict' });
+    detect();
+    reread().flush(inbox(ten()));
+    detect();
+    expect(headline()).toBe('測試商家 1 −$101');
   });
 
   it('rule_error: advances and raises the 規則沒存 error toast instead of 完成', () => {
@@ -392,7 +474,11 @@ describe('ReconFlowComponent', () => {
       const sw = switchEl()!;
       expect(sw.getAttribute('aria-checked')).toBe('false');
       expect(text(el.querySelector('.flow-learn-label'))).toBe('以後「測試商家 1」都這樣');
-      expect(text(el.querySelector('.flow-learn-sub'))).toBe('之後同樣的行自動處理，可在記帳設定關掉');
+      const sub = el.querySelector('.flow-learn-sub')!;
+      expect(text(sub)).toBe('之後同樣的行自動處理，可在記帳設定關掉');
+      expect(sub.id).not.toBe('');
+      expect(sw.getAttribute('aria-describedby')).toBe(sub.id);
+      expect(sw.getAttribute('aria-label')).toBe('以後「測試商家 1」都這樣');
       sw.click();
       detect();
       expect(switchEl()!.getAttribute('aria-checked')).toBe('true');
@@ -503,6 +589,8 @@ describe('ReconFlowComponent', () => {
       key('ArrowLeft');
       key('ArrowLeft');
       expect(headline()).toBe('測試商家 1 −$101');
+      // Nothing before the first step: ← does nothing, so it is not consumed.
+      expect(key('ArrowLeft').defaultPrevented).toBe(false);
       key('Escape');
       expect(closed).toHaveBeenCalledTimes(1);
     });
@@ -532,6 +620,73 @@ describe('ReconFlowComponent', () => {
       key('s');
       key('Escape');
       expect(closed).not.toHaveBeenCalled();
+      expect(headline()).toBe('測試商家 1 −$101');
+    });
+
+    it('ignores auto-repeat for answers and skip; arrows may repeat', () => {
+      open(ten());
+      expect(key('1', document, { repeat: true }).defaultPrevented).toBe(false);
+      expect(key('s', document, { repeat: true }).defaultPrevented).toBe(false);
+      expect(headline()).toBe('測試商家 1 −$101');
+      http.expectNone((r) => r.method === 'POST');
+      expect(key('ArrowRight', document, { repeat: true }).defaultPrevented).toBe(true);
+      expect(headline()).toBe('測試商家 2 −$102');
+    });
+
+    it('does not consume 3 on a two-answer step', () => {
+      open([line(1, { actions: ['dismiss', 'record'] })]);
+      expect(key('3').defaultPrevented).toBe(false);
+      http.expectNone((r) => r.method === 'POST');
+    });
+
+    it('→ and S before the apply answer are ignored and not consumed', () => {
+      open(ten());
+      key('1');
+      const post = apply();
+      expect(key('ArrowRight').defaultPrevented).toBe(false);
+      expect(key('S').defaultPrevented).toBe(false);
+      expect(headline()).toBe('測試商家 1 −$101');
+      post.flush(applied(1));
+      reread().flush(inbox(ten().slice(1)));
+      detect();
+      expect(headline()).toBe('測試商家 2 −$102');
+    });
+
+    it('does nothing with focus in a contenteditable or a [role=combobox]', () => {
+      open(ten());
+      const editable = document.createElement('div');
+      editable.className = 'spec-extra';
+      editable.setAttribute('contenteditable', 'true');
+      editable.tabIndex = 0;
+      const inner = document.createElement('span');
+      inner.tabIndex = 0;
+      editable.appendChild(inner);
+      const combo = document.createElement('span');
+      combo.className = 'spec-extra';
+      combo.setAttribute('role', 'combobox');
+      combo.tabIndex = 0;
+      document.body.append(editable, combo);
+      for (const target of [editable, inner, combo]) {
+        target.focus();
+        expect(document.activeElement).toBe(target);
+        expect(key('1', target).defaultPrevented).toBe(false);
+        expect(key('s', target).defaultPrevented).toBe(false);
+      }
+      http.expectNone((r) => r.method === 'POST');
+      expect(headline()).toBe('測試商家 1 −$101');
+    });
+
+    it('does nothing while a [role=dialog] is open elsewhere in the page', () => {
+      open(ten());
+      const dialog = document.createElement('div');
+      dialog.className = 'spec-extra';
+      dialog.setAttribute('role', 'dialog');
+      document.body.appendChild(dialog);
+      expect(key('1').defaultPrevented).toBe(false);
+      expect(key('s').defaultPrevented).toBe(false);
+      key('Escape');
+      expect(closed).not.toHaveBeenCalled();
+      http.expectNone((r) => r.method === 'POST');
       expect(headline()).toBe('測試商家 1 −$101');
     });
 
@@ -584,6 +739,17 @@ describe('ReconFlowComponent', () => {
       detect();
       expect(text(el.querySelector('.flow-end h2'))).toBe('這張帳單沒有要你決定的了');
       expect(button(el.querySelector('.flow-end')!, '回到通知')).toBeTruthy();
+    });
+
+    it('stale link: the account is there but the statement has no ask item', () => {
+      render();
+      firstRead().flush(
+        inbox([line(1, { question: 'proposed', folded: true }), line(2, { statement: { id: 99, period_end: '2026-08-31' } })]),
+      );
+      detect();
+      expect(text(el.querySelector('.flow-kicker'))).toBe('對帳 · 玉山');
+      expect(text(el.querySelector('.flow-end h2'))).toBe('這張帳單沒有要你決定的了');
+      expect(el.querySelector('.flow-progress')).toBeNull();
     });
   });
 

@@ -90,12 +90,18 @@ function plainError(codeOrErr: unknown): string {
 const TYPING_ROLES = '[role="combobox"], [role="listbox"], [role="spinbutton"]';
 const TYPING_TAGS: ReadonlySet<string> = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 const OPEN_DIALOG = '[role="dialog"], [aria-modal="true"]';
+const EDITABLE = '[contenteditable]:not([contenteditable="false"])';
 
 function typing(node: Element | null): boolean {
   if (!(node instanceof HTMLElement)) {
     return false;
   }
-  return TYPING_TAGS.has(node.tagName) || node.isContentEditable || !!node.closest(TYPING_ROLES);
+  return (
+    TYPING_TAGS.has(node.tagName) ||
+    node.isContentEditable ||
+    !!node.closest(EDITABLE) ||
+    !!node.closest(TYPING_ROLES)
+  );
 }
 
 /** `2026-09-30` → `9/30`. */
@@ -340,16 +346,12 @@ export class ReconFlowComponent {
     }
   }
 
-  skipStep(): void {
-    if (!this.locked()) {
-      this.owned((state) => skip(state));
-    }
+  skipStep(): boolean {
+    return !this.locked() && this.owned((state) => skip(state));
   }
 
-  moveStep(delta: -1 | 1): void {
-    if (!this.locked()) {
-      this.owned((state) => move(state, delta));
-    }
+  moveStep(delta: -1 | 1): boolean {
+    return !this.locked() && this.owned((state) => move(state, delta));
   }
 
   resumeFlow(): void {
@@ -390,14 +392,18 @@ export class ReconFlowComponent {
     if (this.load() !== 'ready') {
       return;
     }
+    // Only keys that act are consumed: nothing while locked (a failed re-read), no step, or no such answer.
     const step = this.step();
+    if (!step || this.locked()) {
+      return;
+    }
     switch (event.key) {
       case '1':
       case '2':
       case '3': {
-        const answer = step?.answers[Number(event.key) - 1];
-        if (!answer) {
-          return;
+        const answer = step.answers[Number(event.key) - 1];
+        if (!answer || event.repeat) {
+          return; // a held key must not answer the next question once busy clears
         }
         event.preventDefault();
         this.press(answer.action);
@@ -405,19 +411,15 @@ export class ReconFlowComponent {
       }
       case 's':
       case 'S':
-        if (!step) {
-          return;
+        if (!event.repeat && this.skipStep()) {
+          event.preventDefault();
         }
-        event.preventDefault();
-        this.skipStep();
         return;
       case 'ArrowLeft':
       case 'ArrowRight':
-        if (!step) {
-          return;
+        if (this.moveStep(event.key === 'ArrowLeft' ? -1 : 1)) {
+          event.preventDefault();
         }
-        event.preventDefault();
-        this.moveStep(event.key === 'ArrowLeft' ? -1 : 1);
         return;
     }
   }
@@ -447,7 +449,7 @@ export class ReconFlowComponent {
     const source =
       initial || accountId === undefined
         ? this.inbox.get({ limit: INBOX_READ_LIMIT })
-        : this.inbox.get({ accountId });
+        : this.inbox.get({ accountId, limit: INBOX_READ_LIMIT });
     this.reading = source.subscribe({
       next: (data) => {
         this.reading = null;
@@ -518,6 +520,9 @@ export class ReconFlowComponent {
       return FAILED_PREFIX + plainError(result?.code ?? null);
     }
     if (!result || result.status === 'refused') {
+      if (result?.code === 'case_closed') {
+        this.toasts.done('這筆已經處理過了'); // answered elsewhere: nothing of ours to undo
+      }
       return null;
     }
     if (pending.out.rule_error) {
@@ -571,6 +576,10 @@ export class ReconFlowComponent {
     const gen = this.gen;
     this.busy.set(true);
     this.inlineError.set(null);
+    // A background read (after 復原) must not land mid-apply and clear `busy`; `pendingGoTo` stays queued for the
+    // answer's own re-read.
+    this.reading?.unsubscribe();
+    this.reading = null;
     this.inbox.apply(body).subscribe({
       next: (out) => {
         this.accounting.markEntriesChanged();
@@ -591,6 +600,9 @@ export class ReconFlowComponent {
         }
         this.busy.set(false);
         this.inlineError.set(FAILED_PREFIX + plainError(err));
+        if (this.pendingGoTo !== null) {
+          this.read(false); // the 復原 read this press cancelled
+        }
       },
     });
   }
@@ -598,16 +610,17 @@ export class ReconFlowComponent {
   // ----- helpers ---------------------------------------------------------------------------------------------------
 
   /** A step change the owner asked for in the flow: focus follows it. */
-  private owned(change: (state: FlowState) => FlowState): void {
+  private owned(change: (state: FlowState) => FlowState): boolean {
     const before = this.flow();
     const after = change(before);
     if (after === before) {
-      return;
+      return false;
     }
     this.flow.set(after);
     if (after.cursor !== before.cursor) {
       this.focusStep();
     }
+    return true;
   }
 
   private pairNote(item: InboxItem): string | null {

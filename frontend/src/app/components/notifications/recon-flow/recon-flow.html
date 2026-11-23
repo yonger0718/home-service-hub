@@ -160,7 +160,7 @@
     <div class="flow-learn">
       <div class="flow-learn-text">
         <span class="flow-learn-label">{{ label }}</span>
-        <span class="flow-learn-sub">之後同樣的行自動處理，可在記帳設定關掉</span>
+        <span id="flow-learn-sub" class="flow-learn-sub">之後同樣的行自動處理，可在記帳設定關掉</span>
       </div>
       <button
         type="button"
@@ -168,6 +168,7 @@
         class="flow-switch"
         [attr.aria-checked]="learnOn()"
         [attr.aria-label]="label"
+        aria-describedby="flow-learn-sub"
         [disabled]="locked()"
         (click)="toggleLearn()"
       ></button>
