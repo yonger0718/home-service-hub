@@ -44,6 +44,11 @@ interface RoundRequests {
   inbox: TestRequest;
   latest: TestRequest;
   actions: TestRequest;
+  /** The portfolio and system reads (股利 first page, 國泰 pending + latest run, recalc status): see `flushPortfolio`. */
+  dividends: TestRequest;
+  cathayPending: TestRequest;
+  cathayRuns: TestRequest;
+  recalc: TestRequest;
 }
 
 async function microtasks(): Promise<void> {
@@ -74,6 +79,9 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
   function take(): RoundRequests {
     const queue = http.expectOne(get(`${API}/schedules/instances`));
     expect(queue.request.params.get('queue')).toBe('true');
+    const dividends = http.expectOne(get('/api/portfolio/dividends'));
+    expect(dividends.request.params.get('limit')).toBe('100');
+    expect(dividends.request.params.get('offset')).toBe('0');
     return {
       accounts: http.expectOne(get(`${API}/accounts`)),
       counterparties: http.expectOne(get(`${API}/counterparties`)),
@@ -81,10 +89,32 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       inbox: http.expectOne(get(`${API}/reconciliation/inbox`)),
       latest: http.expectOne(get(`${API}/imports/latest`)),
       actions: http.expectOne(get(`${API}/reconciliation/actions`)),
+      dividends,
+      cathayPending: http.expectOne(get('/api/portfolio/imports/cathay-statement/pending')),
+      cathayRuns: http.expectOne(get('/api/portfolio/imports/cathay-statement/runs/latest')),
+      recalc: http.expectOne(get('/api/portfolio/imports/recalc/status')),
     };
   }
 
-  /** Answers any open card-statement reads (1,000 spent, no payment) and the recalc status. */
+  const flushedPortfolio = new WeakSet<RoundRequests>();
+
+  /**
+   * The round's portfolio and system reads with the quiet answers (no dividend, no pending 國泰 date, a healthy run 5
+   * minutes before the clock, an idle recalc chain), once per round; a superseded round's are answered too.
+   */
+  function flushPortfolio(round: RoundRequests): void {
+    if (flushedPortfolio.has(round)) {
+      return;
+    }
+    flushedPortfolio.add(round);
+    const latest = { run_at: new Date(Date.now() - 5 * 60_000).toISOString(), result: 'ok', code: null, files_seen: 1, posted: 1 };
+    round.dividends.flush({ items: [], total: 0 });
+    round.cathayPending.flush({ items: [], total: 0, truncated: false });
+    round.cathayRuns.flush({ latest, latest_ok: latest });
+    round.recalc.flush({ state: 'idle' });
+  }
+
+  /** Answers any open card-statement reads (1,000 spent, no payment). */
   async function flushSide(): Promise<void> {
     await settle();
     for (const req of http.match(get(`${API}/accounts/11/summary`))) {
@@ -95,9 +125,6 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     }
     for (const req of http.match(get(`${API}/accounts/11/entries`))) {
       req.flush({ items: [], total: 0, limit: 100, offset: 0 });
-    }
-    for (const req of http.match(get('/api/portfolio/imports/recalc/status'))) {
-      req.flush({ state: 'idle' });
     }
     await settle();
   }
@@ -117,11 +144,51 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       }
     }
     if (open('actions')) round.actions.flush([]);
+    flushPortfolio(round);
     await flushSide();
   }
 
   const rentRow = () => root.querySelector<HTMLElement>(RENT_ROW);
   const rentButton = () => rentRow()?.querySelector<HTMLButtonElement>(NOTIF_PRIMARY_CONTROL) ?? null;
+
+  /** The 國泰 date 10/28 held, `cathay:2026-10-28`, and its 已處理 POST. */
+  const HELD = {
+    items: [{ trade_date: '2026-10-28', status: 'held', reason: null, since: '2026-10-28T22:50:00Z', last_at: '2026-10-28T22:50:00Z' }],
+    total: 1,
+    truncated: false,
+  };
+  const isAck = (req: { method: string; url: string }) =>
+    req.method === 'POST' && req.url === '/api/portfolio/imports/cathay-statement/days/2026-10-28/ack';
+  const cathayRow = () => root.querySelector<HTMLElement>('app-notif-row[data-task-id="cathay:2026-10-28"]');
+  const cathayButton = () => cathayRow()?.querySelector<HTMLButtonElement>(NOTIF_PRIMARY_CONTROL) ?? null;
+
+  /** The round's portfolio and system reads with `pending` as the 國泰 pending answer (the rest quiet). */
+  function flushPortfolioWith(round: RoundRequests, pending: typeof HELD): void {
+    flushedPortfolio.add(round);
+    const latest = { run_at: new Date(Date.now() - 5 * 60_000).toISOString(), result: 'ok', code: null, files_seen: 1, posted: 1 };
+    round.dividends.flush({ items: [], total: 0 });
+    round.cathayPending.flush(pending);
+    round.cathayRuns.flush({ latest, latest_ok: latest });
+    round.recalc.flush({ state: 'idle' });
+  }
+
+  /** Page open at Thu 2026-10-29 07:00 Taipei (the 06:40 run ok today) with round 1 settled and 10/28 held. */
+  async function openWithCathay(interceptor = false): Promise<void> {
+    vi.setSystemTime(new Date('2026-10-29T07:00:00+08:00'));
+    boot(interceptor);
+    center.start();
+    TestBed.tick();
+    http.expectOne(get(`${API}/calendar/business-days`)).flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
+    fixture = TestBed.createComponent(NotificationsComponent);
+    fixture.autoDetectChanges();
+    root = fixture.nativeElement as HTMLElement;
+    const round1 = take();
+    flushPortfolioWith(round1, HELD);
+    await flushRound(round1, []);
+    expect(center.settledRound()).toBe(1);
+    expect(cathayButton()?.getAttribute('aria-label')).toBe('已處理：國泰對帳單 10/28');
+    expect(cathayButton()!.disabled).toBe(false);
+  }
 
   /** Page open after round 1 has settled with the rent row; then a window focus 31 s later starts round 2. */
   async function openThenFocus(interceptor = false): Promise<RoundRequests> {
@@ -345,6 +412,134 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     expect(center.tasks().some(task => task.id === 'sched:1')).toBe(false);
   });
 
+  it('spec 3.4: 已處理 posts the ack and the task disappears', async () => {
+    await openWithCathay();
+    const before = center.summary().total;
+    expect(before).toBeGreaterThan(0);
+    cathayButton()!.click();
+    await settle();
+    const post = http.expectOne(isAck);
+    expect(cathayButton()!.disabled).toBe(true);
+    post.flush({ trade_date: '2026-10-28', ack_status: 'held' });
+    await settle();
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：國泰對帳單 10/28', action: null }));
+    // No accounting write bumped a change signal: the round is the page's own invalidate().
+    expect(center.round()).toBe(2);
+    const round2 = take();
+    expect(cathayRow()).not.toBeNull();
+    expect(cathayButton()!.disabled).toBe(true);
+    await flushRound(round2, []); // pending { items: [], total: 0, truncated: false }
+    expect(center.settledRound()).toBe(2);
+    expect(cathayRow()).toBeNull();
+    expect(center.summary().total).toBe(before - 1);
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：國泰對帳單 10/28' }));
+    http.expectNone(isAck);
+  });
+
+  it('a 500 that committed, then 重試 answered 404: done toast, the row leaves, two POSTs in total (one per press)', async () => {
+    await openWithCathay();
+    cathayButton()!.click();
+    await settle();
+    // Every ack request the press put on the wire (the controller's count, not one this test keeps).
+    const first = http.match(isAck);
+    expect(first).toHaveLength(1);
+    first[0].flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
+    await settle();
+    http.expectNone(isAck);
+    const failure = toasts.current()!;
+    expect(failure).toEqual(
+      expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: expect.objectContaining({ label: '重試' }) }),
+    );
+    // The failure re-reads; the ack had committed, so the date is gone.
+    expect(center.round()).toBe(2);
+    await flushRound(take(), []);
+    expect(cathayRow()).toBeNull();
+
+    toasts.runAction(failure.id);
+    await settle();
+    const second = http.match(isAck);
+    expect(second).toHaveLength(1);
+    second[0].flush({ detail: 'Not Found' }, { status: 404, statusText: 'Not Found' });
+    await settle();
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要處理', action: null }));
+    expect(center.round()).toBe(3);
+    await flushRound(take(), []);
+    expect(cathayRow()).toBeNull();
+    http.expectNone(isAck);
+  });
+
+  it('portfolio reads all fail: 無法讀取：股利、匯入、國泰對帳單 with the ledger rows and their count intact', async () => {
+    boot(false);
+    center.start();
+    TestBed.tick();
+    http.expectOne(get(`${API}/calendar/business-days`)).flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
+    fixture = TestBed.createComponent(NotificationsComponent);
+    fixture.autoDetectChanges();
+    root = fixture.nativeElement as HTMLElement;
+    await flushRound(take(), [RENT]);
+    expect(center.settledRound()).toBe(1);
+    const rowIds = () => Array.from(root.querySelectorAll('app-notif-row')).map(r => r.getAttribute('data-task-id'));
+    const ledgerIds = rowIds();
+    const total = center.summary().total;
+    expect(ledgerIds).toContain('sched:1');
+    expect(total).toBe(ledgerIds.length);
+
+    center.invalidate();
+    TestBed.tick();
+    const round2 = take();
+    flushedPortfolio.add(round2);
+    const boom = { status: 500, statusText: 'Server Error' };
+    round2.dividends.flush('boom', boom);
+    round2.cathayPending.flush('boom', boom);
+    // One source over two reads: the failed pending read cancels its sibling.
+    if (!round2.cathayRuns.cancelled) {
+      round2.cathayRuns.flush('boom', boom);
+    }
+    round2.recalc.flush('boom', boom);
+    await flushRound(round2, [RENT]);
+    expect(center.settledRound()).toBe(2);
+    expect(center.failedSources()).toEqual(['dividends', 'imports', 'cathay']);
+    expect(root.querySelector('.notif-failed')?.textContent).toContain('無法讀取：股利、匯入、國泰對帳單');
+    expect(rowIds()).toEqual(ledgerIds);
+    expect(center.summary().total).toBe(total);
+    expect(TestBed.inject(NavBadgeService).summary().total).toBe(total);
+    expect(root.querySelector('.page-subtitle')?.textContent).toContain(`${total} 件要處理`);
+  });
+
+  describe('a truncated 國泰 pending answer (Review Focus: truncated or inconsistent pending)', () => {
+    /** Page open at Thu 2026-10-29 07:00 Taipei, no card, nothing else to do, with `pending` as the 國泰 answer. */
+    async function openWithPending(pending: typeof HELD): Promise<void> {
+      vi.setSystemTime(new Date('2026-10-29T07:00:00+08:00'));
+      boot(false);
+      center.start();
+      TestBed.tick();
+      http.expectOne(get(`${API}/calendar/business-days`)).flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
+      fixture = TestBed.createComponent(NotificationsComponent);
+      fixture.autoDetectChanges();
+      root = fixture.nativeElement as HTMLElement;
+      const round1 = take();
+      flushPortfolioWith(round1, pending);
+      round1.accounts.flush([]);
+      await flushRound(round1, [], ['accounts']);
+      expect(center.settledRound()).toBe(1);
+      expect(center.summary().total).toBe(0);
+    }
+    const note = () => root.querySelector('.notif-overflow--portfolio');
+
+    it('truncated with no items and total 0: no note, and the page may show the all-clear', async () => {
+      await openWithPending({ items: [], total: 0, truncated: true });
+      expect(note()).toBeNull();
+      expect(root.querySelector('.notif-empty h2')?.textContent?.trim()).toBe('都處理好了');
+    });
+
+    it('truncated with total 5 and no items: the note says 5 and the page does NOT say 都處理好了 beside it', async () => {
+      await openWithPending({ items: [], total: 5, truncated: true });
+      expect(note()?.textContent?.replace(/\s+/g, ' ').trim()).toBe('還有 5 天未列出，處理完上面的會接著顯示');
+      expect(root.querySelector('.notif-empty')).toBeNull();
+      expect(root.textContent).not.toContain('都處理好了');
+    });
+  });
+
   describe('with the app\'s error-logging interceptor (a failed write is sent once, #411)', () => {
     const posts: TestRequest[] = [];
     const takePost = () => {
@@ -420,6 +615,39 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       http.expectNone(isCatchUp);
     });
 
+    it("with the app's error-logging interceptor a failed ack is sent once", async () => {
+      await openWithCathay(true);
+      cathayButton()!.click();
+      await settle();
+      // The controller's count of ack requests on the wire: the interceptor must not have added a second one.
+      const first = http.match(isAck);
+      expect(first).toHaveLength(1);
+      first[0].flush({ message: 'Internal Server Error' }, { status: 500, statusText: 'Internal Server Error' });
+      await settle();
+      http.expectNone(isAck);
+      const failure = toasts.current()!;
+      expect(failure).toEqual(
+        expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: expect.objectContaining({ label: '重試' }) }),
+      );
+      // Not committed: the re-read still lists the date, and the row is pressable again once it settles.
+      expect(center.round()).toBe(2);
+      const round2 = take();
+      flushPortfolioWith(round2, HELD);
+      await flushRound(round2, []);
+      expect(cathayButton()!.disabled).toBe(false);
+
+      toasts.runAction(failure.id);
+      await settle();
+      const second = http.match(isAck);
+      expect(second).toHaveLength(1);
+      second[0].flush({ trade_date: '2026-10-28', ack_status: 'held' });
+      await settle();
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：國泰對帳單 10/28', action: null }));
+      await flushRound(take(), []);
+      expect(cathayRow()).toBeNull();
+      http.expectNone(isAck);
+    });
+
     it('重試 pressed twice sends one write', async () => {
       await flushRound(await openThenFocus(true), [RENT]);
       rentButton()!.click();
@@ -468,6 +696,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       round.inbox.flush(inbox);
       round.latest.flush('', { status: 404, statusText: 'Not Found' });
       round.actions.flush([]);
+      flushPortfolio(round);
       await settle();
     }
 
@@ -478,9 +707,6 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
           account_id: 11, currency: 'TWD', date_from: '', date_to: '', spend, income: '0', rewards: '0',
           net: spend, end_balance: spend, count: 1,
         });
-      }
-      for (const req of http.match(get('/api/portfolio/imports/recalc/status'))) {
-        req.flush({ state: 'idle' });
       }
       await settle();
       const held = holdPayments ? [] : http.match(get(`${API}/accounts/11/entries`));
@@ -531,6 +757,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       round1.inbox.flush(makeInbox([]));
       round1.latest.flush('', { status: 404, statusText: 'Not Found' });
       round1.actions.flush([]);
+      flushPortfolio(round1);
       await settle();
       expect(center.settledRound()).toBe(1);
       expect(emptyBlock()).not.toBeNull();
@@ -548,6 +775,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       round2.inbox.flush(makeInbox([]));
       round2.latest.flush('', { status: 404, statusText: 'Not Found' });
       round2.actions.flush([]);
+      flushPortfolio(round2);
       await settle();
       await answerCard('-1000.0000', true);
       expect(center.loading()).toBe(true);
@@ -638,6 +866,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       round.inbox.flush(makeInbox([]));
       round.latest.flush('', { status: 404, statusText: 'Not Found' });
       round.actions.flush([]);
+      flushPortfolio(round);
       await settle();
       await answerCard('0');
       expect(center.failedSources()).toEqual(['debts']);
@@ -659,6 +888,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       round.inbox.flush('boom', { status: 500, statusText: 'Server Error' });
       round.latest.flush('boom', { status: 500, statusText: 'Server Error' });
       round.actions.flush([]);
+      flushPortfolio(round);
       await settle();
       for (const req of http.match(get(`${API}/accounts/11/summary`))) {
         req.flush('boom', { status: 500, statusText: 'Server Error' });
@@ -668,9 +898,6 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
           account_id: 12, currency: 'TWD', date_from: '', date_to: '', spend: '-1000.0000', income: '0', rewards: '0',
           net: '-1000.0000', end_balance: '-1000.0000', count: 1,
         });
-      }
-      for (const req of http.match(get('/api/portfolio/imports/recalc/status'))) {
-        req.flush({ state: 'idle' });
       }
       await settle();
       for (const req of http.match(get(`${API}/accounts/12/entries`))) {
@@ -699,6 +926,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       round.inbox.flush('boom', { status: 500, statusText: 'Server Error' });
       round.latest.flush('', { status: 404, statusText: 'Not Found' });
       round.actions.flush([]);
+      flushPortfolio(round);
       await settle();
       await answerCard('0');
       expect(center.loaded()).toBe(true);

@@ -43,6 +43,10 @@
     </p>
   }
 
+  @if (cathayMore() > 0) {
+    <p class="notif-overflow notif-overflow--portfolio">還有 {{ cathayMore() }} 天未列出，處理完上面的會接著顯示</p>
+  }
+
   <!-- One element for "no task yet" and "partial list": the same @if spot, so the live region is announced once. -->
   @if (!center.loaded() || state() === 'loading') {
     <p class="notif-loading" role="status">讀取中…</p>

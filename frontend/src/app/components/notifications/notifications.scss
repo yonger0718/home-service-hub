@@ -260,8 +260,9 @@
   padding: 8px;
 }
 
+/* Ink is --app-text: --app-text-muted on the page background is 4.35:1 in the light theme (12.8 px text). */
 .notif-overflow {
-  color: var(--app-text-muted);
+  color: var(--app-text);
   font-size: 0.8rem;
   margin: 0;
   padding: 0 6px;

@@ -81,6 +81,7 @@ describe('debtsRow', () => {
   it('甲 +1000, 乙 +550, 丙 -5000 gives both sides with names', () => {
     expect(debtsRow([person('甲', '1000'), person('乙', '550'), person('丙', '-5000')])).toEqual({
       id: 'debts',
+      source: 'ledger',
       title: '借還款 · 3 位',
       meta: '應收 $1,550（甲、乙）· 應付 $5,000（丙）',
       count: 3,
@@ -160,6 +161,7 @@ describe('upcomingRow', () => {
   it('two tracking bills', () => {
     expect(upcomingRow([bill('測試銀行卡帳單', '2026-10-27'), bill('測試二卡帳單', '2026-10-30')])).toEqual({
       id: 'upcoming',
+      source: 'ledger',
       title: '即將到來 · 2 件',
       meta: '測試銀行卡帳單 10/27 · 測試二卡帳單 10/30',
       count: 2,

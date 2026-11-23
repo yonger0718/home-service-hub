@@ -1,15 +1,17 @@
-import { EnvironmentInjector, createEnvironmentInjector } from '@angular/core';
+import { EnvironmentInjector, createEnvironmentInjector, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { provideRouter } from '@angular/router';
+import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { ConfirmationService } from 'primeng/api';
 import { DatePicker } from 'primeng/datepicker';
 import { Paginator } from 'primeng/paginator';
 import { of, Subject, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { NotificationCenterService } from '../../../services/notification-center.service';
+import { NO_TASKS } from '../../notifications/notif-task';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { ToastService } from '../../../services/toast.service';
 import { PortfolioDividendListComponent } from './dividend-list';
@@ -18,6 +20,22 @@ import { abbrInk, holdingAbbr } from '../dashboard/dashboard-math';
 import { squareToken } from '../square';
 
 const shown = () => TestBed.inject(ToastService).current();
+/**
+ * The notification centre: the page calls only `invalidate()` (after a write that can change the 股利 task); the phone
+ * header's bell reads the rest as nothing to do.
+ */
+const center = {
+  summary: signal(NO_TASKS),
+  badges: signal({}),
+  loaded: signal(true),
+  loading: signal(false),
+  round: signal(1),
+  settledRound: signal(1),
+  failedSources: signal([]),
+  refresh: vi.fn(),
+  invalidate: vi.fn(() => 1),
+};
+const centerProvider = { provide: NotificationCenterService, useValue: center };
 const clearToast = () => {
   const toast = shown();
   if (toast) TestBed.inject(ToastService).dismiss(toast.id);
@@ -33,7 +51,7 @@ describe('Dividend receipt confirmation', () => {
     service.getSymbolNames.mockReturnValue(of({}));
     service.getUpcomingExDividends.mockReturnValue(of([]));
     service.getAccounts.mockReturnValue(of({ items: [{ id: 7, nickname: 'Synthetic TWD', currency: 'TWD', is_active: true }] }));
-    TestBed.configureTestingModule({ imports: [PortfolioDividendListComponent], providers: [provideRouter([]), { provide: PortfolioService, useValue: service }] });
+    TestBed.configureTestingModule({ imports: [PortfolioDividendListComponent], providers: [provideRouter([]), { provide: PortfolioService, useValue: service }, centerProvider] });
   });
   it('shows persistent pending and unknown legacy states without counting paid income', () => {
     const fixture = TestBed.createComponent(PortfolioDividendListComponent);
@@ -238,7 +256,8 @@ describe('Dividend filter-wide summary', () => {
       confirmDividendReceipt: vi.fn(),
       createDividend: vi.fn(() => of({})),
     };
-    TestBed.configureTestingModule({ imports: [PortfolioDividendListComponent], providers: [provideRouter([]), { provide: PortfolioService, useValue: service }] });
+    center.invalidate.mockClear();
+    TestBed.configureTestingModule({ imports: [PortfolioDividendListComponent], providers: [provideRouter([]), { provide: PortfolioService, useValue: service }, centerProvider] });
   });
 
   afterEach(() => {
@@ -467,6 +486,81 @@ describe('Dividend filter-wide summary', () => {
 
     expect(summaryCalls).toHaveLength(2);
     fixture.destroy();
+  });
+
+  describe('the 通知 centre after a write (the 股利 task and dot follow at once)', () => {
+    const boom = () => throwError(() => new HttpErrorResponse({ status: 500 }));
+    const acceptConfirm = (fixture: ComponentFixture<PortfolioDividendListComponent>) =>
+      vi.spyOn(fixture.debugElement.injector.get(ConfirmationService), 'confirm')
+        .mockImplementation(options => { options.accept?.(); return fixture.debugElement.injector.get(ConfirmationService); });
+
+    it('a pure read (open, filter, sort, page, the reloads answering with many rows) never invalidates', () => {
+      const fixture = create();
+      respond(listCalls[0], { items: [due], total: 1 });
+      respond(summaryCalls[0], { items: pendingRows(150), total: 150 });
+      fixture.componentInstance.onSourceChange('csv');
+      fixture.componentInstance.onSortChange('symbol:asc');
+      fixture.componentInstance.onPageChange({ first: 25, rows: 25 });
+      fixture.detectChanges();
+      expect(center.invalidate).not.toHaveBeenCalled();
+      fixture.destroy();
+    });
+
+    it('確認收款 settling invalidates once (not before the answer, not per reloaded row), on success and on error', () => {
+      const fixture = create();
+      const component = fixture.componentInstance;
+      respond(listCalls[0], { items: [due], total: 1 });
+      const answer = new Subject<Dividend>();
+      service['confirmDividendReceipt'].mockReturnValueOnce(answer).mockReturnValueOnce(boom());
+
+      component.openReceipt(due);
+      component.receiptDate.set('2026-11-18'); component.receiptAccountId.set(7);
+      component.confirmReceipt();
+      expect(center.invalidate).not.toHaveBeenCalled();
+      answer.next({ ...due, receipt_status: 'confirmed' });
+      answer.complete();
+      expect(center.invalidate).toHaveBeenCalledTimes(1);
+      // The page's own reloads answering (many rows) add nothing: no invalidate → read → invalidate loop.
+      respond(listCalls[listCalls.length - 1], { items: [due, ...pendingRows(29)], total: 30 });
+      respond(summaryCalls[summaryCalls.length - 1], { items: [due, ...pendingRows(29)], total: 30 });
+      expect(center.invalidate).toHaveBeenCalledTimes(1);
+
+      // An error may have committed: it invalidates too.
+      component.openReceipt(due);
+      component.receiptDate.set('2026-11-18'); component.receiptAccountId.set(7);
+      component.confirmReceipt();
+      expect(center.invalidate).toHaveBeenCalledTimes(2);
+      fixture.destroy();
+    });
+
+    it('a create, an update and a delete each invalidate once when they settle, success or error (404 delete = done)', () => {
+      service['createDividend'].mockReturnValueOnce(of({})).mockReturnValueOnce(boom());
+      service['updateDividend'] = vi.fn().mockReturnValueOnce(of({})).mockReturnValueOnce(boom());
+      service['deleteDividend'] = vi.fn()
+        .mockReturnValueOnce(of({}))
+        .mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 404 })))
+        .mockReturnValueOnce(boom());
+      const fixture = create();
+      const component = fixture.componentInstance;
+      respond(listCalls[0], { items: [due], total: 1 });
+      acceptConfirm(fixture);
+      const steps: [string, () => void][] = [
+        ['create ok', () => { component.openNew(); component.saveDividend(); }],
+        ['create 500', () => { component.openNew(); component.saveDividend(); }],
+        ['update ok', () => { component.editDividend(due); component.saveDividend(); }],
+        ['update 500', () => { component.editDividend(due); component.saveDividend(); }],
+        ['delete ok', () => component.deleteDividend(due)],
+        ['delete 404', () => component.deleteDividend(due)],
+        ['delete 500', () => component.deleteDividend(due)],
+      ];
+      steps.forEach(([name, run], i) => {
+        run();
+        expect(center.invalidate, name).toHaveBeenCalledTimes(i + 1);
+      });
+      component.showDialog.set(false);
+      fixture.detectChanges();
+      fixture.destroy();
+    });
   });
 
   it('cancels a running filter-wide load on destroy', () => {
@@ -706,6 +800,53 @@ describe('Dividend filter-wide summary', () => {
       expect(buttons.map(b => b.textContent?.trim())).toEqual(['全部', '待收', '已收款', '舊資料']);
       expect(buttons[0].getAttribute('aria-checked')).toBe('true');
       fixture.destroy();
+    });
+
+    describe('?status= query param', () => {
+      const p9901: Dividend = { ...due, id: 9901, symbol: '9901' };
+      const p9902: Dividend = { ...confirmed, id: 9902, symbol: '9902' };
+
+      function openWith(params: Record<string, string>): ComponentFixture<PortfolioDividendListComponent> {
+        TestBed.overrideProvider(ActivatedRoute, { useValue: { snapshot: { queryParamMap: convertToParamMap(params) } } });
+        const fixture = create();
+        respond(listCalls[0], { items: [p9901, p9902], total: 2 });
+        respond(summaryCalls[0], { items: [p9901, p9902], total: 2 });
+        fixture.detectChanges();
+        return fixture;
+      }
+
+      const checked = (fixture: ComponentFixture<PortfolioDividendListComponent>) =>
+        Array.from(el(fixture).querySelectorAll('app-seg-toggle button'))
+          .find(b => b.getAttribute('aria-checked') === 'true')?.textContent?.trim();
+
+      it('?status=pending opens on 待收: the toggle\'s value is pending and only the pending row is listed', () => {
+        const fixture = openWith({ status: 'pending' });
+        expect(fixture.componentInstance.status()).toBe('pending');
+        expect(checked(fixture)).toBe('待收');
+        expect(rowIds(fixture)).toEqual([9901]);
+        fixture.destroy();
+      });
+
+      it.each(['confirmed', 'legacy'])('?status=%s is honoured', value => {
+        const fixture = openWith({ status: value });
+        expect(fixture.componentInstance.status()).toBe(value);
+        fixture.destroy();
+      });
+
+      it.each<Record<string, string>>([{}, { status: 'nonsense' }, { status: 'all' }, { status: '' }])('no param, or ?status=nonsense, opens on 全部 (%j)', params => {
+        const fixture = openWith(params);
+        expect(fixture.componentInstance.status()).toBe('all');
+        expect(checked(fixture)).toBe('全部');
+        expect(rowIds(fixture)).toEqual([9901, 9902]);
+        fixture.destroy();
+      });
+
+      it('the toggle still works after opening with the param', () => {
+        const fixture = openWith({ status: 'pending' });
+        selectStatus(fixture, '全部');
+        expect(rowIds(fixture)).toEqual([9901, 9902]);
+        fixture.destroy();
+      });
     });
 
     it('lists only the pending rows of the filter-wide set with their count, without calling the API', () => {

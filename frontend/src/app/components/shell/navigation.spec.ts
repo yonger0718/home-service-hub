@@ -67,6 +67,24 @@ describe('navigation model', () => {
     expect(summarizeGroupBadges(portfolio, {})).toEqual({ dot: false, tone: 'primary' });
   });
 
+  it('the 股利 dot (primary) folds into the 投資 group as primary; with a red 匯入 dot the group is red', () => {
+    const dividends: NavBadge = { dot: true, tone: 'primary', label: '2 筆待確認收款' };
+    expect(summarizeGroupBadges(portfolio, { dividends })).toEqual({ dot: true, tone: 'primary' });
+    expect(
+      summarizeGroupBadges(portfolio, { dividends, import: { dot: true, tone: 'red', label: '最近一次匯入失敗' } }),
+    ).toEqual({ dot: true, tone: 'red' });
+  });
+
+  it('a primary 匯入 dot (pending 國泰 dates) folds as primary, alone or with 股利; a red one still wins', () => {
+    const pending: NavBadge = { dot: true, tone: 'primary', label: '2 天的國泰對帳單待處理' };
+    const dividends: NavBadge = { dot: true, tone: 'primary', label: '2 筆待確認收款' };
+    expect(summarizeGroupBadges(portfolio, { import: pending })).toEqual({ dot: true, tone: 'primary' });
+    expect(summarizeGroupBadges(portfolio, { dividends, import: pending })).toEqual({ dot: true, tone: 'primary' });
+    expect(
+      summarizeGroupBadges(portfolio, { dividends, import: { dot: true, tone: 'red', label: '國泰對帳單匯入失敗' } }),
+    ).toEqual({ dot: true, tone: 'red' });
+  });
+
   it('/notifications and anything under it resolve to the synthetic 通知 item', () => {
     for (const url of ['/notifications', '/notifications?x=1', '/notifications/recon/5']) {
       expect(navItemForUrl(url), url).toBe(NOTIFICATIONS_ITEM);

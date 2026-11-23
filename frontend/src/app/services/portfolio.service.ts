@@ -36,6 +36,8 @@ import {
   FxFetchResult,
   PatchBrokerAccount,
   StockHolding,
+  CathayPending,
+  CathayRuns,
   holdingKey,
 } from '../models/portfolio.model';
 
@@ -221,6 +223,21 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.get<{ currency: string; date: string; rate_to_twd: string | number | null }>(
       '/api/portfolio/fx/rate',
       { params: new HttpParams().set('currency', currency).set('on', on) },
+    );
+  }
+
+  getCathayPending(): Observable<CathayPending> {
+    return this.http.get<CathayPending>('/api/portfolio/imports/cathay-statement/pending');
+  }
+
+  getCathayRuns(): Observable<CathayRuns> {
+    return this.http.get<CathayRuns>('/api/portfolio/imports/cathay-statement/runs/latest');
+  }
+
+  ackCathayDay(tradeDate: string): Observable<{ trade_date: string; ack_status: string }> {
+    return this.http.post<{ trade_date: string; ack_status: string }>(
+      `/api/portfolio/imports/cathay-statement/days/${tradeDate}/ack`,
+      null,
     );
   }
 

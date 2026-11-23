@@ -1,0 +1,54 @@
+<app-bento class="cathay-card" title="國泰每日對帳單">
+  <!-- Gated on the 國泰 source alone (not the whole round): its answer or failure shows as soon as it lands. -->
+  @if (failed()) {
+    <app-banner
+      tone="error"
+      heading="無法讀取國泰對帳單狀態"
+      actionLabel="重試"
+      [actionDisabled]="center.loading()"
+      (action)="retry()"
+    />
+  } @else if (view(); as v) {
+    @if (v.banner; as banner) {
+      <app-banner [tone]="banner.tone" [heading]="banner.heading" [detail]="banner.detail" />
+      @if (v.runDetails) {
+        <p class="cathay-run-details">{{ v.runDetails }}</p>
+      }
+      @if (v.state === 'latched') {
+        <p class="cathay-unlatch">排除原因後，在主機執行：<code>python -m worker cathay --unlatch</code></p>
+      }
+      @if (v.lastOk) {
+        <p class="cathay-last-ok">{{ v.lastOk }}</p>
+      }
+    } @else if (v.runLine) {
+      <p class="cathay-run-line">{{ v.runLine }}</p>
+    }
+
+    @if (v.days.length > 0) {
+      <h3 class="cathay-days-title">需要你處理的日期</h3>
+      <ul class="cathay-days">
+        @for (day of v.days; track day.tradeDate) {
+          <li class="cathay-day" [attr.data-trade-date]="day.tradeDate">
+            <span class="cathay-day-text">
+              <b>{{ day.label }}</b>
+              <small>{{ day.text }}</small>
+            </span>
+            <app-btn
+              variant="soft"
+              [loading]="isBusy(day.tradeDate)"
+              [ariaLabel]="'已處理：國泰對帳單 ' + day.label"
+              (click)="ack(day)"
+            >已處理</app-btn>
+          </li>
+        }
+      </ul>
+    } @else {
+      <small class="cathay-none" tabindex="-1">沒有需要處理的日期</small>
+    }
+    @if (v.more > 0) {
+      <small class="cathay-more">還有 {{ v.more }} 天未列出，處理完上面的會接著顯示</small>
+    }
+  } @else {
+    <small class="cathay-loading" role="status">讀取中…</small>
+  }
+</app-bento>

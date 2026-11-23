@@ -268,6 +268,17 @@ describe('SidebarComponent', () => {
     expect(rail.host.querySelectorAll('.item-dot').length).toBe(2);
   });
 
+  it('a 股利 badge from the facade: 股利 shows its primary dot, labelled 2 筆待確認收款; 匯入 shows none', async () => {
+    const { host } = await render(1440, '/portfolio', { dividends: { dot: true, tone: 'primary', label: '2 筆待確認收款' } });
+    const item = (path: string) => host.querySelector<HTMLAnchorElement>(`a.side-item[href="${path}"]`)!;
+    const dot = item('/portfolio/dividends').querySelector('.item-dot');
+    expect(dot).not.toBeNull();
+    expect(dot!.classList.contains('item-dot--primary')).toBe(true);
+    expect(item('/portfolio/dividends').getAttribute('aria-label')).toBe('股利，2 筆待確認收款');
+    expect(item('/portfolio/import').querySelector('.item-dot')).toBeNull();
+    expect(item('/portfolio/import').getAttribute('aria-label')).toBe('匯入');
+  });
+
   it('a primary dot carries item-dot--primary, a red one does not', async () => {
     const { host } = await render(1440, '/portfolio', {
       'accounting': { dot: true, tone: 'red', label: '有逾期的卡費' },

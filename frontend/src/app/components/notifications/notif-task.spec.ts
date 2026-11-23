@@ -93,6 +93,7 @@ describe('notif-task', () => {
 
   it('failureLine joins names in source order with 、', () => {
     expect(failureLine(['recon', 'bills'])).toBe('無法讀取：帳單、對帳');
+    expect(failureLine(['cathay', 'bills', 'dividends', 'imports'])).toBe('無法讀取：帳單、股利、匯入、國泰對帳單');
     expect(failureLine([])).toBeNull();
   });
 

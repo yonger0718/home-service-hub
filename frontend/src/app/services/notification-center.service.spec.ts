@@ -13,11 +13,17 @@ import { makeAccount, makeEntry, makeInstance } from '../components/accounting/t
 import { NO_TASKS } from '../components/notifications/notif-task';
 import { INBOX_READ_LIMIT } from '../components/notifications/sources/recon';
 import { BusinessDays, Counterparty, ImportRun, LedgerAccount, ScheduleInstance } from '../models/accounting.model';
-import { RecalcStatus } from '../models/portfolio.model';
+import { CathayPending, CathayPendingDay, CathayRun, CathayRuns, Dividend, Paged, RecalcStatus } from '../models/portfolio.model';
 import { AccountingService } from './accounting.service';
 import { ImportHistoryService } from './import-history.service';
 import { NavigationPreferencesService } from './navigation-preferences.service';
-import { BADGE_REFRESH_MIN_MS, NotificationCenterService, READ_TIMEOUT_MS } from './notification-center.service';
+import {
+  BADGE_REFRESH_MIN_MS,
+  DIVIDEND_MAX_PAGES,
+  NOTIF_CLOCK,
+  NotificationCenterService,
+  READ_TIMEOUT_MS,
+} from './notification-center.service';
 import { PortfolioService } from './portfolio.service';
 
 /** Today in this spec: Saturday 2026-10-24. */
@@ -105,6 +111,30 @@ function action(id: number, createdAt: string, revertedBy: number | null = null)
   return { id, created_at: createdAt, reverted_by_action_id: revertedBy } as ReconciliationAction;
 }
 
+/** A dividend row (fictional symbols 9901–9903); `receipt_status` pending unless given. */
+function dividend(id: number, symbol: string, paymentDate: string | null, receiptStatus: Dividend['receipt_status'] = 'pending'): Dividend {
+  return { id, symbol, amount: 100, ex_dividend_date: '2026-09-01', payment_date: paymentDate, receipt_status: receiptStatus };
+}
+
+/** `n` pending dividends paid before today, ids from `firstId`. */
+function dueDividends(n: number, firstId = 1): Dividend[] {
+  return Array.from({ length: n }, (_, i) => dividend(firstId + i, '9901', '2026-10-20'));
+}
+
+/** A 國泰 run `minutesAgo` before `now`. */
+function run(now: Date, result: CathayRun['result'] = 'ok', minutesAgo = 5): CathayRun {
+  return { run_at: new Date(now.getTime() - minutesAgo * 60_000).toISOString(), result, code: null, files_seen: 1, posted: 1 };
+}
+
+function pendingDay(tradeDate: string, overrides: Partial<CathayPendingDay> = {}): CathayPendingDay {
+  return { trade_date: tradeDate, status: 'held', reason: null, since: null, last_at: null, ...overrides };
+}
+
+/** 50 pending dates from 2026-07-01 on (the API's listing limit). */
+function fiftyDays(): CathayPendingDay[] {
+  return Array.from({ length: 50 }, (_, i) => pendingDay(new Date(Date.UTC(2026, 6, 1 + i)).toISOString().slice(0, 10)));
+}
+
 describe('NotificationCenterService', () => {
   let accounts: ReturnType<typeof calls<LedgerAccount[]>>;
   let counterparties: ReturnType<typeof calls<Counterparty[]>>;
@@ -114,8 +144,17 @@ describe('NotificationCenterService', () => {
   let inbox: ReturnType<typeof calls<InboxOut>>;
   let actions: ReturnType<typeof calls<ReconciliationAction[]>>;
   let statements: ReturnType<typeof calls<StatementSummary[]>>;
+  let dividends: ReturnType<typeof calls<Paged<Dividend>>>;
+  let cathayPending: ReturnType<typeof calls<CathayPending>>;
+  let cathayRuns: ReturnType<typeof calls<CathayRuns>>;
   let accountingStub: Record<string, unknown>;
   let getRecalcStatus: ReturnType<typeof vi.fn>;
+  let getDividends: ReturnType<typeof vi.fn>;
+  let getCathayPending: ReturnType<typeof vi.fn>;
+  let getCathayRuns: ReturnType<typeof vi.fn>;
+  /** The round clock (NOTIF_CLOCK); a test moves it by assigning `clockNow`. */
+  let clockNow: Date;
+  let clock: ReturnType<typeof vi.fn<() => Date>>;
   let getInbox: ReturnType<typeof vi.fn>;
   let getActions: ReturnType<typeof vi.fn>;
   let listStatements: ReturnType<typeof vi.fn>;
@@ -133,7 +172,15 @@ describe('NotificationCenterService', () => {
     inbox = calls();
     actions = calls();
     statements = calls();
+    dividends = calls();
+    cathayPending = calls();
+    cathayRuns = calls();
     getRecalcStatus = vi.fn(recalc.fn);
+    getDividends = vi.fn(dividends.fn);
+    getCathayPending = vi.fn(cathayPending.fn);
+    getCathayRuns = vi.fn(cathayRuns.fn);
+    clockNow = new Date(2026, 9, 24, 10, 0, 0);
+    clock = vi.fn(() => clockNow);
     getInbox = vi.fn(inbox.fn);
     getActions = vi.fn(actions.fn);
     listStatements = vi.fn(statements.fn);
@@ -155,15 +202,20 @@ describe('NotificationCenterService', () => {
       getEntries: vi.fn(() => of({ items: [], total: 0, limit: 100, offset: 0 })),
       getBusinessDays: vi.fn((): Observable<BusinessDays> => of({ holidays: [], workdays: [], last_known_day: '2027-12-31' })),
     };
+    configure();
+  });
+
+  function configure(): void {
     TestBed.configureTestingModule({
       providers: [
         { provide: AccountingService, useValue: accountingStub },
-        { provide: PortfolioService, useValue: { getRecalcStatus } },
+        { provide: PortfolioService, useValue: { getRecalcStatus, getDividends, getCathayPending, getCathayRuns } },
         { provide: InboxService, useValue: { get: getInbox, actions: getActions, changed: inboxChanged } },
         { provide: StatementsService, useValue: { list: listStatements, changed: signal(0) } },
+        { provide: NOTIF_CLOCK, useValue: clock },
       ],
     });
-  });
+  }
 
   afterEach(() => {
     TestBed.resetTestingModule();
@@ -180,7 +232,9 @@ describe('NotificationCenterService', () => {
 
   /**
    * Answers round `index` (0-based: the index of each source's call) of every source still open; `'error'` fails one,
-   * `'skip'` leaves it open. The recalc status is answered only when that call exists (refresh rounds).
+   * `'skip'` leaves it open. The dividends answer is the round's first page (index-based: a test that reads more than
+   * one page in a round lands the later pages itself). The quiet defaults: no dividend, no pending 國泰 date, a healthy
+   * 國泰 run 5 minutes before the clock, an idle recalc chain.
    */
   async function answer(
     index: number,
@@ -192,6 +246,9 @@ describe('NotificationCenterService', () => {
       inbox?: Answer<InboxOut>;
       actions?: Answer<ReconciliationAction[]>;
       recalc?: Answer<RecalcStatus>;
+      dividends?: Answer<Paged<Dividend>>;
+      cathayPending?: Answer<CathayPending>;
+      cathayRuns?: Answer<CathayRuns>;
     } = {},
   ): Promise<void> {
     const settle = <T>(subject: Subject<T> | undefined, value: Answer<T> | undefined, fallback: T) => {
@@ -211,6 +268,10 @@ describe('NotificationCenterService', () => {
     settle(inbox.subjects[index], values.inbox, makeInbox([]));
     settle(actions.subjects[index], values.actions, []);
     settle(recalc.subjects[index], values.recalc, { state: 'idle' } as RecalcStatus);
+    settle(dividends.subjects[index], values.dividends, { items: [], total: 0 });
+    settle(cathayPending.subjects[index], values.cathayPending, { items: [], total: 0, truncated: false });
+    const healthy = run(clockNow);
+    settle(cathayRuns.subjects[index], values.cathayRuns, { latest: healthy, latest_ok: healthy });
     TestBed.tick();
     await microtasks();
     TestBed.tick();
@@ -220,10 +281,14 @@ describe('NotificationCenterService', () => {
 
   // ---- carried over from nav-badge.service.spec.ts ---------------------------------------------------------------
 
-  it('failed recalc chain → import dot', async () => {
+  it('a failed recalc chain → a 系統 task import:fail:… and the red 匯入 dot 最近一次匯入失敗', async () => {
     const svc = service();
     svc.refresh({ reason: 'focus' });
-    await answer(0, { recalc: { kind: 'import', state: 'failed' } });
+    await answer(0, { recalc: { kind: 'import', state: 'failed', started_at: '2026-10-24T01:00:00Z' } });
+    expect(svc.tasks().map(task => [task.id, task.tier, task.title])).toEqual([
+      ['import:fail:2026-10-24T01:00:00Z', 'system', '最近一次匯入的重算失敗'],
+    ]);
+    expect(svc.summary().tone).toBe('red');
     expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label: '最近一次匯入失敗' });
   });
 
@@ -234,11 +299,14 @@ describe('NotificationCenterService', () => {
     expect('import' in svc.badges()).toBe(false);
   });
 
-  it('the device\'s last failed commit → import dot even with a healthy recalc chain', async () => {
-    TestBed.inject(ImportHistoryService).record({ at: '2026-10-24T01:00:00Z', file: 'a.csv', type: 'transactions', ok: false, created: 0, errors: 1 });
+  it('the device\'s last failed commit → the same task and dot with a healthy recalc chain', async () => {
+    TestBed.inject(ImportHistoryService).record({ at: '2026-10-24T01:00:00Z', file: '測試匯入.csv', type: 'transactions', ok: false, created: 0, errors: 1 });
     const svc = service();
     svc.refresh({ reason: 'focus' });
     await answer(0, { recalc: { kind: 'import', state: 'completed' } });
+    expect(svc.tasks().map(task => [task.id, task.tier, task.title, task.meta])).toEqual([
+      ['import:fail:2026-10-24T01:00:00Z', 'system', '最近一次匯入失敗', '測試匯入.csv'],
+    ]);
     expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label: '最近一次匯入失敗' });
   });
 
@@ -298,7 +366,7 @@ describe('NotificationCenterService', () => {
     expect(getRecalcStatus).toHaveBeenCalledTimes(2);
   });
 
-  it('an entry or account write reloads every task source at once, not the recalc status', async () => {
+  it('an entry or account write reloads every task source at once', async () => {
     const svc = service();
     svc.start();
     TestBed.tick();
@@ -312,7 +380,10 @@ describe('NotificationCenterService', () => {
     expect(accountingStub['getCounterparties']).toHaveBeenCalledTimes(2);
     expect(accountingStub['getScheduleInstances']).toHaveBeenCalledTimes(2);
     expect(accountingStub['getLatestImport']).toHaveBeenCalledTimes(2);
-    expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+    // P2: the portfolio and system reads are round reads too, so a write re-reads them with the rest.
+    for (const read of [getRecalcStatus, getDividends, getCathayPending, getCathayRuns]) {
+      expect(read).toHaveBeenCalledTimes(2);
+    }
 
     land(latest.subjects[1], importRun(3));
     TestBed.tick();
@@ -322,6 +393,9 @@ describe('NotificationCenterService', () => {
     TestBed.tick();
     expect(accountingStub['getCounterparties']).toHaveBeenCalledTimes(3);
     expect(accountingStub['getLatestImport']).toHaveBeenCalledTimes(3);
+    for (const read of [getRecalcStatus, getDividends, getCathayPending, getCathayRuns]) {
+      expect(read).toHaveBeenCalledTimes(3);
+    }
   });
 
   it('writes before start() load nothing', () => {
@@ -384,25 +458,33 @@ describe('NotificationCenterService', () => {
     expect(getRecalcStatus).toHaveBeenCalledTimes(1);
   });
 
-  it('older response landing after a newer one is dropped', async () => {
+  it('a superseded round\'s recalc answer is dropped', async () => {
     const svc = service();
     svc.refresh({ reason: 'focus' });
+    // Round 1's recalc read is still open when round 2 supersedes it.
     await answer(0, { recalc: 'skip' });
-    vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
-    svc.refresh({ reason: 'focus' });
-    land(recalc.subjects[1], { kind: 'import', state: 'completed' });
+    expect(svc.settledRound()).toBe(0);
+    svc.invalidate();
+    // An older failure landing after the newer success changes nothing.
+    await answer(1, { recalc: { kind: 'import', state: 'completed' } });
     land(recalc.subjects[0], { kind: 'import', state: 'failed' });
+    TestBed.tick();
     expect('import' in svc.badges()).toBe(false);
-  });
+    expect(svc.tasks()).toEqual([]);
+    expect(svc.settledRound()).toBe(2);
+    expect(svc.failedSources()).toEqual([]);
 
-  it('an older success landing after a newer failure is dropped', async () => {
-    const svc = service();
-    svc.refresh({ reason: 'focus' });
-    await answer(0, { recalc: 'skip' });
-    vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
-    svc.refresh({ reason: 'focus' });
-    fail(recalc.subjects[1]);
-    land(recalc.subjects[0], { kind: 'import', state: 'failed' });
+    // And an older success landing after a newer failure.
+    svc.invalidate();
+    await answer(2, { recalc: 'skip' });
+    const before = svc.settledRound();
+    svc.invalidate();
+    await answer(3, { recalc: 'error' });
+    land(recalc.subjects[2], { kind: 'import', state: 'completed' });
+    TestBed.tick();
+    expect(before).toBe(2);
+    expect(svc.settledRound()).toBe(4);
+    expect(svc.failedSources()).toEqual(['imports']);
     expect('import' in svc.badges()).toBe(false);
   });
 
@@ -412,7 +494,7 @@ describe('NotificationCenterService', () => {
     vi.advanceTimersByTime(READ_TIMEOUT_MS);
     TestBed.tick();
     expect(svc.settledRound()).toBe(1);
-    expect(svc.failedSources()).toEqual(['bills', 'schedules', 'recon', 'importReview', 'debts']);
+    expect(svc.failedSources()).toEqual(['bills', 'schedules', 'recon', 'importReview', 'debts', 'dividends', 'imports', 'cathay']);
     // Timed out reads are unsubscribed: round 1 can no longer answer.
     expect(latest.subjects[0].observed).toBe(false);
 
@@ -578,6 +660,10 @@ describe('NotificationCenterService', () => {
     expect(getActions).toHaveBeenCalledTimes(1);
     expect(getActions).toHaveBeenCalledWith(50);
     expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+    expect(getDividends).toHaveBeenCalledTimes(1);
+    expect(getDividends).toHaveBeenCalledWith({ limit: 100, offset: 0 });
+    expect(getCathayPending).toHaveBeenCalledTimes(1);
+    expect(getCathayRuns).toHaveBeenCalledTimes(1);
     expect(svc.round()).toBe(1);
   });
 
@@ -756,6 +842,9 @@ describe('NotificationCenterService', () => {
     expect(getInbox).toHaveBeenCalledTimes(1);
     expect(getActions).toHaveBeenCalledTimes(1);
     expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+    expect(getDividends).toHaveBeenCalledTimes(1);
+    expect(getCathayPending).toHaveBeenCalledTimes(1);
+    expect(getCathayRuns).toHaveBeenCalledTimes(1);
   });
 
   it('invalidate() while a round is in flight starts a new round and returns its id', () => {
@@ -830,12 +919,17 @@ describe('NotificationCenterService', () => {
     expect(svc.round()).toBe(2);
   });
 
-  it('invalidate() does not read the recalc status', () => {
+  it('invalidate() reads the recalc status with every other source', () => {
     const svc = service();
     svc.invalidate();
     expect(svc.round()).toBe(1);
-    expect(accountingStub['getAccounts']).toHaveBeenCalledTimes(1);
-    expect(getRecalcStatus).not.toHaveBeenCalled();
+    for (const read of [accountingStub['getAccounts'], getRecalcStatus, getDividends, getCathayPending, getCathayRuns]) {
+      expect(read).toHaveBeenCalledTimes(1);
+    }
+    svc.invalidate();
+    for (const read of [accountingStub['getAccounts'], getRecalcStatus, getDividends, getCathayPending, getCathayRuns]) {
+      expect(read).toHaveBeenCalledTimes(2);
+    }
   });
 
   // ---- R25: a truncated inbox ------------------------------------------------------------------------------------
@@ -894,14 +988,7 @@ describe('NotificationCenterService', () => {
     // Saturday 10-24 is a make-up workday: a bill due today is debited today.
     TestBed.resetTestingModule();
     accountingStub['getBusinessDays'] = vi.fn(() => of({ holidays: [], workdays: [TODAY], last_known_day: '2027-12-31' }));
-    TestBed.configureTestingModule({
-      providers: [
-        { provide: AccountingService, useValue: accountingStub },
-        { provide: PortfolioService, useValue: { getRecalcStatus } },
-        { provide: InboxService, useValue: { get: getInbox, actions: getActions, changed: inboxChanged } },
-        { provide: StatementsService, useValue: { list: listStatements, changed: signal(0) } },
-      ],
-    });
+    configure();
     const fresh = service();
     fresh.start();
     await answer(1, { accounts: [card(12, 24)] });
@@ -1013,7 +1100,7 @@ describe('NotificationCenterService', () => {
     }
     expect(getInbox).toHaveBeenCalledTimes(3);
     expect(getActions).toHaveBeenCalledTimes(3);
-    expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+    expect(getRecalcStatus).toHaveBeenCalledTimes(3);
     expect(accountingStub['getBusinessDays']).toHaveBeenCalledTimes(1);
 
     await answer(2, { queue: [instance(3, 3, '測試房租', TODAY)] });
@@ -1031,7 +1118,7 @@ describe('NotificationCenterService', () => {
     expect(svc.round()).toBe(1);
     expect(svc.invalidate()).toBe(2);
     expect(accountingStub['getAccounts']).toHaveBeenCalledTimes(2);
-    expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+    expect(getRecalcStatus).toHaveBeenCalledTimes(2);
 
     await answer(0, { latest: importRun(4) });
     expect(svc.settledRound()).toBe(0);
@@ -1050,7 +1137,8 @@ describe('NotificationCenterService', () => {
     vi.advanceTimersByTime(5_000);
     window.dispatchEvent(new Event('focus'));
     expect(svc.round()).toBe(2);
-    expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+    expect(accountingStub['getAccounts']).toHaveBeenCalledTimes(2);
+    expect(getRecalcStatus).toHaveBeenCalledTimes(2);
   });
 
   it('a source that errors synchronously fails only itself and the round still settles', async () => {
@@ -1111,5 +1199,455 @@ describe('NotificationCenterService', () => {
     expect(statements.subjects[0].observed).toBe(false);
     expect(svc.failedSources()).toEqual([]);
     expect(svc.tasks()[0].progress).toBeNull();
+  });
+  // ---- PR C: dividends, imports, 國泰對帳單 -----------------------------------------------------------------------
+
+  describe('a round waits for every one of the eight task sources', () => {
+    it.each(['dividends', 'cathayPending', 'cathayRuns', 'recalc'] as const)('%s open → not settled; answered → settled', async key => {
+      const svc = service();
+      svc.start();
+      await answer(0, { [key]: 'skip' });
+      expect(svc.settledRound()).toBe(0);
+      expect(svc.loaded()).toBe(false);
+      await answer(0);
+      expect(svc.settledRound()).toBe(1);
+      expect(svc.failedSources()).toEqual([]);
+    });
+  });
+
+  it('two dividends past their payment date: one counted task, the 股利 dot labelled 2 筆待確認收款, tone primary', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, {
+      dividends: { items: [dividend(1, '9901', '2026-10-20'), dividend(2, '9902', TODAY), dividend(3, '9903', '2026-10-01', 'confirmed')], total: 3 },
+    });
+    expect(ids(svc)).toEqual(['div:batch']);
+    expect(svc.tasks()[0].title).toBe('股利待確認收款 · 2 筆');
+    expect(svc.summary().total).toBe(1);
+    expect(svc.summary().tone).toBe('primary');
+    expect(svc.badges()['dividends']).toEqual({ dot: true, tone: 'primary', label: '2 筆待確認收款' });
+    expect('import' in svc.badges()).toBe(false);
+  });
+
+  it('pending dividends with a later or no date are a 追蹤中 row after the ledger rows and are not counted', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, {
+      counterparties: [person(1, '甲')],
+      dividends: { items: [dividend(4, '9901', '2026-10-30'), dividend(5, '9902', null)], total: 2 },
+    });
+    expect(ids(svc)).toEqual([]);
+    expect(svc.summary().total).toBe(0);
+    expect(svc.trackingRows().map(row => [row.id, row.source])).toEqual([['debts', 'ledger'], ['dividends', 'portfolio']]);
+    expect(svc.trackingRows()[1].title).toBe('股利待發放 · 2 筆');
+    expect('dividends' in svc.badges()).toBe(false);
+  });
+
+  it('101 dividends are read in two requests (offset 0 and 100) and both pages count', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { dividends: { items: dueDividends(100), total: 101 } });
+    expect(getDividends.mock.calls).toEqual([[{ limit: 100, offset: 0 }], [{ limit: 100, offset: 100 }]]);
+    expect(svc.settledRound()).toBe(0);
+    land(dividends.subjects[1], { items: dueDividends(1, 101), total: 101 });
+    TestBed.tick();
+    expect(svc.settledRound()).toBe(1);
+    expect(svc.tasks().map(task => task.title)).toEqual(['股利待確認收款 · 101 筆']);
+    expect(svc.badges()['dividends']?.label).toBe('101 筆待確認收款');
+  });
+
+  it('cap boundary: DIVIDEND_MAX_PAGES full pages with total 5001 → no further request, 股利 failed, no div:batch, no row, no 股利 dot, the round settles', async () => {
+    expect(DIVIDEND_MAX_PAGES).toBe(50);
+    const svc = service();
+    svc.start();
+    await answer(0, { dividends: 'skip' });
+    for (let page = 0; page < DIVIDEND_MAX_PAGES; page++) {
+      expect(svc.settledRound()).toBe(0);
+      land(dividends.subjects[page], { items: dueDividends(100, page * 100 + 1), total: 5001 });
+    }
+    TestBed.tick();
+    expect(getDividends).toHaveBeenCalledTimes(DIVIDEND_MAX_PAGES);
+    expect(svc.settledRound()).toBe(1);
+    expect(svc.failedSources()).toEqual(['dividends']);
+    expect(ids(svc)).toEqual([]);
+    expect(svc.trackingRows()).toEqual([]);
+    expect('dividends' in svc.badges()).toBe(false);
+  });
+
+  it('exactly DIVIDEND_MAX_PAGES pages (total 5000) is a complete scan: source ok, one batch of 5000', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { dividends: 'skip' });
+    for (let page = 0; page < DIVIDEND_MAX_PAGES; page++) {
+      land(dividends.subjects[page], { items: dueDividends(100, page * 100 + 1), total: 5000 });
+    }
+    TestBed.tick();
+    expect(getDividends).toHaveBeenCalledTimes(DIVIDEND_MAX_PAGES);
+    expect(svc.settledRound()).toBe(1);
+    expect(svc.failedSources()).toEqual([]);
+    expect(svc.tasks().map(task => task.title)).toEqual(['股利待確認收款 · 5000 筆']);
+  });
+
+  it('settlement: page 1 of the dividends answers, page 2 is still open at READ_TIMEOUT_MS → 股利 failed for the round, the round settles, page 1\'s rows make no task', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { dividends: 'skip' });
+    // Page 1 lands 15 s into the round; the limit still counts from the round's start (one read for the whole stream).
+    vi.advanceTimersByTime(15_000);
+    land(dividends.subjects[0], { items: dueDividends(100), total: 150 });
+    TestBed.tick();
+    expect(dividends.subjects[1].observed).toBe(true);
+    vi.advanceTimersByTime(READ_TIMEOUT_MS - 15_000 - 1);
+    TestBed.tick();
+    expect(svc.settledRound()).toBe(0);
+    vi.advanceTimersByTime(1);
+    TestBed.tick();
+    expect(svc.settledRound()).toBe(1);
+    expect(svc.failedSources()).toEqual(['dividends']);
+    expect(dividends.subjects[1].observed).toBe(false);
+    expect(ids(svc)).toEqual([]);
+    expect('dividends' in svc.badges()).toBe(false);
+  });
+
+  it('settlement: a round does not settle while a dividend page is open before the limit, and settles when the last page lands', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { dividends: { items: dueDividends(100), total: 150 } });
+    vi.advanceTimersByTime(READ_TIMEOUT_MS - 1);
+    TestBed.tick();
+    expect(svc.settledRound()).toBe(0);
+    land(dividends.subjects[1], { items: dueDividends(50, 101), total: 150 });
+    TestBed.tick();
+    expect(svc.settledRound()).toBe(1);
+    expect(svc.failedSources()).toEqual([]);
+    expect(svc.tasks().map(task => task.title)).toEqual(['股利待確認收款 · 150 筆']);
+  });
+
+  it('a pending 國泰 date is a counted 系統 task (red count) and lights the 匯入 dot primary: 1 天的國泰對帳單待處理', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { cathayPending: { items: [pendingDay('2026-10-23')], total: 1, truncated: false } });
+    expect(svc.tasks().map(task => [task.id, task.tier, task.title])).toEqual([['cathay:2026-10-23', 'system', '國泰對帳單 10/23']]);
+    expect(svc.summary()).toMatchObject({ total: 1, tone: 'red' });
+    expect(svc.badges()['import']).toEqual({ dot: true, tone: 'primary', label: '1 天的國泰對帳單待處理' });
+    expect(svc.cathay()?.days.map(day => day.tradeDate)).toEqual(['2026-10-23']);
+  });
+
+  it('pending dates truncated by the server: the primary dot counts the server total (73), not the 50 listed', async () => {
+    const svc = service();
+    svc.start();
+    const items = Array.from({ length: 50 }, (_, i) => pendingDay(`2026-08-${String((i % 28) + 1).padStart(2, '0')}`));
+    await answer(0, { cathayPending: { items, total: 73, truncated: true } });
+    expect(svc.badges()['import']).toEqual({ dot: true, tone: 'primary', label: '73 天的國泰對帳單待處理' });
+  });
+
+  it('pending dates and a bad run: red wins, the label is the run title alone', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, {
+      cathayPending: { items: [pendingDay('2026-10-23')], total: 1, truncated: false },
+      cathayRuns: { latest: run(clockNow, 'latched'), latest_ok: null },
+    });
+    expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label: '國泰對帳單匯入已停用' });
+  });
+
+  it('pending dates and an import failure: red wins with 最近一次匯入失敗', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, {
+      recalc: { kind: 'import', state: 'failed', started_at: '2026-10-24T01:00:00Z' },
+      cathayPending: { items: [pendingDay('2026-10-23')], total: 1, truncated: false },
+    });
+    expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label: '最近一次匯入失敗' });
+  });
+
+  it.each([
+    ['failed', '國泰對帳單匯入失敗'],
+    ['latched', '國泰對帳單匯入已停用'],
+  ] as const)('a %s run lights the 匯入 dot red with %s', async (result, label) => {
+    const svc = service();
+    svc.start();
+    await answer(0, { cathayRuns: { latest: run(clockNow, result), latest_ok: null } });
+    expect(svc.tasks().map(task => [task.id, task.title])).toEqual([['cathay:run', label]]);
+    expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label });
+    expect(svc.cathay()?.state).toBe(result);
+  });
+
+  it('a missing latest run (latest null) is stale: cathay:run with 還沒有執行紀錄', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { cathayRuns: { latest: null, latest_ok: null } });
+    expect(svc.tasks().map(task => [task.id, task.title, task.meta])).toEqual([['cathay:run', '國泰對帳單今天沒有執行', '還沒有執行紀錄']]);
+    expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label: '國泰對帳單今天沒有執行' });
+  });
+
+  it('a stale run (clock 2026-10-28T07:00+08:00, latest 2026-10-27T06:41+08:00) creates cathay:run and the dot 國泰對帳單今天沒有執行', async () => {
+    clockNow = new Date('2026-10-28T07:00:00+08:00');
+    const latestRun: CathayRun = { run_at: '2026-10-27T06:41:00+08:00', result: 'ok', code: null, files_seen: 1, posted: 1 };
+    const svc = service();
+    svc.start();
+    await answer(0, { cathayRuns: { latest: latestRun, latest_ok: latestRun } });
+    expect(svc.tasks().map(task => [task.id, task.title, task.meta])).toEqual([['cathay:run', '國泰對帳單今天沒有執行', '上次執行 昨天 06:41']]);
+    expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label: '國泰對帳單今天沒有執行' });
+  });
+
+  it('an import failure and a bad run share one dot: 最近一次匯入失敗、國泰對帳單匯入失敗', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, {
+      recalc: { kind: 'import', state: 'failed', started_at: '2026-10-24T01:00:00Z' },
+      cathayRuns: { latest: run(clockNow, 'failed'), latest_ok: null },
+    });
+    expect(ids(svc).sort()).toEqual(['cathay:run', 'import:fail:2026-10-24T01:00:00Z']);
+    expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label: '最近一次匯入失敗、國泰對帳單匯入失敗' });
+  });
+
+  it('the run verdict uses the round\'s clock: ok at 06:54, stale after the next round at 06:55', async () => {
+    const latestRun: CathayRun = { run_at: '2026-10-27T06:41:00+08:00', result: 'ok', code: null, files_seen: 1, posted: 1 };
+    const runs: CathayRuns = { latest: latestRun, latest_ok: latestRun };
+    clockNow = new Date('2026-10-28T06:54:00+08:00');
+    const svc = service();
+    const before = clock.mock.calls.length;
+    svc.start();
+    expect(clock.mock.calls.length - before).toBe(1);
+    await answer(0, { cathayRuns: runs });
+    expect(ids(svc)).toEqual([]);
+    expect(svc.cathay()?.state).toBe('ok');
+
+    // The clock passing 06:55 changes nothing until a round reads it (P3).
+    clockNow = new Date('2026-10-28T06:55:00+08:00');
+    TestBed.tick();
+    expect(ids(svc)).toEqual([]);
+    expect(clock.mock.calls.length - before).toBe(1);
+
+    vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
+    svc.refresh({ reason: 'focus' });
+    expect(clock.mock.calls.length - before).toBe(2);
+    await answer(1, { cathayRuns: runs });
+    expect(ids(svc)).toEqual(['cathay:run']);
+    expect(svc.cathay()?.state).toBe('stale');
+    expect(svc.badges()['import']?.label).toBe('國泰對帳單今天沒有執行');
+  });
+
+  it('portfolio API down: 股利, 匯入 and 國泰對帳單 are named, their dots and tasks leave (the device failure too), ledger tasks stay, the round settles', async () => {
+    TestBed.inject(ImportHistoryService).record({ at: '2026-10-24T01:00:00Z', file: '測試匯入.csv', type: 'transactions', ok: false, created: 0, errors: 1 });
+    const svc = service();
+    svc.start();
+    const ledger = { accounts: [card(11, 20)], queue: [instance(1, 1, '測試房租', TODAY)] };
+    await answer(0, {
+      ...ledger,
+      dividends: { items: dueDividends(2), total: 2 },
+      cathayPending: { items: [pendingDay('2026-10-23')], total: 1, truncated: false },
+      cathayRuns: { latest: run(clockNow, 'failed'), latest_ok: null },
+    });
+    expect(ids(svc).sort()).toEqual(['bill:11:2026-10-20', 'cathay:2026-10-23', 'cathay:run', 'div:batch', 'import:fail:2026-10-24T01:00:00Z', 'sched:1']);
+    expect(Object.keys(svc.badges()).sort()).toEqual(['accounting', 'dividends', 'import']);
+
+    svc.invalidate();
+    await answer(1, { ...ledger, dividends: 'error', cathayPending: 'error', cathayRuns: 'error', recalc: 'error' });
+    expect(svc.settledRound()).toBe(2);
+    expect(svc.failedSources()).toEqual(['dividends', 'imports', 'cathay']);
+    expect(ids(svc)).toEqual(['bill:11:2026-10-20', 'sched:1']);
+    expect(svc.summary()).toMatchObject({ total: 2, overdue: 1 });
+    expect(Object.keys(svc.badges())).toEqual(['accounting']);
+    expect(svc.trackingRows()).toEqual([]);
+    expect(svc.cathay()).toBeNull();
+    expect(svc.cathayMore()).toBe(0);
+  });
+
+  it('pending answers but runs fails: the 國泰 source fails as a whole — no cathay task, cathay() null', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { cathayPending: { items: [pendingDay('2026-10-23')], total: 1, truncated: false }, cathayRuns: 'error' });
+    expect(svc.settledRound()).toBe(1);
+    expect(svc.failedSources()).toEqual(['cathay']);
+    expect(ids(svc)).toEqual([]);
+    expect(svc.cathay()).toBeNull();
+    expect('import' in svc.badges()).toBe(false);
+  });
+
+  it('a 國泰 source that fails after it succeeded drops its tasks, its dot and cathayMore', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { cathayPending: { items: fiftyDays(), total: 73, truncated: true }, cathayRuns: { latest: run(clockNow, 'failed'), latest_ok: null } });
+    expect(svc.tasks().filter(task => task.from === 'cathay')).toHaveLength(51);
+    expect(svc.badges()['import']).toBeDefined();
+    expect(svc.cathayMore()).toBe(23);
+
+    svc.invalidate();
+    await answer(1, { cathayPending: 'error' });
+    expect(svc.failedSources()).toEqual(['cathay']);
+    expect(svc.tasks().filter(task => task.from === 'cathay')).toEqual([]);
+    expect('import' in svc.badges()).toBe(false);
+    expect(svc.cathayMore()).toBe(0);
+    expect(svc.cathay()).toBeNull();
+  });
+
+  it('cathayMore is total − listed (73, 50 → 23) and 0 when the source is unread', async () => {
+    const svc = service();
+    expect(svc.cathayMore()).toBe(0);
+    expect(svc.cathay()).toBeNull();
+    svc.start();
+    expect(svc.cathayMore()).toBe(0);
+    await answer(0, { cathayPending: { items: fiftyDays(), total: 73, truncated: true } });
+    expect(svc.cathayMore()).toBe(23);
+    expect(svc.cathay()?.more).toBe(23);
+    // The note is not a task: 50 counted dates.
+    expect(svc.summary().total).toBe(50);
+  });
+  // ---- PR C fix round 1 -------------------------------------------------------------------------------------------
+
+  it('a round started on a later clock does not re-judge the previous 國泰 answer: no stale task until its own answer lands', async () => {
+    const latestRun: CathayRun = { run_at: '2026-10-27T06:41:00+08:00', result: 'ok', code: null, files_seen: 1, posted: 1 };
+    const runs: CathayRuns = { latest: latestRun, latest_ok: latestRun };
+    clockNow = new Date('2026-10-27T22:00:00+08:00');
+    const svc = service();
+    svc.start();
+    await answer(0, { cathayRuns: runs });
+    expect(ids(svc)).toEqual([]);
+    expect(svc.cathay()?.state).toBe('ok');
+    const view = svc.cathay();
+
+    // The page stays open overnight; a focus the next morning at 07:30 starts round 2, nothing answered yet.
+    clockNow = new Date('2026-10-28T07:30:00+08:00');
+    vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
+    svc.refresh({ reason: 'focus' });
+    TestBed.tick();
+    expect(svc.round()).toBe(2);
+    expect(ids(svc)).toEqual([]);
+    expect(svc.summary().total).toBe(0);
+    expect(svc.summary().tone).toBe('primary');
+    expect('import' in svc.badges()).toBe(false);
+    expect(svc.cathay()).toEqual(view);
+
+    // Round 2's answer (still yesterday's run) is judged with round 2's clock: stale.
+    await answer(1, { cathayRuns: runs });
+    expect(ids(svc)).toEqual(['cathay:run']);
+    expect(svc.cathay()?.state).toBe('stale');
+    expect(svc.badges()['import']?.label).toBe('國泰對帳單今天沒有執行');
+  });
+
+  it('a round started on the next day does not re-split the previous dividends answer until its own answer lands', async () => {
+    clockNow = new Date(2026, 9, 24, 23, 0, 0);
+    const svc = service();
+    svc.start();
+    const rows = { items: [dividend(1, '9901', '2026-10-25')], total: 1 };
+    await answer(0, { dividends: rows });
+    expect(ids(svc)).toEqual([]);
+    expect(svc.trackingRows().map(row => row.id)).toEqual(['dividends']);
+
+    clockNow = new Date(2026, 9, 25, 8, 0, 0);
+    vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
+    svc.refresh({ reason: 'focus' });
+    TestBed.tick();
+    expect(ids(svc)).toEqual([]);
+    expect(svc.trackingRows().map(row => row.id)).toEqual(['dividends']);
+    expect('dividends' in svc.badges()).toBe(false);
+
+    await answer(1, { dividends: rows });
+    expect(ids(svc)).toEqual(['div:batch']);
+    expect(svc.badges()['dividends']?.label).toBe('1 筆待確認收款');
+  });
+
+  it('a superseded round stops its dividend scan: no further page is requested, the new round settles on its own reads', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { dividends: { items: dueDividends(100), total: 350 } });
+    expect(getDividends).toHaveBeenCalledTimes(2);
+    expect(dividends.subjects[1].observed).toBe(true);
+
+    svc.invalidate();
+    // Round 1's open page is unsubscribed; landing it starts no page 3.
+    expect(dividends.subjects[1].observed).toBe(false);
+    land(dividends.subjects[1], { items: dueDividends(100, 101), total: 350 });
+    expect(getDividends.mock.calls.map(([query]) => query.offset)).toEqual([0, 100, 0]);
+
+    await answer(1, { dividends: 'skip' });
+    expect(svc.settledRound()).toBe(0);
+    land(dividends.subjects[2], { items: dueDividends(2), total: 2 });
+    TestBed.tick();
+    expect(svc.settledRound()).toBe(2);
+    expect(svc.failedSources()).toEqual([]);
+    expect(svc.tasks().map(task => task.title)).toEqual(['股利待確認收款 · 2 筆']);
+  });
+
+  describe('a malformed 200 body fails its source (never throws in a computed)', () => {
+    const bad: readonly [string, unknown][] = [
+      ['null', null],
+      ['{}', {}],
+      ['items not an array', { items: {}, total: 1, truncated: false }],
+    ];
+
+    const day = { trade_date: '2026-10-27', status: 'held', reason: null, since: null, last_at: null };
+    const badPending: readonly [string, unknown][] = [
+      ...bad,
+      ['a numeric trade_date', { items: [{ ...day, trade_date: 20261027 }], total: 1, truncated: false }],
+      ['an unknown status', { items: [{ ...day, status: 'weird' }], total: 1, truncated: false }],
+      ['a numeric reason', { items: [{ ...day, reason: 42 }], total: 1, truncated: false }],
+      ['an object reason', { items: [{ ...day, reason: { code: 'x' } }], total: 1, truncated: false }],
+      ['a numeric since', { items: [{ ...day, since: 1 }], total: 1, truncated: false }],
+      ['an array last_at', { items: [{ ...day, last_at: [] }], total: 1, truncated: false }],
+    ];
+
+    it.each(badPending)('國泰 pending %s → cathay failed, the round settles', async (_name, body) => {
+      const svc = service();
+      svc.start();
+      await answer(0, { cathayPending: body as CathayPending });
+      expect(svc.settledRound()).toBe(1);
+      expect(svc.failedSources()).toEqual(['cathay']);
+      expect(svc.cathay()).toBeNull();
+      expect(svc.cathayMore()).toBe(0);
+      expect(ids(svc)).toEqual([]);
+      expect(svc.badges()).toEqual({});
+    });
+
+    it.each([
+      ['null', null],
+      ['{}', {}],
+      ['latest without run_at', { latest: { result: 'ok' }, latest_ok: null }],
+      ['latest with an unparseable run_at', { latest: { run_at: 'not a time', result: 'failed', code: null, files_seen: 0, posted: 0 }, latest_ok: null }],
+      ['latest_ok with an unparseable run_at', {
+        latest: { run_at: '2026-10-28T06:41:00+08:00', result: 'failed', code: null, files_seen: 0, posted: 0 },
+        latest_ok: { run_at: '', result: 'ok', code: null, files_seen: 0, posted: 0 },
+      }],
+    ] as const)('國泰 runs %s → cathay failed, the round settles', async (_name, body) => {
+      const svc = service();
+      svc.start();
+      await answer(0, { cathayRuns: body as unknown as CathayRuns });
+      expect(svc.settledRound()).toBe(1);
+      expect(svc.failedSources()).toEqual(['cathay']);
+      expect(svc.cathay()).toBeNull();
+      expect(ids(svc)).toEqual([]);
+      expect(svc.badges()).toEqual({});
+    });
+
+    it.each(bad)('a dividends page %s → dividends failed, the round settles', async (_name, body) => {
+      const svc = service();
+      svc.start();
+      await answer(0, { dividends: body as Paged<Dividend> });
+      expect(svc.settledRound()).toBe(1);
+      expect(svc.failedSources()).toEqual(['dividends']);
+      expect(ids(svc)).toEqual([]);
+      expect(svc.trackingRows()).toEqual([]);
+      expect(svc.badges()).toEqual({});
+    });
+
+    it('a dividends page whose items hold a null row → dividends failed', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { dividends: { items: [null as unknown as Dividend], total: 1 } });
+      expect(svc.failedSources()).toEqual(['dividends']);
+      expect(ids(svc)).toEqual([]);
+    });
+  });
+
+  it('runs fails while pending is still open: the 國泰 source fails, the pending read is dropped, the round settles', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { cathayPending: 'skip', cathayRuns: 'error' });
+    expect(cathayPending.subjects[0].observed).toBe(false);
+    expect(svc.settledRound()).toBe(1);
+    expect(svc.failedSources()).toEqual(['cathay']);
+    expect(svc.cathay()).toBeNull();
   });
 });

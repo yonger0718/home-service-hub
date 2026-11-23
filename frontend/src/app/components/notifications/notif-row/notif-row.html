@@ -44,6 +44,7 @@
       [class.solid]="solid()"
       [routerLink]="l.route"
       [queryParams]="l.queryParams"
+      [fragment]="l.fragment"
       [attr.aria-label]="name(l.label)"
       >{{ l.label }}</a
     >
@@ -53,6 +54,7 @@
       class="notif-secondary"
       [routerLink]="s.route"
       [queryParams]="s.queryParams"
+      [fragment]="s.fragment"
       [attr.aria-label]="name(s.label)"
       >{{ s.label }}</a
     >

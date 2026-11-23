@@ -1,14 +1,18 @@
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Confirmation, ConfirmationService } from 'primeng/api';
 import { BehaviorSubject, Observable, of, Subject, throwError } from 'rxjs';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ImportHistoryService } from '../../../services/import-history.service';
 import { ToastService } from '../../../services/toast.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { BrokerCsvImportResult, ImportResult, ImportRow } from '../../../models/portfolio.model';
+import { NotificationCenterService } from '../../../services/notification-center.service';
+import { NO_TASKS, NotifSourceKey } from '../../notifications/notif-task';
+import { CathayView, cathayView } from '../../notifications/sources/cathay';
 import { PortfolioImportComponent } from './import';
 
 const preview: ImportResult = { parsed: 1, created: 1, skipped_duplicates: 0, dry_run: true, errors: [], created_ids: [], rows: [] };
@@ -47,16 +51,42 @@ const brokerNested: BrokerCsvImportResult = {
 describe('Portfolio import controls', () => {
   const service = { uploadCsv: vi.fn(), uploadBrokerCsv: vi.fn(), getRecalcStatus: vi.fn(), triggerRecalc: vi.fn(), verifyOverrideSymbol: vi.fn() };
   let query$: BehaviorSubject<ParamMap>;
+  let fragment$: BehaviorSubject<string | null>;
   let navigate: ReturnType<typeof vi.spyOn>;
+  /**
+   * The notification centre's reads: the 國泰 card's answered as "before the first round" (the card shows 讀取中…),
+   * the phone header bell's as nothing to do.
+   */
+  const center = {
+    summary: signal(NO_TASKS),
+    badges: signal({}),
+    cathay: signal<CathayView | null>(null),
+    loaded: signal(false),
+    loading: signal(false),
+    round: signal(0),
+    settledRound: signal(0),
+    failedSources: signal<readonly NotifSourceKey[]>([]),
+    refresh: vi.fn(),
+    invalidate: vi.fn(() => 1),
+  };
 
-  function setup(query: Record<string, string> = {}) {
+  function setup(query: Record<string, string> = {}, fragment: string | null = null) {
     query$ = new BehaviorSubject(convertToParamMap(query));
+    fragment$ = new BehaviorSubject<string | null>(fragment);
     TestBed.configureTestingModule({
       imports: [PortfolioImportComponent],
       providers: [
         provideRouter([]),
         { provide: PortfolioService, useValue: service },
-        { provide: ActivatedRoute, useValue: { queryParamMap: query$, get snapshot() { return { queryParamMap: query$.value }; } } },
+        { provide: NotificationCenterService, useValue: center },
+        {
+          provide: ActivatedRoute,
+          useValue: {
+            queryParamMap: query$,
+            fragment: fragment$,
+            get snapshot() { return { queryParamMap: query$.value, fragment: fragment$.value }; },
+          },
+        },
       ],
     });
     navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
@@ -87,6 +117,8 @@ describe('Portfolio import controls', () => {
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
+    center.cathay.set(null);
+    center.failedSources.set([]);
     service.uploadCsv.mockReturnValue(of(preview));
     service.uploadBrokerCsv.mockReturnValue(of(brokerPreview));
     service.getRecalcStatus.mockReturnValue(of({ state: 'idle' }));
@@ -806,6 +838,78 @@ describe('Portfolio import controls', () => {
       expect(component.type()).toBe('transactions');
       expect(component.committed()).toBe(true);
       expect(navigate).toHaveBeenCalledWith([], { queryParams: { type: 'transactions' }, replaceUrl: true });
+    });
+  });
+
+  describe('the 通知 centre after a write (the 匯入 task and dot follow at once)', () => {
+    it('pure reads never invalidate: a dry-run preview, a running → running poll', () => {
+      vi.useFakeTimers();
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+      const fixture = setup();
+      const component = fixture.componentInstance;
+      component.onSelect({ files: [new File(['x'], '測試匯入.csv')] });
+      component.preview();
+      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(5000);
+      expect(service.getRecalcStatus.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(center.invalidate).not.toHaveBeenCalled();
+      fixture.destroy();
+    });
+
+    it('opening the page on a failed recalc (a read) does not invalidate', () => {
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed' }));
+      setup();
+      expect(service.getRecalcStatus).toHaveBeenCalled();
+      expect(center.invalidate).not.toHaveBeenCalled();
+    });
+
+    it('a commit settling invalidates once: not before its answer, once on success, once on an error', () => {
+      const commit$ = new Subject<ImportResult>();
+      const fixture = setup();
+      const component = fixture.componentInstance;
+      component.onSelect({ files: [new File(['x'], '測試匯入.csv')] });
+      service.uploadCsv.mockReturnValue(commit$);
+      component.commit();
+      expect(center.invalidate).not.toHaveBeenCalled();
+      commit$.next({ ...preview, dry_run: false, recalc_scheduled: true }); commit$.complete();
+      expect(center.invalidate).toHaveBeenCalledTimes(1);
+
+      service.uploadCsv.mockReturnValue(of(preview));
+      component.onSelect({ files: [new File(['y'], '測試匯入.csv')] });
+      expect(center.invalidate).toHaveBeenCalledTimes(1);
+      service.uploadCsv.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 500 })));
+      component.commit();
+      expect(center.invalidate).toHaveBeenCalledTimes(2);
+    });
+
+    it('starting the recalc invalidates once when the trigger settles, ok or error', () => {
+      const fixture = setup();
+      const component = fixture.componentInstance;
+      const trigger$ = new Subject<unknown>();
+      service.triggerRecalc.mockReturnValueOnce(trigger$).mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 500 })));
+      component.retryRecalc();
+      expect(center.invalidate).not.toHaveBeenCalled();
+      trigger$.next({}); trigger$.complete();
+      expect(center.invalidate).toHaveBeenCalledTimes(1);
+
+      component.retryRecalc();
+      expect(center.invalidate).toHaveBeenCalledTimes(2);
+    });
+
+    it('the polled recalc leaving running invalidates once; the polls after it add nothing', () => {
+      vi.useFakeTimers();
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+      const fixture = setup();
+      vi.advanceTimersByTime(5000);
+      expect(center.invalidate).not.toHaveBeenCalled();
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', quote_refresh: { state: 'running' } }));
+      vi.advanceTimersByTime(5000);
+      expect(center.invalidate).toHaveBeenCalledTimes(1);
+      // Still polling for the quotes: the same failed import state again is not a change.
+      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(5000);
+      expect(center.invalidate).toHaveBeenCalledTimes(1);
+      fixture.destroy();
     });
   });
 
@@ -1614,14 +1718,15 @@ describe('Portfolio import controls', () => {
       });
 
       for (const mode of ['sheet', 'phone'] as const) {
-        it(`${mode}: the two cards render under the footer in the main column`, () => {
+        it(`${mode}: the three side cards (two bentos and the 國泰 card) render under the footer in the main column`, () => {
           const fixture = inModeWithFile(mode);
           const side = aside(fixture)!;
           const footer = el(fixture).querySelector('.imp-footer')!;
           expect(side.parentElement).toBe(footer.parentElement);
           expect(footer.compareDocumentPosition(side) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
           expect(el(fixture).querySelector('.imp-layout > aside')).toBeNull();
-          expect(side.querySelectorAll('app-bento').length).toBe(2);
+          expect(side.querySelectorAll(':scope > app-bento').length).toBe(2);
+          expect(side.querySelectorAll(':scope > app-cathay-status-card').length).toBe(1);
         });
 
         it(`${mode}: with the recalc card visible the order is footer → 匯入並重算 → side cards`, () => {
@@ -1637,6 +1742,18 @@ describe('Portfolio import controls', () => {
         });
       }
 
+      for (const mode of ['panes', 'sheet', 'phone'] as const) {
+        it(`${mode}: the 國泰每日對帳單 card is the side column's third card, after 最近匯入`, () => {
+          const fixture = inModeWithFile(mode);
+          const side = aside(fixture)!;
+          const cards = Array.from(side.children).map(c =>
+            c.tagName === 'APP-CATHAY-STATUS-CARD' ? 'cathay' : c.classList.contains('recent-card') ? 'recent' : c.classList.contains('after-card') ? 'after' : c.tagName);
+          expect(cards).toEqual(['after', 'recent', 'cathay']);
+          expect(norm(side.querySelector('app-cathay-status-card app-bento h2')?.textContent)).toBe('國泰每日對帳單');
+          expect(side.parentElement?.classList.contains('imp-layout')).toBe(mode === 'panes');
+        });
+      }
+
       it('panes: the recalc card stays in the main column, not in the side column', () => {
         service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed' }));
         const fixture = inMode('panes');
@@ -1646,6 +1763,171 @@ describe('Portfolio import controls', () => {
         expect(aside(fixture)!.contains(card)).toBe(false);
         expect(aside(fixture)!.parentElement?.classList).toContain('imp-layout');
       });
+    });
+  });
+  describe('#cathay (查看 on a 國泰 row of 通知)', () => {
+    /** A healthy 國泰 answer (the card shows its run line). */
+    const ANSWER = cathayView(
+      { items: [], total: 0, truncated: false },
+      { latest: { run_at: '2026-10-28T22:41:00Z', result: 'ok', code: null, files_seen: 1, posted: 1 }, latest_ok: null },
+      new Date('2026-10-29T02:00:00Z'),
+    );
+    const card = (fixture: { nativeElement: HTMLElement }) => el(fixture).querySelector<HTMLElement>('app-cathay-status-card');
+
+    function spyScroll() {
+      const proto = Element.prototype as { scrollIntoView?: unknown };
+      const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+      proto.scrollIntoView = () => undefined;
+      const spy = vi.spyOn(Element.prototype, 'scrollIntoView');
+      onTestFinished(() => {
+        spy.mockRestore();
+        if (original) {
+          Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+        } else {
+          delete proto.scrollIntoView;
+        }
+      });
+      return spy;
+    }
+    const rendered = async (fixture: { detectChanges(): void; whenStable(): Promise<unknown> }) => {
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+    };
+
+    it('the card is the fragment target: id cathay, tabindex -1, a region named 國泰每日對帳單', () => {
+      const host = card(setup())!;
+      expect(host.id).toBe('cathay');
+      expect(host.getAttribute('tabindex')).toBe('-1');
+      expect(host.getAttribute('role')).toBe('region');
+      expect(host.getAttribute('aria-label')).toBe('國泰每日對帳單');
+    });
+
+    it('opened with #cathay: once the 國泰 answer is shown the card scrolls into view and takes focus, once', async () => {
+      const scroll = spyScroll();
+      center.cathay.set(ANSWER);
+      const fixture = setup({}, 'cathay');
+      await vi.waitFor(async () => {
+        await rendered(fixture);
+        expect(scroll).toHaveBeenCalledTimes(1);
+      });
+      const host = card(fixture)!;
+      expect(scroll.mock.contexts[0]).toBe(host);
+      expect(scroll.mock.calls[0][0]).toEqual({ block: 'start' });
+      expect(document.activeElement).toBe(host);
+      host.blur();
+
+      // A new 國泰 answer (a later round) and the same fragment again: no second scroll, no focus taken.
+      center.cathay.set({ ...ANSWER });
+      fragment$.next('cathay');
+      await rendered(fixture);
+      await new Promise<void>(r => setTimeout(r));
+      await rendered(fixture);
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).not.toBe(host);
+      fixture.nativeElement.remove();
+    });
+
+    it('#cathay before the 國泰 answer: nothing until it lands (or the source fails), then scroll and focus', async () => {
+      const scroll = spyScroll();
+      const fixture = setup({}, 'cathay');
+      await rendered(fixture);
+      await new Promise<void>(r => setTimeout(r));
+      await rendered(fixture);
+      expect(scroll).not.toHaveBeenCalled();
+
+      center.failedSources.set(['cathay']);
+      await vi.waitFor(async () => {
+        await rendered(fixture);
+        expect(scroll).toHaveBeenCalledTimes(1);
+      });
+      expect(document.activeElement).toBe(card(fixture));
+    });
+
+    // The answer can take seconds (up to the 20 s limit): a user who starts using the page keeps their place.
+    it.each([
+      ['a key press', () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))],
+      ['a press', () => document.dispatchEvent(new Event('pointerdown', { bubbles: true }))],
+      ['a wheel scroll', () => document.dispatchEvent(new Event('wheel', { bubbles: true }))],
+      ['a touch scroll', () => document.dispatchEvent(new Event('touchmove', { bubbles: true }))],
+    ])('#cathay, then %s before the 國泰 answer: the late answer or failure neither scrolls nor takes focus', async (_name, act) => {
+      for (const land of [() => center.cathay.set(ANSWER), () => center.failedSources.set(['cathay'])]) {
+        const scroll = spyScroll();
+        const fixture = setup({}, 'cathay');
+        await rendered(fixture);
+        const other = el(fixture).querySelector<HTMLElement>('button, input, a')!;
+        act();
+        other.focus();
+        expect(document.activeElement).toBe(other);
+
+        land();
+        await rendered(fixture);
+        await new Promise<void>(r => setTimeout(r));
+        await rendered(fixture);
+        expect(scroll).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(other);
+
+        // Still once per fragment: a later answer does not jump either.
+        center.cathay.set({ ...ANSWER });
+        await rendered(fixture);
+        await new Promise<void>(r => setTimeout(r));
+        expect(scroll).not.toHaveBeenCalled();
+        scroll.mockRestore();
+        center.cathay.set(null);
+        center.failedSources.set([]);
+        fixture.destroy();
+        fixture.nativeElement.remove();
+        TestBed.resetTestingModule();
+      }
+    });
+
+    it('#cathay, focus moved to a control without any key or press: the late answer leaves focus and scroll alone', async () => {
+      const scroll = spyScroll();
+      const fixture = setup({}, 'cathay');
+      await rendered(fixture);
+      const other = el(fixture).querySelector<HTMLElement>('button, input, a')!;
+      other.focus();
+      center.cathay.set(ANSWER);
+      await rendered(fixture);
+      await new Promise<void>(r => setTimeout(r));
+      await rendered(fixture);
+      expect(scroll).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(other);
+      fixture.nativeElement.remove();
+    });
+
+    it('a key press AFTER the jump does not matter, and the listeners are gone once the answer landed', async () => {
+      const added = vi.spyOn(document, 'addEventListener');
+      const scroll = spyScroll();
+      const fixture = setup({}, 'cathay');
+      await rendered(fixture);
+      const signals = added.mock.calls.filter(c => c[0] === 'keydown').map(c => (c[2] as AddEventListenerOptions).signal!);
+      expect(signals.length).toBe(1);
+      expect(signals[0].aborted).toBe(false);
+      center.cathay.set(ANSWER);
+      await vi.waitFor(async () => {
+        await rendered(fixture);
+        expect(scroll).toHaveBeenCalledTimes(1);
+      });
+      expect(signals[0].aborted).toBe(true);
+      added.mockRestore();
+      fixture.nativeElement.remove();
+    });
+
+    it('without the fragment (or another one) nothing scrolls and focus stays', async () => {
+      const scroll = spyScroll();
+      center.cathay.set(ANSWER);
+      const before = document.activeElement;
+      const fixture = setup({}, null);
+      await rendered(fixture);
+      await new Promise<void>(r => setTimeout(r));
+      await rendered(fixture);
+      fragment$.next('other');
+      await rendered(fixture);
+      await new Promise<void>(r => setTimeout(r));
+      await rendered(fixture);
+      expect(scroll).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(before);
     });
   });
 });

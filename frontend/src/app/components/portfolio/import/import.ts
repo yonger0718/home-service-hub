@@ -1,5 +1,19 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  ElementRef,
+  Injector,
+  OnDestroy,
+  OnInit,
+  afterNextRender,
+  computed,
+  effect,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
@@ -17,6 +31,7 @@ import { TooltipModule } from 'primeng/tooltip';
 
 import { BrokerCsvImportResult, ImportResult, OverrideStatus, RecalcStatus, UnresolvedName } from '../../../models/portfolio.model';
 import { ImportHistoryService } from '../../../services/import-history.service';
+import { NotificationCenterService } from '../../../services/notification-center.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { injectToasts, toastText } from '../../../services/toast.service';
@@ -30,6 +45,8 @@ import { SideTagComponent } from '../../ui/side-tag/side-tag';
 import { TagComponent } from '../../ui/tag/tag';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BannerComponent } from '../../ui/banner/banner';
+import { CATHAY_CARD_FRAGMENT } from '../../notifications/sources/cathay';
+import { CathayStatusCardComponent } from './cathay-status-card/cathay-status-card';
 import {
   ImportRowError,
   ImportType,
@@ -94,6 +111,7 @@ interface UploadRequest {
     SegToggleComponent,
     SideTagComponent,
     TagComponent,
+    CathayStatusCardComponent,
   ],
   providers: [ConfirmationService],
   templateUrl: './import.html',
@@ -115,7 +133,22 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private route = inject(ActivatedRoute);
   private router = inject(Router);
   private history = inject(ImportHistoryService);
+  /**
+   * The 匯入 task and dot read the recalc status (and this device's last failure) in the centre's own rounds, and no
+   * change signal tells it about this page's writes: a settled commit, a settled recalc trigger and a polled recalc
+   * leaving `running` each call `invalidate()` once. Reads (dry runs, page open, a poll that sees no change) never do,
+   * and the centre's rounds never drive this page, so it cannot loop.
+   */
+  private readonly center = inject(NotificationCenterService);
   private layout = inject(LayoutModeService);
+  private readonly host: HTMLElement = inject(ElementRef).nativeElement;
+  private readonly injector = inject(Injector);
+  private readonly fragment = toSignal(this.route.fragment, { initialValue: this.route.snapshot.fragment });
+  /** The `#cathay` already acted on: a fragment acts once (a new 國泰 answer, or the same fragment again, does not). */
+  private shownFragment: string | null = null;
+  /** Listeners armed while `#cathay` waits for the 國泰 answer; `userMoved` is set by the first key, press or scroll. */
+  private userMoveWatch: AbortController | null = null;
+  private userMoved = false;
 
   readonly typeOptions: SegToggleOption[] = [
     { value: 'transactions', label: '交易' },
@@ -212,11 +245,74 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private urlTypeIgnored = false;
 
   constructor() {
+    // 查看 on a 國泰 row of 通知 (`#cathay`): once the card shows the 國泰 answer (or its failure), it scrolls into view
+    // and takes focus — once per fragment, as reward-rules' `#card-<id>`. On a phone the card is the page's last thing.
+    effect(() => {
+      const fragment = this.fragment();
+      if (fragment !== CATHAY_CARD_FRAGMENT) {
+        this.shownFragment = null;
+        this.stopWatchingUserMove();
+        return;
+      }
+      if (fragment === this.shownFragment) {
+        return;
+      }
+      const answered = this.center.cathay() !== null || this.center.failedSources().includes('cathay');
+      if (!answered) {
+        // The answer can take seconds: a user who starts using the page meanwhile keeps their place.
+        this.watchForUserMove();
+        return;
+      }
+      this.shownFragment = fragment;
+      const moved = this.userMoved;
+      this.stopWatchingUserMove();
+      if (!moved) {
+        afterNextRender(() => this.showCathayCard(), { injector: this.injector });
+      }
+    });
     // The instance is reused when the sidebar links to /portfolio/import without a query: follow ?type= for its whole life.
     this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe(params => {
       const next = typeFromQuery(params.get('type'));
       if (next !== this.type() && !this.applyType(next)) this.urlTypeIgnored = true;
     });
+  }
+
+  /** Scrolls the 國泰每日對帳單 card into view and focuses it (the host has tabindex -1). */
+  private showCathayCard(): void {
+    const card = this.host.querySelector<HTMLElement>(`app-cathay-status-card#${CATHAY_CARD_FRAGMENT}`);
+    if (!card) {
+      return;
+    }
+    // Focus that already sits on a control (moved without a key or pointer event) is the user's: leave it and the scroll.
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== card && !card.contains(active)) {
+      return;
+    }
+    card.scrollIntoView?.({ block: 'start' });
+    card.focus({ preventScroll: true });
+  }
+
+  /** While `#cathay` waits for the 國泰 answer: a key, a press or a scroll gesture anywhere cancels the jump. */
+  private watchForUserMove(): void {
+    if (this.userMoveWatch) {
+      return;
+    }
+    const watch = new AbortController();
+    this.userMoveWatch = watch;
+    this.userMoved = false;
+    const moved = () => {
+      this.userMoved = true;
+      watch.abort();
+    };
+    for (const type of ['pointerdown', 'keydown', 'wheel', 'touchmove']) {
+      document.addEventListener(type, moved, { capture: true, passive: true, signal: watch.signal });
+    }
+  }
+
+  private stopWatchingUserMove(): void {
+    this.userMoveWatch?.abort();
+    this.userMoveWatch = null;
+    this.userMoved = false;
   }
 
   detectedFormatLabel(): string | null {
@@ -234,6 +330,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.destroyed = true;
     this.stopPolling();
+    this.stopWatchingUserMove();
   }
 
   /** From the 匯入類型 toggle: switch, then mirror the choice into ?type=. */
@@ -505,10 +602,13 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     this.recalcSubmitting.set(true);
     this.portfolioService.triggerRecalc().pipe(finalize(() => this.recalcSubmitting.set(false))).subscribe({
       next: () => {
+        this.center.invalidate();
         this.recalcToastId = this.toasts.progress('資料重算執行中…');
         this.startPolling();
       },
       error: err => {
+        // The trigger may have started the chain.
+        this.center.invalidate();
         this.recalcFailToastId = this.toasts.error(toastText('重算觸發失敗', importErrorDetail(err)), {
           retry: retryOnNetwork(err, () => this.retryRecalc()),
         });
@@ -584,6 +684,8 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private settle(dryRun: boolean): void {
     if (dryRun) return;
     this.committing.set(false);
+    // Success or error (it may have committed): the recalc chain and the device's last attempt changed.
+    this.center.invalidate();
     if (!this.urlTypeIgnored) return;
     this.urlTypeIgnored = false;
     if (typeFromQuery(this.route.snapshot.queryParamMap.get('type')) !== this.type()) {
@@ -714,6 +816,8 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
       next: status => {
         const prevState = this.recalcStatus().state;
         this.recalcStatus.set(status);
+        // The chain this page watched has ended (completed / partial / failed): the 匯入 task and dot follow now.
+        if (prevState === 'running' && status.state !== 'running') this.center.invalidate();
         // A newer status supersedes a 失敗 toast that still offers 重試; the same unresolved failure does not.
         const prevFailKey = this.recalcFailKey;
         const sameFailure = status.state === 'partial' && prevFailKey !== null

@@ -1,16 +1,19 @@
 export type NotifTier = 'overdue' | 'today' | 'confirm' | 'system' | 'tracking';
 export type NotifSource = 'ledger' | 'portfolio';
-export type NotifSourceKey = 'bills' | 'schedules' | 'recon' | 'importReview' | 'debts';
+export type NotifSourceKey = 'bills' | 'schedules' | 'recon' | 'importReview' | 'debts' | 'dividends' | 'imports' | 'cathay';
 
 export interface NotifLink {
   readonly label: string;
   readonly route: string;
   readonly queryParams?: Readonly<Record<string, string>>;
+  /** A `#fragment` on the route (never sent to the server). */
+  readonly fragment?: string;
 }
 
 export type NotifCommand =
   | { readonly kind: 'postInstance'; readonly instanceId: number; readonly name: string }
-  | { readonly kind: 'catchUp'; readonly definitionId: number; readonly name: string };
+  | { readonly kind: 'catchUp'; readonly definitionId: number; readonly name: string }
+  | { readonly kind: 'ackCathay'; readonly tradeDate: string; readonly name: string };
 
 export interface NotifCommandAction {
   readonly label: string;
@@ -42,7 +45,8 @@ export interface NotifTask {
 }
 
 export interface NotifTrackingRow {
-  readonly id: 'debts' | 'upcoming';
+  readonly id: 'debts' | 'upcoming' | 'dividends';
+  readonly source: NotifSource;
   readonly title: string;
   readonly meta: string;
   readonly count: number;
@@ -73,6 +77,9 @@ export const SOURCE_NAMES: Record<NotifSourceKey, string> = {
   recon: '對帳',
   importReview: '匯入檢查',
   debts: '借還款',
+  dividends: '股利',
+  imports: '匯入',
+  cathay: '國泰對帳單',
 };
 export const NO_TASKS: NotifSummary = { total: 0, overdue: 0, tone: 'primary', label: '通知' };
 

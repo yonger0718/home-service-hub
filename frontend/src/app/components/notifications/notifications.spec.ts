@@ -15,6 +15,7 @@ import { NavigationPreferencesService } from '../../services/navigation-preferen
 import { ToastService } from '../../services/toast.service';
 import { IMPORT_RUNNING_TOAST } from '../accounting/schedule-math';
 import { NotificationCenterService } from '../../services/notification-center.service';
+import { PortfolioService } from '../../services/portfolio.service';
 import { MATCH_MEDIA, PHONE_QUERY } from '../../services/layout-mode.service';
 import { NotifSourceKey, NotifSummary, NotifTask, NotifTier, NotifTrackingRow, summarize } from './notif-task';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
@@ -48,8 +49,8 @@ const TASKS: NotifTask[] = [
   task('d1', 'system', { source: 'portfolio', from: 'importReview' }),
 ];
 const ROWS: NotifTrackingRow[] = [
-  { id: 'debts', title: '借還款 · 3 位', meta: '甲、乙、丙', count: 3, link: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'debts' } } },
-  { id: 'upcoming', title: '即將到來 · 2 件', meta: '', count: 2, link: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'cards' } } },
+  { id: 'debts', source: 'ledger', title: '借還款 · 3 位', meta: '甲、乙、丙', count: 3, link: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'debts' } } },
+  { id: 'upcoming', source: 'ledger', title: '即將到來 · 2 件', meta: '', count: 2, link: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'cards' } } },
 ];
 
 describe('NotificationsComponent', () => {
@@ -63,6 +64,7 @@ describe('NotificationsComponent', () => {
   const overflow = signal<NotifTask | null>(null);
   const failedSources = signal<readonly NotifSourceKey[]>([]);
   const nextUpcoming = signal<NotifTask | null>(null);
+  const cathayMore = signal(0);
   const refresh = vi.fn();
   /** As the service: starts the next round and returns its id. */
   const invalidate = vi.fn(() => {
@@ -86,6 +88,15 @@ describe('NotificationsComponent', () => {
       return s.asObservable();
     }),
   };
+  /** One Subject per 確認, in call order. */
+  let acks: Subject<{ trade_date: string; ack_status: string }>[] = [];
+  const portfolio = {
+    ackCathayDay: vi.fn((_tradeDate: string) => {
+      const s = new Subject<{ trade_date: string; ack_status: string }>();
+      acks.push(s);
+      return s.asObservable();
+    }),
+  };
 
   const stub = {
     tasks,
@@ -99,6 +110,7 @@ describe('NotificationsComponent', () => {
     overflow,
     failedSources,
     nextUpcoming,
+    cathayMore,
     summary: computed<NotifSummary>(() => summarize(tasks())),
     badges: signal({}),
     refresh,
@@ -118,6 +130,7 @@ describe('NotificationsComponent', () => {
         provideRouter([]),
         { provide: NotificationCenterService, useValue: stub },
         { provide: AccountingService, useValue: accounting },
+        { provide: PortfolioService, useValue: portfolio },
         {
           provide: MATCH_MEDIA,
           useValue: (q: string) =>
@@ -145,12 +158,15 @@ describe('NotificationsComponent', () => {
     overflow.set(null);
     failedSources.set([]);
     nextUpcoming.set(null);
+    cathayMore.set(0);
     refresh.mockClear();
     invalidate.mockClear();
     accounting.postScheduleInstance.mockClear();
     accounting.catchUpSchedule.mockClear();
     posts = [];
     catchUps = [];
+    portfolio.ackCathayDay.mockClear();
+    acks = [];
   });
   afterEach(() => TestBed.resetTestingModule());
 
@@ -1472,6 +1488,308 @@ describe('NotificationsComponent', () => {
         expect(button(root, RENT.id).disabled).toBe(false);
         expect(document.activeElement).toBe(control(root, RENT.id));
       });
+    });
+  });
+
+  describe('投資: 已處理 for a 國泰 date, tracking rows by source, the 國泰 note', () => {
+    let logged: { mock: { calls: unknown[][] }; mockRestore(): void };
+    beforeEach(() => {
+      logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    });
+    afterEach(() => {
+      logged.mockRestore();
+      fixture?.nativeElement.remove();
+    });
+
+    const CATHAY = task('cathay:2026-10-28', 'system', {
+      source: 'portfolio',
+      from: 'cathay',
+      icon: 'pi-file',
+      title: '國泰對帳單 10/28',
+      when: '保留',
+      meta: '自 10/28 起',
+      amount: null,
+      primary: { label: '已處理', command: { kind: 'ackCathay', tradeDate: '2026-10-28', name: '國泰對帳單 10/28' } },
+      secondary: [{ label: '查看', route: '/portfolio/import', fragment: 'cathay' }],
+      sortKey: '2026-10-28',
+    });
+    const DIV = task('div:batch', 'confirm', {
+      source: 'portfolio',
+      from: 'dividends',
+      icon: 'pi-percentage',
+      title: '股利待確認收款 · 2 筆',
+      when: '最早 10/20 發放',
+      meta: '9901、9902',
+      amount: null,
+      primary: { label: '查看', route: '/portfolio/dividends', queryParams: { status: 'pending' } },
+    });
+    const IMPORT = task('import:fail:9', 'system', {
+      source: 'portfolio',
+      from: 'imports',
+      icon: 'pi-upload',
+      title: '最近一次匯入失敗',
+      when: '10/27 21:05',
+      meta: '測試匯入.csv',
+      amount: null,
+      primary: { label: '查看', route: '/portfolio/import' },
+    });
+    const MIXED = [task('a1', 'overdue'), task('b1', 'today'), DIV, IMPORT, CATHAY];
+    const DIV_ROW: NotifTrackingRow = {
+      id: 'dividends',
+      source: 'portfolio',
+      title: '股利待發放 · 3 筆',
+      meta: '9901 11/05 · 9902 11/12 · 9903 日期未定',
+      count: 3,
+      link: { label: '查看', route: '/portfolio/dividends', queryParams: { status: 'pending' } },
+    };
+
+    let toasts: ToastService;
+    const q = (root: HTMLElement, sel: string) => root.querySelector<HTMLElement>(sel);
+    const chips = (root: HTMLElement) => Array.from(root.querySelectorAll<HTMLButtonElement>('.notif-chips button'));
+    const ids = (root: HTMLElement) => Array.from(root.querySelectorAll('app-notif-row')).map(r => r.getAttribute('data-task-id'));
+    const ack = (root: HTMLElement) =>
+      q(root, `app-notif-row[data-task-id="${CATHAY.id}"]`)!.querySelector<HTMLButtonElement>(NOTIF_PRIMARY_CONTROL)!;
+    const answer = async () => {
+      acks[0].next({ trade_date: '2026-10-28', ack_status: 'held' });
+      acks[0].complete();
+      await settle();
+    };
+    const fail = async (status: number, error: unknown = null, index = 0) => {
+      acks[index].error(new HttpErrorResponse({ status, error, url: '/api/portfolio/imports/cathay-statement/days/2026-10-28/ack' }));
+      await settle();
+    };
+    const settleRound = async (id: number) => {
+      round.set(Math.max(round(), id));
+      settledRound.set(id);
+      await settle();
+    };
+
+    function open(list: readonly NotifTask[] = MIXED): HTMLElement {
+      tasks.set(list);
+      const root = mount();
+      document.body.appendChild(root);
+      toasts = TestBed.inject(ToastService);
+      return root;
+    }
+
+    it('投資 chip: only the dividend, import and 國泰 tasks remain, and the chip reads 投資，3 件', async () => {
+      const root = open();
+      expect(chips(root)[2].getAttribute('aria-label')).toBe('投資，3 件');
+      chips(root)[2].click();
+      await settle();
+      expect(ids(root)).toEqual(['div:batch', 'import:fail:9', 'cathay:2026-10-28']);
+      expect(chips(root)[0].getAttribute('aria-label')).toBe('全部，5 件');
+    });
+
+    it('a 系統 section holds the 國泰 rows with 已處理 as a button named 已處理：國泰對帳單 10/28 and 查看 as a link to the card (#cathay)', () => {
+      const root = open();
+      const system = Array.from(root.querySelectorAll('section.notif-section')).find(s => text(s.querySelector('h2')).startsWith('系統'))!;
+      expect(text(system.querySelector('h2'))).toBe('系統 2');
+      const row = system.querySelector(`app-notif-row[data-task-id="${CATHAY.id}"]`)!;
+      const button = row.querySelector(NOTIF_PRIMARY_CONTROL)!;
+      expect(button.tagName).toBe('BUTTON');
+      expect(text(button)).toBe('已處理');
+      expect(button.getAttribute('aria-label')).toBe('已處理：國泰對帳單 10/28');
+      const look = row.querySelector('a.notif-secondary')!;
+      expect(text(look)).toBe('查看');
+      expect(look.getAttribute('href')).toBe('/portfolio/import#cathay');
+    });
+
+    it('已處理 calls ackCathayDay("2026-10-28") once, the row is busy, then 已處理：國泰對帳單 10/28 and one invalidate()', async () => {
+      round.set(4);
+      settledRound.set(4);
+      const root = open();
+      ack(root).click();
+      await settle();
+      expect(portfolio.ackCathayDay).toHaveBeenCalledTimes(1);
+      expect(portfolio.ackCathayDay).toHaveBeenCalledWith('2026-10-28');
+      expect(accounting.postScheduleInstance).not.toHaveBeenCalled();
+      expect(accounting.catchUpSchedule).not.toHaveBeenCalled();
+      expect(ack(root).disabled).toBe(true);
+      expect(invalidate).not.toHaveBeenCalled();
+      await answer();
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：國泰對帳單 10/28', action: null }));
+      // An ack bumps no change signal: the page re-reads itself, once.
+      expect(invalidate).toHaveBeenCalledTimes(1);
+      expect(refresh).toHaveBeenCalledTimes(1); // the open only
+      expect(round()).toBe(5);
+      expect(ack(root).disabled).toBe(true);
+      // The round read before the invalidate settling does not release the row; the re-read does.
+      settledRound.set(4);
+      await settle();
+      expect(ack(root).disabled).toBe(true);
+      await settleRound(5);
+      expect(ack(root).disabled).toBe(false);
+      // …and once that round's list leaves the date out, the row is gone.
+      tasks.set(MIXED.filter(t => t.id !== CATHAY.id));
+      await settle();
+      expect(q(root, `app-notif-row[data-task-id="${CATHAY.id}"]`)).toBeNull();
+    });
+
+    it('a second press while busy sends nothing', async () => {
+      const root = open();
+      ack(root).click();
+      ack(root).click();
+      await settle();
+      expect(portfolio.ackCathayDay).toHaveBeenCalledTimes(1);
+      const page = fixture.componentInstance as unknown as { onRun(t: NotifTask, c: unknown): void };
+      page.onRun(CATHAY, (CATHAY.primary as { command: unknown }).command);
+      expect(portfolio.ackCathayDay).toHaveBeenCalledTimes(1);
+    });
+
+    it('404 reads as done: 國泰對帳單 10/28：已經不需要處理, no 重試, invalidate() called', async () => {
+      round.set(4);
+      settledRound.set(3);
+      const root = open();
+      ack(root).click();
+      await settle();
+      await fail(404, { detail: 'Not Found' });
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要處理', action: null }));
+      expect(invalidate).toHaveBeenCalledTimes(1);
+      expect(round()).toBe(5);
+      expect(logged.mock.calls.length).toBe(0);
+      expect(ack(root).disabled).toBe(true);
+      settledRound.set(4);
+      await settle();
+      expect(ack(root).disabled).toBe(true);
+      await settleRound(5);
+      expect(ack(root).disabled).toBe(false);
+    });
+
+    it('500: 失敗 toast 國泰對帳單 10/28 標記失敗 with 重試; the raw body goes to console.error, not the toast', async () => {
+      const root = open();
+      ack(root).click();
+      await settle();
+      await fail(500, { message: 'Internal Server Error: db down' });
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: expect.objectContaining({ label: '重試' }) }),
+      );
+      expect(root.textContent).not.toContain('db down');
+      expect(document.body.textContent).not.toContain('db down');
+      expect(logged.mock.calls.length).toBe(1);
+      expect(String(logged.mock.calls[0][0])).toContain(CATHAY.id);
+      expect(logged.mock.calls[0][1]).toBeInstanceOf(HttpErrorResponse);
+      // An error bumps nothing, and the ack may have committed: the page re-reads.
+      expect(invalidate).toHaveBeenCalledTimes(1);
+      expect(ack(root).disabled).toBe(true);
+    });
+
+    it('403: 失敗 toast without 重試', async () => {
+      const root = open();
+      ack(root).click();
+      await settle();
+      await fail(403, { detail: 'write scope required' });
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: null }));
+      expect(root.textContent).not.toContain('write scope');
+      expect(invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it('a reason the app words itself is appended: 409 import_running', async () => {
+      const root = open();
+      ack(root).click();
+      await settle();
+      await fail(409, { code: 'CONFLICT', message: 'import_running' });
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'error', text: `國泰對帳單 10/28 標記失敗：${IMPORT_RUNNING_TOAST}`, action: null }),
+      );
+    });
+
+    it('重試 re-sends the captured date; while the row is busy it re-raises the toast instead', async () => {
+      const root = open();
+      ack(root).click();
+      await settle();
+      await fail(500);
+      const first = toasts.current()!.id;
+      toasts.runAction(first);
+      await settle();
+      expect(portfolio.ackCathayDay).toHaveBeenCalledTimes(1);
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'error', text: '國泰對帳單 10/28 標記失敗', action: expect.objectContaining({ label: '重試' }) }),
+      );
+      expect(toasts.current()!.id).not.toBe(first);
+      await settleRound(2);
+      expect(ack(root).disabled).toBe(false);
+      // The row may have left by now (the ack had committed): 重試 still sends the captured date.
+      tasks.set(MIXED.filter(t => t.id !== CATHAY.id));
+      await settle();
+      toasts.runAction(toasts.current()!.id);
+      await settle();
+      expect(portfolio.ackCathayDay.mock.calls).toEqual([['2026-10-28'], ['2026-10-28']]);
+      await fail(404, null, 1);
+      expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要處理', action: null }));
+    });
+
+    it('the dividends tracking row shows under 全部 and 投資, the ledger rows under 全部 and 財務', async () => {
+      trackingRows.set([...ROWS, DIV_ROW]);
+      const root = open();
+      const titles = () => Array.from(root.querySelectorAll('.tracking-title')).map(t => text(t));
+      expect(titles()).toEqual(['借還款 · 3 位', '即將到來 · 2 件', '股利待發放 · 3 筆']);
+      expect(text(q(root, '.tracking-sum'))).toBe('借還款 3 位 · 即將到來 2 件 · 股利 3 筆');
+      chips(root)[2].click();
+      await settle();
+      expect(titles()).toEqual(['股利待發放 · 3 筆']);
+      expect(text(q(root, '.tracking-sum'))).toBe('股利 3 筆');
+      expect(q(root, 'a.tracking-link')?.getAttribute('href')).toBe('/portfolio/dividends?status=pending');
+      chips(root)[1].click();
+      await settle();
+      expect(titles()).toEqual(['借還款 · 3 位', '即將到來 · 2 件']);
+      expect(text(q(root, '.tracking-sum'))).toBe('借還款 3 位 · 即將到來 2 件');
+    });
+
+    it("the all-clear's 下一件 stays ledger-only; under 投資 its tracking link counts the dividends row", async () => {
+      trackingRows.set([...ROWS, DIV_ROW]);
+      nextUpcoming.set(task('bill:11:2026-10-27', 'tracking', { title: '測試銀行卡帳單', when: '10/27 截止', amount: '$1,824' }));
+      const root = open([]);
+      expect(text(q(root, '.empty-next'))).toBe('下一件：測試銀行卡帳單 · 10/27 截止 · $1,824');
+      expect(text(q(root, '.empty-tracking'))).toBe('看追蹤中的 8 件 ›');
+      chips(root)[2].click();
+      await settle();
+      expect(q(root, '.notif-empty h2')).not.toBeNull();
+      expect(q(root, '.empty-next')).toBeNull();
+      expect(text(q(root, '.empty-tracking'))).toBe('看追蹤中的 3 件 ›');
+    });
+
+    it('cathayMore 23: 還有 23 天未列出，處理完上面的會接著顯示 (no link) under 全部 and 投資, not under 財務, and no count includes it', async () => {
+      cathayMore.set(23);
+      const root = open();
+      const note = () => q(root, 'p.notif-overflow.notif-overflow--portfolio');
+      expect(text(note())).toBe('還有 23 天未列出，處理完上面的會接著顯示');
+      expect(note()!.querySelector('a')).toBeNull();
+      expect(note()!.closest('section')).toBeNull();
+      expect(note()!.previousElementSibling?.matches('section.notif-section')).toBe(true);
+      // Never counted: chips, sections and subtitle are the rows' numbers.
+      expect(chips(root).map(c => c.getAttribute('aria-label'))).toEqual(['全部，5 件', '財務，2 件', '投資，3 件']);
+      expect(subtitle(root)).toContain('5 件要處理');
+      expect(root.querySelectorAll('app-notif-row').length).toBe(5);
+      chips(root)[2].click();
+      await settle();
+      expect(text(note())).toBe('還有 23 天未列出，處理完上面的會接著顯示');
+      chips(root)[1].click();
+      await settle();
+      expect(note()).toBeNull();
+    });
+
+    it('the 國泰 note comes after the ledger overflow note', () => {
+      cathayMore.set(23);
+      truncated.set(true);
+      overflow.set(task('recon:more', 'confirm', { from: 'recon', title: '還有 12 筆對帳項目未列出', when: '', primary: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } } }));
+      const root = open();
+      const notes = Array.from(root.querySelectorAll('p.notif-overflow'));
+      expect(notes.map(n => text(n))).toEqual(['還有 12 筆對帳項目未列出 · 到提醒中心查看 ›', '還有 23 天未列出，處理完上面的會接著顯示']);
+    });
+
+    it('cathayMore 0 or the page still pending: no portfolio note', async () => {
+      const root = open();
+      expect(q(root, '.notif-overflow--portfolio')).toBeNull();
+      root.remove();
+      TestBed.resetTestingModule();
+      cathayMore.set(23);
+      loaded.set(false);
+      const pendingRoot = open([]);
+      expect(q(pendingRoot, '.notif-overflow--portfolio')).toBeNull();
+      loaded.set(true);
+      await settle();
+      expect(text(q(pendingRoot, '.notif-overflow--portfolio'))).toBe('還有 23 天未列出，處理完上面的會接著顯示');
     });
   });
 

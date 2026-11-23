@@ -1,9 +1,11 @@
 import { Component, ElementRef, Injector, OnDestroy, OnInit, afterNextRender, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { ActivatedRoute } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Subscription, catchError, finalize, of } from 'rxjs';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { NotificationCenterService } from '../../../services/notification-center.service';
 import { injectToasts, toastText } from '../../../services/toast.service';
 import { guardedRetry } from '../../../services/toast-retry';
 import { BrokerAccount, Dividend, DividendQuery, ExDividendRecord } from '../../../models/portfolio.model';
@@ -76,6 +78,11 @@ const STATUS_OPTIONS: SegToggleOption[] = [
   { value: 'legacy', label: '舊資料' },
 ];
 
+/** `?status=` opens the page pre-filtered (read once); anything but a known status is 全部. */
+function initialStatus(param: string | null): DividendStatusFilter {
+  return param === 'pending' || param === 'confirmed' || param === 'legacy' ? param : 'all';
+}
+
 const SOURCE_OPTIONS = [
   { value: 'manual', label: '手動' },
   { value: 'auto:TWT49U', label: '自動 (TWSE)' },
@@ -99,6 +106,13 @@ const SOURCE_OPTIONS = [
 })
 export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
+  /**
+   * A write here that can change a dividend's receipt status or payment date (確認收款, create, update, delete) bumps no
+   * change signal the centre watches: the page calls `invalidate()` once when the write settles, on success and on
+   * error (it may have committed), so the 股利 task, dot and 通知 count follow. Reads never call it, and the centre's
+   * round never drives this page, so it cannot loop. 修改扣款 changes neither field and does not call it.
+   */
+  private readonly center = inject(NotificationCenterService);
   private confirmationService = inject(ConfirmationService);
   private readonly toasts = injectToasts();
   private layoutMode = inject(LayoutModeService);
@@ -171,7 +185,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   });
 
   /** Status SegToggle; any value but 全部 lists the filter-wide set (Decision 7), paged client-side from `statusOffset` (reset by every `loadAll`). */
-  readonly status = signal<DividendStatusFilter>('all');
+  readonly status = signal<DividendStatusFilter>(initialStatus(inject(ActivatedRoute).snapshot.queryParamMap.get('status')));
   private readonly statusOffset = signal(0);
   /** The selected status's rows of the filter-wide set; null on 全部 or while the set is not loaded. */
   readonly statusSet = computed(() => {
@@ -271,6 +285,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
         this.focusRowButton(row.id);
       }
       this.reload({ silent });
+      this.center.invalidate();
     };
     this.receiptSub?.unsubscribe();
     this.receiptSub = this.portfolioService.confirmDividendReceipt(row.id, body).subscribe({
@@ -715,6 +730,8 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
           this.deleted();
           return;
         }
+        // The delete may have committed.
+        this.center.invalidate();
         const text = '刪除失敗，請稍後再試';
         this.toasts.error(text, {
           retry: guardedRetry(err, this.toasts, text, () => this.deleting, () => this.sendDelete(dividend)),
@@ -726,6 +743,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   private deleted(): void {
     this.toasts.done('紀錄已刪除');
     this.reload();
+    this.center.invalidate();
   }
 
   saveDividend() {
@@ -739,9 +757,12 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       next: () => {
         if (session === this.dialogSession) this.showDialog.set(false);
         this.reload();
+        this.center.invalidate();
         this.toasts.done(id !== null ? '紀錄已更新' : '紀錄已新增');
       },
       error: err => {
+        // The save may have committed.
+        this.center.invalidate();
         const text = id !== null ? '更新失敗，請檢查欄位' : '新增失敗，請檢查欄位';
         this.toasts.error(text, {
           retry: guardedRetry(err, this.toasts, text, () => this.saving, () => this.sendSave(payload, id, session)),

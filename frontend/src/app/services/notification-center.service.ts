@@ -1,6 +1,6 @@
-import { DestroyRef, Injectable, Injector, Signal, computed, effect, inject, signal, untracked } from '@angular/core';
+import { DestroyRef, Injectable, InjectionToken, Injector, Signal, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DOCUMENT } from '@angular/common';
-import { Observable, catchError, from, map, of, timeout } from 'rxjs';
+import { Observable, Subject, catchError, forkJoin, from, map, of, takeUntil, timeout } from 'rxjs';
 
 import { BillingEvent, reminderDues } from '../components/accounting/billing/billing-math';
 import { WEEKENDS_ONLY } from '../components/accounting/billing/business-days';
@@ -22,6 +22,7 @@ import {
   summarize,
 } from '../components/notifications/notif-task';
 import { billTasks } from '../components/notifications/sources/bills';
+import { CathayView, cathayMore, cathayTasks, cathayView } from '../components/notifications/sources/cathay';
 import { debtsRow, handledText, importReviewTask, upcomingRow } from '../components/notifications/sources/ledger-misc';
 import {
   INBOX_READ_LIMIT,
@@ -31,14 +32,81 @@ import {
   reconOverflowTask,
   reconTasks,
 } from '../components/notifications/sources/recon';
+import {
+  dividendBatch,
+  dividendsBadge,
+  dividendsRow,
+  importFailureTask,
+  recalcFailed,
+  splitPendingDividends,
+} from '../components/notifications/sources/portfolio';
 import { scheduleTasks } from '../components/notifications/sources/schedules';
+import { allPages } from '../components/portfolio/paging';
 import { NavBadge } from '../components/shell/navigation';
 import { Counterparty, ImportRun, LedgerAccount, ScheduleInstance } from '../models/accounting.model';
-import { RecalcStatus } from '../models/portfolio.model';
+import { CathayPending, CathayPendingDay, CathayRun, CathayRuns, Dividend, Paged, RecalcStatus } from '../models/portfolio.model';
 import { AccountingService } from './accounting.service';
 import { BusinessCalendarService } from './business-calendar.service';
 import { ImportHistoryService } from './import-history.service';
 import { PortfolioService } from './portfolio.service';
+
+/** The round's clock; tests provide a fixed one. */
+export const NOTIF_CLOCK = new InjectionToken<() => Date>('NOTIF_CLOCK', { providedIn: 'root', factory: () => () => new Date() });
+
+/** The dividend scan's page cap (`allPages`' default, named so the tests can cite it): beyond it the source fails (C12). */
+export const DIVIDEND_MAX_PAGES = 50;
+
+/** The dividend scan's page size (as the 股利 page reads it). */
+const DIVIDEND_PAGE_SIZE = 100;
+
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+
+/** A dividends page with an array of row objects and a numeric total; else an error, so the source fails. */
+function checkedPage(page: unknown): Paged<Dividend> {
+  if (!isObject(page) || !Array.isArray(page['items']) || typeof page['total'] !== 'number' || !page['items'].every(isObject)) {
+    throw new Error('dividends page');
+  }
+  return page as unknown as Paged<Dividend>;
+}
+
+const PENDING_STATUSES: readonly unknown[] = ['held', 'mismatch', 'conflict'] satisfies CathayPendingDay['status'][];
+/** Null, absent or a string (`reason` / `since` / `last_at`). */
+const optionalText = (value: unknown): boolean => value === null || value === undefined || typeof value === 'string';
+
+/**
+ * 國泰 pending: dates with a string `trade_date`, a known `status`, and `reason` / `since` / `last_at` each null or a
+ * string, plus a numeric total; else an error, so the source fails (a non-string reason would throw in a computed).
+ */
+function checkedPending(pending: unknown): CathayPending {
+  const day = (d: unknown) =>
+    isObject(d) &&
+    typeof d['trade_date'] === 'string' &&
+    PENDING_STATUSES.includes(d['status']) &&
+    optionalText(d['reason']) &&
+    optionalText(d['since']) &&
+    optionalText(d['last_at']);
+  if (!isObject(pending) || !Array.isArray(pending['items']) || typeof pending['total'] !== 'number' || !pending['items'].every(day)) {
+    throw new Error('cathay pending');
+  }
+  return pending as unknown as CathayPending;
+}
+
+/**
+ * 國泰 runs: `latest` / `latest_ok` each null or a run with a `run_at` that parses to a finite time and a string
+ * `result`; else an error (source fails): an unparseable run_at would render 「上次執行 NaN/NaN NaN:NaN」.
+ */
+function checkedRuns(runs: unknown): CathayRuns {
+  const run = (r: unknown): r is CathayRun | null =>
+    r === null ||
+    (isObject(r) &&
+      typeof r['run_at'] === 'string' &&
+      Number.isFinite(new Date(r['run_at']).getTime()) &&
+      typeof r['result'] === 'string');
+  if (!isObject(runs) || !('latest' in runs) || !('latest_ok' in runs) || !run(runs['latest']) || !run(runs['latest_ok'])) {
+    throw new Error('cathay runs');
+  }
+  return runs as unknown as CathayRuns;
+}
 
 /** A focus / visible / timer refresh starting sooner than this after the last started round is skipped. */
 export const BADGE_REFRESH_MIN_MS = 30_000;
@@ -78,10 +146,11 @@ const IDLE: SourceStatus = { round: 0, state: 'idle' };
 
 /**
  * The notification centre's state (R26, R27). A round has an id (`round()`); it reads every task source once (accounts
- * → card statements, schedule queue, reconciliation inbox, latest import, counterparties) plus the silent reads
- * (statement progress, handled actions, and on `refresh` rounds the recalc status). An answer is applied only while
- * its round is the newest started one, so a superseded round changes nothing and never settles. `settledRound()` is
- * the newest round whose five task sources — the card statements included — have all answered, ok or failed.
+ * → card statements, schedule queue, reconciliation inbox, latest import, counterparties, every dividend page, the
+ * recalc status, the 國泰 pending dates + latest run) plus the silent reads (statement progress, handled actions), with
+ * `now` taken once from `NOTIF_CLOCK` at its start. An answer is applied only while its round is the newest started
+ * one, so a superseded round changes nothing and never settles. `settledRound()` is the newest round whose eight task
+ * sources — the card statements included — have all answered, ok or failed.
  *
  * Each source fails on its own: its tasks and its dot leave, `failedSources()` names it, the others stay. No read
  * raises a toast. Every source is read whatever groups are hidden (R13).
@@ -97,14 +166,17 @@ export class NotificationCenterService {
   private readonly importHistory = inject(ImportHistoryService);
   private readonly document = inject(DOCUMENT);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly clock = inject(NOTIF_CLOCK);
 
   private readonly roundId = signal(0);
   private readonly settledId = signal(0);
   private readonly status = signal<Readonly<Record<NotifSourceKey, SourceStatus>>>({
-    bills: IDLE, schedules: IDLE, recon: IDLE, importReview: IDLE, debts: IDLE,
+    bills: IDLE, schedules: IDLE, recon: IDLE, importReview: IDLE, debts: IDLE, dividends: IDLE, imports: IDLE, cathay: IDLE,
   });
+  /** The clock as of the newest started round (P3: read once per round). */
+  private readonly now = signal<Date>(this.clock());
   /** Today as of the newest started round. */
-  private readonly today = signal(todayIso());
+  private readonly today = computed(() => todayIso(this.now()));
 
   /** The accepted accounts snapshot (null before the first answer and after a failed read). */
   private readonly accountList = signal<LedgerAccount[] | null>(null);
@@ -115,7 +187,20 @@ export class NotificationCenterService {
   private readonly latestImport = signal<ImportRun | null>(null);
   private readonly counterparties = signal<Counterparty[] | null>(null);
   private readonly actionsText = signal<string | null>(null);
-  private readonly recalc = signal<RecalcStatus | null>(null);
+  /**
+   * Every dividend row with the `today` of the round that read them (null before the first answer, after a failed read
+   * and after a capped scan): a round started on a later day does not re-split the previous answer before its own lands.
+   */
+  private readonly dividendData = signal<{ readonly items: Dividend[]; readonly today: string } | null>(null);
+  /** The applied recalc status answer (its `status` may be null: an empty body); null when unread or failed. */
+  private readonly recalcAnswer = signal<{ readonly status: RecalcStatus | null } | null>(null);
+  /**
+   * The applied 國泰 answers, both reads or none (P1), with the clock of the round that read them: the run verdict is
+   * always the answer judged at its own round's `now`, never an older answer re-judged by a newer round still in flight.
+   */
+  private readonly cathayData = signal<{ readonly pending: CathayPending; readonly runs: CathayRuns; readonly now: Date } | null>(null);
+  /** Emits when a round starts: the previous round's dividend scan stops requesting pages. */
+  private readonly roundStarted = new Subject<void>();
 
   /**
    * The business-day calendar, first asked for on the first round (not at construction: the calendar service reads
@@ -139,7 +224,21 @@ export class NotificationCenterService {
   private lastStartedAt: number | null = null;
   /** `BillingService.generation()` at the previous round's statements call; null before the first one. */
   private lastBillsGeneration: number | null = null;
-  private recalcGeneration = 0;
+
+  /** The pending dividends split by payment date (null while the source is unread). */
+  private readonly dividendSplit = computed(() => {
+    const data = this.dividendData();
+    return data ? splitPendingDividends(data.items, data.today) : null;
+  });
+
+  /** The 系統 import-failure task (the recalc chain or this device's last commit), while the recalc status is read. */
+  private readonly importFailure: Signal<NotifTask | null> = computed(() => {
+    const answer = this.recalcAnswer();
+    if (!answer || !(recalcFailed(answer.status) || this.importHistory.lastFailed())) {
+      return null;
+    }
+    return importFailureTask(answer.status, this.importHistory.attempts()[0]);
+  });
 
   /** Every task of the applied answers, counted and tracking, in `sortTasks` order. */
   private readonly allTasks: Signal<NotifTask[]> = computed(() => {
@@ -163,6 +262,19 @@ export class NotificationCenterService {
     const review = importReviewTask(this.latestImport());
     if (review) {
       tasks.push(review);
+    }
+    const dividends = this.dividendSplit();
+    const batch = dividends ? dividendBatch(dividends.due) : null;
+    if (batch) {
+      tasks.push(batch);
+    }
+    const importFailure = this.importFailure();
+    if (importFailure) {
+      tasks.push(importFailure);
+    }
+    const cathay = this.cathayData();
+    if (cathay) {
+      tasks.push(...cathayTasks(cathay.pending, cathay.runs, cathay.now));
     }
     return sortTasks(tasks);
   });
@@ -191,12 +303,15 @@ export class NotificationCenterService {
   readonly tasks: Signal<readonly NotifTask[]> = computed(() =>
     this.allTasks().filter(task => COUNTED_TIERS.includes(task.tier)),
   );
-  /** The debts row, then the upcoming row; either absent when it has nothing. */
+  /** The debts row, the upcoming row, then the dividends waiting for their payment date; each absent when it has nothing. */
   readonly trackingRows: Signal<readonly NotifTrackingRow[]> = computed(() => {
     const counterparties = this.counterparties();
-    return [counterparties ? debtsRow(counterparties) : null, upcomingRow(this.trackingBills())].filter(
-      (row): row is NotifTrackingRow => row !== null,
-    );
+    const dividends = this.dividendSplit();
+    return [
+      counterparties ? debtsRow(counterparties) : null,
+      upcomingRow(this.trackingBills()),
+      dividends ? dividendsRow(dividends.waiting) : null,
+    ].filter((row): row is NotifTrackingRow => row !== null);
   });
   /** The nearest tracking bill (the empty state's 下一件). */
   readonly nextUpcoming: Signal<NotifTask | null> = computed(() => this.trackingBills()[0] ?? null);
@@ -227,6 +342,17 @@ export class NotificationCenterService {
     return !!inbox && inboxMissing(inbox, INBOX_READ_LIMIT) !== 0;
   });
 
+  /** The 國泰 view of the last applied answers; null before the first one and while the source failed. */
+  readonly cathay: Signal<CathayView | null> = computed(() => {
+    const data = this.cathayData();
+    return data ? cathayView(data.pending, data.runs, data.now) : null;
+  });
+  /** Pending dates the API did not list (0 when none or unread): the uncounted note. */
+  readonly cathayMore: Signal<number> = computed(() => {
+    const data = this.cathayData();
+    return data ? cathayMore(data.pending) : 0;
+  });
+
   /** Nav dots (R9); no badge carries a count. */
   readonly badges: Signal<Readonly<Record<string, NavBadge>>> = computed(() => {
     const badges: Record<string, NavBadge> = {};
@@ -236,11 +362,21 @@ export class NotificationCenterService {
     if (importReviewTask(this.latestImport())) {
       badges['accounting-timeline'] = { dot: true, tone: 'primary', label: '有待確認的匯入紀錄' };
     }
-    const recalc = this.recalc();
-    const recalcFailed = !!recalc && recalc.kind !== 'quotes' && recalc.state === 'failed';
-    // The device's last commit failing raises the dot too; it clears on the next successful commit here.
-    if (recalcFailed || this.importHistory.lastFailed()) {
-      badges['import'] = { dot: true, tone: 'red', label: '最近一次匯入失敗' };
+    const dividends = this.dividendSplit();
+    const dividendsDot = dividends ? dividendsBadge(dividends.due) : null;
+    if (dividendsDot) {
+      badges['dividends'] = dividendsDot;
+    }
+    // O2 / P6: an import failure (the recalc chain, or this device's last commit until its next successful one) and a
+    // bad 國泰 run share the red 匯入 dot. Pending 國泰 dates alone light it primary (as 股利); red wins over them.
+    const cathay = this.cathay();
+    const importLabels = [this.importFailure() ? '最近一次匯入失敗' : null, cathay?.dotLabel ?? null].filter(
+      (label): label is string => label !== null,
+    );
+    if (importLabels.length > 0) {
+      badges['import'] = { dot: true, tone: 'red', label: importLabels.join('、') };
+    } else if (cathay?.pendingLabel) {
+      badges['import'] = { dot: true, tone: 'primary', label: cathay.pendingLabel };
     }
     return badges;
   });
@@ -314,7 +450,6 @@ export class NotificationCenterService {
       return;
     }
     this.startRound();
-    this.readRecalc();
   }
 
   /**
@@ -327,10 +462,12 @@ export class NotificationCenterService {
 
   private startRound(): number {
     const round = untracked(this.roundId) + 1;
+    this.roundStarted.next();
     this.roundId.set(round);
     this.lastStartedAt = Date.now();
-    const today = todayIso();
-    this.today.set(today);
+    const now = this.clock();
+    this.now.set(now);
+    const today = untracked(this.today);
     if (untracked(this.calendar) === null) {
       this.calendar.set(this.injector.get(BusinessCalendarService));
     }
@@ -364,7 +501,34 @@ export class NotificationCenterService {
       this.mark('debts', round, counterparties ? 'ok' : 'failed');
     });
     this.read(round, this.inbox.actions(HANDLED_LIMIT), actions => {
-      this.actionsText.set(actions ? handledText(actions, new Date().toISOString(), HANDLED_LIMIT) : null);
+      this.actionsText.set(actions ? handledText(actions, now.toISOString(), HANDLED_LIMIT) : null);
+    });
+    // Every page through one read: its READ_TIMEOUT_MS is for the whole stream (C13). A scan the page cap stopped is
+    // a failed read, never a partial all-clear (C12).
+    // A superseded round's scan stops (its open page request is cancelled); its single-request reads simply land and
+    // are dropped by `read()`.
+    const dividendPages = allPages(
+      offset => this.portfolio.getDividends({ limit: DIVIDEND_PAGE_SIZE, offset }).pipe(map(checkedPage)),
+      DIVIDEND_PAGE_SIZE,
+      DIVIDEND_MAX_PAGES,
+    ).pipe(takeUntil(this.roundStarted));
+    this.read(round, dividendPages, answer => {
+      const complete = answer && !answer.capped ? { items: answer.items, today } : null;
+      this.dividendData.set(complete);
+      this.mark('dividends', round, complete ? 'ok' : 'failed');
+    });
+    this.read(round, this.portfolio.getRecalcStatus().pipe(map(status => ({ status }))), answer => {
+      this.recalcAnswer.set(answer);
+      this.mark('imports', round, answer ? 'ok' : 'failed');
+    });
+    // One source over two reads (P1): either failing fails both.
+    const cathay = forkJoin({
+      pending: this.portfolio.getCathayPending().pipe(map(checkedPending)),
+      runs: this.portfolio.getCathayRuns().pipe(map(checkedRuns)),
+    });
+    this.read(round, cathay, answer => {
+      this.cathayData.set(answer ? { ...answer, now } : null);
+      this.mark('cathay', round, answer ? 'ok' : 'failed');
     });
     return round;
   }
@@ -419,19 +583,6 @@ export class NotificationCenterService {
     }
   }
 
-  /** The recalc status (the 匯入 dot), on `refresh` rounds only, guarded by its own generation. */
-  private readRecalc(): void {
-    const generation = ++this.recalcGeneration;
-    this.portfolio
-      .getRecalcStatus()
-      .pipe(catchError(() => of(null)))
-      .subscribe(status => {
-        if (generation === this.recalcGeneration) {
-          this.recalc.set(status);
-        }
-      });
-  }
-
   /**
    * Applies `request`'s answer (null on any error, and after READ_TIMEOUT_MS without one: the request is then
    * unsubscribed, so no late answer arrives) while `round` is the newest started round.
@@ -445,7 +596,7 @@ export class NotificationCenterService {
   }
 
   /**
-   * Records a task source's answer for `round`; the round settles once all five have answered for it. The first
+   * Records a task source's answer for `round`; the round settles once all eight have answered for it. The first
    * answer of a source in a round is final (a late one, e.g. a statement landing after the bills timeout, is ignored).
    */
   private mark(source: NotifSourceKey, round: number, state: 'ok' | 'failed'): void {

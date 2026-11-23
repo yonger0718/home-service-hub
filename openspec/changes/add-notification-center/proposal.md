@@ -10,10 +10,10 @@ The owner reviewed a redesign on the design canvas (`design_handoff_v3/`) and as
 - **Count**: one number, on 通知 only, counting tasks (a card bill, a schedule definition, a statement to reconcile, a dividend batch, a system failure), not rows. Red when anything is overdue or failing. Other navigation items keep dots only. The timeline's 🔔 and its count go away; the timeline links to 通知.
 - **Snooze**: 稍後提醒 / 明天提醒 hides a task from the list and the count until the chosen time, stored on the device.
 - **對帳逐筆處理** at `/notifications/recon/:statementId` (right pane at ≥ 1024 px, full screen below): one case per screen, bank line and ledger entry side by side, answers as full-width buttons with keys 1–3, 以後都這樣 as a switch, cases about the same ledger entry handled together, progress across the statement, a stop-any-time end state. Transfer cases get 改成帳單的轉帳 and 配成轉帳 (#150) and `ambiguous` cases get 改金額.
-- **New task sources** the SPA does not read today: `GET /api/portfolio/imports/cathay-statement/pending` and `/runs/latest` (with 確認 through `POST …/days/{date}/ack`), `GET /reconciliation/audit?event=auto_pay_skipped`, pending dividends past their payment date.
+- **New task sources** the SPA does not read today: `GET /api/portfolio/imports/cathay-statement/pending` and `/runs/latest` (with 已處理 through `POST …/days/{date}/ack`), `GET /reconciliation/audit?event=auto_pay_skipped`, pending dividends past their payment date.
 - **One toast** (shell-level service replacing `p-toast` and `AccountingToastService`) and **one banner** primitive (錯誤 / 注意 / 資訊).
 - **Auto-pay visibility**: the bill pill says 自動扣繳 MM/DD for linked cards when auto-pay is on; 記帳設定 gets the auto-pay switch and start date (existing `PUT /settings/reconciliation`).
-- **匯入** gets a 國泰每日對帳單 status card (last run, dates that need the owner, 確認).
+- **匯入** gets a 國泰每日對帳單 status card (last run, dates that need the owner, 已處理).
 - **電子發票** (added 2026-11-07, after the e-invoice link shipped):
   - Invoices that need a decision (`ambiguous` + `near`) are one task in 要你確認, 「電子發票 · N 張要確認」. It opens a one-invoice-at-a-time flow at `/notifications/einvoices`.
   - Invoices without a ledger entry (`unmatched`) are one 追蹤中 row, 「有發票沒有帳 · N 張」. It opens a page grouped by seller, with 這 N 張都不用記帳 and 這家以後都不提醒.
