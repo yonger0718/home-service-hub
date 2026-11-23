@@ -787,6 +787,49 @@ describe('ReconFlowComponent', () => {
     expect(headline()).toBe('測試商家 1 −$101');
   });
 
+  describe('the page heading below panes width', () => {
+    const h1s = () => Array.from(el.querySelectorAll('h1')).map(text);
+
+    it('loading: an h1 「對帳」 on phone; none at panes width', () => {
+      render('phone');
+      detect();
+      expect(h1s()).toEqual(['對帳']);
+      firstRead().flush(inbox(ten()));
+      detect();
+      expect(h1s()).toEqual(['至 9/30 帳單']);
+
+      fixture.destroy();
+      render('panes');
+      detect();
+      expect(h1s()).toEqual([]);
+      firstRead().flush(inbox(ten()));
+      detect();
+      expect(h1s()).toEqual([]);
+      expect(text(el.querySelector('p.flow-title'))).toBe('至 9/30 帳單');
+    });
+
+    it('a failed read: an h1 「對帳」 on phone; none at panes width', () => {
+      render('phone');
+      firstRead().flush('boom', { status: 500, statusText: 'Server Error' });
+      detect();
+      expect(el.querySelector('app-banner')).not.toBeNull();
+      expect(h1s()).toEqual(['對帳']);
+
+      fixture.destroy();
+      render('panes');
+      firstRead().flush('boom', { status: 500, statusText: 'Server Error' });
+      detect();
+      expect(h1s()).toEqual([]);
+    });
+
+    it('a statement the inbox does not know: an h1 「對帳」 on phone', () => {
+      render('phone', 999);
+      firstRead().flush(inbox(ten()));
+      detect();
+      expect(h1s()).toEqual(['對帳']);
+    });
+  });
+
   it('drops an older read when statementId changes mid-read', () => {
     render();
     const old = firstRead();

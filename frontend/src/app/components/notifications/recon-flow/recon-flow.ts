@@ -203,6 +203,11 @@ export class ReconFlowComponent {
     const end = this.periodEnd();
     return end ? `至 ${monthDay(end)} 帳單` : null;
   });
+  /**
+   * Below panes width the flow is the whole page and its title is the page's h1: the statement once it is known, else
+   * 「對帳」 (while loading, after a failed read, for a statement the inbox does not list).
+   */
+  readonly heading = computed(() => (this.load() === 'ready' ? this.titleText() : null) ?? '對帳');
   readonly subText = computed(() => {
     const task = this.center.tasks().find((t) => t.id === `recon:${this.statementId()}`);
     const decide = `這次要你決定 ${this.progressInfo().total} 筆`;

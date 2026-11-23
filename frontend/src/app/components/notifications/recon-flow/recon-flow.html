@@ -6,14 +6,13 @@
   }
   <div class="flow-titles">
     <p class="flow-kicker">{{ kicker() }}</p>
+    @if (!panes()) {
+      <!-- Full screen: the page's only h1, in every load state. -->
+      <h1 class="flow-title">{{ heading() }}</h1>
+    } @else if (load() === 'ready' && titleText()) {
+      <p class="flow-title">{{ titleText() }}</p>
+    }
     @if (load() === 'ready') {
-      @if (titleText(); as title) {
-        @if (panes()) {
-          <p class="flow-title">{{ title }}</p>
-        } @else {
-          <h1 class="flow-title">{{ title }}</h1>
-        }
-      }
       <p class="flow-sub">{{ subText() }}</p>
       @if (statementLink(); as link) {
         <a class="flow-statement" [routerLink]="link">看整張帳單</a>
