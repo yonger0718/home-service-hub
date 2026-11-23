@@ -69,8 +69,12 @@ Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and �
 - **THEN** keys 1–3 SHALL pick an answer, S SHALL skip, ← and → SHALL move without answering and Esc SHALL close
 
 #### Scenario: Keys while a sheet is open
-- **WHEN** the record or match sheet is open, or a held key repeats
+- **WHEN** the record or match sheet is open
 - **THEN** the flow's keys SHALL do nothing
+
+#### Scenario: Held key
+- **WHEN** an answer key (1–3) or S is held down and repeats
+- **THEN** the repeats SHALL be ignored, so one press sends at most one answer
 
 #### Scenario: Answering moves on
 - **WHEN** the owner presses 1 on the first question
