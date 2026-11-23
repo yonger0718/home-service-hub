@@ -236,6 +236,32 @@ describe('ShellComponent', () => {
     expect(fab()).toBeNull();
   });
 
+  it('hides the floating 記一筆 on the full-screen review flow (below 1024 px) and keeps it beside the list at 1024 px and up', async () => {
+    const cases: [number, string, boolean][] = [
+      [390, '/notifications/recon/12', false],
+      [820, '/notifications/recon/12', false],
+      [1440, '/notifications/recon/12', true],
+      [820, '/notifications', true],
+      [1440, '/accounting/reports', false],
+    ];
+    for (const [width, url, shown] of cases) {
+      TestBed.resetTestingModule();
+      const { fab, el } = await render(viewportOf(width), { url });
+      expect(fab() !== null, `${width} ${url}`).toBe(shown);
+      // The toast's right clearance follows the button.
+      const clear = el.querySelector<HTMLElement>('app-toast-outlet')!.style.getPropertyValue('--toast-fab-clear');
+      expect(clear === '24px', `${width} ${url}`).toBe(!shown);
+    }
+  });
+
+  it('brings the floating 記一筆 back when the review flow closes at 820 px', async () => {
+    const { fab, settle, router } = await render(viewportOf(820), { url: '/notifications/recon/12' });
+    expect(fab()).toBeNull();
+    await router.navigateByUrl('/notifications');
+    await settle();
+    expect(fab()).not.toBeNull();
+  });
+
   it('hides the floating button while the entry form is open', async () => {
     const { fab, settle } = await render(viewportOf(1440), { url: '/portfolio' });
     const pane = TestBed.inject(PaneStateService);

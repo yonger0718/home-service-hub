@@ -1,6 +1,36 @@
-/* One column at every width (R20). Colours: tokens only. */
+/* One column at every width (R20); with the review flow open at 1024 px and up, the list and the flow side by side.
+   Colours: tokens only. */
 :host {
   display: block;
+}
+
+/* Without a flow: a plain block, the page keeps its own 720 px column. With one (only rendered at panes width): a
+   row wide enough for both columns, list 5 : pane 6. */
+.notif-split--open {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  max-width: 1280px;
+
+  > .notif-page {
+    flex: 5 1 420px;
+    max-width: none;
+    min-width: 0;
+  }
+}
+
+/* The flow is transparent at panes width: the pane is its card (surface, radius and shadow as the list's cards), so
+   muted text inside sits on --app-surface. It stays in view while the list scrolls, and scrolls inside when taller. */
+.notif-pane {
+  background: var(--app-surface);
+  border-radius: 18px;
+  box-shadow: var(--app-card-shadow);
+  flex: 6 1 480px;
+  max-height: calc(100dvh - 32px);
+  min-width: 0;
+  overflow: auto;
+  position: sticky;
+  top: 16px;
 }
 
 .notif-page {

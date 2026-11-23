@@ -33,6 +33,8 @@ const OPEN_MODAL = '[aria-modal="true"]:not([data-global-shortcuts]), [role="ale
 const TYPING_ROLES = '[role="combobox"], [role="listbox"], [role="spinbutton"]';
 
 const NO_FAB_URL = /^\/accounting\/reports(?:[/?#]|$)/;
+/** The review flow: full screen below 1024 px (its answer buttons sit where the button floats); beside the list from 1024 px. */
+const REVIEW_FLOW_URL = /^\/notifications\/recon\//;
 
 @Component({
   selector: 'app-shell',
@@ -55,15 +57,17 @@ export class ShellComponent {
   protected readonly sidebarWidth = computed(() => (this.sidebarExpanded() ? EXPANDED_WIDTH : RAIL_WIDTH));
   private readonly url = signal(this.router.url);
   /**
-   * 記一筆 from 760 px, except over the entry form, the 760–1023 px sheet (a modal dialog) and the report pages (it
-   * covered the table's last column; the N shortcut and the tab bar's + still work there).
+   * 記一筆 from 760 px, except over the entry form, the 760–1023 px sheet (a modal dialog), the report pages (it
+   * covered the table's last column; the N shortcut and the tab bar's + still work there) and the full-screen review
+   * flow below 1024 px.
    */
   protected readonly showFab = computed(
     () =>
       this.layout.mode() !== 'phone' &&
       !this.paneState.formOpen() &&
       !this.paneState.sheetOpen() &&
-      !NO_FAB_URL.test(this.url()),
+      !NO_FAB_URL.test(this.url()) &&
+      !(this.layout.mode() !== 'panes' && REVIEW_FLOW_URL.test(this.url())),
   );
 
   /** Space the toast leaves to its right: the floating 記一筆 (right offset + 56 px button + 12 px gap), else a margin. */

@@ -5,8 +5,9 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { computed, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
-import { provideRouter } from '@angular/router';
-import { Subject } from 'rxjs';
+import { Router, provideRouter } from '@angular/router';
+import { RouterTestingHarness } from '@angular/router/testing';
+import { NEVER, Subject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ScheduleCatchUpResult, ScheduleInstance } from '../../models/accounting.model';
@@ -16,7 +17,9 @@ import { ToastService } from '../../services/toast.service';
 import { IMPORT_RUNNING_TOAST } from '../accounting/schedule-math';
 import { NotificationCenterService } from '../../services/notification-center.service';
 import { PortfolioService } from '../../services/portfolio.service';
-import { MATCH_MEDIA, PHONE_QUERY } from '../../services/layout-mode.service';
+import { notificationsMatcher } from '../../app.routes';
+import { LayoutMode, LayoutModeService, MATCH_MEDIA, PHONE_QUERY } from '../../services/layout-mode.service';
+import { InboxService } from '../accounting/inbox/inbox.service';
 import { NotifSourceKey, NotifSummary, NotifTask, NotifTier, NotifTrackingRow, summarize } from './notif-task';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
 import { NotificationsComponent } from './notifications';
@@ -1790,6 +1793,175 @@ describe('NotificationsComponent', () => {
       loaded.set(true);
       await settle();
       expect(text(q(pendingRoot, '.notif-overflow--portfolio'))).toBe('還有 23 天未列出，處理完上面的會接著顯示');
+    });
+  });
+
+  describe('the review flow (/notifications/recon/:statementId)', () => {
+    const RECON = task('recon:12', 'confirm', {
+      from: 'recon',
+      title: '對帳 · 測試銀行卡（至 10/05）',
+      primary: { label: '對帳', route: '/notifications/recon/12' },
+    });
+    const RECON_OTHER = task('recon:13', 'confirm', {
+      from: 'recon',
+      title: '對帳 · 測試信用卡（至 10/08）',
+      primary: { label: '對帳', route: '/notifications/recon/13' },
+    });
+    /** The flow's reads never answer here: it stays on its 讀取中… step. */
+    const inbox = { get: vi.fn(() => NEVER), apply: vi.fn(() => NEVER) };
+
+    let harness: RouterTestingHarness;
+    let router: Router;
+    const root = () => harness.fixture.nativeElement as HTMLElement;
+    const q = (sel: string) => root().querySelector<HTMLElement>(sel);
+    const flow = () => q('app-recon-flow');
+    // NOTIF_PRIMARY_CONTROL is a selector list: look inside the row, not by a descendant prefix.
+    const rowControl = (id: string) => q(`app-notif-row[data-task-id="${id}"]`)?.querySelector<HTMLElement>(NOTIF_PRIMARY_CONTROL) ?? null;
+    const settleFlow = async () => {
+      await harness.fixture.whenStable();
+      harness.detectChanges();
+      await harness.fixture.whenStable();
+    };
+
+    async function openAt(mode: LayoutMode, url: string): Promise<void> {
+      TestBed.configureTestingModule({
+        providers: [
+          provideRouter([{ matcher: notificationsMatcher, component: NotificationsComponent }]),
+          { provide: NotificationCenterService, useValue: stub },
+          { provide: AccountingService, useValue: accounting },
+          { provide: PortfolioService, useValue: portfolio },
+          { provide: InboxService, useValue: inbox },
+        ],
+      });
+      TestBed.inject(LayoutModeService).set(mode);
+      tasks.set([...TASKS, RECON, RECON_OTHER]);
+      router = TestBed.inject(Router);
+      harness = await RouterTestingHarness.create();
+      await harness.navigateByUrl(url);
+      await settleFlow();
+    }
+
+    afterEach(() => harness?.fixture.destroy());
+
+    it('at panes width: the list and the flow side by side, the flow in a pane of its own; one h1', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      const split = q('.notif-split')!;
+      expect(split.classList.contains('notif-split--open')).toBe(true);
+      expect(split.querySelector(':scope > .notif-page')).not.toBeNull();
+      const pane = split.querySelector<HTMLElement>(':scope > .notif-pane')!;
+      expect(pane.querySelector('app-recon-flow')).not.toBeNull();
+      expect(root().querySelectorAll('app-notif-row').length).toBe(7);
+      expect(q('.notif-chips')).not.toBeNull();
+      expect(text(q('h1'))).toBe('通知');
+      expect(root().querySelectorAll('h1').length).toBe(1);
+      expect(inbox.get).toHaveBeenCalled();
+    });
+
+    it('at panes width the row of the open statement is selected: 對帳中, aria-current; the others are not', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      const selected = Array.from(root().querySelectorAll('app-notif-row.notif-row--selected')).map(r => r.getAttribute('data-task-id'));
+      expect(selected).toEqual(['recon:12']);
+      expect(text(rowControl('recon:12'))).toBe('對帳中');
+      expect(rowControl('recon:12')!.getAttribute('aria-current')).toBe('true');
+      expect(text(rowControl('recon:13'))).toBe('對帳');
+      expect(rowControl('recon:13')!.hasAttribute('aria-current')).toBe(false);
+    });
+
+    it('opening the flow moves focus to the flow host', async () => {
+      await openAt('panes', '/notifications');
+      expect(flow()).toBeNull();
+      rowControl('recon:12')!.focus();
+      rowControl('recon:12')!.click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications/recon/12');
+        expect(flow()).not.toBeNull();
+        expect(document.activeElement).toBe(flow());
+      });
+    });
+
+    it('a direct load with an id focuses the flow host once it is rendered', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      await vi.waitFor(() => expect(document.activeElement).toBe(flow()));
+    });
+
+    for (const mode of ['phone', 'sheet'] as const) {
+      it(`below panes (${mode}): only the flow renders: no page header, chips, list or links`, async () => {
+        await openAt(mode, '/notifications/recon/12');
+        expect(flow()).not.toBeNull();
+        expect(q('app-page-header')).toBeNull();
+        expect(q('.notif-chips')).toBeNull();
+        expect(root().querySelectorAll('app-notif-row').length).toBe(0);
+        expect(q('a.notif-reminders')).toBeNull();
+        expect(q('.notif-pane')).toBeNull();
+        expect(q('.notif-split')).toBeNull();
+      });
+    }
+
+    it('without an id there is no flow and the page is as before', async () => {
+      await openAt('panes', '/notifications');
+      expect(flow()).toBeNull();
+      expect(q('.notif-pane')).toBeNull();
+      expect(q('.notif-split')!.classList.contains('notif-split--open')).toBe(false);
+      expect(root().querySelectorAll('app-notif-row').length).toBe(7);
+      expect(root().querySelector('app-notif-row.notif-row--selected')).toBeNull();
+    });
+
+    it('a statement id of 0 is no id', async () => {
+      await openAt('phone', '/notifications/recon/0');
+      expect(flow()).toBeNull();
+      expect(root().querySelectorAll('app-notif-row').length).toBe(7);
+    });
+
+    it('closing at panes width navigates to /notifications and focuses the row of that statement', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      (flow()!.querySelector('button.flow-close') as HTMLButtonElement).click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications');
+        expect(flow()).toBeNull();
+        expect(document.activeElement).toBe(rowControl('recon:12'));
+      });
+      expect(text(rowControl('recon:12'))).toBe('對帳');
+    });
+
+    it('closing when the row has left the list focuses the page heading', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      tasks.set(TASKS);
+      await settleFlow();
+      (flow()!.querySelector('button.flow-close') as HTMLButtonElement).click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications');
+        expect(document.activeElement).toBe(q('h1'));
+      });
+    });
+
+    it('closing below panes (the flow\'s back button) brings the list back and focuses the row of that statement', async () => {
+      await openAt('phone', '/notifications/recon/12');
+      (flow()!.querySelector('button.flow-back') as HTMLButtonElement).click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications');
+        expect(flow()).toBeNull();
+        expect(root().querySelectorAll('app-notif-row').length).toBe(7);
+        expect(document.activeElement).toBe(rowControl('recon:12'));
+      });
+    });
+
+    it('another statement\'s 對帳 while the flow is open changes the statement in the same flow', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      const before = flow();
+      const page = q('.notif-page');
+      rowControl('recon:13')!.click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications/recon/13');
+        expect(text(rowControl('recon:13'))).toBe('對帳中');
+      });
+      expect(flow()).toBe(before);
+      expect(q('.notif-page')).toBe(page);
+      expect(text(rowControl('recon:12'))).toBe('對帳');
     });
   });
 

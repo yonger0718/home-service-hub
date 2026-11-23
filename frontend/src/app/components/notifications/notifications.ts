@@ -12,7 +12,9 @@ import {
   untracked,
 } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
-import { RouterLink } from '@angular/router';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { map } from 'rxjs';
 
 import { AccountingService } from '../../services/accounting.service';
 import { LayoutModeService } from '../../services/layout-mode.service';
@@ -40,6 +42,7 @@ import {
   isCommand,
 } from './notif-task';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
+import { ReconFlowComponent } from './recon-flow/recon-flow';
 
 /** 409 `already_posted`: the instance was posted before this request (by its own earlier send, or elsewhere). */
 function isAlreadyPosted(err: unknown): boolean {
@@ -71,15 +74,22 @@ const TRACKING_UNIT: Record<NotifTrackingRow['id'], { name: string; unit: string
   dividends: { name: '股利', unit: '筆' },
 };
 
+/** The route's `statementId` as a positive integer; null when absent, zero, negative or not a number. */
+function statementIdOf(raw: string | null): number | null {
+  const id = Number(raw);
+  return raw !== null && Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 /**
- * `/notifications`: one column (R20). Header with the count, source chips (a radiogroup, as 提醒中心's tabs), the
+ * `/notifications`: one column (R20). `/notifications/recon/:statementId` adds the review flow (D5): beside the list
+ * from 1024 px (the row of that statement selected), alone below (the flow draws its own card and header). Header with the count, source chips (a radiogroup, as 提醒中心's tabs), the
  * counted tasks by tier, the folded 追蹤中 (never counted) and the links out. 入帳 / 全部入帳 / 已處理 run in place (R4). Before the first round
  * settles a 讀取中… row ends the page (the only one, whether or not tasks have arrived); then the empty state or the
  * failure line.
  */
 @Component({
   selector: 'app-notifications',
-  imports: [BannerComponent, NotifRowComponent, PageHeaderComponent, RouterLink],
+  imports: [BannerComponent, NotifRowComponent, PageHeaderComponent, ReconFlowComponent, RouterLink],
   templateUrl: './notifications.html',
   styleUrl: './notifications.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -92,6 +102,21 @@ export class NotificationsComponent {
   private readonly toasts = injectToasts();
   private readonly host: HTMLElement = inject(ElementRef).nativeElement;
   private readonly injector = inject(Injector);
+  private readonly router = inject(Router);
+
+  /** The statement whose review flow is open (the route's `statementId`), or null on `/notifications`. */
+  protected readonly statementId = toSignal(
+    inject(ActivatedRoute).paramMap.pipe(map((params) => statementIdOf(params.get('statementId')))),
+    { initialValue: null },
+  );
+  protected readonly panes = computed(() => this.layout.mode() === 'panes');
+  /** Below 1024 px with a statement: its id, and the flow renders alone, full screen (no header, chips, list or links). */
+  protected readonly flowAlone = computed(() => (this.panes() ? null : this.statementId()));
+  /** The task id of the row the open flow belongs to (`recon:<id>`), or null. */
+  protected readonly selectedTaskId = computed(() => {
+    const id = this.statementId();
+    return id === null ? null : `recon:${id}`;
+  });
 
   /**
    * Rows whose command runs or has answered: task id → `null` while the write runs, then the id of the newest round
@@ -256,6 +281,22 @@ export class NotificationsComponent {
   constructor() {
     this.center.refresh({ reason: 'open' });
 
+    // The flow opens (or changes statement): focus goes to its host once it is rendered. It closes: focus goes to the
+    // row of that statement (the list is back below 1024 px), else the page heading.
+    let shown: number | null = null;
+    effect(() => {
+      const id = this.statementId();
+      const previous = shown;
+      shown = id;
+      if (id === previous) {
+        return;
+      }
+      afterNextRender(
+        () => (id !== null ? this.focusFlow() : this.focusAfterClose(previous!)),
+        { injector: this.injector },
+      );
+    });
+
     // The all-clear leaves (a later round is in flight, or a task arrived): focus on its 看追蹤中 button would fall to
     // <body>, so it goes to the checked chip, as after a 重試.
     effect(() => {
@@ -325,6 +366,31 @@ export class NotificationsComponent {
         }
       }
     });
+  }
+
+  /** The flow's ✕, ‹ or Escape: back to the list (the flow itself does no navigation). */
+  protected closeFlow(): void {
+    void this.router.navigate(['/notifications']);
+  }
+
+  private focusFlow(): void {
+    this.host.querySelector<HTMLElement>('app-recon-flow')?.focus({ preventScroll: true });
+  }
+
+  private focusAfterClose(statementId: number): void {
+    const row = this.host.querySelector(`app-notif-row[data-task-id="recon:${statementId}"]`);
+    const control = row?.querySelector<HTMLElement>(NOTIF_PRIMARY_CONTROL) ?? null;
+    if (control) {
+      control.focus({ preventScroll: true });
+      return;
+    }
+    const heading = this.host.querySelector<HTMLElement>('h1');
+    if (heading) {
+      if (!heading.hasAttribute('tabindex')) {
+        heading.setAttribute('tabindex', '-1');
+      }
+      heading.focus({ preventScroll: true });
+    }
   }
 
   protected retry(): void {

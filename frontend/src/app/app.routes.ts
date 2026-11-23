@@ -9,7 +9,8 @@ import { NavigationPreferencesService } from './services/navigation-preferences.
  * Every deep-linkable accounting path must also match Caddy's `@hub_spa` matcher (docs/deploy). PR-9 adds the 多類別
  * group view: `/accounting/entries/[0-9]+/group` and `/accounting/accounts/[0-9]+/entries/[0-9]+/group`. The reward rules
  * phase 1 adds the 回饋規則總覽 page: `/accounting/reward-rules`.
- * The notification center adds `/notifications` (top level, outside `/accounting`).
+ * The notification center adds `/notifications` (top level, outside `/accounting`) and its review flow
+ * `/notifications/recon/[0-9]+`.
  */
 
 /**
@@ -82,13 +83,31 @@ export function portfolioAccountsMatcher(segments: UrlSegment[]): UrlMatchResult
   return segments.length === 3 ? { consumed: segments, posParams: { id: segments[2] } } : { consumed: segments };
 }
 
+/**
+ * `notifications` and `notifications/recon/<digits>` as one route, so the page (its list, chips and row state) stays
+ * mounted while the review flow opens, changes statement and closes. Anything else under `notifications/` does not
+ * match (and falls to `**`).
+ */
+export function notificationsMatcher(segments: UrlSegment[]): UrlMatchResult | null {
+  if (segments.length === 0 || segments[0].path !== 'notifications') {
+    return null;
+  }
+  if (segments.length === 1) {
+    return { consumed: segments };
+  }
+  if (segments.length === 3 && segments[1].path === 'recon' && /^\d+$/.test(segments[2].path)) {
+    return { consumed: segments, posParams: { statementId: segments[2] } };
+  }
+  return null;
+}
+
 export const routes: Routes = [
   // The bare URL (the manifest's start_url) opens the first visible group, as the sidebar logo does.
   { path: '', pathMatch: 'full', redirectTo: landingPath },
   { path: 'inventory', loadComponent: () => import('./components/item-list/item-list').then(m => m.ItemListComponent) },
   { path: 'shopping-list', loadComponent: () => import('./components/shopping-list/shopping-list').then(m => m.ShoppingListComponent) },
   { path: 'settings', loadComponent: () => import('./components/settings/settings').then(m => m.SettingsComponent) },
-  { path: 'notifications', loadComponent: () => import('./components/notifications/notifications').then(m => m.NotificationsComponent) },
+  { matcher: notificationsMatcher, loadComponent: () => import('./components/notifications/notifications').then(m => m.NotificationsComponent) },
   
   // Portfolio routes
   { path: 'portfolio', loadComponent: () => import('./components/portfolio/dashboard/dashboard').then(m => m.PortfolioDashboardComponent) },

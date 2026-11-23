@@ -229,3 +229,22 @@
     min-height: 44px;
   }
 }
+
+/* The statement open in the review flow beside the list (from 1024 px). Muted text is 4.26:1 on --app-primary-soft in
+   the light theme, so the row's muted inks turn --app-text; the icon tile and the link primary (both primary-soft
+   themselves) sit on --app-surface to stay visible. */
+:host(.notif-row--selected) {
+  background: var(--app-primary-soft);
+  box-shadow: inset 3px 0 0 var(--app-primary);
+
+  .notif-line,
+  .notif-meta,
+  .notif-secondary {
+    color: var(--app-text);
+  }
+
+  .notif-icon,
+  .notif-primary--link:not(.solid) {
+    background: var(--app-surface);
+  }
+}
