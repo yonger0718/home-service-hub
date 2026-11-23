@@ -15,6 +15,7 @@ from . import send
 from .api import ReadClient
 from .config import ConfigError, NotifyConfig, read_token
 from .hermes_run import HERMES_ENV_KEYS, run_hermes
+from .terms_dismiss import Applied, apply_dismissals
 from .terms_input import build_input, select_cards, to_json
 from .terms_parse import TermsParseError, digest, join_rules, parse_result
 from .terms_prompt import build_prompt
@@ -53,6 +54,23 @@ def _make_archive(report_dir: Path, now: datetime) -> Path:
     return archive
 
 
+def _dismissed_json(applied: dict[int, Applied]) -> dict:
+    """What the dismiss list hid and which entries are stale, per card that has any (``result.json`` keeps it all)."""
+    return {
+        str(aid): {
+            "hidden": [dataclasses.asdict(f) for f in a.hidden],
+            "hidden_next_terms": a.hidden_next_terms,
+            # the `rates` pin a next_terms entry can carry, in the config's own spelling
+            "hidden_next_terms_rates": [f"{r or 'none'}/{c or 'none'}" for r, c in a.hidden_rates],
+            "stale": [{"field": d.field, "rule": d.rule, "value": d.value, "contains": list(d.contains),
+                       "until": d.until.isoformat() if d.until else None,
+                       "rates": None if d.rates is None else [f"{r or 'none'}/{c or 'none'}" for r, c in d.rates],
+                       "reason": reason} for d, reason in a.stale],
+        }
+        for aid, a in applied.items() if a.hidden_count or a.stale
+    }
+
+
 def _summary(inp, decisions, sent: int) -> None:
     shown = sum(has_items(d) for d in decisions.values())
     print(f"terms: {len(inp.cards)} cards, {shown} with items, sent {sent} messages", file=sys.stderr)
@@ -85,13 +103,19 @@ def run_terms(args: argparse.Namespace, cfg: NotifyConfig, today: date) -> list[
     result = join_rules(result, {c.card.account_id: c.rules for c in inp.cards})  # system side = HomeHub rows
     _write(archive / "result.json", json.dumps(dataclasses.asdict(result), ensure_ascii=False, indent=2))
     tiers = {c.card.account_id: c.card for c in inp.cards}
+    live = {c.card.account_id: frozenset(r.get("id") for r in c.rules) for c in inp.cards}
+    # The owner's dismiss list (#287): the digest, the show rules and the message all work on the filtered cards.
+    applied = {c.account_id: apply_dismissals(c, tiers[c.account_id], live[c.account_id], inp.today)
+               for c in result.cards}
+    result = dataclasses.replace(result, cards=tuple(applied[c.account_id].card for c in result.cards))
+    _write(archive / "dismissed.json", json.dumps(_dismissed_json(applied), ensure_ascii=False, indent=2))
     digests = {c.account_id: digest(c, tiers[c.account_id].tier) for c in result.cards}
     try:
         with terms_lock(t.terms_state_file):
             state = load_terms_state(t.terms_state_file)
             decisions = {c.account_id: decide(c, tiers[c.account_id], state.cards.get(c.account_id),
                                               digests[c.account_id]) for c in result.cards}
-            messages = render_terms(inp, result, decisions, cfg, archive)
+            messages = render_terms(inp, result, decisions, cfg, archive, applied)
             _write(archive / "message.md", "\n\n---\n\n".join(messages))
             if not args.send:
                 print("\n---\n".join(messages))

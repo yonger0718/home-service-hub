@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 from notify.config import ConfigError
@@ -14,6 +16,33 @@ _CARD_KEY = re.compile(r"[1-9][0-9]*")
 _LDH = r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
 _HOSTNAME = re.compile(rf"{_LDH}(\.{_LDH})+")  # LDH labels, at least one dot
 MAX_HERMES_TIMEOUT = 1840  # the units' TimeoutStartSec=1900 must outlast Hermes by 60 s
+
+# Dismiss list (#287): which findings the owner accepted. A rule field can be pinned to the value the bank
+# publishes when that value has a stable form; free text (name, description) can only be dismissed whole.
+DATE_FIELDS = ("starts_on", "ends_on")
+NUMBER_FIELDS = ("rate", "fixed_amount", "total_cap")
+TOKEN_FIELDS = ("method", "window")
+TEXT_FIELDS = ("name", "description")
+DISMISS_RULE_FIELDS = DATE_FIELDS + NUMBER_FIELDS + TOKEN_FIELDS + TEXT_FIELDS + ("is_basic",)
+NO_VALUE = "none"  # pin: the bank gives no value (date and number fields)
+_DISMISS_KEYS = frozenset({"field", "rule", "value", "contains", "until", "note", "rates"})
+_NUMBER = re.compile(r"[0-9]+(\.[0-9]+)?")
+_SIGNED = re.compile(r"-?[0-9]+(\.[0-9]+)?")  # a `rates` side: whatever the parser keeps for an announced row
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")  # date.fromisoformat also takes 20260701 and 2026-W27-3
+_TOKEN = re.compile(r"[a-z_]+")
+_NOTE_MAX = 200
+
+
+@dataclass(frozen=True)
+class Dismissal:
+    field: str  # a compared rule field, "missing_rule" or "next_terms"
+    rule: int | None = None
+    value: str | None = None  # normalised pin; NO_VALUE = the bank gives no value
+    contains: tuple[str, ...] = ()
+    until: date | None = None
+    note: str = ""
+    # next_terms only: the announced rows' (rate, cap) pairs, sorted; None = the period end alone decides
+    rates: tuple[tuple[str | None, str | None], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -27,6 +56,7 @@ class CardEntry:
     currency: str = "TWD"
     aliases: tuple[str, ...] = ()
     year_end_window: bool = True
+    dismiss: tuple[Dismissal, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -78,6 +108,115 @@ def _bool(raw: dict, key: str, path: str, default: bool) -> bool:
     return value
 
 
+def _iso_date(value: object, path: str) -> date:
+    """An ISO string or a TOML date literal; a datetime is refused."""
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and _ISO_DATE.fullmatch(value.strip()):
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError:
+            pass
+    raise ConfigError(path)
+
+
+def format_number(value: Decimal) -> str:
+    """One spelling per number, so a pin and a site value compare as text: ``9.0000`` and ``9`` are both ``9``."""
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def sort_rates(pairs) -> tuple[tuple[str | None, str | None], ...]:
+    """One order for a set of announced (rate, cap) rows, so the pin and a run's block compare as tuples."""
+    return tuple(sorted(pairs, key=lambda p: (p[0] or "", p[1] or "")))
+
+
+def _rates(value: object, path: str) -> tuple[tuple[str | None, str | None], ...]:
+    """``["3/888", "0.88/none"]``: one ``rate/cap`` string per announced row, ``none`` for a missing side."""
+    if not isinstance(value, list) or not value:
+        raise ConfigError(path)
+    pairs = []
+    for item in value:
+        parts = item.split("/") if isinstance(item, str) else []
+        if len(parts) != 2:
+            raise ConfigError(path)
+        pair = []
+        for part in (x.strip() for x in parts):
+            if part != NO_VALUE and not _SIGNED.fullmatch(part):
+                raise ConfigError(path)
+            pair.append(None if part == NO_VALUE else format_number(Decimal(part)))
+        pairs.append(tuple(pair))
+    if all(rate is None and cap is None for rate, cap in pairs):
+        raise ConfigError(path)  # no number at all: it would pin the row count and look like protection
+    return sort_rates(pairs)
+
+
+def _pin(field: str, value: object, path: str) -> str:
+    if field in DATE_FIELDS or field in NUMBER_FIELDS:
+        if value == NO_VALUE:
+            return NO_VALUE
+    if field in DATE_FIELDS or field == "next_terms":
+        return _iso_date(value, path).isoformat()
+    if field in NUMBER_FIELDS:
+        text = str(value).strip() if isinstance(value, (int, float, str)) and not isinstance(value, bool) else ""
+        if not _NUMBER.fullmatch(text):
+            raise ConfigError(path)
+        return format_number(Decimal(text))
+    if field == "is_basic":
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if value in ("true", "false"):
+            return value
+        raise ConfigError(path)
+    if field in TOKEN_FIELDS and isinstance(value, str) and _TOKEN.fullmatch(value) and value != NO_VALUE:
+        return value
+    raise ConfigError(path)  # name / description / missing_rule take no pin
+
+
+def _dismissal(raw: object, p: str) -> Dismissal:
+    if not isinstance(raw, dict):
+        raise ConfigError(p)
+    for key in raw:
+        if key not in _DISMISS_KEYS:
+            raise ConfigError(f"{p}.{key}")
+    field = raw.get("field")
+    is_rule_field = field in DISMISS_RULE_FIELDS
+    if not is_rule_field and field not in ("missing_rule", "next_terms"):
+        raise ConfigError(f"{p}.field")
+    rule = raw.get("rule")
+    if is_rule_field != ("rule" in raw) or (is_rule_field and (
+            isinstance(rule, bool) or not isinstance(rule, int) or rule <= 0)):
+        raise ConfigError(f"{p}.rule")
+    value = None
+    if "value" in raw or field == "next_terms":
+        value = _pin(field, raw.get("value"), f"{p}.value")
+    contains = raw.get("contains", [])
+    if ((field == "missing_rule") != ("contains" in raw) or not isinstance(contains, list)
+            or (field == "missing_rule" and not contains)
+            or not all(isinstance(c, str) and len(c.strip()) >= 2 for c in contains)):
+        raise ConfigError(f"{p}.contains")
+    if "until" not in raw and (field == "missing_rule" or field in TEXT_FIELDS):
+        raise ConfigError(f"{p}.until")  # nothing to pin: the entry must end on a date
+    until = _iso_date(raw["until"], f"{p}.until") if "until" in raw else None
+    note = raw.get("note", "")
+    if not isinstance(note, str) or len(note) > _NOTE_MAX:
+        raise ConfigError(f"{p}.note")
+    rates = None
+    if "rates" in raw:
+        if field != "next_terms":
+            raise ConfigError(f"{p}.rates")
+        rates = _rates(raw["rates"], f"{p}.rates")
+    return Dismissal(field, rule=rule if is_rule_field else None, value=value,
+                     contains=tuple(c.strip() for c in contains), until=until, note=note, rates=rates)
+
+
+def _dismissals(raw: dict, p: str, tier: str) -> tuple[Dismissal, ...]:
+    entries = raw.get("dismiss", [])
+    if not isinstance(entries, list) or (entries and tier != "precise"):
+        raise ConfigError(p)  # a signal card has no findings to dismiss
+    return tuple(_dismissal(e, f"{p}[{i}]") for i, e in enumerate(entries))
+
+
 def _card(key: str, raw: object) -> CardEntry:
     p = f"terms.cards.{key}"
     if not isinstance(key, str) or not _CARD_KEY.fullmatch(key):
@@ -105,6 +244,7 @@ def _card(key: str, raw: object) -> CardEntry:
         currency=_pattern(raw, "currency", f"{p}.currency", "TWD", r"[A-Z]{3}"),
         aliases=tuple(_str_list(raw, "aliases", f"{p}.aliases", non_empty=False)),
         year_end_window=_bool(raw, "year_end_window", f"{p}.year_end_window", country == "TW"),
+        dismiss=_dismissals(raw, f"{p}.dismiss", tier),
     )
 
 

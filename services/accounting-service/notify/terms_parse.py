@@ -427,8 +427,8 @@ def digest(card: CardResult, tier: str) -> str:
         pe, nt = card.current_period_end, card.next_terms
         obj = {
             "status": card.status,
-            "current_period_end": None if pe is None else
-            {"date": pe.date, "source": pe.source, "quote": _q(pe.quote)},
+            # the date only: the model quotes another sentence or URL form of the same page on most runs (#287)
+            "current_period_end": None if pe is None else pe.date,
             "findings": _sorted(card.findings),
             "unverified": _sorted(card.unverified),
             "next_terms": None if nt is None else {

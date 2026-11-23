@@ -308,3 +308,76 @@ def test_discord_invite_straddling_quote_cut(fx):
         c = card(101, "changed", findings=(finding(quote="y" * pad + "discord.gg/abc"),))
         (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True)})
         assert not INVITE_RE.search(msg) and "discord" not in msg.lower()
+
+
+# --- dismiss list tail lines (#287) ---
+
+def _applied(c, hidden=0, next_terms=False, stale=()):
+    from notify.terms_dismiss import Applied
+    return Applied(c, hidden=tuple(finding() for _ in range(hidden)), hidden_next_terms=next_terms, stale=tuple(stale))
+
+
+def _render(fx, entries, cards, decisions, applied, unregistered=()):
+    res = TermsResult(tuple(cards), {"failed": [], "truncated": []})
+    return "\n".join(render_terms(inp(entries, unregistered, RULES), res, decisions, fx.cfg(), ARCHIVE, applied))
+
+
+def test_hidden_items_are_counted_per_card(fx):
+    entries = [entry(101, "範例 Live+"), entry(301, "Example Global"), entry(401, "範例 Quiet")]
+    cards = [card(101, "changed", findings=(finding(),)), card(301), card(401)]
+    dec = {101: show(show_findings=True), 301: NO, 401: NO}
+    out = _render(fx, entries, cards, dec, {101: _applied(cards[0], hidden=2, next_terms=True),
+                                            301: _applied(cards[1], hidden=1), 401: _applied(cards[2])})
+    lines = out.split("\n")
+    assert "已忽略 4 項：範例 Live+ 3、Example Global 1" in lines
+    assert lines.index("已忽略 4 項：範例 Live+ 3、Example Global 1") < lines.index("無變動：Example Global、範例 Quiet")
+    assert "忽略清單失效" not in out
+
+
+def test_no_tail_lines_without_hidden_or_stale(fx):
+    entries, cards = [entry(101, "範例 Live+")], [card(101, "changed", findings=(finding(),))]
+    out = _render(fx, entries, cards, {101: show(show_findings=True)}, {101: _applied(cards[0])})
+    assert "已忽略" not in out and "忽略清單失效" not in out
+    assert out == "\n".join(run(fx, entries, cards, {101: show(show_findings=True)}))  # same as without the argument
+
+
+def test_stale_dismissals_are_listed_with_their_reason(fx):
+    from datetime import date as d
+
+    from notify.terms_config import Dismissal
+    entries, cards = [entry(101, "範例 Live+")], [card(101, "changed", findings=(finding(),))]
+    stale = ((Dismissal("starts_on", rule=162, value="2026-07-01"), "rule"),
+             (Dismissal("missing_rule", contains=("LINE Pay", "10%"), until=d(2026, 10, 31)), "expired"),
+             (Dismissal("next_terms", value="2026-09-30"), "expired"))
+    out = _render(fx, entries, cards, {101: show(show_findings=True)}, {101: _applied(cards[0], stale=stale)})
+    assert ("忽略清單失效：範例 Live+ 規則 162 開始日（規則已不在）、範例 Live+ 缺規則「LINE Pay 10%」（到期）、"
+            "範例 Live+ 下期條款 2026-09-30（到期）") in out.split("\n")
+
+
+def test_stale_label_text_is_defanged(fx):
+    from datetime import date as d
+
+    from notify.terms_config import Dismissal
+    entries, cards = [entry(101, "範例 Live+")], [card(101)]
+    stale = ((Dismissal("missing_rule", contains=("@everyone", "https://discord.gg/x", "**b**"),
+                        until=d(2026, 10, 31)), "expired"),)
+    out = _render(fx, entries, cards, {101: NO}, {101: _applied(cards[0], stale=stale)})
+    (line,) = [x for x in out.split("\n") if x.startswith("忽略清單失效")]
+    assert "@everyone" not in line and "://" not in line and "discord" not in line and "**b**" not in line
+
+
+def test_single_line_form_carries_the_hidden_count(fx):
+    entries, cards = [entry(101, "範例 Live+"), entry(401, "範例 Quiet")], [card(101), card(401)]
+    out = _render(fx, entries, cards, {101: NO, 401: NO}, {101: _applied(cards[0], hidden=2), 401: _applied(cards[1])})
+    assert out == "📋 回饋條款查核 2026-11-03：2 張卡無變動（已忽略 2 項）"
+    plain = _render(fx, entries, cards, {101: NO, 401: NO}, {101: _applied(cards[0]), 401: _applied(cards[1])})
+    assert plain == "📋 回饋條款查核 2026-11-03：2 張卡無變動"
+
+
+def test_stale_alone_forces_the_long_form(fx):
+    from notify.terms_config import Dismissal
+    entries, cards = [entry(101, "範例 Live+")], [card(101)]
+    stale = ((Dismissal("rate", rule=9), "rule"),)
+    lines = _render(fx, entries, cards, {101: NO}, {101: _applied(cards[0], stale=stale)}).split("\n")
+    assert lines[0] == "📋 回饋條款查核 2026-11-03（1 張卡，0 張有事項）"
+    assert "忽略清單失效：範例 Live+ 規則 9 回饋率（規則已不在）" in lines and "無變動：範例 Live+" in lines

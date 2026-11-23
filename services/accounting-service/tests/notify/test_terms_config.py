@@ -170,3 +170,181 @@ def test_defaults_for_provider_and_state_file(tmp_path):
     t = _load(tmp_path, TERMS + CARD).terms
     assert t.hermes_provider == "anthropic" and t.terms_state_file.name == "terms-state.json"
     assert t.hermes_timeout_seconds == 1800 and t.max_output_bytes == 4194304
+
+
+# --- dismiss list (#287) ---
+
+def _dismiss(tmp_path, *entries, card=CARD):
+    body = TERMS + card + "".join(f'\n[[terms.cards."101".dismiss]]\n{e}\n' for e in entries)
+    return _load(tmp_path, body).terms.cards[0].dismiss
+
+
+def _dismiss_err(tmp_path, *entries, card=CARD):
+    with pytest.raises(ConfigError) as exc:
+        _dismiss(tmp_path, *entries, card=card)
+    return str(exc.value)
+
+
+def test_card_without_dismiss_has_none(tmp_path):
+    assert _load(tmp_path, TERMS + CARD).terms.cards[0].dismiss == ()
+
+
+def test_dismiss_four_shapes_load(tmp_path):
+    from datetime import date
+
+    from notify.terms_config import Dismissal
+
+    got = _dismiss(
+        tmp_path,
+        'field = "starts_on"\nrule = 162\nvalue = "2026-07-01"\nnote = "current period only"',
+        'field = "description"\nrule = 163\nuntil = "2026-12-31"',
+        'field = "missing_rule"\ncontains = ["LINE Pay", "10%"]\nuntil = "2026-12-31"',
+        'field = "next_terms"\nvalue = "2027-03-31"',
+    )
+    assert got == (
+        Dismissal("starts_on", rule=162, value="2026-07-01", note="current period only"),
+        Dismissal("description", rule=163, until=date(2026, 12, 31)),
+        Dismissal("missing_rule", contains=("LINE Pay", "10%"), until=date(2026, 12, 31)),
+        Dismissal("next_terms", value="2027-03-31"),
+    )
+
+
+@pytest.mark.parametrize("field, raw, stored", [
+    ("rate", "9.0", "9"), ("rate", '"9.0000"', "9"), ("rate", "9", "9"), ("total_cap", '"60000.50"', "60000.5"),
+    ("fixed_amount", "100", "100"), ("total_cap", '"none"', "none"), ("ends_on", '"none"', "none"),
+    ("is_basic", "true", "true"), ("is_basic", '"false"', "false"), ("window", '"calendar_month"', "calendar_month"),
+    ("method", '"per_unit"', "per_unit"), ("ends_on", '"2027-03-31"', "2027-03-31"),
+])
+def test_dismiss_pin_is_normalised(tmp_path, field, raw, stored):
+    (d,) = _dismiss(tmp_path, f'field = "{field}"\nrule = 1\nvalue = {raw}')
+    assert d.value == stored
+
+
+@pytest.mark.parametrize("entry, key", [
+    ('field = "posting"\nrule = 1', "field"),
+    ('field = "id"\nrule = 1', "field"),
+    ('rule = 1', "field"),
+    ('field = "rate"', "rule"),
+    ('field = "rate"\nrule = 0', "rule"),
+    ('field = "rate"\nrule = true', "rule"),
+    ('field = "rate"\nrule = "1"', "rule"),
+    ('field = "missing_rule"\nrule = 1\ncontains = ["ab"]\nuntil = "2026-12-31"', "rule"),
+    ('field = "next_terms"\nrule = 1\nvalue = "2027-03-31"', "rule"),
+    ('field = "name"\nrule = 1\nvalue = "x"', "value"),
+    # free text cannot be pinned, so such an entry must end on a date
+    ('field = "name"\nrule = 1', "until"),
+    ('field = "description"\nrule = 1', "until"),
+    ('field = "description"\nrule = 1\nvalue = "x"', "value"),
+    ('field = "missing_rule"\nvalue = "x"\ncontains = ["ab"]\nuntil = "2026-12-31"', "value"),
+    ('field = "starts_on"\nrule = 1\nvalue = "2026-13-01"', "value"),
+    ('field = "starts_on"\nrule = 1\nvalue = "2026/07/01"', "value"),
+    ('field = "starts_on"\nrule = 1\nvalue = 20260701', "value"),
+    ('field = "starts_on"\nrule = 1\nvalue = "20260701"', "value"),
+    ('field = "starts_on"\nrule = 1\nvalue = "2026-W27-3"', "value"),
+    ('field = "rate"\nrule = 1\nvalue = inf', "value"),
+    ('field = "rate"\nrule = 1\nvalue = nan', "value"),
+    ('field = "rate"\nrule = 1\nvalue = -1', "value"),
+    ('field = "rate"\nrule = 1\nvalue = [1]', "value"),
+    ('field = "rate"\nrule = 1\nuntil = 10:00:00', "until"),
+    ('field = "rate"\nrule = 1\nvalue = "nine"', "value"),
+    ('field = "rate"\nrule = 1\nvalue = true', "value"),
+    ('field = "rate"\nrule = 1\nvalue = "1e3"', "value"),
+    ('field = "is_basic"\nrule = 1\nvalue = "yes"', "value"),
+    ('field = "is_basic"\nrule = 1\nvalue = "none"', "value"),
+    ('field = "window"\nrule = 1\nvalue = "Calendar Month"', "value"),
+    ('field = "method"\nrule = 1\nvalue = "none"', "value"),
+    ('field = "next_terms"', "value"),
+    ('field = "next_terms"\nvalue = "none"', "value"),
+    ('field = "next_terms"\nvalue = "soon"', "value"),
+    ('field = "missing_rule"\nuntil = "2026-12-31"', "contains"),
+    ('field = "missing_rule"\ncontains = []\nuntil = "2026-12-31"', "contains"),
+    ('field = "missing_rule"\ncontains = ["a"]\nuntil = "2026-12-31"', "contains"),
+    ('field = "missing_rule"\ncontains = ["ab", " "]\nuntil = "2026-12-31"', "contains"),
+    ('field = "missing_rule"\ncontains = "LINE Pay"\nuntil = "2026-12-31"', "contains"),
+    ('field = "rate"\nrule = 1\ncontains = ["ab"]', "contains"),
+    ('field = "next_terms"\nvalue = "2027-03-31"\ncontains = ["ab"]', "contains"),
+    ('field = "missing_rule"\ncontains = ["ab"]', "until"),
+    ('field = "rate"\nrule = 1\nuntil = "tomorrow"', "until"),
+    ('field = "rate"\nrule = 1\nuntil = 20261231', "until"),
+    ('field = "rate"\nrule = 1\nnote = 5', "note"),
+    ('field = "rate"\nrule = 1\nnote = "' + "x" * 201 + '"', "note"),
+    ('field = "rate"\nrule = 1\nreason = "x"', "reason"),
+])
+def test_dismiss_refusals_name_the_key(tmp_path, entry, key):
+    assert _dismiss_err(tmp_path, entry) == f"terms.cards.101.dismiss[0].{key}"
+
+
+def test_dismiss_error_names_the_entry_index(tmp_path):
+    assert _dismiss_err(tmp_path, 'field = "rate"\nrule = 1', 'field = "rate"') == "terms.cards.101.dismiss[1].rule"
+
+
+def test_dismiss_must_be_a_list_of_tables(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        _load(tmp_path, TERMS + CARD + 'dismiss = "all"\n')
+    assert str(exc.value) == "terms.cards.101.dismiss"
+    with pytest.raises(ConfigError) as exc:
+        _load(tmp_path, TERMS + CARD + 'dismiss = ["x"]\n')
+    assert str(exc.value) == "terms.cards.101.dismiss[0]"
+
+
+def test_dismiss_on_a_signal_card_is_refused(tmp_path):
+    signal = CARD.replace('tier = "precise"', 'tier = "signal"')
+    assert _dismiss_err(tmp_path, 'field = "rate"\nrule = 1', card=signal) == "terms.cards.101.dismiss"
+
+
+def test_note_at_the_limit_loads(tmp_path):
+    (d,) = _dismiss(tmp_path, 'field = "rate"\nrule = 1\nnote = "' + "x" * 200 + '"')
+    assert len(d.note) == 200
+
+
+def test_toml_date_literals_are_accepted(tmp_path):
+    from datetime import date
+
+    (d,) = _dismiss(tmp_path, 'field = "starts_on"\nrule = 1\nvalue = 2026-07-01\nuntil = 2026-12-31')
+    assert (d.value, d.until) == ("2026-07-01", date(2026, 12, 31))
+    assert _dismiss_err(tmp_path, 'field = "rate"\nrule = 1\nuntil = 2026-12-31T00:00:00') == (
+        "terms.cards.101.dismiss[0].until")
+
+
+def test_example_toml_documents_the_four_dismiss_shapes():
+    cards = {c.account_id: c for c in load_config(EXAMPLE_FILE, with_terms=True).terms.cards}
+    got = [(d.field, d.rule, d.value, d.contains, d.until is not None) for d in cards[101].dismiss]
+    assert got == [("starts_on", 162, "2026-07-01", (), False), ("description", 163, None, (), True),
+                   ("missing_rule", None, None, ("LINE Pay", "10%"), True), ("next_terms", None, "2027-03-31", (), False)]
+    assert cards[101].dismiss[3].rates == (("0.88", None), ("1", "200"), ("1", "200"), ("3", "888"))
+    assert cards[102].dismiss == () and cards[301].dismiss == ()
+
+
+# --- next_terms: pin on the announced rates and caps ---
+
+def test_next_terms_rates_pin_is_normalised_and_sorted(tmp_path):
+    (d,) = _dismiss(tmp_path, 'field = "next_terms"\nvalue = "2027-03-31"\n'
+                              'rates = ["3.0/888", "0.88/none", "1/200.00", "1/200", "none/none"]')
+    assert d.rates == ((None, None), ("0.88", None), ("1", "200"), ("1", "200"), ("3", "888"))
+
+
+def test_next_terms_without_rates_has_no_rates_pin(tmp_path):
+    (d,) = _dismiss(tmp_path, 'field = "next_terms"\nvalue = "2027-03-31"')
+    assert d.rates is None
+
+
+@pytest.mark.parametrize("entry", [
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = "3/888"',
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = []',
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = ["3"]',
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = ["3/888/1"]',
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = ["three/888"]',
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = [3]',
+    # rows without a rate or a cap (a miles card: "1 mile per NT$15" is text) give nothing to pin
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = ["none/none", "none/none"]',
+    'field = "rate"\nrule = 1\nrates = ["3/888"]',
+    'field = "missing_rule"\ncontains = ["ab"]\nuntil = "2026-12-31"\nrates = ["3/888"]',
+])
+def test_rates_refusals(tmp_path, entry):
+    assert _dismiss_err(tmp_path, entry) == "terms.cards.101.dismiss[0].rates"
+
+
+def test_rates_pin_takes_what_dismissed_json_prints(tmp_path):
+    """`hidden_next_terms_rates` is meant to be pasted back: a sign the parser keeps must load."""
+    (d,) = _dismiss(tmp_path, 'field = "next_terms"\nvalue = "2027-03-31"\nrates = ["-1/none", "1.5/3000"]')
+    assert d.rates == (("-1", None), ("1.5", "3000"))

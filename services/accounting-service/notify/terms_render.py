@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 
 from notify.config import NotifyConfig
 from notify.render import _settings_link, split_blocks
+from notify.terms_config import Dismissal
+from notify.terms_dismiss import EXPIRED, RULE_GONE, Applied
 from notify.terms_input import TermsInput
 from notify.terms_parse import CardResult, TermsResult, TruncatedSource, source_ok
 from notify.terms_state import ShowDecision
@@ -16,6 +18,7 @@ from notify.terms_state import ShowDecision
 FIELD_ZH = {"ends_on": "結束日", "starts_on": "開始日", "rate": "回饋率", "total_cap": "上限", "is_basic": "基本",
             "name": "名稱", "description": "說明", "method": "方式", "fixed_amount": "固定金額", "window": "期間",
             "missing_rule": "缺規則"}
+_STALE_ZH = {EXPIRED: "到期", RULE_GONE: "規則已不在"}
 _ZW = "​"
 _QUOTE_MAX = 80
 _SHOW = tuple(f.name for f in fields(ShowDecision) if f.name.startswith("show_"))
@@ -135,8 +138,32 @@ def _block(card: CardResult, d: ShowDecision, head: str, rows: dict, failed: lis
     return "\n".join(lines)
 
 
+def _dismissal_label(d: Dismissal) -> str:
+    """Config text (the owner's) is defanged like model text: it is printed into a Discord message."""
+    if d.field == "missing_rule":
+        return f"缺規則「{_safe_text(' '.join(d.contains))}」"
+    if d.field == "next_terms":
+        return f"下期條款 {_safe_text(d.value)}"
+    return f"規則 {d.rule} {FIELD_ZH.get(d.field, _safe_text(d.field))}"
+
+
+def _dismiss_lines(inp: TermsInput, applied: dict[int, Applied]) -> tuple[int, list[str], list[str]]:
+    """(hidden total, per-card hidden counts, stale entries) for the cards of this run, in registry order."""
+    total, hidden, stale = 0, [], []
+    for ci in inp.cards:
+        a = applied.get(ci.card.account_id)
+        if a is None:
+            continue
+        if a.hidden_count:
+            total += a.hidden_count
+            hidden.append(f"{ci.card.official} {a.hidden_count}")
+        stale += [f"{ci.card.official} {_dismissal_label(d)}（{_STALE_ZH[reason]}）" for d, reason in a.stale]
+    return total, hidden, stale
+
+
 def render_terms(inp: TermsInput, result: TermsResult, decisions: dict[int, ShowDecision],
-                 cfg: NotifyConfig, archive: Path) -> list[str]:
+                 cfg: NotifyConfig, archive: Path, applied: dict[int, Applied] | None = None) -> list[str]:
+    """``result`` is what is shown (dismissed items already removed); ``applied`` says what the dismiss list hid."""
     by_id = {c.account_id: c for c in result.cards}
     failed = list(result.fetch_log.get("failed", []))
     blocks: list[str] = []
@@ -150,11 +177,16 @@ def render_terms(inp: TermsInput, result: TermsResult, decisions: dict[int, Show
         head = f"【{ci.card.official}】 → {_link(_settings_link(cfg, aid))}"
         blocks.append(_block(card, d, head, rows, _card_failures(failed, ci.card.bank_domains)))
     m = len(inp.cards)
-    if not blocks and not inp.unregistered:
-        return [f"📋 回饋條款查核 {inp.today}：{m} 張卡無變動"]
+    total, hidden, stale = _dismiss_lines(inp, applied or {})
+    if not blocks and not inp.unregistered and not stale:
+        return [f"📋 回饋條款查核 {inp.today}：{m} 張卡無變動" + (f"（已忽略 {total} 項）" if total else "")]
     out = [f"📋 回饋條款查核 {inp.today}（{m} 張卡，{len(blocks)} 張有事項）\narchive: {archive}"] + blocks
     if inp.unregistered:
         out.append("未登錄：" + "、".join(f"{n}（{i}）" for i, n in inp.unregistered))
+    if total:
+        out.append(f"已忽略 {total} 項：" + "、".join(hidden))
+    if stale:
+        out.append("忽略清單失效：" + "、".join(stale))
     if quiet:
         out.append("無變動：" + "、".join(quiet))
     return split_blocks(out)

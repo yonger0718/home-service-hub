@@ -370,10 +370,28 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
       python -m notify terms --cause {monthly,year-end} [--as-of YYYY-MM-DD] [--dry-run | --send] [--config PATH]
 
   Exit code：0 完成或無事可報；1 失敗（寫 `last_failure.txt`，`failed@` 單元發通知）；2 參數錯誤或缺少/無效的 `[terms]`。
-  每次執行在 `report_dir/<UTC 時間戳>/` 留存封存（目錄 0700、檔案 0600：`input.json`、`prompt.md`、`hermes.out`、`hermes.err`、`result.json` 含各卡 `fetch_log`、`message.md`）；
+  每次執行在 `report_dir/<UTC 時間戳>/` 留存封存（目錄 0700、檔案 0600：`input.json`、`prompt.md`、`hermes.out`、`hermes.err`、`result.json` 含各卡 `fetch_log`、`dismissed.json`、`message.md`）；
   只有 `--send` 成功送出後才儲存 state。封存目錄已存在（時間戳碰撞）時以 `TermsArchiveError archive <dir>` 失敗，不覆寫。
 - 訊息：完整網址只印通過來源規則（銀行網域、僅 RFC 3986 可列印字元、無 `@`）的，並以 `<url>` 形式呈現（Discord 不展開預覽）；
   其餘只印主機名稱。發現的「系統」值取自 HomeHub 的規則列，不採用模型自述；`rule_id` 不是該卡現行規則的發現列為「未驗證（未知規則）」。
+- 忽略清單（spec `docs/superpowers/specs/2026-11-23-terms-dismiss-list-design.md`）：已驗證的發現與「下期條款已公告」每次都會重印。
+  owner 看過、決定不處理的項目，寫進該卡的 `[[terms.cards."<id>".dismiss]]`（範例見 example TOML）就不再出現。比對由 notifier 自己做，Hermes 看不到清單。
+  - 規則欄位：`field` + `rule`（規則 id），可加 `value` 釘住官網的值（日期、`rate` / `fixed_amount` / `total_cap`、`is_basic`、`method`、`window`；
+    日期與數字欄位可用 `"none"` 表示官網沒有值）。銀行改成別的值就會再出現。沒有 `value` 表示該規則該欄位的任何值都忽略；`name`、`description` 只能整欄忽略，所以必須寫 `until`（銀行改排除條件時通常就是報成說明不同；到期後差異會再顯示）。
+  - 缺規則：`field = "missing_rule"` + `contains`（每個字串都要出現在發現的文字或引文中，不分大小寫、全半形）+ 必填的 `until`。
+  - 下期條款：`field = "next_terms"` + `value`（公告期間的結束日）；期間結束後自動失效。建議加 `rates`（公告各列的 `"回饋率/上限"`，
+    沒有的一邊寫 `none`，順序不拘）：銀行在同一期內改了任何一個數字，公告就會再出現。不加 `rates` 則只看結束日，同期改版會被蓋住，直到新一期開始。
+    已被忽略的公告，其 `rates` 寫在 `dismissed.json` 的 `hidden_next_terms_rates`，可直接複製。
+    哩程卡的公告沒有回饋率與上限（「每 15 元 1 哩」是文字），各列都是 `none/none`，這樣的 `rates` 會被拒絕：這類卡的公告只能看結束日，
+    建議不要忽略，或加一個短的 `until`。
+  - `until`（選填；缺規則、`name`、`description` 必填）：最後生效日。`note`：原因，只留在設定檔。signal 卡不能有 `dismiss`。
+  - 被忽略的項目仍在 `result.json`，另列於 `dismissed.json`；訊息尾端印 `已忽略 N 項：…`。到期、或所指規則已不是現行規則的項目不再生效，
+    並列在 `忽略清單失效：…`，直到從設定檔移除。全部項目都被忽略的卡視同無差異。
+  - 新增一項：讀最近一次封存的 `result.json`（該發現的 `rule_id`、`field`、`site`），加進設定檔，再跑一次 `--dry-run` 確認。
+  - 限制：釘值只認「一個值，後面是結尾或括號註解」（`9%（合計）` 視為 9，全形數字、逗號、百分號、括號會先轉半形）；其餘寫法（`約 9%`、區間 `1.5-3%` / `1.5～3%`、分數、`9% 起`）
+    一律不比對、照常顯示；
+    釘的是官網的值，之後若改了規則自己的值而官網沒變，該差異仍被忽略；沒有 `value` 的項目會連之後的真實變動一起蓋掉；
+    模型下次若把同一差異報在別的欄位或規則上，不會被比對到；訊號卡的摘要、「來源文件過長」、未驗證項目不在清單範圍內。
 - 隔離：Hermes 以固定參數呼叫（`hermes -z … -t web --ignore-user-config --ignore-rules --provider … -m …`），
   不給 HomeHub token，環境變數只有 PATH/HOME/LANG/TZ。**不得上線規則**：Hermes 升級後若
   `deploy/notify/terms-isolation-probe.md` 的隔離探測有任何一項失敗，就不要啟用計時器。
