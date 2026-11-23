@@ -1,6 +1,7 @@
 import { inject } from '@angular/core';
 import { Routes, UrlMatchResult, UrlSegment } from '@angular/router';
 import { ACCOUNTING_PAGES, AccountingPage } from './components/accounting/accounting-pages';
+import { REVIEW_FLOW_ID } from './components/notifications/review-flow-url';
 import { landingPathFor } from './components/shell/navigation';
 import { phoneLayoutGuard, wideLayoutGuard } from './services/layout-mode.service';
 import { NavigationPreferencesService } from './services/navigation-preferences.service';
@@ -10,7 +11,7 @@ import { NavigationPreferencesService } from './services/navigation-preferences.
  * group view: `/accounting/entries/[0-9]+/group` and `/accounting/accounts/[0-9]+/entries/[0-9]+/group`. The reward rules
  * phase 1 adds the 回饋規則總覽 page: `/accounting/reward-rules`.
  * The notification center adds `/notifications` (top level, outside `/accounting`) and its review flow
- * `/notifications/recon/[0-9]+`.
+ * `/notifications/recon/[1-9][0-9]*`.
  */
 
 /**
@@ -84,7 +85,7 @@ export function portfolioAccountsMatcher(segments: UrlSegment[]): UrlMatchResult
 }
 
 /**
- * `notifications` and `notifications/recon/<digits>` as one route, so the page (its list, chips and row state) stays
+ * `notifications` and `notifications/recon/<id>` (`REVIEW_FLOW_ID`: no 0, no leading zero) as one route, so the page (its list, chips and row state) stays
  * mounted while the review flow opens, changes statement and closes. Anything else under `notifications/` does not
  * match (and falls to `**`).
  */
@@ -95,7 +96,7 @@ export function notificationsMatcher(segments: UrlSegment[]): UrlMatchResult | n
   if (segments.length === 1) {
     return { consumed: segments };
   }
-  if (segments.length === 3 && segments[1].path === 'recon' && /^\d+$/.test(segments[2].path)) {
+  if (segments.length === 3 && segments[1].path === 'recon' && REVIEW_FLOW_ID.test(segments[2].path)) {
     return { consumed: segments, posParams: { statementId: segments[2] } };
   }
   return null;

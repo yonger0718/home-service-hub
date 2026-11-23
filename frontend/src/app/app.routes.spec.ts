@@ -315,7 +315,7 @@ describe('notifications route', () => {
     expect(result?.posParams?.['statementId'].path).toBe('12');
   });
 
-  for (const url of ['notifications/recon/abc', 'notifications/recon', 'notifications/x', 'notifications/recon/12/x', 'notifications/recon/-1', 'notifications/recon/1.5', 'settings']) {
+  for (const url of ['notifications/recon/abc', 'notifications/recon', 'notifications/x', 'notifications/recon/12/x', 'notifications/recon/-1', 'notifications/recon/1.5', 'notifications/recon/0', 'notifications/recon/012', 'settings']) {
     it(`does not match /${url}`, () => {
       expect(notificationsMatcher(segments(url))).toBeNull();
     });
@@ -332,12 +332,14 @@ describe('notifications route', () => {
     expect(root.querySelector('app-notifications app-recon-flow')).not.toBeNull();
   });
 
-  it('an unknown path under /notifications falls through to the landing page', async () => {
-    stubViewport(1440);
-    const harness = await RouterTestingHarness.create();
-    await harness.navigateByUrl('/notifications/recon/abc');
-    expect(TestBed.inject(Router).url).not.toMatch(/^\/notifications/);
-  });
+  for (const url of ['/notifications/recon/abc', '/notifications/recon/0', '/notifications/recon/012']) {
+    it(`${url} is not a review-flow URL: it falls through to the landing page`, async () => {
+      stubViewport(1440);
+      const harness = await RouterTestingHarness.create();
+      await harness.navigateByUrl(url);
+      expect(TestBed.inject(Router).url).not.toMatch(/^\/notifications/);
+    });
+  }
 });
 
 describe('portfolio import routes', () => {

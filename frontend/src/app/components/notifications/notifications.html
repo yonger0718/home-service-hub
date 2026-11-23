@@ -1,8 +1,6 @@
-@if (flowAlone(); as id) {
-  <!-- Below 1024 px: the flow alone, with its own card and header (‹ 返回通知); the list comes back when it closes. -->
-  <app-recon-flow [statementId]="id" (closed)="closeFlow()" />
-} @else {
-  <div class="notif-split" [class.notif-split--open]="statementId() !== null">
+<div class="notif-split" [class.notif-split--open]="statementId() !== null && panes()">
+  <!-- Below 1024 px with a statement the list (header, chips, rows, links) is not rendered; it returns on close. -->
+  @if (!flowAlone()) {
     <div class="notif-page">
       <app-page-header [back]="true" backFallback="/accounting" [subtitle]="subtitle()"></app-page-header>
 
@@ -89,12 +87,14 @@
         <app-banner class="notif-failed" tone="error" [heading]="line" actionLabel="重試" [actionDisabled]="center.loading()" (action)="retry()" />
       }
     </div>
+  }
 
-    @if (statementId(); as id) {
-      <!-- From 1024 px: the flow beside the list; the pane gives it the card surface (its own background is transparent). -->
-      <div class="notif-pane">
-        <app-recon-flow [statementId]="id" (closed)="closeFlow()" />
-      </div>
-    }
-  </div>
-}
+  @if (statementId(); as id) {
+    <!-- One flow at one template position for every width, so crossing 1024 px never remounts it (cursor, open sheet,
+         undo offer and focus survive). From 1024 px the pane is its card beside the list; below, the flow draws its
+         own card and header and is the whole page. -->
+    <div class="notif-pane" [class.notif-pane--card]="panes()">
+      <app-recon-flow [statementId]="id" (closed)="closeFlow()" />
+    </div>
+  }
+</div>

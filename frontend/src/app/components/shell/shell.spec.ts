@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { routes } from '../../app.routes';
 import {
   COMPACT_QUERY,
+  LayoutModeService,
   MATCH_MEDIA,
   MatchMediaFn,
   PANES_QUERY,
@@ -243,6 +244,10 @@ describe('ShellComponent', () => {
       [1440, '/notifications/recon/12', true],
       [820, '/notifications', true],
       [1440, '/accounting/reports', false],
+      // Not review-flow URLs (the route does not match them): the button stays.
+      [820, '/notifications/recon/0', true],
+      [820, '/notifications/recon/012', true],
+      [820, '/notifications/recon/abc', true],
     ];
     for (const [width, url, shown] of cases) {
       TestBed.resetTestingModule();
@@ -252,6 +257,24 @@ describe('ShellComponent', () => {
       const clear = el.querySelector<HTMLElement>('app-toast-outlet')!.style.getPropertyValue('--toast-fab-clear');
       expect(clear === '24px', `${width} ${url}`).toBe(!shown);
     }
+  });
+
+  it('on the review flow, the floating 記一筆 follows the layout mode: shown at panes, hidden below', async () => {
+    const { fab, settle } = await render(viewportOf(390), { url: '/notifications/recon/12' });
+    const layout = TestBed.inject(LayoutModeService);
+    expect(fab()).toBeNull();
+    layout.set('panes');
+    await settle();
+    expect(fab()).not.toBeNull();
+    layout.set('phone');
+    await settle();
+    expect(fab()).toBeNull();
+    layout.set('panes');
+    await settle();
+    expect(fab()).not.toBeNull();
+    layout.set('sheet');
+    await settle();
+    expect(fab()).toBeNull();
   });
 
   it('brings the floating 記一筆 back when the review flow closes at 820 px', async () => {

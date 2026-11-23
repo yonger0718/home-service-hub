@@ -4,33 +4,49 @@
   display: block;
 }
 
-/* Without a flow: a plain block, the page keeps its own 720 px column. With one (only rendered at panes width): a
-   row wide enough for both columns, list 5 : pane 6. */
+/* Without a flow: a plain block, the page keeps its own 720 px column. With one at panes width: a row wide enough for
+   both columns, list 5 : pane 6. Below panes width the split stays a plain block holding only the flow (no card here:
+   it draws its own). */
 .notif-split--open {
   align-items: flex-start;
   display: flex;
   gap: 16px;
   max-width: 1280px;
 
+  /* The floor is what a row needs before its body would drop under the icon: 14 + 40 icon + 12 gap + 280 body
+     (.notif-body's min-width) + 14 = 360 px. The narrowest panes content is 1024 - 72 (rail; the expanded sidebar
+     needs >= 1280 px) - 56 (page padding) = 896 px: list ~411 / pane ~469 by flex, so the floor only guards. */
   > .notif-page {
     flex: 5 1 420px;
     max-width: none;
+    min-width: 360px;
+  }
+
+  > .notif-pane {
+    flex: 6 1 480px;
     min-width: 0;
   }
 }
 
 /* The flow is transparent at panes width: the pane is its card (surface, radius and shadow as the list's cards), so
-   muted text inside sits on --app-surface. It stays in view while the list scrolls, and scrolls inside when taller. */
-.notif-pane {
+   muted text inside sits on --app-surface. It stays in view while the list scrolls and scrolls inside when taller,
+   ending above the floating 記一筆 (--fab-clear, set on .hub-page from 760 px) so its last row can scroll clear of it. */
+.notif-pane--card {
   background: var(--app-surface);
   border-radius: 18px;
   box-shadow: var(--app-card-shadow);
-  flex: 6 1 480px;
-  max-height: calc(100dvh - 32px);
-  min-width: 0;
+  max-height: calc(100dvh - 16px - var(--fab-clear, 88px));
   overflow: auto;
   position: sticky;
   top: 16px;
+}
+
+/* Sticky makes the pane a stacking context at layer 0, which traps the flow's record / match sheet (.overlay, fixed,
+   z-index 1100 in accounting/sheet.scss) under the sidebar and the 記一筆 (both z-index 1000): they would paint over the
+   backdrop and stay clickable. While a sheet is open the pane itself rises to the sheet's layer. Nothing else relies
+   on the pane's layer (the toasts sit at 10000; the sheets append nothing to <body>). */
+.notif-pane--card:has(.overlay) {
+  z-index: 1100;
 }
 
 .notif-page {

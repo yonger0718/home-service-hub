@@ -11,6 +11,7 @@ import {
   signal,
   untracked,
 } from '@angular/core';
+import { DOCUMENT } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
@@ -27,6 +28,7 @@ import { IMPORT_RUNNING_TOAST, isImportRunning } from '../accounting/schedule-ma
 import { apiErrorText, splitApiCode } from '../accounting/statements/statement-view';
 import { focusPageIfLost, focusRetryIfLost } from '../accounting/retry-focus';
 import { BannerComponent } from '../ui/banner/banner';
+import { PAGE_SCROLLER_SELECTOR } from '../shell/fab-visibility';
 import { PageHeaderComponent } from '../shell/page-header/page-header';
 import {
   COUNTED_TIERS,
@@ -103,6 +105,7 @@ export class NotificationsComponent {
   private readonly host: HTMLElement = inject(ElementRef).nativeElement;
   private readonly injector = inject(Injector);
   private readonly router = inject(Router);
+  private readonly document = inject(DOCUMENT);
 
   /** The statement whose review flow is open (the route's `statementId`), or null on `/notifications`. */
   protected readonly statementId = toSignal(
@@ -373,24 +376,44 @@ export class NotificationsComponent {
     void this.router.navigate(['/notifications']);
   }
 
+  /**
+   * The flow opened (or changed statement). Alone (below 1024 px) it is a new screen: the page scrolls to its top, as a
+   * route change would (the router restores no scroll here, and the list may have been scrolled down). The scroller is
+   * the document, or `.hub-main` when the shell scrolls it (compact-height panes); both are reset. Then its host
+   * takes focus.
+   */
   private focusFlow(): void {
+    if (this.flowAlone() !== null) {
+      const scrollers = [this.document.scrollingElement ?? this.document.documentElement, this.host.closest(PAGE_SCROLLER_SELECTOR)];
+      for (const scroller of scrollers) {
+        scroller?.scrollTo?.({ top: 0 });
+      }
+    }
     this.host.querySelector<HTMLElement>('app-recon-flow')?.focus({ preventScroll: true });
   }
 
+  /**
+   * The flow closed: the row of that statement takes focus, else the page heading, scrolled into view (below 1024 px
+   * the list was just rendered again at the top of a page that may be scrolled).
+   */
   private focusAfterClose(statementId: number): void {
     const row = this.host.querySelector(`app-notif-row[data-task-id="recon:${statementId}"]`);
-    const control = row?.querySelector<HTMLElement>(NOTIF_PRIMARY_CONTROL) ?? null;
-    if (control) {
-      control.focus({ preventScroll: true });
+    const target = row?.querySelector<HTMLElement>(NOTIF_PRIMARY_CONTROL) ?? this.focusableHeading();
+    if (!target) {
       return;
     }
+    target.scrollIntoView?.({ block: 'nearest' });
+    target.focus({ preventScroll: true });
+  }
+
+  /** The page h1, focusable for this one hand-off: its tabindex leaves with the focus. */
+  private focusableHeading(): HTMLElement | null {
     const heading = this.host.querySelector<HTMLElement>('h1');
-    if (heading) {
-      if (!heading.hasAttribute('tabindex')) {
-        heading.setAttribute('tabindex', '-1');
-      }
-      heading.focus({ preventScroll: true });
+    if (heading && !heading.hasAttribute('tabindex')) {
+      heading.setAttribute('tabindex', '-1');
+      heading.addEventListener('blur', () => heading.removeAttribute('tabindex'), { once: true });
     }
+    return heading;
   }
 
   protected retry(): void {

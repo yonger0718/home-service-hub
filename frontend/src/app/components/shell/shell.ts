@@ -8,6 +8,7 @@ import { LayoutModeService } from '../../services/layout-mode.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
 import { PaneStateService } from '../../services/pane-state.service';
 import { isHandledKey } from '../accounting/accounting-ui';
+import { isReviewFlowUrl } from '../notifications/review-flow-url';
 import { MobileNavComponent } from '../mobile-nav/mobile-nav';
 import { SidebarComponent } from '../sidebar/sidebar';
 import { EntryFormLauncher } from './entry-form-launcher';
@@ -33,8 +34,6 @@ const OPEN_MODAL = '[aria-modal="true"]:not([data-global-shortcuts]), [role="ale
 const TYPING_ROLES = '[role="combobox"], [role="listbox"], [role="spinbutton"]';
 
 const NO_FAB_URL = /^\/accounting\/reports(?:[/?#]|$)/;
-/** The review flow: full screen below 1024 px (its answer buttons sit where the button floats); beside the list from 1024 px. */
-const REVIEW_FLOW_URL = /^\/notifications\/recon\//;
 
 @Component({
   selector: 'app-shell',
@@ -67,7 +66,8 @@ export class ShellComponent {
       !this.paneState.formOpen() &&
       !this.paneState.sheetOpen() &&
       !NO_FAB_URL.test(this.url()) &&
-      !(this.layout.mode() !== 'panes' && REVIEW_FLOW_URL.test(this.url())),
+      // The review flow is full screen below 1024 px (its answers sit where the button floats); beside the list from 1024 px.
+      !(this.layout.mode() !== 'panes' && isReviewFlowUrl(this.url())),
   );
 
   /** Space the toast leaves to its right: the floating 記一筆 (right offset + 56 px button + 12 px gap), else a margin. */
