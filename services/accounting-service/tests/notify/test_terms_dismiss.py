@@ -71,6 +71,9 @@ def _apply(card: CardResult, *dismiss: Dismissal, today=TODAY, live=LIVE) -> App
     ("total_cap", "9，000", "9000"), ("total_cap", "9，000～12，000", None), ("total_cap", "９，０００", "9000"),
     ("rate", "９％", "9"), ("rate", "9％（合計）", "9"), ("rate", "9 %", "9"), ("total_cap", "500 元 (每月)", "500"),
     ("rate", "9% 國內外合計", None), ("total_cap", "500元起", None),
+    # a footnote mark or another compatibility digit must not fuse into the number when the text is normalised
+    ("rate", "1.5²", None), ("rate", "5¹", None), ("rate", "①", None), ("rate", "⑨%", None), ("rate", "9½", None),
+    ("starts_on", "2026-07-0①", None), ("total_cap", "5㎝", None),
     ("is_basic", "false（基本為每滿 25 元）", "false"), ("is_basic", "TRUE", "true"), ("is_basic", "falsey", None),
     ("is_basic", "true/false", None), ("is_basic", "true 或 false", None), ("is_basic", "false [x]", "false"),
     ("is_basic", "否", None),

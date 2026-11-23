@@ -57,7 +57,10 @@ class Applied:
 def site_key(field: str, site: str | None) -> str | None:
     """The comparable form of a site value for ``field``: its one leading value, ``none`` for a missing value, and
     None when the text is not one value (or the field takes no pin)."""
-    text = unicodedata.normalize("NFKC", site or "").strip()
+    raw = site or ""
+    if any(unicodedata.category(ch) == "No" for ch in raw):
+        return None  # a footnote mark or circled digit ("5¹", "①") would fuse into the number when normalised
+    text = unicodedata.normalize("NFKC", raw).strip()
     if field in DATE_FIELDS or field in NUMBER_FIELDS:
         if not text or _lead(_NONE, text):
             return NO_VALUE
