@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 通知 also lists portfolio and system work: one batch task for dividends past their payment date (the rest in 追蹤中), one task for a failed import, one task per 國泰 daily-statement date that needs the owner (with 確認 in place) and one task when the 06:40 run is failed, latched or stale. The 投資 chip gets real numbers, 股利 and 匯入 get their dots, and `/portfolio/import` gets a 國泰每日對帳單 status card.
+**Goal:** 通知 also lists portfolio and system work: one batch task for dividends past their payment date (the rest in 追蹤中), one task for a failed import, one task per 國泰 daily-statement date that needs the owner (with 已處理 in place — renamed from 確認 in the design review) and one task when the 06:40 run is failed, latched or stale. The 投資 chip gets real numbers, 股利 and 匯入 get their dots, and `/portfolio/import` gets a 國泰每日對帳單 status card.
 
-**Architecture:** SPA only (`frontend/`). Three new task sources join `NotificationCenterService`'s round next to the five ledger ones: `dividends` (every dividend page, filtered in the client), `imports` (the recalc status, now read inside the round, plus the device-local last failure) and `cathay` (`…/cathay-statement/pending` + `/runs/latest`, one source). Pure builders in `components/notifications/sources/` turn the answers into `NotifTask`s; the run-health rule is a pure function of `(latest, now)` computed in Asia/Taipei, with `now` from an injectable clock read once per round. 確認 is a third `NotifCommand` kind handled by the page like 入帳; an ack bumps no change signal, so the handler calls `center.invalidate()` itself. The import page's card renders the same `center.cathay()` view, so the card, the tasks and the dot cannot disagree.
+**Architecture:** SPA only (`frontend/`). Three new task sources join `NotificationCenterService`'s round next to the five ledger ones: `dividends` (every dividend page, filtered in the client), `imports` (the recalc status, now read inside the round, plus the device-local last failure) and `cathay` (`…/cathay-statement/pending` + `/runs/latest`, one source). Pure builders in `components/notifications/sources/` turn the answers into `NotifTask`s; the run-health rule is a pure function of `(latest, now)` computed in Asia/Taipei, with `now` from an injectable clock read once per round. 已處理 (the ack; it records the date as known, imports nothing and changes no data) is a third `NotifCommand` kind handled by the page like 入帳; an ack bumps no change signal, so the handler calls `center.invalidate()` itself. The import page's card renders the same `center.cathay()` view, so the card, the tasks and the dot cannot disagree.
 
 **Tech Stack:** Angular 21.2 standalone / signals / OnPush, vitest (`cd frontend && npx ng test --watch=false --include='<glob>'`, quote the glob), SCSS with the tokens of `frontend/src/styles.scss`.
 
@@ -12,16 +12,16 @@
 
 ## Open points for the owner
 
-Only what still needs an answer. Each has the resolution this plan uses until told otherwise.
+All five answered by the owner in the design review (2026-11-23); the answers are recorded under each point and in the Decisions / Copy tables.
 
-1. **A dividend whose `payment_date` is today.** D2 says the batch is `payment_date ≤ today`; the spec requirement says "past their `payment_date`" and its scenario "before today". Plan: `≤ today` (the money arrives that day; D2 is the more precise text). One comparison in `dividendBatch()` if you prefer `<`.
-2. **Tone of a latched / stale run on 通知.** Decision 4 makes latched and stale *warnings*, but every 系統 row is drawn in the alert (red) style and turns the 通知 count red (D3), and the 匯入 dot is red for any bad run (D8). A row has no warning style. Plan: on 通知 and on the dot all three states are red as the spec says; the warning tone shows in the import card's banner (注意 for latched / stale, 錯誤 for failed) and in the wording. The alternative is a new row style, which no artboard has.
-3. **A held date turns the 通知 count red without a 匯入 dot.** Follows from D2 (pending dates are 系統) and owner decision 2 (pending dates do not light 匯入). The app-shell spec says a nav item *MAY* carry a dot, so nothing is violated; listed so it is not a surprise. Plan: as decided.
-4. **Portfolio API unreachable hides the device-local import failure too.** Today the 匯入 dot stays lit from this device's last failed import even when the recalc read fails. With 匯入 as a named source, the spec's "a failing source SHALL hide its dot" applies: the dot and the task leave and the page says 「無法讀取：匯入」. Plan: follow the spec (the import page's own banner still shows the device failure). Say so if the device-local part should survive a failed read.
-5. **Dividend rows carry a symbol, not a name.** `Dividend` (`models/portfolio.model.ts:202`) has `symbol` only, so the batch task's second line lists symbols (`9901、9902`), not names as the spec's example (玉山金, 台積電) suggests. Plan: symbols; names would need a second read per round.
+1. **A dividend whose `payment_date` is today.** D2 says the batch is `payment_date ≤ today`; the spec requirement says "past their `payment_date`" and its scenario "before today". Plan: `≤ today` (the money arrives that day; D2 is the more precise text). One comparison in `dividendBatch()` if you prefer `<`. **Answered: agreed — payment date today = due.**
+2. **Tone of a latched / stale run on 通知.** Decision 4 makes latched and stale *warnings*, but every 系統 row is drawn in the alert (red) style and turns the 通知 count red (D3), and the 匯入 dot is red for any bad run (D8). A row has no warning style. Plan: on 通知 and on the dot all three states are red as the spec says; the warning tone shows in the import card's banner (注意 for latched / stale, 錯誤 for failed) and in the wording. The alternative is a new row style, which no artboard has. **Answered: agreed — all three bad-run states are red on 通知.** (The card's banner tone changed in the same review: failed and latched are 錯誤, stale and missing 注意; see C4.)
+3. **A held date turns the 通知 count red without a 匯入 dot.** Follows from D2 (pending dates are 系統) and owner decision 2 (pending dates do not light 匯入). The app-shell spec says a nav item *MAY* carry a dot, so nothing is violated; listed so it is not a surprise. Plan: as decided. **Answered: changed — pending dates alone light the 匯入 dot in `--app-primary` (the 股利 dot's tone), labelled 「N 天的國泰對帳單待處理」; red still wins (O2).**
+4. **Portfolio API unreachable hides the device-local import failure too.** Today the 匯入 dot stays lit from this device's last failed import even when the recalc read fails. With 匯入 as a named source, the spec's "a failing source SHALL hide its dot" applies: the dot and the task leave and the page says 「無法讀取：匯入」. Plan: follow the spec (the import page's own banner still shows the device failure). Say so if the device-local part should survive a failed read. **Answered: agreed — the API down hides the device-local import-failure dot too.**
+5. **Dividend rows carry a symbol, not a name.** `Dividend` (`models/portfolio.model.ts:202`) has `symbol` only, so the batch task's second line lists symbols (`9901、9902`), not names as the spec's example (玉山金, 台積電) suggests. Plan: symbols; names would need a second read per round. **Answered: agreed — symbols, at most 3, then 「等 N 檔」 with N every distinct symbol (`9901、9902、9903 等 5 檔`); the 追蹤中 row likewise ends 「等 N 筆」 with N every row.**
 6. **The copy table below** (planner's wording, marked) — edit freely.
 
-Not an owner question, but unverified here because env and token files are off limits: the SPA's portfolio token must have `write` scope for the ack (it already POSTs `confirm-receipt`, so it should). Task 8's live check covers it; a 401 / 403 would show as 「… 確認失敗」.
+Not an owner question, but unverified here because env and token files are off limits: the SPA's portfolio token must have `write` scope for the ack (it already POSTs `confirm-receipt`, so it should). Task 8's live check covers it; a 401 / 403 would show as 「… 標記失敗」.
 
 ## Decisions
 
@@ -30,11 +30,11 @@ O = owner, C = coordinator, P = planner (made where the others were silent).
 | # | Decision | If wrong |
 |---|---|---|
 | O1 | Dividends are read client-side: every page, as the 股利 page does (`allPages`, `limit: 100`), filtered in the SPA. No backend change, no API deploy | A `receipt_status` filter later replaces one read |
-| O2 | The 匯入 dot lights only for an import failure or a bad 國泰 run (missing / failed / latched / stale). Pending dates (held / mismatch / conflict) are 通知 tasks, counted, and do not light it | One condition in `badges` |
+| O2 | The 匯入 dot is red for an import failure or a bad 國泰 run (missing / failed / latched / stale). Pending dates (held / mismatch / conflict) are 通知 tasks, counted (red count); **design review: alone they light the 匯入 dot `--app-primary`, label 「N 天的國泰對帳單待處理」 (N = the server's total when truncated, else the dates listed); red wins when both** | One condition in `badges` |
 | C3 | Run health is computed explicitly in Asia/Taipei (06:40 + 15 min grace) from an injectable clock, mirroring `notify/cathay.py`; precedence latched → failed → missing-or-stale, as the notifier | One pure function |
-| C4 | failed = error wording; latched and stale = warning wording (see open point 2 for where the tone can show) | Copy / banner tone |
-| C5 | Pending dates beyond the API's 50 are one uncounted note line, like PR B's `center.overflow()` note | Markup |
-| C6 | 確認 is a new `NotifCommand` kind; 404 reads as done; no 復原 (no un-ack endpoint); failure toast 「<name> 確認失敗」 with 重試 for a network failure only, a reason appended only when `knownWriteReason` gives one, raw error to the console. One request per press (#411) | Handler branch |
+| C4 | 通知 rows and the red 匯入 dot: all three bad-run states red (open point 2). Card banner (**design review**): failed and latched = 錯誤 (red; a latched job stays off until someone acts on the host), stale and missing = 注意 (yellow); a latched card adds the `--unlatch` line | Copy / banner tone |
+| C5 | Pending dates beyond the API's 50 are one uncounted note line, like PR B's `center.overflow()` note; **design review: no link on 通知 (the 到匯入頁查看 link is gone), the same sentence on 通知 and on the card** | Markup |
+| C6 | 已處理 (**design review**: renamed from 確認 — the ack only records "known"; internal names `ackCathay` / `ackCathayDay` stay) is a new `NotifCommand` kind; 404 reads as done 「<name>：已經不需要處理」; no 復原 (no un-ack endpoint); failure toast 「<name> 標記失敗」 with 重試 for a network failure only, a reason appended only when `knownWriteReason` gives one, raw error to the console. One request per press (#411) | Handler branch |
 | C7 | The dividend task links to `/portfolio/dividends?status=pending` (new query param); the 股利 dot is badge key `dividends`, `--app-primary` (not overdue or failed work), gone with badges off | Link / tone |
 | C8 | Source names for the failure line: 股利, 匯入, 國泰對帳單; each fails on its own and hides its dot | Strings |
 | C9 | Ids `div:batch`, `import:fail:<key>`, `cathay:<trade_date>`, `cathay:run`; a changed state is a new fingerprint (snooze is PR E) | Strings |
@@ -45,12 +45,14 @@ O = owner, C = coordinator, P = planner (made where the others were silent).
 | P3 | `now` is taken once per round. A page left open across 06:55 shows the stale task at the next round (focus, open, a write), not at 06:55 sharp | A timer later |
 | P4 | Dividend "today" is the round's `today` (browser-local calendar day, as every other source); only the run rule is pinned to Asia/Taipei | One argument |
 | P5 | `NotifTrackingRow` gains `source`; a row shows under 全部 and under its own chip. The all-clear's 下一件 stays ledger-only | One filter |
-| P6 | 匯入 dot label: the import failure's 最近一次匯入失敗 (spec), or the run task's title, or both joined with 「、」 | String |
+| P6 | 匯入 dot label: the import failure's 最近一次匯入失敗 (spec), or the run task's title, or both joined with 「、」; pending dates alone 「N 天的國泰對帳單待處理」 (O2) | String |
 | P7 | A pending date's fingerprint is `status|reason` (not `last_at`, which moves on every run) | E's wake-up |
 | P8 | No amount on the dividend task (gross / net / currency mixes are the 股利 page's business) | One field |
 | C12 | A dividend scan that hits `allPages`' page cap (`capped: true`; default 50 pages, `portfolio/paging.ts:13`, `:24–25`) marks the `dividends` source FAILED for that round: 「無法讀取：股利」, no task, no row, no dot. A partial scan never reads as an all-clear. O1 (client-side filtering) stands | Beyond 5,000 dividend rows the source needs the server filter |
 | C13 | `read()`'s 20 s `timeout` (`notification-center.service.ts:440`) covers the whole paginated dividend stream: `allPages` emits once, after its last page, so pages that together take longer than `READ_TIMEOUT_MS` fail the whole source for that round | A per-page timeout later |
-| C14 | The card releases a 確認 row when `settledRound() >= N`, where N is the id `invalidate()` returned (`:324–325`) — the round started after the ack's answer. This differs on purpose from the 通知 page, which stores the round id read *before* its `invalidate()` and releases on `settled > that` (`notifications.ts:415–417`, `:270`); both mean "a round started after the answer has settled" | One comparison |
+| C14 | The card releases an 已處理 row when `settledRound() >= N`, where N is the id `invalidate()` returned (`:324–325`) — the round started after the ack's answer. This differs on purpose from the 通知 page, which stores the round id read *before* its `invalidate()` and releases on `settled > that` (`notifications.ts:415–417`, `:270`); both mean "a round started after the answer has settled" | One comparison |
+| C15 | (**design review**) A failed run's code is shown in plain words by one function, `runCodeText()` in `sources/cathay.ts`, used by the 通知 task's meta and the card banner. Exact match on the worker's `CathayError` codes as stored verbatim by the portfolio (`latest.code`): `password_file`, `state_file`, `decrypt`, `pdf_malformed`, `pdf_too_large`, `extract`, `portfolio:body`; `portfolio:<3 digits>` → the status; anything else (parser codes, `drive:<Exc>`, `portfolio:<httpx Exc>`) → 「錯誤代碼 <code>」; no code → nothing | One table |
+| C16 | (**design review**) 查看 on a 國泰 row (pending dates and the run task) goes to `/portfolio/import#cathay` (`NotifLink.fragment`). The import page scrolls the card (`app-cathay-status-card#cathay`, `tabindex="-1"`, a region named 國泰每日對帳單) into view and focuses it once the 國泰 answer (or its failure) is shown, once per fragment, as reward-rules' `#card-<id>` (no smooth scroll there, so none here). A fragment never reaches the server: the Caddy SPA allowlist is unaffected | One effect |
 
 ## Copy
 
@@ -60,29 +62,30 @@ O = owner, C = coordinator, P = planner (made where the others were silent).
 |---|---|
 | Source names (failure line) | `股利` · `匯入` · `國泰對帳單` |
 | Dividend task title | `股利待確認收款 · {n} 筆` (spec) |
-| Dividend task line 2 | when `最早 {MM/DD} 發放`; meta up to 3 distinct symbols joined with `、`, then ` 等 {k} 檔` for the rest |
+| Dividend task line 2 | when `最早 {MM/DD} 發放`; meta up to 3 distinct symbols joined with `、`, then ` 等 {N} 檔` with N = every distinct symbol (`9901、9902、9903 等 5 檔`) (owner) |
 | Dividend task action | `查看` → 股利, 待收 |
 | 股利 dot label | `{n} 筆待確認收款` (spec) |
-| Dividend 追蹤中 row | title `股利待發放 · {n} 筆`; meta up to 3 of `{symbol} {MM/DD}` / `{symbol} 日期未定` joined with ` · `, then ` · 等 {k} 筆`; link `查看`; summary part `股利 {n} 筆` |
+| Dividend 追蹤中 row | title `股利待發放 · {n} 筆`; meta up to 3 of `{symbol} {MM/DD}` / `{symbol} 日期未定` joined with ` · `, then ` · 等 {N} 筆` with N = every row (owner's 「等 N」 rule); link `查看`; summary part `股利 {n} 筆` |
 | Import failure task | title `最近一次匯入的重算失敗` (server recalc failed) else `最近一次匯入失敗`; when `{MM/DD HH:mm}` (local, as the import review task); meta the file name for the device failure, none for the recalc; action `查看` → 匯入 |
-| 匯入 dot label | `最近一次匯入失敗` (spec) / the run title below / both joined with `、` |
+| 匯入 dot label | red: `最近一次匯入失敗` (spec) / the run title below / both joined with `、`; primary (pending dates alone): `{N} 天的國泰對帳單待處理` (owner) |
 | Pending date title | `國泰對帳單 {MM/DD}` |
 | Pending date line 2 (when) | held: `保留` · `保留：名稱對不到代號 {x}` · `保留：含融資融券交易` · `保留：{reason}`; mismatch: `對不上 CSV`; conflict: `收到不同版本的對帳單` (all notifier) |
 | Pending date meta | `自 {MM/DD} 起` (Taipei date of `since`); none when `since` is null |
-| Pending date actions | `確認` (command); secondary `查看` → 匯入 |
-| Ack toasts | done `已確認：國泰對帳單 {MM/DD}`; 404 `國泰對帳單 {MM/DD}：已經不需要確認` (done); failed `國泰對帳單 {MM/DD} 確認失敗` |
-| Run failed (error) | title `國泰對帳單匯入失敗` (notifier); when `{stamp}`; meta `錯誤代碼 {code}` or none |
+| Pending date actions | `已處理` (command; accessible name `已處理：國泰對帳單 {MM/DD}`) (owner); secondary `查看` → 匯入 `#cathay` |
+| Ack toasts | done `已處理：國泰對帳單 {MM/DD}`; 404 `國泰對帳單 {MM/DD}：已經不需要處理` (done); failed `國泰對帳單 {MM/DD} 標記失敗` (owner) |
+| Run failed (error) | title `國泰對帳單匯入失敗` (notifier); when `{stamp}`; meta the code in plain words (C15: `讀不到對帳單密碼檔` (owner) · `狀態檔損壞` · `密碼打不開對帳單` · `對帳單 PDF 損壞` · `對帳單 PDF 太大` · `讀不出對帳單文字` · `投資服務回應異常` · `投資服務拒絕匯入（{status}）`), else `錯誤代碼 {code}`, or none |
 | Run latched (warning) | title `國泰對帳單匯入已停用` (notifier); when `{stamp}`; meta `排程已停用，之後不會自動匯入` |
 | Run stale (warning) | title `國泰對帳單今天沒有執行` (notifier); when `06:40 的排程沒有回報`; meta `上次執行 {stamp}` or `還沒有執行紀錄` |
-| Run task action | `查看` → 匯入 |
-| Truncation note on 通知 | `還有 {n} 天的國泰對帳單未列出 · 到匯入頁查看 ›` |
+| Run task action | `查看` → 匯入 `#cathay` (the card) |
+| Truncation note on 通知 | `還有 {n} 天未列出，處理完上面的會接著顯示` (owner; no link) |
 | Card title | `國泰每日對帳單` |
 | Card run line (ok) | `{stamp} · 已匯入 {posted} 份` (spec); `{stamp} · 沒有新的對帳單` only when `files_seen` is 0 (a received but held statement reads `{stamp} · 已匯入 0 份 · 收到 {files_seen} 份`); plus ` · 收到 {files_seen} 份` when `files_seen > posted` |
-| Card banner (bad run) | heading = the run title; detail = when and meta joined with ` · `; tone error for failed, warn for latched / stale |
+| Card banner (bad run) | heading = the run title; detail = when and meta joined with ` · `; tone error for failed and latched, warn for stale / missing (owner) |
+| Card latched recovery | `排除原因後，在主機執行：` + `<code>python -m worker cathay --unlatch</code>` (owner; latched only; wraps at 390 px, selectable) |
 | Card latest-run details (bad run, beside the banner) | `最近一次執行：{stamp} · {result} · 收到 {files_seen} 份 · 已匯入 {posted} 份`, `{result}` = `失敗` / `已停用` / `成功` (a stale run whose latest was ok); absent only when there is no run at all |
 | Card last success | `上次成功 {stamp}` (only under a bad run, when `latest_ok` exists) |
-| Card dates | heading `需要你確認的日期`; row `{MM/DD}` + the line-2 text; button `確認` (accessible name `確認：國泰對帳單 {MM/DD}`); none: `沒有需要確認的日期` |
-| Card truncation | `還有 {n} 天未列出` |
+| Card dates | heading `需要你處理的日期`; row `{MM/DD}` + the line-2 text; button `已處理` (accessible name `已處理：國泰對帳單 {MM/DD}`); none: `沒有需要處理的日期` (owner) |
+| Card truncation | `還有 {n} 天未列出，處理完上面的會接著顯示` (owner) |
 | Card loading / unread | `讀取中…` / `無法讀取國泰對帳單狀態` with `重試` |
 
 ## Global Constraints
