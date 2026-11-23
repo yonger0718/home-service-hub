@@ -26,6 +26,7 @@ import { ReconFlowComponent } from './recon-flow';
 const INBOX_URL = '/api/accounting/reconciliation/inbox';
 const APPLY_URL = '/api/accounting/reconciliation/inbox/apply';
 const STATEMENT = 10;
+const RECONCILE_URL = '/api/accounting/accounts/1/statements/10/reconcile';
 
 /** A fictional bank_only line `商家 n` of −$(100 + n) on statement 10; 忽略 first so key 1 answers at once. */
 function line(caseId: number, overrides: Partial<InboxItem> = {}): InboxItem {
@@ -100,6 +101,8 @@ describe('ReconFlowComponent', () => {
 
   beforeEach(() => {
     tasks.set([]);
+    // A failed verify in the previous afterEach skips Angular's own reset; without this one failure fails the rest.
+    TestBed.resetTestingModule();
     TestBed.configureTestingModule({
       imports: [ReconFlowComponent],
       providers: [
@@ -175,6 +178,15 @@ describe('ReconFlowComponent', () => {
 
   function switchEl(): HTMLButtonElement | null {
     return el.querySelector<HTMLButtonElement>('button[role="switch"]');
+  }
+
+  /** 復原 on the current toast: the revert, then the statement reconcile (account 1, statement 10). */
+  function undoLast(actionId: number): void {
+    const toasts = TestBed.inject(ToastService);
+    toasts.runAction(toasts.current()!.id);
+    http.expectOne(`/api/accounting/reconciliation/actions/${actionId}/revert`).flush({});
+    http.expectOne(RECONCILE_URL).flush({});
+    detect();
   }
 
   /** Answer the current question with key 1 and land a re-read with `rest`. */
@@ -261,6 +273,12 @@ describe('ReconFlowComponent', () => {
       learn: null,
     });
     req.flush(applied(1));
+    detect();
+    // 已處理 with 復原 as soon as the answer is in; the step moves only after the re-read.
+    expect(TestBed.inject(ToastService).current()).toEqual(
+      expect.objectContaining({ kind: 'done', text: '已處理：忽略', action: expect.objectContaining({ label: '復原' }) }),
+    );
+    expect(headline()).toBe('測試商家 1 −$101');
     reread().flush(inbox(ten().slice(1)));
     detect();
     expect(marked).toHaveBeenCalledTimes(1);
@@ -301,7 +319,7 @@ describe('ReconFlowComponent', () => {
       open(pair());
       expect(progressText()).toBe('第 1 / 3 筆');
       expect(text(el.querySelector('.flow-pair'))).toBe(
-        '你這筆 −$2,066 也出現在「你記了，銀行沒有」，選了就一起處理。',
+        '你這筆 −$2,066 也列在「你記了，銀行沒有」。這裡對上或改金額後，那一題會自動消失。',
       );
       key('1');
       const req = apply();
@@ -324,6 +342,38 @@ describe('ReconFlowComponent', () => {
       key('3');
       const req = apply();
       expect((req.request.body as InboxApplyBody).action).toBe('dismiss');
+      req.flush(applied(1));
+      reread().flush(inbox([ledgerOnly(2), line(3)]));
+      detect();
+      expect(text(el.querySelector('.flow-chip'))).toBe('你記了，銀行沒有');
+      expect(progressText()).toBe('第 2 / 3 筆');
+    });
+
+    it('對到 a different entry: the re-read still has the follower, which is the next question', () => {
+      const candidate = {
+        entry_id: 600,
+        date: '2026-09-12',
+        title: '測試服飾 另一筆',
+        amount: '-2096.0000',
+        reason: null,
+        residual: null,
+        date_distance: 0,
+      };
+      open([ledgerOnly(2), differs(1, { candidates: [candidate] }), line(3)]);
+      key('2');
+      const sheet = el.querySelector<HTMLElement>('app-inbox-match-sheet')!;
+      sheet.querySelector<HTMLInputElement>('input[type="radio"]')!.click();
+      detect();
+      button(sheet, '確定').click();
+      detect();
+      const req = apply();
+      expect(req.request.body as InboxApplyBody).toEqual({
+        cases: [{ case_id: 1, case_version: 1 }],
+        action: 'match_candidate',
+        params: { entry_ids: { '1': 600 } },
+        answer: '對到 測試服飾 另一筆',
+        learn: null,
+      });
       req.flush(applied(1));
       reread().flush(inbox([ledgerOnly(2), line(3)]));
       detect();
@@ -375,6 +425,10 @@ describe('ReconFlowComponent', () => {
     detect();
     const alert = el.querySelector('.flow-error[role="alert"]')!;
     expect(text(alert)).toContain('答案已送出，但清單讀取失敗');
+    // The 復原 is already offered: closing the flow now does not lose it.
+    expect(TestBed.inject(ToastService).current()).toEqual(
+      expect.objectContaining({ kind: 'done', text: '已處理：忽略', action: expect.objectContaining({ label: '復原' }) }),
+    );
     // The answer is in: pressing again must not post it twice, and keys that do nothing are not consumed.
     for (const k of ['1', '2', 's', 'ArrowRight']) {
       expect(key(k).defaultPrevented).toBe(false);
@@ -408,9 +462,7 @@ describe('ReconFlowComponent', () => {
     open(ten());
     answerWith1(1, ten().slice(1));
     const toasts = TestBed.inject(ToastService);
-    toasts.runAction(toasts.current()!.id);
-    http.expectOne('/api/accounting/reconciliation/actions/901/revert').flush({});
-    detect();
+    undoLast(901);
     const stale = reread();
     key('1');
     const post = apply();
@@ -435,10 +487,7 @@ describe('ReconFlowComponent', () => {
   it('a revert read pending when the apply fails is restarted so the case still shows', () => {
     open(ten());
     answerWith1(1, ten().slice(1));
-    const toasts = TestBed.inject(ToastService);
-    toasts.runAction(toasts.current()!.id);
-    http.expectOne('/api/accounting/reconciliation/actions/901/revert').flush({});
-    detect();
+    undoLast(901);
     const stale = reread();
     key('1');
     expect(stale.cancelled).toBe(true);
@@ -763,14 +812,55 @@ describe('ReconFlowComponent', () => {
     expect(headline()).toBe('測試商家 2 −$102');
     // Focus is outside the flow (the toast's 復原): the background re-read must not pull it in.
     (document.activeElement as HTMLElement | null)?.blur();
-    toasts.runAction(toasts.current()!.id);
-    http.expectOne('/api/accounting/reconciliation/actions/901/revert').flush({});
-    detect();
+    undoLast(901);
     reread().flush(inbox(ten()));
     detect();
     expect(headline()).toBe('測試商家 1 −$101');
     expect(progressText()).toBe('第 1 / 10 筆');
     expect(document.activeElement).not.toBe(el.querySelector('h2'));
+  });
+
+  it('undo of an answer that taught a rule switches the rule off before the reconcile', () => {
+    open(ten());
+    switchEl()!.click();
+    detect();
+    key('1');
+    apply().flush({ ...applied(1), rule_id: 55 });
+    reread().flush(inbox(ten().slice(1)));
+    detect();
+    const toasts = TestBed.inject(ToastService);
+    toasts.runAction(toasts.current()!.id);
+    http.expectOne('/api/accounting/reconciliation/actions/901/revert').flush({});
+    const patch = http.expectOne('/api/accounting/reconciliation/owner-rules/55');
+    expect(patch.request.body).toEqual({ enabled: false });
+    patch.flush({});
+    http.expectOne(RECONCILE_URL).flush({});
+    detect();
+    expect(toasts.current()?.text).toBe('已復原，並停用「測試商家 1」的規則');
+    reread().flush(inbox(ten()));
+    detect();
+    expect(headline()).toBe('測試商家 1 −$101');
+  });
+
+  it('a 復原 read that lands before the case is back reads once more; never a third time', () => {
+    open(ten());
+    answerWith1(1, ten().slice(1));
+    undoLast(901);
+    reread().flush(inbox(ten().slice(1)));
+    detect();
+    reread().flush(inbox(ten()));
+    detect();
+    expect(headline()).toBe('測試商家 1 −$101');
+
+    // The case never comes back: one extra read, then the goTo is dropped.
+    answerWith1(1, ten().slice(1));
+    undoLast(901);
+    reread().flush(inbox(ten().slice(1)));
+    detect();
+    reread().flush(inbox(ten().slice(1)));
+    detect();
+    http.expectNone((r) => r.url === INBOX_URL);
+    expect(headline()).toBe('測試商家 2 −$102');
   });
 
   it('read failure: banner with 重試', () => {

@@ -67,6 +67,7 @@ import {
   resume,
   skip,
   startFlow,
+  steps,
 } from './recon-flow-state';
 import { compareRows, flowCard, flowChip, flowEntry, flowHeadline, flowLearnable, flowNote } from './recon-flow-view';
 import { ReconUndoService } from './recon-undo.service';
@@ -114,9 +115,7 @@ type OneTap = Exclude<InboxButton, 'record' | 'match_candidate' | 'apply_proposa
 /** An answer the server took (or refused) whose re-read has not landed yet. */
 interface PendingAnswer {
   readonly caseId: number;
-  readonly answer: string;
   readonly out: InboxApplyOut;
-  readonly rulePattern: string | null;
 }
 
 type SegmentState = 'done' | 'current' | 'rest';
@@ -186,6 +185,8 @@ export class ReconFlowComponent {
   private reading: Subscription | null = null;
   private pending: PendingAnswer | null = null;
   private pendingGoTo: number | null = null;
+  /** The queued goTo already had its one extra read (its case was not back yet). */
+  private goToRetried = false;
   private destroyed = false;
 
   readonly item = computed<InboxItem | null>(() => {
@@ -502,9 +503,18 @@ export class ReconFlowComponent {
     if (state.cursor !== null && !state.open.has(state.cursor)) {
       state = advance(state);
     }
+    // A read issued before the 復原 finished may not have the case yet: read once more, then give up.
+    let readAgain = false;
     if (this.pendingGoTo !== null) {
-      state = goTo(state, this.pendingGoTo);
-      this.pendingGoTo = null;
+      if (steps(state).includes(this.pendingGoTo)) {
+        state = goTo(state, this.pendingGoTo);
+        this.pendingGoTo = null;
+      } else if (!this.goToRetried) {
+        this.goToRetried = true;
+        readAgain = true;
+      } else {
+        this.pendingGoTo = null;
+      }
     }
     const focus = pending !== null || this.hasFocus();
     this.flow.set(state);
@@ -516,34 +526,46 @@ export class ReconFlowComponent {
     if (focus && state.cursor !== before) {
       this.focusStep();
     }
+    if (readAgain) {
+      this.read(false);
+    }
   }
 
-  /** The answered case left: 完成 with 復原 (or the rule error). Still open: the refusal text. */
+  /** After the re-read: still open → the refusal text; a refused `case_closed` that left → 這筆已經處理過了. */
   private settle(pending: PendingAnswer, state: FlowState): string | null {
     const result = pending.out.results.find((r) => r.case_id === pending.caseId);
     if (state.open.has(pending.caseId)) {
       return FAILED_PREFIX + plainError(result?.code ?? null);
     }
-    if (!result || result.status === 'refused') {
-      if (result?.code === 'case_closed') {
-        this.toasts.done('這筆已經處理過了'); // answered elsewhere: nothing of ours to undo
-      }
-      return null;
+    if (result?.status === 'refused' && result.code === 'case_closed') {
+      this.toasts.done('這筆已經處理過了'); // answered elsewhere: nothing of ours to undo
     }
-    if (pending.out.rule_error) {
-      this.toasts.error('答案已記下，但規則沒存：' + plainError(pending.out.rule_error));
-      return null;
-    }
-    const actionIds = pending.out.results
-      .filter((r) => r.status !== 'refused' && r.action_id !== null)
-      .map((r) => r.action_id as number);
-    this.undo.offer(
-      pending.answer,
-      pending.caseId,
-      actionIds,
-      pending.out.rule_id !== null ? pending.rulePattern : null,
-    );
     return null;
+  }
+
+  /**
+   * 完成 with 復原 as soon as the apply says the answer went in, before the re-read: a failed re-read followed by
+   * closing the flow must not lose the 復原. A `rule_error` raises its error instead (no 復原 on that one).
+   */
+  private announce(item: InboxItem, answer: string, out: InboxApplyOut, accountId: number, statementId: number): void {
+    const result = out.results.find((r) => r.case_id === item.case_id);
+    if (!result || result.status === 'refused') {
+      return;
+    }
+    if (out.rule_error) {
+      this.toasts.error('答案已記下，但規則沒存：' + plainError(out.rule_error));
+      return;
+    }
+    this.undo.offer({
+      answer,
+      caseId: item.case_id,
+      actionIds: out.results
+        .filter((r) => r.status !== 'refused' && r.action_id !== null)
+        .map((r) => r.action_id as number),
+      accountId,
+      statementId,
+      rule: out.rule_id !== null ? { id: out.rule_id, pattern: item.rule_hint?.merchant_pattern ?? '' } : null,
+    });
   }
 
   private onReverted(caseId: number): void {
@@ -551,6 +573,7 @@ export class ReconFlowComponent {
       return; // the first read (or its 重試) brings the case back anyway
     }
     this.pendingGoTo = caseId;
+    this.goToRetried = false;
     if (this.busy()) {
       return; // the answer's own re-read lands after the revert and goes to the case
     }
@@ -575,10 +598,12 @@ export class ReconFlowComponent {
    * so it runs to its end and bumps `entriesChanged`; only the screen work is skipped once the flow is gone.
    */
   private send(item: InboxItem, body: InboxApplyBody): void {
-    if (this.locked()) {
+    const account = this.account();
+    if (this.locked() || !account) {
       return;
     }
     const gen = this.gen;
+    const statementId = this.statementId();
     this.busy.set(true);
     this.inlineError.set(null);
     // A background read (after 復原) must not land mid-apply and clear `busy`; `pendingGoTo` stays queued for the
@@ -588,15 +613,11 @@ export class ReconFlowComponent {
     this.inbox.apply(body).subscribe({
       next: (out) => {
         this.accounting.markEntriesChanged();
+        this.announce(item, body.answer, out, account.id, statementId);
         if (this.destroyed || gen !== this.gen) {
           return;
         }
-        this.pending = {
-          caseId: item.case_id,
-          answer: body.answer,
-          out,
-          rulePattern: item.rule_hint?.merchant_pattern ?? null,
-        };
+        this.pending = { caseId: item.case_id, out };
         this.read(false);
       },
       error: (err: unknown) => {
@@ -636,7 +657,7 @@ export class ReconFlowComponent {
       return null;
     }
     const amount = formatMoney(entry.amount, this.currency(), { sign: true });
-    return `你這筆 ${amount} 也出現在「你記了，銀行沒有」，選了就一起處理。`;
+    return `你這筆 ${amount} 也列在「你記了，銀行沒有」。這裡對上或改金額後，那一題會自動消失。`;
   }
 
   private hasFocus(): boolean {
