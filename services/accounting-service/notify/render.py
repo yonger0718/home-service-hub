@@ -159,6 +159,18 @@ def render_failure(reason: str) -> str:
 # --- splitting -----------------------------------------------------------------------------------------------
 
 
+def _cut(line: str, limit: int) -> int:
+    """Where to cut a line longer than ``limit``: at ``limit``, or just before a ``<…>`` token the cut would fall
+    inside, so a link is never sent in two halves (the first half would be a URL of its own). A token that does
+    not fit in one message is cut hard."""
+    start = line.rfind("<", 0, limit)
+    if start > 0 and ">" not in line[start:limit]:
+        end = line.find(">", limit)
+        if end != -1 and end - start < limit:
+            return start
+    return limit
+
+
 def _split_lines(block: str, limit: int) -> list[str]:
     """Break an oversized block on line boundaries; a single line longer than `limit` is cut hard."""
     out: list[str] = []
@@ -168,10 +180,9 @@ def _split_lines(block: str, limit: int) -> list[str]:
             if cur:
                 out.append(cur)
                 cur = ""
-            out.append(line[:limit])
-            line = line[limit:]
-        if not line and out and not cur:
-            continue  # the remainder of a hard-cut line was exactly `limit` long
+            at = _cut(line, limit)
+            out.append(line[:at])
+            line = line[at:]
         if cur and len(cur) + 1 + len(line) > limit:
             out.append(cur)
             cur = line

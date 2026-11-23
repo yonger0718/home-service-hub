@@ -512,3 +512,18 @@ def test_state_file_error_after_the_send_is_a_failure_notice(tenv, monkeypatch, 
     text = tenv.failure.read_text()
     assert text == "❌ 帳務通知失敗：terms 2026-11-03 PermissionError EACCES"
     assert "/secret" not in capsys.readouterr().err
+
+
+# --- #286: every directory the run creates is 0700 ---
+
+def test_missing_parents_of_report_dir_are_created_0700(tmp_path):
+    old = os.umask(0o022)
+    try:
+        kept = tmp_path / "kept"
+        kept.mkdir(mode=0o755)
+        arch = terms._make_archive(kept / "a" / "b" / "reports", datetime(2026, 11, 3, 1, 0, 0, tzinfo=timezone.utc))
+    finally:
+        os.umask(old)
+    made = [kept / "a", kept / "a" / "b", kept / "a" / "b" / "reports", arch]
+    assert [stat.S_IMODE(p.stat().st_mode) for p in made] == [0o700] * 4
+    assert stat.S_IMODE(kept.stat().st_mode) == 0o755  # an existing directory is left as it is
