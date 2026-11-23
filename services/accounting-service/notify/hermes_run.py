@@ -74,7 +74,7 @@ class _Capped(threading.Thread):
         while view:
             view = view[os.write(self._file_fd, view):]
 
-    def _stop(self, marker: bool) -> None:
+    def _mark_over(self, marker: bool) -> None:
         self.over = True
         if marker:
             with contextlib.suppress(OSError):
@@ -91,11 +91,11 @@ class _Capped(threading.Thread):
                 try:
                     self._put(chunk[:room])
                 except OSError:  # disk full, quota: nothing more can be kept
-                    self._stop(marker=False)
+                    self._mark_over(marker=False)
                     continue
                 written += min(len(chunk), room)
                 if len(chunk) > room:
-                    self._stop(marker=True)
+                    self._mark_over(marker=True)
         except OSError:
             self.over = True
         finally:

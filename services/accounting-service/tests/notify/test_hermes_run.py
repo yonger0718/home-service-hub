@@ -318,3 +318,15 @@ def test_unopenable_output_file_is_hermes_error(tmp_path):
     with pytest.raises(HermesError) as ei:
         _run(tmp_path, make_runner(calls=calls))
     assert str(ei.value) == f"hermes {tmp_path}" and calls == []
+
+
+def test_reader_thread_overrides_nothing_of_thread_but_run():
+    """Thread has private methods of its own (``_stop`` before 3.13 is called by ``join``): a reader that
+    redefines one breaks on those versions."""
+    import threading
+
+    own = {n for n in vars(hermes_run._Capped) if not (n.startswith("__") and n.endswith("__"))}
+    clash = sorted(n for n in own - {"run"} if hasattr(threading.Thread, n))
+    py311 = {"_stop", "_started", "_is_stopped", "_tstate_lock", "_delete", "_bootstrap", "_bootstrap_inner",
+             "_set_ident", "_set_native_id", "_set_tstate_lock", "_wait_for_tstate_lock", "_reset_internal_locks"}
+    assert clash == [] and not own & py311

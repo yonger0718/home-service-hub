@@ -98,3 +98,7 @@ Whole-branch review on `bdf6c944`: no Critical; one Important (a link longer tha
 - Tests: real child over the pipe buffer, real child timing out, the reader's write-failure branch; the grandchild test no longer depends on a 1 s margin.
 
 Deferred minors: a reader still alive after the drain time is taken as done (theoretical short read); `report_dir` prints raw in the message head (owner config, predates the branch); `_split_lines` can return an empty piece for a block ending in a blank line (unreachable from today's renderers, predates the branch).
+
+### Task 8: PR round
+
+Multica review on `b7c2546a`: PASS-with-minor. The reader thread's `_stop(marker)` redefined `threading.Thread._stop`, which `join()` calls on Python 3.11 and 3.12: every run raised `TypeError` there (reproduced with both interpreters). The production venv is 3.13, where the name is free, so nothing was broken in use. Renamed to `_mark_over`; a test refuses any reader attribute that a `Thread` has on those versions.
