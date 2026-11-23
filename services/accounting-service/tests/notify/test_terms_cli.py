@@ -305,3 +305,109 @@ def test_api_token_used_but_never_archived(tenv):
     for f in arch.iterdir():
         assert SECRET not in f.read_text(), f.name
     assert SECRET not in json.dumps(tenv.hermes_calls[0], default=str)
+
+
+# --- dismiss list (#287) ---
+
+ON_BANK = "https://www.example-bank.com/cards/terms"
+RULE_162 = [{"id": 162, "name": "R162", "is_enabled": True, "ends_on": "2026-12-31", "rate": "3"}]
+
+
+def _denv(tmp_path, monkeypatch, extra: str, stdout: str = FULL_STDOUT) -> TermsEnv:
+    block = TERMS_BLOCK.format(reports=tmp_path / "reports", tstate=tmp_path / "state" / "terms-state.json") + extra
+    env = TermsEnv(tmp_path, monkeypatch, block=block, stdout=stdout)
+    env.routes["/accounts/101/reward-rules"] = RULE_162
+    return env
+
+
+def _stdout(*cards: dict) -> str:
+    return "prose\n```json\n" + json.dumps({"cards": list(cards), "fetch_log": {"tool_calls": 1, "failed": [],
+                                                                               "truncated": []}}) + "\n```\n"
+
+
+def test_dismissed_finding_leaves_the_message_and_stays_in_the_archive(tmp_path, monkeypatch):
+    env = _denv(tmp_path, monkeypatch,
+                '\n[[terms.cards."101".dismiss]]\nfield = "ends_on"\nrule = 162\nvalue = "2027-03-31"\n')
+    assert env.run("--cause", "monthly") == 0
+    (arch,) = env.archives
+    message = (arch / "message.md").read_text()
+    assert "R162" not in message and "找不到官網來源" not in message
+    assert "已忽略 1 項：Alpha 1" in message.split("\n")
+    (kept,) = json.loads((arch / "result.json").read_text())["cards"][0]["findings"]
+    assert kept["rule_id"] == 162 and kept["site"] == "2027-03-31"  # the evidence is never dropped
+    dismissed = json.loads((arch / "dismissed.json").read_text())
+    assert list(dismissed) == ["101"] and dismissed["101"]["hidden_next_terms"] is False
+    assert [f["rule_id"] for f in dismissed["101"]["hidden"]] == [162] and dismissed["101"]["stale"] == []
+    assert stat.S_IMODE((arch / "dismissed.json").stat().st_mode) == 0o600
+    assert not env.tstate.exists()  # a dry run
+
+
+def test_dismissed_json_is_empty_without_entries(tenv):
+    assert tenv.run("--cause", "monthly") == 0
+    assert json.loads((tenv.archives[0] / "dismissed.json").read_text()) == {}
+
+
+def test_pin_on_another_value_keeps_the_finding(tmp_path, monkeypatch):
+    env = _denv(tmp_path, monkeypatch,
+                '\n[[terms.cards."101".dismiss]]\nfield = "ends_on"\nrule = 162\nvalue = "2027-06-30"\n')
+    assert env.run("--cause", "monthly") == 0
+    message = (env.archives[0] / "message.md").read_text()
+    assert "· R162：結束日 官網 2027-03-31" in message and "已忽略" not in message
+
+
+def test_dismissed_announced_block_is_hidden(tmp_path, monkeypatch):
+    env = _denv(tmp_path, monkeypatch, '\n[[terms.cards."301".dismiss]]\nfield = "next_terms"\nvalue = "2027-03-31"\n')
+    assert env.run("--cause", "monthly") == 0
+    (arch,) = env.archives
+    message = (arch / "message.md").read_text()
+    assert "下期條款已公告" not in message and "【Gamma】" not in message
+    assert "已忽略 1 項：Gamma 1" in message.split("\n")
+    assert json.loads((arch / "dismissed.json").read_text())["301"]["hidden_next_terms"] is True
+    assert json.loads((arch / "result.json").read_text())["cards"][2]["next_terms"]["announced"] is True
+
+
+def test_send_saves_the_digest_of_the_filtered_card(tmp_path, monkeypatch):
+    def out(quote):
+        return _stdout(
+            {"account_id": 101, "status": "changed",
+             "current_period_end": {"date": "2026-12-31", "source": ON_BANK, "quote": quote},
+             "findings": [{"rule_id": 162, "field": "ends_on", "site": "2027-03-31", "system": "2026-12-31",
+                           "source": ON_BANK, "quote": quote}]},
+            {"account_id": 102, "status": "signal", "notes": "same as before"},
+            {"account_id": 301, "status": "unchanged"})
+
+    env = _denv(tmp_path, monkeypatch, '\n[[terms.cards."101".dismiss]]\nfield = "ends_on"\nrule = 162\n',
+                stdout=out("valid until the end of 2026"))
+    assert env.run("--cause", "monthly", "--send") == 0
+    first = (env.archives[0] / "message.md").read_text()
+    assert "【Alpha】" in first and "· 無差異，條款期間至 2026-12-31" in first and "找不到官網來源" not in first
+    env.hermes_stdout = out("the programme ends on 31 December 2026")  # the model words it differently next week
+    monkeypatch.setattr(terms, "_utcnow", lambda: datetime(2026, 11, 10, 1, 0, 0, tzinfo=timezone.utc))
+    assert env.run("--cause", "monthly", "--send") == 0
+    second = (env.archives[-1] / "message.md").read_text()
+    assert second == "📋 回饋條款查核 2026-11-03：3 張卡無變動（已忽略 1 項）"
+
+
+def test_stale_dismissal_is_reported_and_hides_nothing(tmp_path, monkeypatch):
+    env = _denv(tmp_path, monkeypatch,
+                '\n[[terms.cards."101".dismiss]]\nfield = "ends_on"\nrule = 162\nuntil = "2026-11-02"\n'
+                '\n[[terms.cards."101".dismiss]]\nfield = "rate"\nrule = 999\n')
+    assert env.run("--cause", "monthly") == 0
+    (arch,) = env.archives
+    message = (arch / "message.md").read_text()
+    assert "· R162：結束日 官網 2027-03-31" in message and "已忽略" not in message
+    assert "忽略清單失效：Alpha 規則 162 結束日（到期）、Alpha 規則 999 回饋率（規則已不在）" in message.split("\n")
+    stale = json.loads((arch / "dismissed.json").read_text())["101"]["stale"]
+    assert [(s["field"], s["rule"], s["reason"]) for s in stale] == [("ends_on", 162, "expired"), ("rate", 999, "rule")]
+
+
+def test_year_end_run_does_not_judge_cards_outside_the_window(tmp_path, monkeypatch):
+    extra = '\n[[terms.cards."301".dismiss]]\nfield = "rate"\nrule = 999\n'  # 301 has year_end_window = false
+    two = _stdout({"account_id": 101, "status": "unchanged"}, {"account_id": 102, "status": "signal", "notes": "n"})
+    env = _denv(tmp_path, monkeypatch, extra, stdout=two)
+    assert env.run("--cause", "year-end") == 0
+    assert "忽略清單失效" not in (env.archives[0] / "message.md").read_text()
+    env.hermes_stdout = FULL_STDOUT
+    monkeypatch.setattr(terms, "_utcnow", lambda: datetime(2026, 11, 10, 1, 0, 0, tzinfo=timezone.utc))
+    assert env.run("--cause", "monthly") == 0
+    assert "忽略清單失效：Gamma 規則 999 回饋率（規則已不在）" in (env.archives[-1] / "message.md").read_text()
