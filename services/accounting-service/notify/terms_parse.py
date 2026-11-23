@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from notify.config import PRINTABLE_URL as _PRINTABLE
 from notify.terms_config import CardEntry
 
 STATUSES = ("unchanged", "changed", "announced", "not_found", "signal")
@@ -105,8 +106,6 @@ def _norm_domain(d: str) -> str:
 
 
 _BAD_CHARS = re.compile(r"[\s\x00-\x1f\x7f\\]")
-# Printable-URL rule: RFC 3986 characters minus @ ' * and everything Discord can turn into a link or mention.
-_PRINTABLE = re.compile(r"[A-Za-z0-9\-._~:/?#!$&+,;=%()]+")
 _DISCORD = re.compile(r"discord", re.IGNORECASE)  # invite hosts Discord renders without a scheme; no bank URL has it
 _LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _URL_MAX = 2048

@@ -370,7 +370,7 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
       python -m notify terms --cause {monthly,year-end} [--as-of YYYY-MM-DD] [--dry-run | --send] [--config PATH]
 
   Exit code：0 完成或無事可報；1 失敗（寫 `last_failure.txt`，`failed@` 單元發通知）；2 參數錯誤或缺少/無效的 `[terms]`。
-  每次執行在 `report_dir/<UTC 時間戳>/` 留存封存（目錄 0700、檔案 0600：`input.json`、`prompt.md`、`hermes.out`、`hermes.err`、`result.json` 含各卡 `fetch_log`、`dismissed.json`、`message.md`）；
+  每次執行在 `report_dir/<UTC 時間戳>/` 留存封存（目錄 0700、檔案 0600：`input.json`、`prompt.md`、`hermes.out`、`hermes.err`、`result.json` 含 `fetch_log` 與各卡自己的抓取失敗 `failed`、`dismissed.json`、`message.md`）；
   只有 `--send` 成功送出後才儲存 state。封存目錄已存在（時間戳碰撞）時以 `TermsArchiveError archive <dir>` 失敗，不覆寫。
 - 訊息：完整網址只印通過來源規則（銀行網域、僅 RFC 3986 可列印字元、無 `@`）的，並以 `<url>` 形式呈現（Discord 不展開預覽）；
   其餘只印主機名稱。發現的「系統」值取自 HomeHub 的規則列，不採用模型自述；`rule_id` 不是該卡現行規則的發現列為「未驗證（未知規則）」。

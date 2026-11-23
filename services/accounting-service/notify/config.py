@@ -1,12 +1,14 @@
 """Notifier configuration, read from a TOML file (not env vars)."""
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass, field
 from datetime import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from notify.terms_config import TermsConfig
@@ -65,6 +67,26 @@ def _hhmm(raw: dict, key: str, default: time) -> time:
         raise ConfigError(key) from None
 
 
+# Printable-URL rule: RFC 3986 characters minus @ ' * and everything Discord can turn into a link or mention.
+# Every URL a message prints in full passes it (the terms source rule, and hub_base_url below).
+PRINTABLE_URL = re.compile(r"[A-Za-z0-9\-._~:/?#!$&+,;=%()]+")
+
+
+def _hub_url(value: str) -> str:
+    """``hub_base_url`` is printed in every message as part of a settings link: an http(s) URL with a host, the
+    printable characters only, no userinfo, query or fragment."""
+    url = value.strip().rstrip("/")
+    try:
+        parts = urlsplit(url)
+        host, _ = parts.hostname, parts.port  # .port raises on a non-numeric port
+    except ValueError:
+        raise ConfigError("hub_base_url") from None
+    if (parts.scheme not in ("http", "https") or not host or "@" in parts.netloc or parts.query or parts.fragment
+            or "?" in url or "#" in url or not PRINTABLE_URL.fullmatch(url)):
+        raise ConfigError("hub_base_url")
+    return url
+
+
 def _optional_path(raw: dict, key: str) -> Path | None:
     if key not in raw:
         return None
@@ -109,7 +131,7 @@ def load_config(path: Path, *, with_terms: bool = False) -> NotifyConfig:
     return NotifyConfig(
         api_base=raw["api_base"].strip().rstrip("/"),
         token_file=Path(raw["token_file"]).expanduser(),
-        hub_base_url=raw["hub_base_url"].strip().rstrip("/"),
+        hub_base_url=_hub_url(raw["hub_base_url"]),
         discord_target=raw["discord_target"].strip(),
         lead_business_days=_int(raw, "lead_business_days", 2),
         lead_overrides=overrides,
