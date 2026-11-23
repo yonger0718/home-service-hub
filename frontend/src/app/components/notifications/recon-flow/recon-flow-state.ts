@@ -44,13 +44,28 @@ export function steps(state: FlowState): number[] {
   return state.order.filter((id) => state.open.has(id) && !hidden.has(id));
 }
 
+/**
+ * The opening snapshot. Each follower is placed directly after its leader (the server sorts by day: a ledger_only
+ * item's day is its entry date, often before the leader's bank line date), so after 不是同一筆 the still-open
+ * follower is the next question, not one behind the cursor. Stable otherwise.
+ */
 export function startFlow(items: readonly InboxItem[]): FlowState {
-  const state: FlowState = {
+  const draft: FlowState = {
     order: items.map((i) => i.case_id),
     open: toMap(items),
     skipped: new Set(),
     cursor: null,
   };
+  const leaderOf = followers(draft);
+  const order: number[] = [];
+  for (const id of draft.order) {
+    if (leaderOf.has(id)) continue;
+    order.push(id);
+    for (const [follower, leader] of leaderOf) {
+      if (leader === id) order.push(follower);
+    }
+  }
+  const state = { ...draft, order };
   return { ...state, cursor: steps(state)[0] ?? null };
 }
 

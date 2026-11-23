@@ -72,6 +72,18 @@ describe('recon-flow-state', () => {
     expect(steps(onlyFollower)).toEqual([2]);
   });
 
+  it('puts a follower listed before its leader directly after it', () => {
+    const [leader, follower] = pair();
+    const third = makeItem({ case_id: 3 });
+    const s = startFlow([follower, leader, third]);
+    expect(s.order).toEqual([1, 2, 3]);
+    expect(s.cursor).toBe(1);
+    expect(progress(s).position).toBe(1);
+    // 不是同一筆: only the leader leaves; the follower is now a real question and comes next.
+    const next = advance(afterRead(s, [follower, third]));
+    expect(next.cursor).toBe(2);
+  });
+
   it('skip on the last step ends, resume restarts', () => {
     const s0 = startFlow(items(2));
     const s1 = skip(skip(s0));
