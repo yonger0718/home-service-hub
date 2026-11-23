@@ -96,7 +96,9 @@ Keys:
   `missing_rule`, refused otherwise.
 - `rates` (non-empty list of `"rate/cap"` strings, `none` for a missing side): `next_terms`
   only, optional. One string per announced row; order does not matter, repeated rows count.
-  With it the entry applies only while the announced rows carry exactly these numbers.
+  With it the entry applies only while the announced rows carry exactly these numbers. A
+  list in which no row has a rate or a cap is refused: it would pin nothing but the number
+  of rows.
 - `until` (ISO date): the last day the dismissal applies. Required for `missing_rule`,
   optional otherwise.
 - `note` (string, at most 200 characters): the owner's reason. Kept in the config only.
@@ -127,17 +129,24 @@ the same period changes a rate or a cap, and the block shows again.
 
 Site values are the model's text, so the pin compares the **leading token** only:
 
-| field | token | examples that match the pin |
+| field | value | examples that match the pin |
 |---|---|---|
-| `starts_on`, `ends_on` | `YYYY-MM-DD`, a valid date, not followed by a digit | `2026-07-01`, `2026-07-01（本期活動）` |
-| `rate`, `fixed_amount`, `total_cap` | one decimal number (commas only as thousands separators), compared as a number, not followed by a digit, `.`, `,`, `-` or `/` | `9`, `9.0000`, `9%`, `60,000` |
+| `starts_on`, `ends_on` | `YYYY-MM-DD`, a valid date | `2026-07-01`, `2026-07-01（本期活動）` |
+| `rate`, `fixed_amount`, `total_cap` | one decimal number (commas only as thousands separators), with an optional `%`, 元, 點 or 哩, compared as a number | `9`, `9.0000`, `9%`, `60,000`, `500 點` |
 | `is_basic` | `true` / `false`, any case | `false（基本為每滿 25 元）` |
 | `method`, `window` | `[a-z_]+` | `calendar_month` |
 
+The text is read NFKC-normalised (full-width digits, commas, percent signs and brackets
+become their ASCII forms), and the value must be followed by the end of the text or by an
+opening bracket, i.e. a remark. Anything else after it means the text is not that one value:
+a range or a fraction in any script (`1.5-3%`, `1.5～3%`, `1.5 - 3`, `1.5／2`, `1.5至3`), a
+list, a second value, loose words (`9% 起`). Such a site value has no key, matches no pin,
+and the finding is shown. This is a whitelist on purpose: a new way of writing a range is
+shown, not hidden.
+
 For the date and number fields a missing or blank site value normalises to `none`, and so
-does one the model spells out (a leading `null`, `none` or 「無」, as in `null（上限僅適用加碼哩）`). A site value with no such leading token
-matches no pin, so the finding is shown. A range, a fraction or a list (`1.5-3%`, `1.5/2`,
-`9,000-12,000`) has no token: its first digits never stand in for the value.
+does one the model spells out (`null`, `none`, 「無」 or 「無上限」, alone or before a remark,
+as in `null（上限僅適用加碼哩）`).
 
 ### 3. Effect on the card
 
@@ -213,8 +222,10 @@ this recipe.
   merged, split or left without its rate). That is noise in the safe direction.
 - The model can report the same difference under another field or rule on another run; that
   finding is not matched and shows.
-- A pin reads the leading token and ignores what follows it: `9%（2027 起 5%）` matches a pin
-  on 9, and 「無上限，但每月 500」 matches `none`.
+- A pin ignores a bracketed remark after the value: `9%（2027 起 5%）` matches a pin on 9.
+- Announced rows of a miles card carry no rate and no cap (「每 15 元 1 哩」 is text), so
+  there is nothing for `rates` to pin: a `next_terms` entry for such a card looks at the
+  period end only. Leave that announcement visible, or give the entry a short `until`.
 - A pin is the bank's value, not the pair of values. If the rule's own value is later edited
   to something else while the bank still publishes the pinned value, the finding stays
   hidden.
@@ -227,7 +238,8 @@ this recipe.
 
 - Loader: every key rule above, each refusal names its key; a card without `dismiss` loads
   as before.
-- Matching: each field kind with and without a pin; leading-token forms; `none`; a
+- Matching: each field kind with and without a pin; the value forms, with ranges and
+  fractions in ASCII and non-ASCII separators through the parser; `none`; a
   non-normalisable site value is shown; `missing_rule` with all / some strings, NFKC and
   case; `until` on the last day and the day after; `next_terms` with the same and another
   period end, after the period ended, and with a `rates` pin (same numbers in another order

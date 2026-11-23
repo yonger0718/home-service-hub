@@ -146,6 +146,8 @@ def _rates(value: object, path: str) -> tuple[tuple[str | None, str | None], ...
                 raise ConfigError(path)
             pair.append(None if part == NO_VALUE else format_number(Decimal(part)))
         pairs.append(tuple(pair))
+    if all(rate is None and cap is None for rate, cap in pairs):
+        raise ConfigError(path)  # no number at all: it would pin the row count and look like protection
     return sort_rates(pairs)
 
 

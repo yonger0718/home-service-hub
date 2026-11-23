@@ -47,7 +47,10 @@ def _apply(card: CardResult, *dismiss: Dismissal, today=TODAY, live=LIVE) -> App
 @pytest.mark.parametrize("field, site, key", [
     ("starts_on", "2026-07-01", "2026-07-01"),
     ("starts_on", " 2026-07-01（本期活動）", "2026-07-01"),
-    ("ends_on", "2026-07-01 起", "2026-07-01"),
+    ("ends_on", "2026-07-01 起", None), ("ends_on", "2026-07-01～2026-12-31", None),
+    ("ends_on", "2026-07-01~2026-12-31", None), ("starts_on", "2026-07-01 至 2026-12-31", None),
+    ("starts_on", "２０２６-０７-０１（全形）", "2026-07-01"), ("starts_on", "2026-07-01 (note)", "2026-07-01"),
+    ("starts_on", "2026-07-01【註】", "2026-07-01"),
     ("starts_on", "2026/07/01", None),
     ("starts_on", "約 2026-07-01", None),
     ("starts_on", "2026-07-011", None),
@@ -60,7 +63,16 @@ def _apply(card: CardResult, *dismiss: Dismissal, today=TODAY, live=LIVE) -> App
     ("total_cap", "9,000-12,000", None), ("total_cap", "60,000/年", None), ("rate", "3,5%", None),
     ("rate", "1,2,3", None), ("total_cap", "1,000,000", "1000000"), ("total_cap", "12,34", None),
     ("total_cap", "500 點", "500"), ("total_cap", "500點", "500"), ("rate", "9.", None),
+    # separators outside ASCII, with or without spaces: still a range or a fraction, never its first number
+    ("rate", "1.5～3%", None), ("rate", "1.5－3%", None), ("rate", "1.5–3%", None), ("rate", "1.5—3%", None),
+    ("rate", "1.5／2", None), ("rate", "1.5 - 3%", None), ("rate", "1.5 ~ 3", None), ("rate", "1.5〜3%", None),
+    ("rate", "1.5至3%", None), ("rate", "1.5% 起", None), ("rate", "1.5%～3%", None), ("rate", "1.5 或 3", None),
+    ("rate", "1.5:2", None), ("rate", "1.5×2", None), ("rate", "1.5 3", None),
+    ("total_cap", "9，000", "9000"), ("total_cap", "9，000～12，000", None), ("total_cap", "９，０００", "9000"),
+    ("rate", "９％", "9"), ("rate", "9％（合計）", "9"), ("rate", "9 %", "9"), ("total_cap", "500 元 (每月)", "500"),
+    ("rate", "9% 國內外合計", None), ("total_cap", "500元起", None),
     ("is_basic", "false（基本為每滿 25 元）", "false"), ("is_basic", "TRUE", "true"), ("is_basic", "falsey", None),
+    ("is_basic", "true/false", None), ("is_basic", "true 或 false", None), ("is_basic", "false [x]", "false"),
     ("is_basic", "否", None),
     ("window", "calendar_month", "calendar_month"), ("window", "calendar_month（日曆月）", "calendar_month"),
     ("method", "Percent", None), ("window", "calendar_monthX", None), ("window", "calendar_month2", None),
@@ -69,6 +81,8 @@ def _apply(card: CardResult, *dismiss: Dismissal, today=TODAY, live=LIVE) -> App
     # the model also spells a missing value out
     ("total_cap", "null（上限僅適用加碼哩）", "none"), ("total_cap", "None", "none"), ("ends_on", "null", "none"),
     ("total_cap", "無上限", "none"), ("total_cap", "nullable", None), ("is_basic", "null", None),
+    ("total_cap", "無上限，但每月 500", None), ("total_cap", "無 500", None), ("total_cap", "none/500", None),
+    ("total_cap", "無（僅加碼哩有上限）", "none"), ("window", "calendar_month/statement_cycle", None),
     ("description", "anything", None), ("name", "x", None),
 ])
 def test_site_key(field, site, key):
@@ -332,3 +346,50 @@ def test_a_not_found_card_stays_not_found():
     card = _card(status="not_found", findings=(_f(),), next_terms=_announced())
     got = _apply(card, Dismissal("starts_on", rule=162), Dismissal("next_terms", value="2027-03-31"))
     assert got.hidden_count == 2 and got.card.status == "not_found"
+
+
+# --- Multica PR round: the whole path, with separators outside ASCII ---
+
+def _through_the_parser(site: str, field: str = "rate"):
+    """A model answer with this site text, parsed and joined like a run does."""
+    from notify.terms_parse import join_rules, parse_result
+    from tests.notify import terms_fixtures as fx
+    entry = CardEntry(account_id=101, official="Card A", bank_domains=("example-bank.com",), tier="precise")
+    src = "https://www.example-bank.com/cards/terms"
+    raw = {"account_id": 101, "status": "changed",
+           "findings": [{"rule_id": 162, "field": field, "site": site, "system": "x", "source": src, "quote": "q"}]}
+    rules = {101: ({"id": 162, "name": "R", "rate": "1.5", "total_cap": "9", "starts_on": "2026-07-01"},)}
+    return join_rules(parse_result(fx.one_card(raw), (entry,)), rules).cards[0]
+
+
+@pytest.mark.parametrize("site", ["1.5～3%", "1.5－3%", "1.5–3%", "1.5／2", "1.5 ~ 3%", "1.5-3%", "1.5/2"])
+def test_a_range_or_fraction_written_with_any_separator_is_shown(site):
+    card = _through_the_parser(site)
+    got = _apply(card, Dismissal("rate", rule=162, value="1.5"))
+    assert got.hidden == () and got.card is card and got.card.status == "changed", site
+
+
+def test_a_full_width_thousands_comma_is_read_as_the_whole_number():
+    card = _through_the_parser("9，000", field="total_cap")
+    assert _apply(card, Dismissal("total_cap", rule=162, value="9")).hidden == ()
+    assert _apply(card, Dismissal("total_cap", rule=162, value="9000")).hidden_count == 1
+
+
+@pytest.mark.parametrize("field, site, pin, other", [
+    ("starts_on", "2026-07-01", "2026-07-01", "2027-01-01"), ("ends_on", "2026-12-31", "2026-12-31", "2027-03-31"),
+    ("rate", "9%", "9", "8.8"), ("fixed_amount", "100", "100", "50"), ("total_cap", "500", "500", "888"),
+    ("is_basic", "true", "true", "false"), ("method", "per_unit", "per_unit", "percent"),
+    ("window", "calendar_month", "calendar_month", "statement_cycle"),
+])
+def test_every_pinnable_field_with_and_without_a_pin(field, site, pin, other):
+    card = _card(findings=(_f(field=field, site=site),))
+    assert _apply(card, Dismissal(field, rule=162, value=pin)).hidden_count == 1
+    assert _apply(card, Dismissal(field, rule=162, value=other)).hidden == ()
+    assert _apply(card, Dismissal(field, rule=162)).hidden_count == 1
+
+
+@pytest.mark.parametrize("field", ["name", "description"])
+def test_text_fields_are_dismissed_whole(field):
+    card = _card(findings=(_f(field=field, site="any wording"), _f(rule_id=163, field=field, site="any wording")))
+    got = _apply(card, Dismissal(field, rule=162))
+    assert got.hidden_count == 1 and got.card.findings[0].rule_id == 163

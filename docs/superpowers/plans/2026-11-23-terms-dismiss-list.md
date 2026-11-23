@@ -148,3 +148,7 @@ Added during execution (a reviewer's note: the period end alone hides a revision
 ### Task 7: Final review fixes
 
 Whole-branch review on `f9a0d150`: one Critical (a number pin matched the first digits of a range or fraction), one Important (hiding an item silenced the 「找不到官網來源」 line of a `changed` card without verified findings, or of a `not_found` card), minors (ISO dates stricter than `date.fromisoformat`, signed `rates` sides, `until` and `rates` in the stale records, the token regex stopping in front of `_`). Each fixed test-first in one pass.
+
+### Task 8: Multica PR round fixes
+
+AGENT-572 on `8b415a41`, CHANGES-REQUESTED, one P1: a separator outside ASCII (`1.5～3%`, `1.5－3%`, `1.5／2`, `9，000`) passed the lookahead, so a number pin matched the first number of a range. `site_key` now reads the text NFKC-normalised and accepts one value followed only by the end of the text or an opening bracket (a whitelist instead of a list of separators). Tests: the ranges through `parse_result → join_rules → apply_dismissals`, a matrix of every pinnable field with and without a pin, a state file from before the digest change. Also: a `rates` pin whose rows hold no number is refused (a miles card's announced rows have neither rate nor cap).

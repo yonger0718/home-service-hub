@@ -18,14 +18,27 @@ from notify.terms_parse import CardResult, Finding, NextTerms
 EXPIRED = "expired"  # `until` is past, or the announced period a next_terms entry names has ended
 RULE_GONE = "rule"  # the rule a rule-field entry names is not among the card's live rules of this run
 
-_DATE = re.compile(r"(\d{4}-\d{2}-\d{2})(?!\d)")
-# One number, then something that cannot continue it. The lookahead holds every character a shorter prefix could
-# stop in front of, so a range, a fraction or a list ("1.5-3%", "9,000-12,000", "1.5/2") gives no token at all
-# instead of its first digits. Commas only as thousands separators.
-_NUMBER = re.compile(r"((?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)(?![0-9.,\-/])")
-_BOOL = re.compile(r"(true|false)(?![A-Za-z])", re.IGNORECASE)
-_TOKEN = re.compile(r"([a-z_]+)(?![A-Za-z0-9_])")
-_NONE = re.compile(r"(?:(?:null|none)(?![A-Za-z])|無)", re.IGNORECASE)  # the model spelling a missing value out
+# A pin compares one leading value of the model's site text. The text is read NFKC-normalised (full-width digits,
+# commas and brackets become their ASCII forms), and the value must be followed by the end of the text or by an
+# opening bracket (a remark). Anything else after it — a range or fraction in any script ("1.5～3%", "1.5 - 3",
+# "1.5／2", "1.5至3"), a list, a second value, loose words — means the text is not that one value: no key, so the
+# finding is shown.
+_OPEN = "([{<【「『〔《〈"
+_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+# commas only as thousands separators; an optional percent sign or unit belongs to the value
+_NUMBER = re.compile(r"((?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?)\s*(?:%|元|點|哩)?")
+_BOOL = re.compile(r"true|false", re.IGNORECASE)
+_TOKEN = re.compile(r"[a-z_]+")
+_NONE = re.compile(r"null|none|無上限|無", re.IGNORECASE)  # the model spelling a missing value out
+
+
+def _lead(pattern: re.Pattern, text: str) -> re.Match | None:
+    """The pattern at the start of ``text``, when nothing but a bracketed remark follows it."""
+    m = pattern.match(text)
+    if m is None:
+        return None
+    tail = text[m.end():].lstrip()
+    return m if not tail or tail[0] in _OPEN else None
 
 
 @dataclass(frozen=True)
@@ -42,26 +55,27 @@ class Applied:
 
 
 def site_key(field: str, site: str | None) -> str | None:
-    """The comparable form of a site value for ``field``: its leading token, ``none`` for a missing value, and None
-    when the text has no such token (or the field takes no pin)."""
-    text = (site or "").strip()
-    if (field in DATE_FIELDS or field in NUMBER_FIELDS) and (not text or _NONE.match(text)):
-        return NO_VALUE
+    """The comparable form of a site value for ``field``: its one leading value, ``none`` for a missing value, and
+    None when the text is not one value (or the field takes no pin)."""
+    text = unicodedata.normalize("NFKC", site or "").strip()
+    if field in DATE_FIELDS or field in NUMBER_FIELDS:
+        if not text or _lead(_NONE, text):
+            return NO_VALUE
     if field in DATE_FIELDS:
-        m = _DATE.match(text)
+        m = _lead(_DATE, text)
         try:
-            return date.fromisoformat(m.group(1)).isoformat() if m else None
+            return date.fromisoformat(m.group(0)).isoformat() if m else None
         except ValueError:
             return None
     if field in NUMBER_FIELDS:
-        m = _NUMBER.match(text)
+        m = _lead(_NUMBER, text)
         return format_number(Decimal(m.group(1).replace(",", ""))) if m else None
     if field == "is_basic":
-        m = _BOOL.match(text)
-        return m.group(1).lower() if m else None
+        m = _lead(_BOOL, text)
+        return m.group(0).lower() if m else None
     if field in TOKEN_FIELDS:
-        m = _TOKEN.match(text)
-        return m.group(1) if m else None
+        m = _lead(_TOKEN, text)
+        return m.group(0) if m else None
     return None
 
 

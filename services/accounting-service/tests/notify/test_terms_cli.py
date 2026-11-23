@@ -432,3 +432,13 @@ def test_announced_block_with_the_pinned_rates_is_hidden(tmp_path, monkeypatch):
     env = _rates_env(tmp_path, monkeypatch, '["1.5/3000.00"]')
     assert env.run("--cause", "monthly") == 0
     assert "下期條款已公告" not in (env.archives[0] / "message.md").read_text()
+
+
+def test_a_state_file_from_before_the_digest_change_loads_and_is_replaced(tenv):
+    """Old digests are just strings that no longer match: every card is news once, then the file holds new ones."""
+    tenv.tstate.parent.mkdir(parents=True)
+    old = {str(i): {"digest": "0" * 64, "seen_at": "2026-11-02T01:00:00+00:00"} for i in (101, 102, 301)}
+    tenv.tstate.write_text(json.dumps(old))
+    assert tenv.run("--cause", "monthly", "--send") == 0
+    saved = load_terms_state(tenv.tstate).cards
+    assert set(saved) == {101, 102, 301} and all(c.digest != "0" * 64 and len(c.digest) == 64 for c in saved.values())

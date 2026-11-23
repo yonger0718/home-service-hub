@@ -332,6 +332,8 @@ def test_next_terms_without_rates_has_no_rates_pin(tmp_path):
     'field = "next_terms"\nvalue = "2027-03-31"\nrates = ["3/888/1"]',
     'field = "next_terms"\nvalue = "2027-03-31"\nrates = ["three/888"]',
     'field = "next_terms"\nvalue = "2027-03-31"\nrates = [3]',
+    # rows without a rate or a cap (a miles card: "1 mile per NT$15" is text) give nothing to pin
+    'field = "next_terms"\nvalue = "2027-03-31"\nrates = ["none/none", "none/none"]',
     'field = "rate"\nrule = 1\nrates = ["3/888"]',
     'field = "missing_rule"\ncontains = ["ab"]\nuntil = "2026-12-31"\nrates = ["3/888"]',
 ])
