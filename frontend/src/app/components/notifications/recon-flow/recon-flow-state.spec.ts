@@ -1,5 +1,5 @@
-import { makeItem } from '../../accounting/inbox/testing';
-import { InboxItem } from '../../accounting/inbox/inbox.model';
+import { makeItem as baseItem } from '../../accounting/inbox/testing';
+import { InboxCandidate, InboxEntry, InboxItem } from '../../accounting/inbox/inbox.model';
 import {
   FlowState,
   advance,
@@ -15,6 +15,34 @@ import {
   steps,
 } from './recon-flow-state';
 
+/** `makeItem` with a fictional merchant (its default is a real store name). */
+function makeItem(over: Partial<InboxItem> = {}): InboxItem {
+  return baseItem({
+    line: { id: 5, date: '2026-09-03', merchant: '測試小店', amount: '-100.0000', line_kind: 'purchase' },
+    rule_hint: null,
+    ...over,
+  });
+}
+
+const ENTRY: InboxEntry = { id: 812, date: '2026-09-03', title: '測試小店', amount: '-100.0000', account_id: 1 };
+const CANDIDATE: InboxCandidate = {
+  entry_id: 812,
+  date: '2026-09-03',
+  title: '測試小店',
+  amount: '-100.0000',
+  reason: null,
+  residual: null,
+  date_distance: 0,
+};
+
+function leaderItem(caseId: number): InboxItem {
+  return makeItem({ case_id: caseId, question: 'amount_differs', candidates: [CANDIDATE] });
+}
+
+function followerItem(caseId: number): InboxItem {
+  return makeItem({ case_id: caseId, question: 'ledger_only', line: null, entry: ENTRY });
+}
+
 function items(n: number): InboxItem[] {
   return Array.from({ length: n }, (_, i) => makeItem({ case_id: i + 1 }));
 }
@@ -24,15 +52,7 @@ function without(list: InboxItem[], ...ids: number[]): InboxItem[] {
 }
 
 function pair(): InboxItem[] {
-  const entry = { id: 812, date: '2026-09-03', title: '小店', amount: '-100.0000' };
-  return [
-    makeItem({
-      case_id: 1,
-      question: 'amount_differs',
-      candidates: [{ entry_id: 812, date: '2026-09-03', title: '小店', amount: '-100.0000' } as never],
-    }),
-    makeItem({ case_id: 2, question: 'ledger_only', line: null, entry: entry as never }),
-  ];
+  return [leaderItem(1), followerItem(2)];
 }
 
 describe('recon-flow-state', () => {
@@ -122,6 +142,50 @@ describe('recon-flow-state', () => {
     const list = items(10);
     const s = afterRead(startFlow(list), without(list, 1, 2, 3, 4));
     expect(progress(s)).toMatchObject({ handled: 4, remaining: 6 });
+  });
+
+  it('advance from a mid-list cursor whose case left goes to the next after its place, not back', () => {
+    const list = items(5);
+    const at3 = goTo(startFlow(list), 3);
+    const next = advance(afterRead(at3, without(list, 3)));
+    expect(next.cursor).toBe(4);
+    // Earlier items 1 and 2 are still open; the last one leaving ends the walk instead of going back.
+    const atLast = goTo(startFlow(list), 5);
+    expect(advance(afterRead(atLast, without(list, 5))).cursor).toBeNull();
+  });
+
+  it('skipping to the end with items left: no cursor, remaining > 0', () => {
+    const s = skip(skip(skip(startFlow(items(3)))));
+    expect(s.cursor).toBeNull();
+    expect(progress(s)).toMatchObject({ remaining: 3, handled: 0, position: 0 });
+  });
+
+  it('resume with a follower present starts at the leader and keeps the follower hidden', () => {
+    const s = skip(skip(startFlow([...pair(), makeItem({ case_id: 3 })])));
+    expect(s.cursor).toBeNull();
+    const r = resume(s);
+    expect(r.cursor).toBe(1);
+    expect(steps(r)).toEqual([1, 3]);
+  });
+
+  it('advance passes over a hidden follower', () => {
+    const s = startFlow([...pair(), makeItem({ case_id: 3 })]);
+    expect(s.order).toEqual([1, 2, 3]);
+    expect(advance(s).cursor).toBe(3);
+  });
+
+  it('move from a closed cursor goes to its neighbours', () => {
+    const list = items(3);
+    const closed = afterRead(goTo(startFlow(list), 2), without(list, 2));
+    expect(closed.cursor).toBe(2);
+    expect(move(closed, -1).cursor).toBe(1);
+    expect(move(closed, 1).cursor).toBe(3);
+  });
+
+  it('two followers of one leader both sit directly after it, in their original order', () => {
+    const s = startFlow([followerItem(5), makeItem({ case_id: 3 }), leaderItem(1), followerItem(4)]);
+    expect(s.order).toEqual([3, 1, 5, 4]);
+    expect(steps(s)).toEqual([3, 1]);
   });
 
   it('does not mutate the input state', () => {
