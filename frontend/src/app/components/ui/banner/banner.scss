@@ -81,6 +81,15 @@
   }
 }
 
+/* Phones: the action is a 44 x 44 px touch target (as the app's other controls below 760 px); the banner may grow a
+   few px. From 760 px it keeps its 34 px. */
+@media (max-width: 759.98px) {
+  .banner-action {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
 .banner-close {
   position: absolute;
   top: 6px;

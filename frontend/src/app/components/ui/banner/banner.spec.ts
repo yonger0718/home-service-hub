@@ -171,6 +171,16 @@ describe('BannerComponent', () => {
     expect(scss).toMatch(/\.banner-body\s*\{[^}]*flex:\s*1 1 180px;[^}]*overflow-wrap:\s*anywhere/);
   });
 
+  it('scss: the action is a 44 x 44 px touch target below 760 px and keeps its 34 px height from 760 px', () => {
+    const scss = readFileSync(join(process.cwd(), 'src/app/components/ui/banner/banner.scss'), 'utf8');
+    const top = scss.slice(0, scss.indexOf('@media'));
+    expect(top).toMatch(/\.banner-action\s*\{[^}]*min-height:\s*34px/);
+    const phone = scss.slice(scss.indexOf('@media (max-width: 759.98px)'));
+    const action = /\.banner-action\s*\{([^}]*)\}/.exec(phone)?.[1] ?? '';
+    expect(action).toMatch(/min-height:\s*44px/);
+    expect(action).toMatch(/min-width:\s*44px/);
+  });
+
   it('scss uses tokens only', () => {
     const scss = readFileSync(join(process.cwd(), 'src/app/components/ui/banner/banner.scss'), 'utf8');
     for (const t of [

@@ -2100,10 +2100,29 @@ describe('NotificationsComponent', () => {
       const card = block('.notif-pane--card');
       expect(card).toMatch(/background:\s*var\(--app-surface\)/);
       expect(card).toMatch(/position:\s*sticky/);
-      expect(card).toMatch(/max-height:\s*calc\(100dvh - 16px - var\(--fab-clear, 88px\)\)/);
+      // Its top is the page's top padding at rest and when stuck (one offset, every breakpoint), so its height leaves
+      // that padding above and the 記一筆 clearance below.
+      expect(card).toMatch(/top:\s*var\(--page-pad-y\)/);
+      expect(card).toMatch(/max-height:\s*calc\(100dvh - var\(--page-pad-y\) - var\(--fab-clear, 88px\)\)/);
+      expect(card).not.toMatch(/top:\s*16px/);
       expect(card).toMatch(/overflow:\s*auto/);
       // Below panes the pane is no card: only the --card modifier carries surface, shadow and sticky.
       expect(css).not.toMatch(/\n\.notif-pane \{/);
+    });
+
+    it('on a phone the page heading (a focus target after the flow closes) scrolls clear of the tab bar and its + button', () => {
+      const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
+      expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(
+        /app-page-header ::ng-deep h1\s*\{[^}]*scroll-margin-bottom:\s*calc\(var\(--m-nav-h\) \+ var\(--m-plus-lift\) \+ env\(safe-area-inset-bottom, 0px\) \+ 12px\)/,
+      );
+    });
+
+    it('on a phone the failure banner centres its heading and icon on the 44 px 重試 (a block after the base rules)', () => {
+      const phone = css.slice(css.lastIndexOf('@media (max-width: 759.98px)'));
+      expect(css.indexOf('\n.notif-failed ::ng-deep {')).toBeLessThan(css.lastIndexOf('@media (max-width: 759.98px)'));
+      const block = phone.slice(0, phone.indexOf('\n}\n'));
+      expect(block).toMatch(/\.banner-body\s*\{[^}]*min-height:\s*44px/);
+      expect(block).toMatch(/top:\s*clamp\(0px, calc\(56px - 100%\), 12px\)/);
     });
 
     it('a sheet open in the pane lifts the pane above the sidebar and the 記一筆 (z-index 1000) to the sheet\'s layer', () => {

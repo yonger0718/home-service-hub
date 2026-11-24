@@ -308,6 +308,18 @@ describe('NotifRowComponent', () => {
       expect(q(NOTIF_PRIMARY_CONTROL)!.textContent?.trim()).toBe('對帳');
     });
 
+    it('scss: on a phone the primary control scrolls clear of the tab bar and its + button (focus lands on it after the flow closes)', () => {
+      const css = readFileSync(
+        join(process.cwd(), 'src/app/components/notifications/notif-row/notif-row.scss'),
+        'utf8',
+      );
+      const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
+      const block = phone.slice(0, phone.indexOf('\n}\n'));
+      const clear = 'scroll-margin-bottom: calc(var(--m-nav-h) + var(--m-plus-lift) + env(safe-area-inset-bottom, 0px) + 12px)';
+      const rule = /\.notif-primary--link,\s*\.notif-primary ::ng-deep \.btn\s*\{([^}]*)\}/.exec(block);
+      expect(rule?.[1]).toContain(clear);
+    });
+
     it('scss: the selected row is on --app-primary-soft with a 3 px inset --app-primary bar at the start side', () => {
       const css = readFileSync(
         join(process.cwd(), 'src/app/components/notifications/notif-row/notif-row.scss'),
