@@ -2117,6 +2117,12 @@ describe('NotificationsComponent', () => {
       );
     });
 
+    it('with the flow open the row takes back the page\'s 記一筆 padding, so the sticky pane is not pushed out at the page end', () => {
+      expect(block('.notif-split--open')).toMatch(
+        /margin-bottom:\s*calc\(var\(--page-pad-y\) - var\(--page-pad-b\) - var\(--fab-clear, 0px\)\)/,
+      );
+    });
+
     it('on a phone the full-screen flow ends below the tab bar\'s raised + so 略過 scrolls clear of it', () => {
       const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
       expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(

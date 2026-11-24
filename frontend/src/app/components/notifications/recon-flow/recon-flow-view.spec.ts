@@ -250,7 +250,7 @@ describe('recon-flow-view', () => {
       expect(flowError(code), code).toEqual({ text: '這一題的資料剛剛變了', reload: true });
     }
     expect(flowError('protected')).toEqual({ text: '沒成功：這筆是轉帳或交割款，不能改金額', reload: false });
-    expect(flowError('brand_new_code')).toEqual({ text: '沒成功：答案沒有送出去，請再試一次', reload: true });
+    expect(flowError('brand_new_code')).toEqual({ text: '沒成功：答案沒有送出去，請再試一次', reload: false });
     expect(flowError(null).text).not.toMatch(/[a-z_]{4,}/);
     const conflict = new HttpErrorResponse({ status: 409, error: { message: 'stale_case: case 3' } });
     expect(flowError(conflict).reload).toBe(true);

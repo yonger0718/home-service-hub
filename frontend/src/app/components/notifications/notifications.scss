@@ -11,6 +11,10 @@
   align-items: flex-start;
   display: flex;
   gap: 16px;
+  /* The page keeps bottom padding for the floating 記一筆 (--page-pad-b + --fab-clear in shell.scss), which is hidden
+     while the flow is open. Taking it back leaves --page-pad-y under the row, so at the end of the page the sticky
+     pane still fits between the paddings instead of being pushed up out of view by the row's bottom edge. */
+  margin-bottom: calc(var(--page-pad-y) - var(--page-pad-b) - var(--fab-clear, 0px));
   max-width: 1280px;
 
   /* The floor is what a row needs before its body would drop under the icon: 14 + 40 icon + 12 gap + 280 body

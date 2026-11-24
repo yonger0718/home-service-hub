@@ -123,7 +123,8 @@ export interface FlowError {
 }
 
 const CHANGED: FlowError = { text: '這一題的資料剛剛變了', reload: true };
-const UNKNOWN: FlowError = { text: '沒成功：答案沒有送出去，請再試一次', reload: true };
+/** No 重新讀取 here: the sentence asks for the answer again, and the answers are right above it. */
+const UNKNOWN: FlowError = { text: '沒成功：答案沒有送出去，請再試一次', reload: false };
 
 /** Codes that mean the case, its line or its candidates moved since the read. */
 const CHANGED_CODES: ReadonlySet<string> = new Set([

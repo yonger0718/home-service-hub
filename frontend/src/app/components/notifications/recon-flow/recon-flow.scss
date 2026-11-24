@@ -90,6 +90,11 @@ a:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* Alone in the header (loading, a failed read): level with the 44 px back button beside it. */
+h1.flow-title:only-child {
+  padding-top: 5px;
+}
+
 :host(.flow--panes) .flow-title {
   font-size: 20px;
 }
@@ -301,17 +306,21 @@ app-banner ::ng-deep .banner {
   }
 }
 
+/* Full screen: a line of its own under the note (a 44 px tap target inside running text would push the lines apart).
+   In the pane it follows the text. */
 .flow-note-link {
   align-items: center;
   color: var(--app-primary);
-  display: inline-flex;
+  display: flex;
   font-weight: 700;
-  margin-left: 6px;
-  min-height: 44px; /* tap target on phone */
+  min-height: 44px;
   text-decoration: underline;
+  width: fit-content;
 }
 
 :host(.flow--panes) .flow-note-link {
+  display: inline;
+  margin-left: 6px;
   min-height: 0;
 }
 
