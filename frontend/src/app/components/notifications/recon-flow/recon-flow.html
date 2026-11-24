@@ -116,12 +116,7 @@
         @if (inlineError(); as message) {
           <p class="flow-error" role="alert">{{ message }}</p>
         }
-        @if (rereadFailed()) {
-          <div class="flow-error flow-error--read" role="alert">
-            <span>答案已送出，但清單讀取失敗</span>
-            <button type="button" class="flow-retry" (click)="retryRead()">重試</button>
-          </div>
-        }
+        <ng-container *ngTemplateOutlet="readErrorTpl" />
 
         @if (panes()) {
           <ng-container *ngTemplateOutlet="learnTpl; context: { $implicit: s.learn }" />
@@ -138,6 +133,7 @@
       <section class="flow-end">
         <div class="flow-check" aria-hidden="true"><i class="pi pi-check"></i></div>
         <h2 class="flow-end-title" tabindex="-1">{{ endTitle() }}</h2>
+        <ng-container *ngTemplateOutlet="readErrorTpl" />
         @if (progressInfo().remaining > 0) {
           <p class="flow-end-text">剩下的會留在通知裡，帳單對完才會從數字中拿掉。</p>
           <div class="flow-end-actions">
@@ -193,3 +189,12 @@
     (closed)="matchCard.set(null)"
   />
 }
+
+<ng-template #readErrorTpl>
+  @if (rereadFailed()) {
+    <div class="flow-error flow-error--read" role="alert">
+      <span>{{ rereadText() }}</span>
+      <button type="button" class="flow-retry" (click)="retryRead()">重試</button>
+    </div>
+  }
+</ng-template>

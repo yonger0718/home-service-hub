@@ -937,6 +937,97 @@ describe('ReconFlowComponent', () => {
       expect(answers()[0].disabled).toBe(false);
     });
 
+    it('a re-read already in flight when the 復原 finishes is superseded: a fresh GET restores the question', () => {
+      open([line(1)]);
+      key('1');
+      apply().flush(applied(1));
+      // GET A: the server may have answered it before the undo (an empty list); its response is still on the way.
+      const stale = reread();
+      undoLast(901);
+      expect(stale.cancelled).toBe(true);
+      reread().flush(inbox([fresh(1, 11)]));
+      detect();
+      http.expectNone((r) => r.url === INBOX_URL);
+      expect(headline()).toBe('測試商家 1 −$101');
+      expect(progressText()).toBe('第 1 / 1 筆');
+      expect(el.querySelector('.flow-error')).toBeNull();
+      expect(answers()[0].disabled).toBe(false);
+    });
+
+    it('a 復原 while the first read is in flight reads again; the stale first read is dropped', () => {
+      render();
+      const stale = firstRead();
+      const undo = TestBed.inject(ReconUndoService);
+      undo.offer({ answer: '忽略', caseId: 1, actionIds: [901], accountId: 1, statementId: STATEMENT, rule: null });
+      undoLast(901);
+      expect(stale.cancelled).toBe(true);
+      firstRead().flush(inbox([fresh(1, 11), line(2)]));
+      detect();
+      http.expectNone((r) => r.url === INBOX_URL);
+      expect(headline()).toBe('測試商家 1 −$101');
+      expect(progressText()).toBe('第 1 / 2 筆');
+    });
+
+    it('a 復原 while a 重試 read is in flight supersedes it', () => {
+      open(three());
+      key('1');
+      apply().flush(applied(1));
+      reread().flush('boom', { status: 500, statusText: 'Server Error' });
+      detect();
+      (el.querySelector('.flow-retry') as HTMLButtonElement).click();
+      detect();
+      const stale = reread();
+      undoLast(901);
+      expect(stale.cancelled).toBe(true);
+      reread().flush(inbox([fresh(1, 11), line(2), line(3)]));
+      detect();
+      http.expectNone((r) => r.url === INBOX_URL);
+      expect(el.querySelector('.flow-error')).toBeNull();
+      expect(headline()).toBe('測試商家 1 −$101');
+      expect(progressText()).toBe('第 1 / 3 筆');
+    });
+
+    it('the read after a 復原 fails in the end state: 已復原，但清單讀取失敗 + 重試 (a GET only) restores', () => {
+      open([line(1)]);
+      answerWith1(1, []);
+      expect(text(el.querySelector('.flow-end h2'))).toBe('這張帳單都決定好了');
+      undoLast(901);
+      reread().flush('boom', { status: 500, statusText: 'Server Error' });
+      detect();
+      const alert = el.querySelector('.flow-end .flow-error--read');
+      expect(alert?.getAttribute('role')).toBe('alert');
+      expect(text(alert!.querySelector('span'))).toBe('已復原，但清單讀取失敗');
+      (alert!.querySelector('.flow-retry') as HTMLButtonElement).click();
+      detect();
+      http.expectNone((r) => r.method === 'POST');
+      reread().flush(inbox([fresh(1, 11)]));
+      detect();
+      http.expectNone((r) => r.url === INBOX_URL);
+      expect(el.querySelector('.flow-error')).toBeNull();
+      expect(headline()).toBe('測試商家 1 −$101');
+      expect(progressText()).toBe('第 1 / 1 筆');
+    });
+
+    it('the read after a 復原 fails mid-list: the same error under the step; 重試 restores', () => {
+      open(three());
+      answerWith1(1, three().slice(1));
+      undoLast(901);
+      reread().flush('boom', { status: 500, statusText: 'Server Error' });
+      detect();
+      const alert = el.querySelector('.flow-error--read');
+      expect(alert?.getAttribute('role')).toBe('alert');
+      expect(text(alert!.querySelector('span'))).toBe('已復原，但清單讀取失敗');
+      expect(answers().every((b) => b.disabled)).toBe(true);
+      (alert!.querySelector('.flow-retry') as HTMLButtonElement).click();
+      detect();
+      http.expectNone((r) => r.method === 'POST');
+      reread().flush(inbox([fresh(1, 11), line(2), line(3)]));
+      detect();
+      expect(el.querySelector('.flow-error')).toBeNull();
+      expect(headline()).toBe('測試商家 1 −$101');
+      expect(progressText()).toBe('第 1 / 3 筆');
+    });
+
     it('a 復原 of another statement is ignored', () => {
       open(three());
       const undo = TestBed.inject(ReconUndoService);

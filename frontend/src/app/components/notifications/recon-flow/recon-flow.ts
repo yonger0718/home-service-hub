@@ -170,8 +170,14 @@ export class ReconFlowComponent {
   readonly flow = signal<FlowState>(startFlow([]));
   /** From a press until its re-read settles (or the apply fails). */
   readonly busy = signal(false);
-  /** The answer went through but the re-read after it failed: only 重試 (a read) is offered. */
-  readonly rereadFailed = signal(false);
+  /**
+   * A read after a write failed: `answer` (the answer went through) or `undo` (a 復原 went through; the question to
+   * restore is kept). Only 重試 (a read) is offered.
+   */
+  readonly rereadFailed = signal<'answer' | 'undo' | null>(null);
+  readonly rereadText = computed(() =>
+    this.rereadFailed() === 'undo' ? '已復原，但清單讀取失敗' : '答案已送出，但清單讀取失敗',
+  );
   readonly locked = computed(() => this.busy() || this.rereadFailed());
 
   readonly recordCard = signal<InboxCard | null>(null);
@@ -378,7 +384,7 @@ export class ReconFlowComponent {
     if (this.busy()) {
       return;
     }
-    this.rereadFailed.set(false);
+    this.rereadFailed.set(null);
     this.busy.set(true);
     this.read(false);
   }
@@ -444,7 +450,7 @@ export class ReconFlowComponent {
     this.periodEnd.set(null);
     this.flow.set(startFlow([]));
     this.busy.set(false);
-    this.rereadFailed.set(false);
+    this.rereadFailed.set(null);
     this.recordCard.set(null);
     this.matchCard.set(null);
     this.load.set('loading');
@@ -476,9 +482,11 @@ export class ReconFlowComponent {
           return;
         }
         this.busy.set(false);
-        this.pendingRevert = null;
+        // The restore target stays: 重試 reads again and restores.
         if (this.pending) {
-          this.rereadFailed.set(true);
+          this.rereadFailed.set('answer');
+        } else if (this.pendingRevert !== null) {
+          this.rereadFailed.set('undo');
         }
       },
     });
@@ -501,8 +509,8 @@ export class ReconFlowComponent {
     const pending = this.pending;
     this.pending = null;
     let error: string | null = null;
-    if (pending) {
-      error = this.settle(pending, state);
+    if (pending && pending.caseId !== this.pendingRevert) {
+      error = this.settle(pending, state); // an answer undone meanwhile is open again on purpose: no refusal text
     }
     if (state.cursor !== null && !state.open.has(state.cursor)) {
       state = advance(state);
@@ -520,7 +528,7 @@ export class ReconFlowComponent {
       this.inlineError.set(error);
     }
     this.busy.set(false);
-    this.rereadFailed.set(false);
+    this.rereadFailed.set(null);
     if (focus && state.cursor !== before) {
       this.focusStep();
     }
@@ -563,19 +571,28 @@ export class ReconFlowComponent {
     });
   }
 
+  /**
+   * Only a GET that started after the 復原 finished may restore its question: a read already in flight may have been
+   * answered by the server before the revert, however late its response arrives. So a read in flight (the first read,
+   * an answer's re-read, a 重試) is superseded by a fresh one; an apply still in flight issues its re-read afterwards
+   * anyway. One extra GET per 復原 at most.
+   */
   private onReverted(reverted: ReconReverted): void {
-    if (reverted.statementId !== this.statementId() || this.load() !== 'ready') {
-      return; // another statement; or the first read (or its 重試) is still to come and brings the question anyway
+    if (reverted.statementId !== this.statementId() || this.load() === 'failed') {
+      return; // another statement; or the failed first read's 重試 reads afresh anyway
+    }
+    if (this.load() === 'loading') {
+      this.read(true); // the opening snapshot, no restore needed: the server order places the question
+      return;
     }
     if (!this.account()) {
       this.restart(); // opened on a finished statement: only a full read can find the account again
       return;
     }
     this.pendingRevert = reverted.caseId;
-    if (this.busy()) {
-      return; // the answer's own re-read lands after the revert and restores the question
+    if (this.reading || !this.busy()) {
+      this.read(false);
     }
-    this.read(false);
   }
 
   // ----- applying --------------------------------------------------------------------------------------------------
