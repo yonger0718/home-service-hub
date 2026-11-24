@@ -250,6 +250,55 @@ describe('recon-flow-state', () => {
       expect(s.cursor).toBe(1);
     });
 
+    describe('a ledger_only that names a bank line too (shadowed_by_stand_in / orphaned_stand_in)', () => {
+      const SHADOW_ENTRY: InboxEntry = { id: 900, date: '2026-09-02', title: '測試小店', amount: '-100.0000', account_id: 1 };
+      /** The backend's shadow / orphan entry_unmatched: line_id of the stand-in's line AND the owner's entry. */
+      const shadow = (caseId: number): InboxItem =>
+        makeItem({ case_id: caseId, case_version: 1, question: 'ledger_only', entry: SHADOW_ENTRY });
+      /** A line question on the same bank line (line 5). */
+      const lineQuestion = (caseId: number): InboxItem => makeItem({ case_id: caseId, question: 'bank_only' });
+
+      it('keys by its entry, not the line it names', () => {
+        expect(itemKey(shadow(1))).toBe('entry:900');
+        expect(itemKey(lineQuestion(2))).toBe('line:5');
+      });
+
+      it('alone: answered, then back under a new id at its place', () => {
+        const list = [shadow(1), linesOf(2)[1]];
+        const answered = advance(afterRead(startFlow(list), [list[1]]));
+        const s = restore(afterRead(answered, [shadow(11), list[1]]), {
+          position: 0,
+          keys: new Map([[1, itemKey(list[0])!]]),
+        });
+        expect(s.order).toEqual([11, 2]);
+        expect(s.cursor).toBe(11);
+        expect(progress(s)).toMatchObject({ total: 2, handled: 0 });
+      });
+
+      it('beside a line question on the same line: only the answered one moves, nothing is dropped', () => {
+        const list = [lineQuestion(1), shadow(2), linesOf(3)[2]];
+        // The shadow answered (cursor moved to it first), then 復原: it returns as 12; the line question stays put.
+        const answered = advance(afterRead(goTo(startFlow(list), 2), [list[0], list[2]]));
+        expect(answered.cursor).toBe(3);
+        const s = restore(afterRead(answered, [list[0], shadow(12), list[2]]), {
+          position: 1,
+          keys: new Map([[2, itemKey(list[1])!]]),
+        });
+        expect(s.order).toEqual([1, 12, 3]);
+        expect(s.cursor).toBe(12);
+        expect(progress(s)).toMatchObject({ total: 3, handled: 0, remaining: 3 });
+
+        // The other way round: the line question answered and back as 11; the shadow is not moved or dropped.
+        const answered2 = advance(afterRead(startFlow(list), [list[1], list[2]]));
+        const s2 = restore(afterRead(answered2, [lineQuestion(11), list[1], list[2]]), {
+          position: 0,
+          keys: new Map([[1, itemKey(list[0])!]]),
+        });
+        expect(s2.order).toEqual([11, 2, 3]);
+        expect(s2.cursor).toBe(11);
+      });
+    });
+
     it('nothing came back: the state is returned unchanged', () => {
       const list = linesOf(3);
       const read = afterRead(advance(afterRead(startFlow(list), without(list, 1))), without(list, 1));

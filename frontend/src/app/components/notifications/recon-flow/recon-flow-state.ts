@@ -75,14 +75,17 @@ function leadersFirst(ids: readonly number[], open: ReadonlyMap<number, InboxIte
 }
 
 /**
- * What a question is about, stable across case ids: its bank line, else its ledger entry. A 復原 followed by the
- * statement reconcile brings an answered question back under a NEW case id (the server does not recognise the
- * reopened case and writes a fresh one), so the flow finds it again by this key.
+ * What a question is about, stable across case ids. A 復原 followed by the statement reconcile brings an answered
+ * question back under a NEW case id (the server does not recognise the reopened case and writes a fresh one), so the
+ * flow finds it again by this key.
+ * - `ledger_only` (an `entry_unmatched` case, one per entry): its ledger entry. A shadowed / orphaned stand-in case
+ *   names a bank line too; keying it by that line could collide with a line question on the same line.
+ * - Every other question: its bank line (line-based cases, one per line), else its entry.
  */
 export function itemKey(item: InboxItem): string | null {
-  if (item.line) return `line:${item.line.id}`;
-  if (item.entry) return `entry:${item.entry.id}`;
-  return null;
+  const line = item.line ? `line:${item.line.id}` : null;
+  const entry = item.entry ? `entry:${item.entry.id}` : null;
+  return item.question === 'ledger_only' ? (entry ?? line) : (line ?? entry);
 }
 
 /** An applied answer as the flow remembers it for 復原: its place in `order`, and the key of each case it closed. */
