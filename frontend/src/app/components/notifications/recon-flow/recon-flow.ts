@@ -26,10 +26,8 @@ import { BannerComponent } from '../../ui/banner/banner';
 import { isHandledKey } from '../../accounting/accounting-ui';
 import { formatMoney } from '../../accounting/format';
 import {
-  INBOX_GENERIC_ERROR,
   InboxCard,
   buttonLabel,
-  inboxErrorMessage,
   inboxLearn,
   learnLabel,
   learnableAnswer,
@@ -71,23 +69,25 @@ import {
   restore,
   startFlow,
 } from './recon-flow-state';
-import { compareRows, flowCard, flowChip, flowEntry, flowHeadline, flowLearnable, flowNote } from './recon-flow-view';
+import {
+  FlowError,
+  compareRows,
+  flowActions,
+  flowCard,
+  flowChip,
+  flowEntry,
+  flowError,
+  flowExcluded,
+  flowHeadline,
+  flowLearnScope,
+  flowLearnable,
+  flowNote,
+  flowPartOf,
+} from './recon-flow-view';
 import { ReconReverted, ReconUndoService } from './recon-undo.service';
 
 /** Above this many cases the bar is one plain fill instead of one segment per case. */
 const MAX_SEGMENTS = 20;
-
-const FAILED_PREFIX = '沒成功：';
-const GENERIC_PLAIN = INBOX_GENERIC_ERROR.replace(/^沒成功，/, '');
-
-/** As the inbox panel: the mapped message without the `沒成功：` / `沒成功，` that `inboxErrorMessage` may lead with. */
-function plainError(codeOrErr: unknown): string {
-  const message = inboxErrorMessage(codeOrErr);
-  if (message === INBOX_GENERIC_ERROR) {
-    return GENERIC_PLAIN;
-  }
-  return message.startsWith(FAILED_PREFIX) ? message.slice(FAILED_PREFIX.length) : message;
-}
 
 /** ARIA text widgets whose letters are input (as the shell's global keys). */
 const TYPING_ROLES = '[role="combobox"], [role="listbox"], [role="spinbutton"]';
@@ -171,23 +171,35 @@ export class ReconFlowComponent {
   /** From a press until its re-read settles (or the apply fails). */
   readonly busy = signal(false);
   /**
-   * A read after a write failed: `answer` (the answer went through) or `undo` (a 復原 went through; the question to
-   * restore is kept). Only 重試 (a read) is offered.
+   * A read after the first one failed: `answer` (the answer went through), `undo` (a 復原 went through; the question
+   * to restore is kept) or `reload` (重新讀取 on a changed question). Only 重試 (a read) is offered.
    */
-  readonly rereadFailed = signal<'answer' | 'undo' | null>(null);
-  readonly rereadText = computed(() =>
-    this.rereadFailed() === 'undo' ? '已復原，但清單讀取失敗' : '答案已送出，但清單讀取失敗',
-  );
+  readonly rereadFailed = signal<'answer' | 'undo' | 'reload' | null>(null);
+  readonly rereadText = computed(() => {
+    switch (this.rereadFailed()) {
+      case 'undo':
+        return '已復原，但清單讀取失敗';
+      case 'reload':
+        return '清單讀取失敗';
+      default:
+        return '答案已送出，但清單讀取失敗';
+    }
+  });
   readonly locked = computed(() => this.busy() || this.rereadFailed());
 
   readonly recordCard = signal<InboxCard | null>(null);
   readonly matchCard = signal<InboxCard | null>(null);
+  /** The entry the open 對到… sheet must not offer (the one the question already compares). */
+  readonly matchExclude = computed<readonly number[]>(() => {
+    const excluded = this.matchCard() ? flowExcluded(this.matchCard()!.items[0]) : null;
+    return excluded === null ? [] : [excluded];
+  });
 
   private readonly cursor = computed(() => this.flow().cursor);
   /** Off on every step change. */
   readonly learnOn = linkedSignal<number | null, boolean>({ source: this.cursor, computation: () => false });
-  /** `沒成功：…` under the answers; cleared on every step change. */
-  readonly inlineError = linkedSignal<number | null, string | null>({ source: this.cursor, computation: () => null });
+  /** The refusal under the answers; cleared on every step change. */
+  readonly inlineError = linkedSignal<number | null, FlowError | null>({ source: this.cursor, computation: () => null });
 
   private gen = 0;
   private reading: Subscription | null = null;
@@ -205,9 +217,16 @@ export class ReconFlowComponent {
   private readonly currency = computed(() => this.account()?.currency ?? 'TWD');
   readonly progressInfo = computed(() => progress(this.flow()));
 
+  /**
+   * 「對帳 · 帳戶」. Full screen the heading already says 對帳 until the statement is known (loading, a failed read, a
+   * statement the inbox does not list), so there is no kicker then; the pane has no heading in those states and keeps it.
+   */
   readonly kicker = computed(() => {
     const account = this.account();
-    return account ? `對帳 · ${account.name}` : '對帳';
+    if (account) {
+      return `對帳 · ${account.name}`;
+    }
+    return this.panes() ? '對帳' : null;
   });
   readonly titleText = computed(() => {
     const end = this.periodEnd();
@@ -218,10 +237,15 @@ export class ReconFlowComponent {
    * 「對帳」 (while loading, after a failed read, for a statement the inbox does not list).
    */
   readonly heading = computed(() => (this.load() === 'ready' ? this.titleText() : null) ?? '對帳');
+  /** 「已對上 k / n 行 · 這次要你決定 N 筆」; the second half only while something is left to decide. */
   readonly subText = computed(() => {
     const task = this.center.tasks().find((t) => t.id === `recon:${this.statementId()}`);
-    const decide = `這次要你決定 ${this.progressInfo().total} 筆`;
-    return task?.progress ? `已對上 ${task.progress.k} / ${task.progress.n} 行 · ${decide}` : decide;
+    const { total, remaining } = this.progressInfo();
+    const parts = [
+      task?.progress ? `已對上 ${task.progress.k} / ${task.progress.n} 行` : null,
+      remaining > 0 ? `這次要你決定 ${total} 筆` : null,
+    ].filter((part): part is string => part !== null);
+    return parts.length ? parts.join(' · ') : null;
   });
   readonly statementLink = computed(() => {
     const account = this.account();
@@ -256,6 +280,12 @@ export class ReconFlowComponent {
     }
     const currency = this.currency();
     const hint = item.rule_hint;
+    const answers = flowActions(item).map((action) => ({
+      action,
+      label: buttonLabel(action, item, currency),
+      learns: hint !== null && learnableAnswer(item.question, action),
+    }));
+    const partOf = flowPartOf(item) ? (item.part_of ?? [])[0] : undefined;
     return {
       item,
       chip: flowChip(item.question),
@@ -263,11 +293,17 @@ export class ReconFlowComponent {
       rows: compareRows(item, currency),
       pair: this.pairNote(item),
       note: flowNote(item, currency),
-      highlight: !item.part_of?.length,
-      answers: item.actions.map((action) => ({ action, label: buttonLabel(action, item, currency) })),
+      /** 打開那筆: the recorded entry the note says this line may be part of. */
+      noteLink: partOf ? `/accounting/entries/${partOf.id}` : null,
+      highlight: !flowPartOf(item),
+      answers,
+      keys: this.keyHint(Math.min(answers.length, 3)),
       learn:
         hint && flowLearnable(item)
-          ? learnLabel(hint, item.actions.find((a) => learnableAnswer(item.question, a)) ?? 'dismiss')
+          ? {
+              label: learnLabel(hint, item.actions.find((a) => learnableAnswer(item.question, a)) ?? 'dismiss'),
+              scope: flowLearnScope(item, currency),
+            }
           : null,
     };
   });
@@ -373,6 +409,21 @@ export class ReconFlowComponent {
     if (!this.locked()) {
       this.owned((state) => resume(state));
     }
+  }
+
+  /** 重新讀取 on a question that changed: a read only; the step shows what the question is now. */
+  reloadStep(): void {
+    if (this.locked()) {
+      return;
+    }
+    this.inlineError.set(null);
+    this.busy.set(true);
+    this.read(false);
+  }
+
+  /** The record sheet's 以後…都這樣 is this step's switch: a tick there moves it. */
+  setLearn(on: boolean): void {
+    this.learnOn.set(on);
   }
 
   retryLoad(): void {
@@ -483,11 +534,7 @@ export class ReconFlowComponent {
         }
         this.busy.set(false);
         // The restore target stays: 重試 reads again and restores.
-        if (this.pending) {
-          this.rereadFailed.set('answer');
-        } else if (this.pendingRevert !== null) {
-          this.rereadFailed.set('undo');
-        }
+        this.rereadFailed.set(this.pending ? 'answer' : this.pendingRevert !== null ? 'undo' : 'reload');
       },
     });
   }
@@ -508,7 +555,7 @@ export class ReconFlowComponent {
     let state = afterRead(this.flow(), askItems(items, statementId));
     const pending = this.pending;
     this.pending = null;
-    let error: string | null = null;
+    let error: FlowError | null = null;
     if (pending && pending.caseId !== this.pendingRevert) {
       error = this.settle(pending, state); // an answer undone meanwhile is open again on purpose: no refusal text
     }
@@ -535,10 +582,10 @@ export class ReconFlowComponent {
   }
 
   /** After the re-read: still open → the refusal text; a refused `case_closed` that left → 這筆已經處理過了. */
-  private settle(pending: PendingAnswer, state: FlowState): string | null {
+  private settle(pending: PendingAnswer, state: FlowState): FlowError | null {
     const result = pending.out.results.find((r) => r.case_id === pending.caseId);
     if (state.open.has(pending.caseId)) {
-      return FAILED_PREFIX + plainError(result?.code ?? null);
+      return flowError(result?.code ?? null);
     }
     if (result?.status === 'refused' && result.code === 'case_closed') {
       this.toasts.done('這筆已經處理過了'); // answered elsewhere: nothing of ours to undo
@@ -556,7 +603,7 @@ export class ReconFlowComponent {
       return;
     }
     if (out.rule_error) {
-      this.toasts.error('答案已記下，但規則沒存：' + plainError(out.rule_error));
+      this.toasts.error('答案已記下，但規則沒存：' + flowError(out.rule_error).text.replace(/^沒成功：/, ''));
       return;
     }
     this.undo.offer({
@@ -644,7 +691,7 @@ export class ReconFlowComponent {
           return;
         }
         this.busy.set(false);
-        this.inlineError.set(FAILED_PREFIX + plainError(err));
+        this.inlineError.set(flowError(err));
         if (this.pendingRevert !== null) {
           this.read(false); // the 復原 read this press cancelled
         }
@@ -681,6 +728,12 @@ export class ReconFlowComponent {
       this.focusStep();
     }
     return true;
+  }
+
+  /** 「1–3 選擇 · …」 with the digits this step really has. */
+  private keyHint(digits: number): string {
+    const pick = digits === 0 ? null : digits === 1 ? '1 選擇' : `1–${digits} 選擇`;
+    return [pick, 'S 略過', '← → 上下筆', 'Esc 關閉'].filter((part) => part !== null).join(' · ');
   }
 
   private pairNote(item: InboxItem): string | null {

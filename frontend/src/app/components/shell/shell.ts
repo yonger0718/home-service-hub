@@ -57,8 +57,8 @@ export class ShellComponent {
   private readonly url = signal(this.router.url);
   /**
    * 記一筆 from 760 px, except over the entry form, the 760–1023 px sheet (a modal dialog), the report pages (it
-   * covered the table's last column; the N shortcut and the tab bar's + still work there) and the full-screen review
-   * flow below 1024 px.
+   * covered the table's last column; the N shortcut and the tab bar's + still work there) and the review flow at every
+   * width (full screen its answers sit where the button floats; in the pane it covered the flow's last row).
    */
   protected readonly showFab = computed(
     () =>
@@ -66,8 +66,7 @@ export class ShellComponent {
       !this.paneState.formOpen() &&
       !this.paneState.sheetOpen() &&
       !NO_FAB_URL.test(this.url()) &&
-      // The review flow is full screen below 1024 px (its answers sit where the button floats); beside the list from 1024 px.
-      !(this.layout.mode() !== 'panes' && isReviewFlowUrl(this.url())),
+      !isReviewFlowUrl(this.url()),
   );
 
   /** Space the toast leaves to its right: the floating 記一筆 (right offset + 56 px button + 12 px gap), else a margin. */

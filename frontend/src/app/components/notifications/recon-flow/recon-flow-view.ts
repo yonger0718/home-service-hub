@@ -1,7 +1,10 @@
+import { HttpErrorResponse } from '@angular/common/http';
+
 import { daysBetween, slashDate } from '../../accounting/dates';
 import { formatMoney } from '../../accounting/format';
-import { InboxCard, learnableAnswer, questionText } from '../../accounting/inbox/inbox-view';
-import { InboxAccount, InboxItem, InboxQuestion } from '../../accounting/inbox/inbox.model';
+import { InboxCard, buttonLabel, learnableAnswer, questionText } from '../../accounting/inbox/inbox-view';
+import { InboxAccount, InboxButton, InboxItem, InboxQuestion } from '../../accounting/inbox/inbox.model';
+import { apiErrorText, splitApiCode } from '../../accounting/statements/statement-view';
 
 const CHIPS: Partial<Record<InboxQuestion, string>> = {
   bank_only: '銀行有，你沒記',
@@ -75,13 +78,120 @@ export function flowHeadline(item: InboxItem, currency: string): string {
   }
 }
 
-/** Extra line under the grid: the part-of warning, the transfer hint, or the item's note; null when none. */
+/** True for a bank-only line that may be one part of an entry already recorded (#392). */
+export function flowPartOf(item: InboxItem): boolean {
+  return item.question === 'bank_only' && (item.part_of ?? []).length > 0;
+}
+
+/**
+ * Extra line under the grid: the part-of warning, the transfer hint, or the item's note; null when none. The transfer
+ * hint names only what this flow can do (對到…, 略過): the transfer answers themselves come with PR E.
+ */
 export function flowNote(item: InboxItem, currency: string): string | null {
-  if (item.question === 'bank_only' && (item.part_of ?? []).length > 0) {
+  if (flowPartOf(item)) {
     return questionText(item, currency);
   }
-  if (item.question === 'transfer') return '在時間軸記一筆轉帳，或對到已記的。';
+  if (item.question === 'transfer') return '已經記過的話，選「已記在別處，對到…」；還沒記就先略過。';
   return item.note || null;
+}
+
+/** The answers in the order the flow lists them: the server's, except 記為… goes last on a part-of line. */
+export function flowActions(item: InboxItem): InboxButton[] {
+  if (!flowPartOf(item) || !item.actions.includes('record')) {
+    return item.actions;
+  }
+  return [...item.actions.filter((action) => action !== 'record'), 'record'];
+}
+
+/** The answers 以後都這樣 applies to, as the buttons name them: 只有「記為支出…」「忽略」會記住. Null when none. */
+export function flowLearnScope(item: InboxItem, currency: string): string | null {
+  if (item.rule_hint === null) {
+    return null;
+  }
+  const learning = flowActions(item).filter((action) => learnableAnswer(item.question, action));
+  if (learning.length === 0) {
+    return null;
+  }
+  const names = learning.map((action) => `「${buttonLabel(action, item, currency)}」`).join('');
+  return learning.length === item.actions.length ? `${names}都會記住` : `只有${names}會記住`;
+}
+
+export interface FlowError {
+  readonly text: string;
+  /** Offer 重新讀取: the question changed under the owner, a fresh read shows what it is now. */
+  readonly reload: boolean;
+}
+
+const CHANGED: FlowError = { text: '這一題的資料剛剛變了', reload: true };
+const UNKNOWN: FlowError = { text: '沒成功：答案沒有送出去，請再試一次', reload: true };
+
+/** Codes that mean the case, its line or its candidates moved since the read. */
+const CHANGED_CODES: ReadonlySet<string> = new Set([
+  'stale_case',
+  'candidate_changed',
+  'case_moved',
+  'not_offered',
+  'no_line',
+  'snapshot_conflict',
+  'conflict_stale',
+  'needs_recheck',
+  'accrual_not_estimated',
+  'proposal_superseded',
+]);
+
+/** Every other refusal in the owner's words (no code, no English). */
+const PLAIN: Readonly<Record<string, string>> = {
+  case_closed: '這筆已經處理過了',
+  not_conserved: '金額對不上，不能直接對到這筆',
+  protected: '這筆是轉帳或交割款，不能改金額',
+  owner_may_record: '這筆你已經記過了',
+  historical_statement: '這是舊帳單，不能再改',
+  locked_until_cutover: '這筆是匯入的舊記錄，現在還不能改',
+  rule_pattern_mismatch: '這幾筆描述不同，不能一起記住',
+  rule_pattern_empty: '描述只有數字，沒辦法記住',
+  not_learnable: '這種答案沒辦法記住',
+  entry_claimed: '這筆記錄已經對到別的行了',
+  entry_in_group: '這筆是分期或回饋的一部分，不能直接對',
+  line_outside_period: '這筆的入帳日不在這期帳單內',
+  action_busy: '系統正在處理這張帳單，等一下再試',
+  reconcile_busy: '系統正在處理這張帳單，等一下再試',
+  sweep_barrier_busy: '系統正在處理這張帳單，等一下再試',
+};
+
+const KNOWN_CODES = [...CHANGED_CODES, ...Object.keys(PLAIN)];
+
+/** The business code of a refusal: the string itself, a 409 / string `detail` text, or one named in a 422 `detail[].msg`. */
+function errorCode(codeOrErr: unknown): string | null {
+  if (typeof codeOrErr === 'string') {
+    return codeOrErr;
+  }
+  const text = apiErrorText(codeOrErr);
+  if (text) {
+    return splitApiCode(text).code;
+  }
+  if (codeOrErr instanceof HttpErrorResponse) {
+    const detail = (codeOrErr.error as { detail?: unknown } | null)?.detail;
+    if (Array.isArray(detail)) {
+      for (const part of detail as { msg?: unknown }[]) {
+        const msg = typeof part?.msg === 'string' ? part.msg : '';
+        const code = KNOWN_CODES.find((key) => msg.includes(key));
+        if (code) {
+          return code;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** A refused or failed answer as the flow shows it under the buttons: never a raw code. */
+export function flowError(codeOrErr: unknown): FlowError {
+  const code = errorCode(codeOrErr);
+  if (code !== null && CHANGED_CODES.has(code)) {
+    return CHANGED;
+  }
+  const plain = code === null ? undefined : PLAIN[code];
+  return plain ? { text: `沒成功：${plain}`, reload: false } : UNKNOWN;
 }
 
 export interface CompareRow {
@@ -139,4 +249,12 @@ export function flowCard(item: InboxItem, account: InboxAccount): InboxCard {
     rule_hint: item.rule_hint,
     learnable: flowLearnable(item),
   };
+}
+
+/**
+ * The entry 對到… must not offer: 「已記在別處，對到…」 on an amount question means another entry, not the one the step
+ * is already comparing. Null otherwise.
+ */
+export function flowExcluded(item: InboxItem): number | null {
+  return item.question === 'amount_differs' ? (flowEntry(item)?.id ?? null) : null;
 }

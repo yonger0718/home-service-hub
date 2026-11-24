@@ -105,7 +105,9 @@ describe('ReconFlowComponent', () => {
   let closed: ReturnType<typeof vi.fn<() => void>>;
   const tasks = signal<readonly NotifTask[]>([]);
 
-  beforeEach(() => {
+  beforeEach(() => setup());
+
+  function setup(): void {
     tasks.set([]);
     // A failed verify in the previous afterEach skips Angular's own reset; without this one failure fails the rest.
     TestBed.resetTestingModule();
@@ -119,7 +121,7 @@ describe('ReconFlowComponent', () => {
       ],
     });
     http = TestBed.inject(HttpTestingController);
-  });
+  }
 
   afterEach(() => {
     // Destroy first: a failed verify must not leave this flow's document key listener to the next test.
@@ -399,13 +401,74 @@ describe('ReconFlowComponent', () => {
     });
   });
 
-  it('refused: inline 沒成功 and still on the same question after the re-read', () => {
+  it('refused because the question changed: 這一題的資料剛剛變了 with 重新讀取, still on the same question', () => {
     open(ten());
     key('1');
     apply().flush(refused(1, 'stale_case'));
     reread().flush(inbox([line(1, { case_version: 2 }), ...ten().slice(1)]));
     detect();
-    expect(text(el.querySelector('.flow-error[role="alert"]'))).toBe('沒成功：對象已變，重新整理');
+    const alert = el.querySelector('.flow-error[role="alert"]')!;
+    expect(text(alert.querySelector('span'))).toBe('這一題的資料剛剛變了');
+    expect(text(alert)).not.toContain('對象已變');
+    // 重新讀取 is a GET only; the error goes and the question shows what the read returned.
+    button(alert, '重新讀取').click();
+    detect();
+    expect(answers()[0].disabled).toBe(true);
+    http.expectNone(APPLY_URL);
+    reread().flush(inbox([line(1, { case_version: 3 }), ...ten().slice(1)]));
+    detect();
+    expect(el.querySelector('.flow-error')).toBeNull();
+    expect(headline()).toBe('測試商家 1 −$101');
+    key('1');
+    expect((apply().request.body as InboxApplyBody).cases).toEqual([{ case_id: 1, case_version: 3 }]);
+  });
+
+  it('重新讀取 that fails: 清單讀取失敗 with 重試', () => {
+    open(ten());
+    key('1');
+    apply().flush(refused(1, 'candidate_changed'));
+    reread().flush(inbox(ten()));
+    detect();
+    button(el, '重新讀取').click();
+    detect();
+    reread().flush('boom', { status: 500, statusText: 'Server Error' });
+    detect();
+    expect(text(el.querySelector('.flow-error--read span'))).toBe('清單讀取失敗');
+    button(el, '重試').click();
+    detect();
+    reread().flush(inbox(ten()));
+    detect();
+    expect(el.querySelector('.flow-error')).toBeNull();
+  });
+
+  it('every refusal is in plain words: no raw code, no 對象已變', () => {
+    const codes = [
+      'stale_case', 'candidate_changed', 'case_moved', 'not_offered', 'not_conserved', 'protected', 'owner_may_record',
+      'historical_statement', 'locked_until_cutover', 'entry_claimed', 'entry_in_group', 'line_outside_period',
+      'no_line', 'action_busy', 'some_new_code',
+    ];
+    for (const code of codes) {
+      fixture?.destroy();
+      setup();
+      open(ten());
+      key('1');
+      apply().flush(refused(1, code));
+      reread().flush(inbox(ten()));
+      detect();
+      const shown = text(el.querySelector('.flow-error[role="alert"] span'));
+      expect(shown, code).not.toMatch(/[a-z_]{4,}|對象已變|cutover/);
+      expect(shown.length, code).toBeGreaterThan(4);
+    }
+  });
+
+  it('refused, second half (kept from the old test): the next press carries the fresh version', () => {
+    open(ten());
+    key('1');
+    apply().flush(refused(1, 'not_conserved'));
+    reread().flush(inbox([line(1, { case_version: 2 }), ...ten().slice(1)]));
+    detect();
+    expect(text(el.querySelector('.flow-error[role="alert"]'))).toBe('沒成功：金額對不上，不能直接對到這筆');
+    expect(el.querySelector('.flow-error .flow-retry')).toBeNull();
     expect(headline()).toBe('測試商家 1 −$101');
     expect(progressText()).toBe('第 1 / 10 筆');
     // The next press carries the fresh version.
@@ -418,7 +481,7 @@ describe('ReconFlowComponent', () => {
     key('1');
     apply().flush({ detail: 'case_closed' }, { status: 409, statusText: 'Conflict' });
     detect();
-    expect(text(el.querySelector('.flow-error[role="alert"]'))).toBe('沒成功：已經處理過了');
+    expect(text(el.querySelector('.flow-error[role="alert"]'))).toBe('沒成功：這筆已經處理過了');
     expect(headline()).toBe('測試商家 1 −$101');
     expect(answers()[0].disabled).toBe(false);
   });
@@ -514,7 +577,7 @@ describe('ReconFlowComponent', () => {
     detect();
     expect(headline()).toBe('測試商家 2 −$102');
     expect(TestBed.inject(ToastService).current()).toEqual(
-      expect.objectContaining({ kind: 'error', text: '答案已記下，但規則沒存：描述只有數字，不能學', action: null }),
+      expect.objectContaining({ kind: 'error', text: '答案已記下，但規則沒存：描述只有數字，沒辦法記住', action: null }),
     );
   });
 
@@ -530,7 +593,8 @@ describe('ReconFlowComponent', () => {
       expect(sw.getAttribute('aria-checked')).toBe('false');
       expect(text(el.querySelector('.flow-learn-label'))).toBe('以後「測試商家 1」都這樣');
       const sub = el.querySelector('.flow-learn-sub')!;
-      expect(text(sub)).toBe('之後同樣的行自動處理，可在記帳設定關掉');
+      // Every answer that will be remembered is named, as its button reads.
+      expect(text(sub)).toBe('只有「忽略」「記為支出…」會記住，之後同樣的行自動處理；可在記帳設定關掉');
       expect(sub.id).not.toBe('');
       expect(sw.getAttribute('aria-describedby')).toBe(sub.id);
       expect(sw.getAttribute('aria-label')).toBe('以後「測試商家 1」都這樣');
@@ -562,13 +626,54 @@ describe('ReconFlowComponent', () => {
       expect((apply().request.body as InboxApplyBody).learn).toBeNull();
     });
 
-    it('sits above the answers on phone and below them at panes width', () => {
-      open(ten(), 'phone');
+    it('sits before the answers at every width', () => {
       const order = (a: Element, b: Element) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
-      expect(order(el.querySelector('.flow-learn')!, el.querySelector('.flow-answers')!)).toBeTruthy();
-      fixture.destroy();
-      open(ten(), 'panes');
-      expect(order(el.querySelector('.flow-answers')!, el.querySelector('.flow-learn')!)).toBeTruthy();
+      for (const mode of ['phone', 'sheet', 'panes'] as const) {
+        open(ten(), mode);
+        expect(order(el.querySelector('.flow-learn')!, el.querySelector('.flow-answers')!), mode).toBeTruthy();
+        fixture.destroy();
+      }
+    });
+
+    it('names the one answer it applies to on an amount question, and tags the answers that learn while on', () => {
+      open([differs(1)]);
+      expect(text(el.querySelector('.flow-learn-sub'))).toBe(
+        '只有「改成銀行的 −$2,096」會記住，之後同樣的行自動處理；可在記帳設定關掉',
+      );
+      const tags = () => answers().map((b) => text(b.querySelector('.flow-answer-learns')));
+      expect(tags()).toEqual(['', '', '']);
+      switchEl()!.click();
+      detect();
+      expect(tags()).toEqual(['會記住', '', '']);
+    });
+
+    it('the record sheet tick is the switch: a tick changed in the sheet is written back, also after 取消', () => {
+      open([line(1, { actions: ['record', 'match_candidate', 'dismiss'] })]);
+      expect(switchEl()!.getAttribute('aria-checked')).toBe('false');
+      key('1');
+      http.expectOne((r) => r.url === '/api/accounting/categories').flush([]);
+      http.expectOne((r) => r.url === '/api/accounting/projects').flush([]);
+      detect();
+      const sheet = el.querySelector<HTMLElement>('app-inbox-record-sheet')!;
+      const box = sheet.querySelector<HTMLInputElement>('.learn input')!;
+      expect(box.checked).toBe(false);
+      box.click();
+      detect();
+      expect(switchEl()!.getAttribute('aria-checked')).toBe('true');
+      button(sheet, '取消').click();
+      detect();
+      expect(el.querySelector('app-inbox-record-sheet')).toBeNull();
+      expect(switchEl()!.getAttribute('aria-checked')).toBe('true');
+      // Opened again it carries the switch; unticking there turns the switch off.
+      key('1');
+      http.expectOne((r) => r.url === '/api/accounting/categories').flush([]);
+      http.expectOne((r) => r.url === '/api/accounting/projects').flush([]);
+      detect();
+      const again = el.querySelector<HTMLElement>('app-inbox-record-sheet .learn input') as HTMLInputElement;
+      expect(again.checked).toBe(true);
+      again.click();
+      detect();
+      expect(switchEl()!.getAttribute('aria-checked')).toBe('false');
     });
   });
 
@@ -631,6 +736,67 @@ describe('ReconFlowComponent', () => {
         learn: null,
       });
     });
+  });
+
+  it('對到… on an amount question never offers the entry being compared, in the candidates or the search', () => {
+    const cand = (entry_id: number, title: string) => ({
+      entry_id,
+      date: '2026-09-12',
+      title,
+      amount: '-2066.0000',
+      reason: null,
+      residual: null,
+      date_distance: 0,
+    });
+    // As the server sends it without `entry`: the compared entry is the first candidate.
+    open([differs(1, { entry: null, candidates: [cand(500, '測試服飾'), cand(501, '測試另一筆')] })]);
+    key('2');
+    detect();
+    const sheet = el.querySelector<HTMLElement>('app-inbox-match-sheet')!;
+    const rows = () => Array.from(sheet.querySelectorAll('label')).map(text);
+    expect(rows().length).toBe(1);
+    expect(rows()[0]).toContain('測試另一筆');
+    button(sheet, '搜尋這個帳戶的記錄').click();
+    http
+      .expectOne((r) => r.url === '/api/accounting/reconciliation/inbox/cases/1/search')
+      .flush([cand(500, '測試服飾'), cand(502, '測試第三筆')]);
+    detect();
+    expect(rows().length).toBe(2);
+    expect(rows().join()).not.toContain('測試服飾');
+  });
+
+  it('part-of: 記為支出… goes last, and the note links 打開那筆 to the recorded entry', () => {
+    open([
+      line(1, {
+        actions: ['record', 'match_candidate', 'dismiss'],
+        part_of: [{ id: 700, date: '2026-09-01', title: '測試還款', amount: '-5000.0000', account_id: 1 }],
+        rule_hint: null,
+      }),
+    ]);
+    expect(answers().map((b) => text(b.querySelector('.flow-answer-label')))).toEqual([
+      '已記在別處，對到…',
+      '忽略',
+      '記為支出…',
+    ]);
+    const link = el.querySelector<HTMLAnchorElement>('.flow-note a')!;
+    expect(text(link)).toBe('打開那筆');
+    expect(link.getAttribute('href')).toBe('/accounting/entries/700');
+    // The keys follow the order shown.
+    key('3');
+    detect();
+    expect(el.querySelector('app-inbox-record-sheet')).not.toBeNull();
+    http.expectOne((r) => r.url === '/api/accounting/categories').flush([]);
+    http.expectOne((r) => r.url === '/api/accounting/projects').flush([]);
+  });
+
+  it('the key hint names the digits the step has', () => {
+    const hint = () => text(el.querySelector('.flow-hint'));
+    open([line(1, { actions: ['match_candidate', 'dismiss'] })]);
+    expect(answers().length).toBe(2);
+    expect(hint()).toBe('1–2 選擇 · S 略過 · ← → 上下筆 · Esc 關閉');
+    fixture.destroy();
+    open([line(1, { actions: ['dismiss'] })]);
+    expect(hint()).toBe('1 選擇 · S 略過 · ← → 上下筆 · Esc 關閉');
   });
 
   describe('keys', () => {
@@ -786,6 +952,15 @@ describe('ReconFlowComponent', () => {
       expect(text(end.querySelector('h2'))).toBe('這張帳單都決定好了');
       expect(button(end, '回到通知')).toBeTruthy();
       expect(button(end, '繼續對帳')).toBeUndefined();
+      // Nothing left to decide: the header does not count questions any more.
+      expect(el.querySelector('.flow-sub')).toBeNull();
+    });
+
+    it('all answered with the statement progress known: only 已對上 k / n 行', () => {
+      tasks.set([{ id: `recon:${STATEMENT}`, progress: { k: 28, n: 28 } } as unknown as NotifTask]);
+      open([line(1)]);
+      answerWith1(1, []);
+      expect(text(el.querySelector('.flow-sub'))).toBe('已對上 28 / 28 行');
     });
 
     it('stale link: no ask item for the statement → 這張帳單沒有要你決定的了', () => {
@@ -793,6 +968,7 @@ describe('ReconFlowComponent', () => {
       firstRead().flush(inbox([line(1, { statement: { id: 99, period_end: '2026-08-31' } })]));
       detect();
       expect(text(el.querySelector('.flow-end h2'))).toBe('這張帳單沒有要你決定的了');
+      expect(text(el)).not.toContain('這次要你決定');
       expect(button(el.querySelector('.flow-end')!, '回到通知')).toBeTruthy();
     });
 
@@ -1072,6 +1248,7 @@ describe('ReconFlowComponent', () => {
     detect();
     const banner = el.querySelector('app-banner')!;
     expect(text(banner)).toContain('對帳資料讀取失敗');
+    expect(text(el.querySelector('.flow-kicker'))).toBe('對帳');
     button(banner, '重試').click();
     detect();
     firstRead().flush(inbox(ten()));
@@ -1087,13 +1264,18 @@ describe('ReconFlowComponent', () => {
       render('phone');
       detect();
       expect(h1s()).toEqual(['對帳']);
+      // 對帳 once: no kicker repeating the heading until the account is known.
+      expect(el.querySelector('.flow-kicker')).toBeNull();
       firstRead().flush(inbox(ten()));
       detect();
       expect(h1s()).toEqual(['至 9/30 帳單']);
 
+      expect(text(el.querySelector('.flow-kicker'))).toBe('對帳 · 玉山');
+
       fixture.destroy();
       render('panes');
       detect();
+      expect(text(el.querySelector('.flow-kicker'))).toBe('對帳');
       expect(h1s()).toEqual([]);
       firstRead().flush(inbox(ten()));
       detect();

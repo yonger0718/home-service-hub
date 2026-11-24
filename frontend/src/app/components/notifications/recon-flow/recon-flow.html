@@ -5,7 +5,9 @@
     </button>
   }
   <div class="flow-titles">
-    <p class="flow-kicker">{{ kicker() }}</p>
+    @if (kicker(); as text) {
+      <p class="flow-kicker">{{ text }}</p>
+    }
     @if (!panes()) {
       <!-- Full screen: the page's only h1, in every load state. -->
       <h1 class="flow-title">{{ heading() }}</h1>
@@ -13,7 +15,9 @@
       <p class="flow-title">{{ titleText() }}</p>
     }
     @if (load() === 'ready') {
-      <p class="flow-sub">{{ subText() }}</p>
+      @if (subText(); as sub) {
+        <p class="flow-sub">{{ sub }}</p>
+      }
       @if (statementLink(); as link) {
         <a class="flow-statement" [routerLink]="link">看整張帳單</a>
       }
@@ -84,12 +88,16 @@
           <p class="flow-pair">{{ pair }}</p>
         }
         @if (s.note; as note) {
-          <p class="flow-note">{{ note }}</p>
+          <p class="flow-note">
+            {{ note }}
+            @if (s.noteLink; as link) {
+              <a class="flow-note-link" [routerLink]="link">打開那筆</a>
+            }
+          </p>
         }
 
-        @if (!panes()) {
-          <ng-container *ngTemplateOutlet="learnTpl; context: { $implicit: s.learn }" />
-        }
+        <!-- Before the answers at every width: it changes what the press below does. -->
+        <ng-container *ngTemplateOutlet="learnTpl; context: { $implicit: s.learn }" />
 
         <div
           class="flow-answers"
@@ -108,24 +116,28 @@
               @if (panes() && $index < 3) {
                 <kbd aria-hidden="true">{{ $index + 1 }}</kbd>
               }
-              <span>{{ answer.label }}</span>
+              <span class="flow-answer-label">{{ answer.label }}</span>
+              @if (answer.learns && learnOn()) {
+                <span class="flow-answer-learns">會記住</span>
+              }
             </button>
           }
         </div>
 
-        @if (inlineError(); as message) {
-          <p class="flow-error" role="alert">{{ message }}</p>
+        @if (inlineError(); as error) {
+          <div class="flow-error flow-error--read" role="alert">
+            <span>{{ error.text }}</span>
+            @if (error.reload) {
+              <button type="button" class="flow-retry" [disabled]="locked()" (click)="reloadStep()">重新讀取</button>
+            }
+          </div>
         }
         <ng-container *ngTemplateOutlet="readErrorTpl" />
-
-        @if (panes()) {
-          <ng-container *ngTemplateOutlet="learnTpl; context: { $implicit: s.learn }" />
-        }
 
         <footer class="flow-foot">
           <button type="button" class="flow-skip" [disabled]="locked()" (click)="skipStep()">略過，稍後再看</button>
           @if (panes()) {
-            <p class="flow-hint">1–3 選擇 · S 略過 · ← → 上下筆 · Esc 關閉</p>
+            <p class="flow-hint">{{ s.keys }}</p>
           }
         </footer>
       </section>
@@ -137,7 +149,7 @@
         @if (progressInfo().remaining > 0) {
           <p class="flow-end-text">剩下的會留在通知裡，帳單對完才會從數字中拿掉。</p>
           <div class="flow-end-actions">
-            <button type="button" class="solid" (click)="resumeFlow()">繼續對帳</button>
+            <button type="button" class="solid" [disabled]="locked()" (click)="resumeFlow()">繼續對帳</button>
             <button type="button" (click)="closed.emit()">回到通知</button>
           </div>
         } @else {
@@ -150,19 +162,19 @@
   }
 }
 
-<ng-template #learnTpl let-label>
-  @if (label) {
+<ng-template #learnTpl let-learn>
+  @if (learn) {
     <div class="flow-learn">
       <div class="flow-learn-text">
-        <span class="flow-learn-label">{{ label }}</span>
-        <span id="flow-learn-sub" class="flow-learn-sub">之後同樣的行自動處理，可在記帳設定關掉</span>
+        <span class="flow-learn-label">{{ learn.label }}</span>
+        <span id="flow-learn-sub" class="flow-learn-sub">{{ learn.scope }}，之後同樣的行自動處理；可在記帳設定關掉</span>
       </div>
       <button
         type="button"
         role="switch"
         class="flow-switch"
         [attr.aria-checked]="learnOn()"
-        [attr.aria-label]="label"
+        [attr.aria-label]="learn.label"
         aria-describedby="flow-learn-sub"
         [disabled]="locked()"
         (click)="toggleLearn()"
@@ -177,6 +189,7 @@
     [currency]="card.account.currency"
     [learnDefault]="learnOn()"
     [amountAnyDefault]="false"
+    (learnChange)="setLearn($event)"
     (confirmed)="record(card, $event)"
     (closed)="recordCard.set(null)"
   />
@@ -185,6 +198,7 @@
   <app-inbox-match-sheet
     [card]="card"
     [account]="card.account"
+    [exclude]="matchExclude()"
     (confirmed)="match(card, $event)"
     (closed)="matchCard.set(null)"
   />

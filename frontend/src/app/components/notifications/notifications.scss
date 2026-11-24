@@ -29,23 +29,21 @@
 }
 
 /* The flow is transparent at panes width: the pane is its card (surface, radius and shadow as the list's cards), so
-   muted text inside sits on --app-surface. It stays in view while the list scrolls and scrolls inside when taller,
-   ending above the floating 記一筆 (--fab-clear, set on .hub-page from 760 px) so its last row can scroll clear of it. */
+   muted text inside sits on --app-surface. It stays in view while the list scrolls and scrolls inside when taller.
+   The floating 記一筆 is hidden while the flow is open, so the pane runs to the page's padding at both ends: one offset
+   at rest and stuck (--page-pad-y, 24 px; 12 px on compact-height screens). */
 .notif-pane--card {
   background: var(--app-surface);
   border-radius: 18px;
   box-shadow: var(--app-card-shadow);
-  /* One offset at rest and stuck: unscrolled the pane sits at the page's top padding (--page-pad-y, 24 px; 12 px on
-     compact-height screens), so it also sticks there, and its height leaves that padding above and the 記一筆
-     clearance below in both positions. */
-  max-height: calc(100dvh - var(--page-pad-y) - var(--fab-clear, 88px));
+  max-height: calc(100dvh - 2 * var(--page-pad-y));
   overflow: auto;
   position: sticky;
   top: var(--page-pad-y);
 }
 
 /* Sticky makes the pane a stacking context at layer 0, which traps the flow's record / match sheet (.overlay, fixed,
-   z-index 1100 in accounting/sheet.scss) under the sidebar and the 記一筆 (both z-index 1000): they would paint over the
+   z-index 1100 in accounting/sheet.scss) under the sidebar (z-index 1000): they would paint over the
    backdrop and stay clickable. While a sheet is open the pane itself rises to the sheet's layer. Nothing else relies
    on the pane's layer (the toasts sit at 10000; the sheets append nothing to <body>). */
 .notif-pane--card:has(.overlay) {
@@ -80,6 +78,12 @@
      fixed tab bar and its raised + button (tokens shared with mobile-nav and the toast outlet), plus 12 px of air. */
   app-page-header ::ng-deep h1 {
     scroll-margin-bottom: calc(var(--m-nav-h) + var(--m-plus-lift) + env(safe-area-inset-bottom, 0px) + 12px);
+  }
+
+  /* The full-screen flow is the page here. The tab bar's raised + reaches above the bar, so the page ends that much
+     lower: the flow's last control (略過) scrolls clear of it with air to spare. */
+  .notif-pane {
+    padding-bottom: calc(var(--m-plus-lift) + 24px);
   }
 }
 

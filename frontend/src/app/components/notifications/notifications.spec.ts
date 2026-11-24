@@ -2096,14 +2096,14 @@ describe('NotificationsComponent', () => {
       return rest.slice(0, rest.indexOf('\n}\n'));
     };
 
-    it('the review pane is a card, sticky, and ends above the floating 記一筆 (the page\'s --fab-clear)', () => {
+    it('the review pane is a card, sticky, and runs to the page padding at both ends (記一筆 is hidden while the flow is open)', () => {
       const card = block('.notif-pane--card');
       expect(card).toMatch(/background:\s*var\(--app-surface\)/);
       expect(card).toMatch(/position:\s*sticky/);
-      // Its top is the page's top padding at rest and when stuck (one offset, every breakpoint), so its height leaves
-      // that padding above and the 記一筆 clearance below.
+      // Its top is the page's top padding at rest and when stuck (one offset, every breakpoint); the same below.
       expect(card).toMatch(/top:\s*var\(--page-pad-y\)/);
-      expect(card).toMatch(/max-height:\s*calc\(100dvh - var\(--page-pad-y\) - var\(--fab-clear, 88px\)\)/);
+      expect(card).toMatch(/max-height:\s*calc\(100dvh - 2 \* var\(--page-pad-y\)\)/);
+      expect(card).not.toMatch(/--fab-clear/);
       expect(card).not.toMatch(/top:\s*16px/);
       expect(card).toMatch(/overflow:\s*auto/);
       // Below panes the pane is no card: only the --card modifier carries surface, shadow and sticky.
@@ -2114,6 +2114,13 @@ describe('NotificationsComponent', () => {
       const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
       expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(
         /app-page-header ::ng-deep h1\s*\{[^}]*scroll-margin-bottom:\s*calc\(var\(--m-nav-h\) \+ var\(--m-plus-lift\) \+ env\(safe-area-inset-bottom, 0px\) \+ 12px\)/,
+      );
+    });
+
+    it('on a phone the full-screen flow ends below the tab bar\'s raised + so 略過 scrolls clear of it', () => {
+      const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
+      expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(
+        /\.notif-pane\s*\{[^}]*padding-bottom:\s*calc\(var\(--m-plus-lift\) \+ 24px\)/,
       );
     });
 

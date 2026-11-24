@@ -80,6 +80,23 @@ Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and �
 - **WHEN** the owner presses 1 on the first question
 - **THEN** the answer SHALL be applied through `POST /reconciliation/inbox/apply` and the second question SHALL show with progress `2 / 10`
 
+#### Scenario: Refused because the question changed
+- **WHEN** an answer is refused with `stale_case`
+- **THEN** the flow SHALL show 「這一題的資料剛剛變了」 with 重新讀取, which reads the list again without sending the answer, and SHALL show no refusal code
+
+#### Scenario: Which answers are remembered
+- **GIVEN** a `bank_only` question with 記為支出…, 已記在別處，對到… and 忽略
+- **WHEN** the step is shown
+- **THEN** the switch SHALL sit before the answers and its line SHALL name 記為支出… and 忽略 as the answers that are remembered
+
+#### Scenario: Record sheet shares the switch
+- **WHEN** the owner unticks 以後…都這樣 in the record sheet and cancels it
+- **THEN** the flow's switch SHALL be off
+
+#### Scenario: No floating button over the flow
+- **WHEN** the flow is open at 390, 820 or 1440 px
+- **THEN** the floating 記一筆 SHALL be hidden
+
 #### Scenario: Stop midway
 - **WHEN** the owner closes after answering 4 of 10
 - **THEN** the statement's task SHALL remain with 「6 筆要你決定」

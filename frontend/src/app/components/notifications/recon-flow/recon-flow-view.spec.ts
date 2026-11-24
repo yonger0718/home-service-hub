@@ -1,3 +1,4 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { describe, expect, it } from 'vitest';
 
 import { formatMoney } from '../../accounting/format';
@@ -5,7 +6,20 @@ import { questionText } from '../../accounting/inbox/inbox-view';
 import { InboxCandidate, InboxEntry } from '../../accounting/inbox/inbox.model';
 import { makeInboxAccount, makeItem as baseItem } from '../../accounting/inbox/testing';
 import { InboxItem } from '../../accounting/inbox/inbox.model';
-import { compareRows, flowCard, flowChip, flowEntry, flowHeadline, flowLearnable, flowNote } from './recon-flow-view';
+import {
+  compareRows,
+  flowActions,
+  flowCard,
+  flowChip,
+  flowEntry,
+  flowError,
+  flowExcluded,
+  flowHeadline,
+  flowLearnScope,
+  flowLearnable,
+  flowNote,
+  flowPartOf,
+} from './recon-flow-view';
 
 const entry = (over: Partial<InboxEntry> = {}): InboxEntry => ({
   id: 7,
@@ -183,7 +197,7 @@ describe('recon-flow-view', () => {
   it('flowNote', () => {
     const partOf = makeItem({ part_of: [entry({ amount: '-5000' })] });
     expect(flowNote(partOf, 'TWD')).toBe(questionText(partOf, 'TWD'));
-    expect(flowNote(makeItem({ question: 'transfer' }), 'TWD')).toBe('在時間軸記一筆轉帳，或對到已記的。');
+    expect(flowNote(makeItem({ question: 'transfer' }), 'TWD')).toBe('已經記過的話，選「已記在別處，對到…」；還沒記就先略過。');
     expect(flowNote(makeItem({ note: '提早入帳' }), 'TWD')).toBe('提早入帳');
     expect(flowNote(makeItem(), 'TWD')).toBeNull();
   });
@@ -200,5 +214,48 @@ describe('recon-flow-view', () => {
     expect(card.key).toBe('1');
     expect(card.account).toBe(account);
     expect(flowCard(makeItem(), account).learnable).toBe(true);
+  });
+
+  it('flowActions: 記為… last on a part-of line, the server order otherwise', () => {
+    const actions = ['record', 'match_candidate', 'dismiss'] as const;
+    const partOf = makeItem({ actions: [...actions], part_of: [entry({ amount: '-5000' })], rule_hint: null });
+    expect(flowPartOf(partOf)).toBe(true);
+    expect(flowActions(partOf)).toEqual(['match_candidate', 'dismiss', 'record']);
+    const plain = makeItem({ actions: [...actions] });
+    expect(flowPartOf(plain)).toBe(false);
+    expect(flowActions(plain)).toBe(plain.actions);
+  });
+
+  it('flowLearnScope names the answers that learn, as the buttons read', () => {
+    expect(flowLearnScope(makeItem({ actions: ['record', 'match_candidate', 'dismiss'] }), 'TWD')).toBe(
+      '只有「記為支出…」「忽略」會記住',
+    );
+    expect(flowLearnScope(makeItem({ actions: ['record', 'dismiss'] }), 'TWD')).toBe('「記為支出…」「忽略」都會記住');
+    expect(flowLearnScope(makeItem({ actions: ['defer'] }), 'TWD')).toBeNull();
+    expect(flowLearnScope(makeItem({ rule_hint: null }), 'TWD')).toBeNull();
+  });
+
+  it('flowExcluded: the compared entry of an amount question only', () => {
+    const candidates = [
+      { entry_id: 9, date: '2026-09-01', title: '測試', amount: '-10', reason: null, residual: null, date_distance: 0 },
+    ];
+    expect(flowExcluded(makeItem({ question: 'amount_differs', entry: entry() }))).toBe(entry().id);
+    expect(flowExcluded(makeItem({ question: 'amount_differs', entry: null, candidates }))).toBe(9);
+    expect(flowExcluded(makeItem({ question: 'date_differs', entry: entry() }))).toBeNull();
+    expect(flowExcluded(makeItem({ question: 'bank_only' }))).toBeNull();
+  });
+
+  it('flowError: a changed question offers a reload; the rest is plain words, never a code', () => {
+    for (const code of ['stale_case', 'candidate_changed', 'case_moved', 'not_offered']) {
+      expect(flowError(code), code).toEqual({ text: '這一題的資料剛剛變了', reload: true });
+    }
+    expect(flowError('protected')).toEqual({ text: '沒成功：這筆是轉帳或交割款，不能改金額', reload: false });
+    expect(flowError('brand_new_code')).toEqual({ text: '沒成功：答案沒有送出去，請再試一次', reload: true });
+    expect(flowError(null).text).not.toMatch(/[a-z_]{4,}/);
+    const conflict = new HttpErrorResponse({ status: 409, error: { message: 'stale_case: case 3' } });
+    expect(flowError(conflict).reload).toBe(true);
+    const invalid = new HttpErrorResponse({ status: 422, error: { detail: [{ msg: 'Value error, entry_claimed' }] } });
+    expect(flowError(invalid).text).toBe('沒成功：這筆記錄已經對到別的行了');
+    expect(flowError(new HttpErrorResponse({ status: 500 })).text).toBe('沒成功：答案沒有送出去，請再試一次');
   });
 });

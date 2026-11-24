@@ -58,6 +58,8 @@ export class AppInboxMatchSheetComponent implements OnInit {
 
   readonly card = input.required<InboxCard>();
   readonly account = input.required<InboxAccount>();
+  /** Entries never offered, in the candidates or the search (the review flow: the entry the question compares). */
+  readonly exclude = input<readonly number[]>([]);
   readonly confirmed = output<InboxMatchResult>();
   readonly closed = output<void>();
 
@@ -86,7 +88,9 @@ export class AppInboxMatchSheetComponent implements OnInit {
       : `案件 #${item.case_id}`;
   });
   readonly candidates = computed(() =>
-    this.item().candidates.map((candidate) => this.row(candidate)),
+    this.item()
+      .candidates.filter((candidate) => !this.exclude().includes(candidate.entry_id))
+      .map((candidate) => this.row(candidate)),
   );
   readonly search = computed(() => this.searches().get(this.item().case_id) ?? null);
   readonly others = computed(() =>
@@ -111,7 +115,7 @@ export class AppInboxMatchSheetComponent implements OnInit {
       return;
     }
     const item = this.item();
-    const listed = new Set(item.candidates.map((candidate) => candidate.entry_id));
+    const listed = new Set([...item.candidates.map((candidate) => candidate.entry_id), ...this.exclude()]);
     this.searching.set(true);
     this.inbox
       .search(item.case_id)

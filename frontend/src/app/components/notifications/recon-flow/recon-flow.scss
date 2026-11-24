@@ -137,6 +137,11 @@ a:focus-visible {
   width: 36px;
 }
 
+/* The failed first read: one line and 重試, centred on each other (the shared banner tops-aligns for two-line bodies). */
+app-banner ::ng-deep .banner {
+  align-items: center;
+}
+
 .flow-loading {
   color: var(--app-text-muted);
   font-size: 14px;
@@ -296,6 +301,20 @@ a:focus-visible {
   }
 }
 
+.flow-note-link {
+  align-items: center;
+  color: var(--app-primary);
+  display: inline-flex;
+  font-weight: 700;
+  margin-left: 6px;
+  min-height: 44px; /* tap target on phone */
+  text-decoration: underline;
+}
+
+:host(.flow--panes) .flow-note-link {
+  min-height: 0;
+}
+
 .flow-pair,
 .flow-note {
   background: var(--app-surface-soft);
@@ -341,6 +360,21 @@ a:focus-visible {
   text-align: left;
 }
 
+/* Shown on the answers 以後都這樣 applies to while the switch is on. Text colour as the button's own. */
+.flow-answer-learns {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 4px 8px;
+}
+
+:host(.flow--panes) .flow-answer-learns {
+  margin-left: auto;
+}
+
 /* White on --app-primary 6.2:1 (light); dark fills --app-primary-ink-bg, 4.86:1. */
 .flow-answers button.solid,
 .flow-end-actions button.solid {
@@ -350,6 +384,8 @@ a:focus-visible {
 }
 
 .flow-answers button:disabled,
+.flow-end-actions button:disabled,
+.flow-retry:disabled,
 .flow-skip:disabled,
 .flow-switch:disabled {
   cursor: default;
@@ -412,11 +448,6 @@ kbd {
   align-items: center;
   display: flex;
   gap: 12px;
-}
-
-:host(.flow--panes) .flow-learn {
-  border-top: 1px solid var(--app-border);
-  padding-top: 14px;
 }
 
 .flow-learn-text {
@@ -507,10 +538,19 @@ kbd {
   justify-content: center;
 }
 
+/* The pane scrolls when the step is taller than it: 略過 and the key hint stay at its bottom edge, over the pane's own
+   surface (the host is transparent there). The row takes over the host's side and bottom padding so nothing shows
+   beside or under it while stuck. */
 :host(.flow--panes) .flow-foot {
+  background: var(--app-surface);
+  border-radius: 0 0 18px 18px;
   border-top: 1px solid var(--app-border);
+  bottom: 0;
   justify-content: space-between;
-  padding-top: 12px;
+  margin: 0 -20px -20px;
+  padding: 8px 20px 12px;
+  position: sticky;
+  z-index: 1;
 }
 
 .flow-skip {
