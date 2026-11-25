@@ -33,6 +33,11 @@ export interface InboxMatchRow {
   label: string;
 }
 
+/** A candidate row as 對到… lists it: `2026/09/05 標題 −$120` (also the flow's entry pickers). */
+export function matchRowLabel(candidate: InboxCandidate, currency: string): string {
+  return `${slashDate(candidate.date)} ${candidate.title} ${formatMoney(candidate.amount, currency)}`;
+}
+
 /** A search answered for one case: its rows not already listed, or the failure text (the button stays to retry). */
 type SearchState = { rows: InboxCandidate[]; error: null } | { rows: []; error: string };
 
@@ -188,7 +193,7 @@ export class AppInboxMatchSheetComponent implements OnInit {
   private row(candidate: InboxCandidate): InboxMatchRow {
     return {
       candidate,
-      label: `${slashDate(candidate.date)} ${candidate.title} ${formatMoney(candidate.amount, this.account().currency)}`,
+      label: matchRowLabel(candidate, this.account().currency),
     };
   }
 }

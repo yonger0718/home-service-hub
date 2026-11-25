@@ -16,7 +16,7 @@ import {
   untracked,
 } from '@angular/core';
 import { RouterLink } from '@angular/router';
-import { Subscription } from 'rxjs';
+import { Observable, Subscription } from 'rxjs';
 
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
@@ -36,10 +36,12 @@ import {
   recordAnswer,
 } from '../../accounting/inbox/inbox-view';
 import {
+  CaseAction,
   InboxAccount,
   InboxApplyBody,
   InboxApplyOut,
   InboxButton,
+  InboxCandidate,
   InboxItem,
   InboxOut,
 } from '../../accounting/inbox/inbox.model';
@@ -47,12 +49,14 @@ import { InboxService } from '../../accounting/inbox/inbox.service';
 import {
   AppInboxMatchSheetComponent,
   InboxMatchResult,
+  matchRowLabel,
 } from '../../accounting/inbox/match-sheet/match-sheet';
 import {
   AppInboxRecordSheetComponent,
   InboxRecordResult,
 } from '../../accounting/inbox/record-sheet/record-sheet';
 import { INBOX_READ_LIMIT } from '../sources/recon';
+import { AppFlowPickSheetComponent, FlowPickOption } from './pick-sheet/pick-sheet';
 import {
   FlowState,
   advance,
@@ -72,6 +76,7 @@ import {
 import {
   FlowAnswer,
   FlowError,
+  adjustEntries,
   compareRows,
   flowActions,
   flowAnswerLabel,
@@ -86,6 +91,7 @@ import {
   flowNote,
   flowPartOf,
   isCaseAction,
+  transferLegs,
 } from './recon-flow-view';
 import { ReconReverted, ReconUndoService } from './recon-undo.service';
 
@@ -117,10 +123,22 @@ function monthDay(iso: string): string {
 
 type OneTap = Exclude<InboxButton, 'record' | 'match_candidate' | 'apply_proposal' | 'reject_proposal'>;
 
-/** An answer the server took (or refused) whose re-read has not landed yet. */
+/**
+ * An answer the server took (or refused) whose re-read has not landed yet: the apply's results, or null for a case
+ * action (a refused one is an HTTP error and never pending).
+ */
 interface PendingAnswer {
   readonly caseId: number;
-  readonly out: InboxApplyOut;
+  readonly out: InboxApplyOut | null;
+}
+
+/** The open picker of a case action: the item it answers (captured, as the record / match sheets do) and its rows. */
+interface FlowPick {
+  readonly kind: CaseAction;
+  readonly item: InboxItem;
+  readonly heading: string;
+  readonly sub: string | null;
+  readonly options: readonly FlowPickOption[];
 }
 
 type SegmentState = 'done' | 'current' | 'rest';
@@ -128,7 +146,8 @@ type SegmentState = 'done' | 'current' | 'rest';
 /**
  * 對帳 one question at a time for one statement (spec D5): reads the inbox, shows the statement's open ask items as
  * steps, applies one answer per press through `/inbox/apply` (the inbox panel's body shape, one case), re-reads with
- * the account id and moves on. 記為… / 對到… open the panel's record / match sheets.
+ * the account id and moves on. 記為… / 對到… open the panel's record / match sheets. The transfer and amount answers
+ * post to `/cases/{id}/actions` instead; 改成帳單的轉帳… / 配成轉帳… / 改金額… first ask which row in the pick sheet.
  */
 @Component({
   selector: 'app-recon-flow',
@@ -139,6 +158,7 @@ type SegmentState = 'done' | 'current' | 'rest';
     BannerComponent,
     AppInboxRecordSheetComponent,
     AppInboxMatchSheetComponent,
+    AppFlowPickSheetComponent,
   ],
   templateUrl: './recon-flow.html',
   styleUrl: './recon-flow.scss',
@@ -192,6 +212,8 @@ export class ReconFlowComponent {
 
   readonly recordCard = signal<InboxCard | null>(null);
   readonly matchCard = signal<InboxCard | null>(null);
+  /** 改成帳單的轉帳… / 配成轉帳… / 改金額…: which row the answer is about. */
+  readonly pick = signal<FlowPick | null>(null);
   /** The entry the open 對到… sheet must not offer (the one the question already compares). */
   readonly matchExclude = computed<readonly number[]>(() => {
     const excluded = this.matchCard() ? flowExcluded(this.matchCard()!.items[0]) : null;
@@ -300,7 +322,7 @@ export class ReconFlowComponent {
       noteLink: partOf ? `/accounting/entries/${partOf.id}` : null,
       highlight: !flowPartOf(item),
       answers,
-      keys: this.keyHint(Math.min(answers.length, 3)),
+      keys: this.keyHint(Math.min(answers.length, 4)),
       learn:
         hint && flowLearnable(item)
           ? {
@@ -346,7 +368,11 @@ export class ReconFlowComponent {
   press(answer: FlowAnswer): void {
     const item = this.item();
     const account = this.account();
-    if (!item || !account || this.locked() || isCaseAction(answer)) {
+    if (!item || !account || this.locked()) {
+      return;
+    }
+    if (isCaseAction(answer)) {
+      this.caseAnswer(item, answer);
       return;
     }
     const action: InboxButton = answer;
@@ -393,6 +419,27 @@ export class ReconFlowComponent {
       answer: matchAnswer(result.titles[String(item.case_id)]),
       learn: null,
     });
+  }
+
+  /** A row picked in the case-action picker: close it, then post that action. */
+  picked(pick: FlowPick, id: number): void {
+    this.pick.set(null);
+    const { item, kind } = pick;
+    switch (kind) {
+      case 'adjust_transfer':
+        this.sendCaseAction(item, kind, { entry_id: id, line_id: item.transfer!.adjust_transfer!.line_id }, '改成帳單的轉帳');
+        return;
+      case 'pair_transfer': {
+        const peer = item.transfer?.pair_transfer?.peer_candidates.find((p) => p.line_id === id);
+        this.sendCaseAction(item, kind, { peer_line_id: id }, `配成轉帳：${peer?.account_name ?? ''}`);
+        return;
+      }
+      case 'adjust_amount': {
+        const entry = item.candidates.find((c) => c.entry_id === id);
+        this.sendCaseAction(item, kind, { entry_id: id, line_id: item.line!.id }, `改金額：${entry?.title ?? ''}`);
+        return;
+      }
+    }
   }
 
   toggleLearn(): void {
@@ -448,7 +495,7 @@ export class ReconFlowComponent {
     if (isHandledKey(event) || event.ctrlKey || event.metaKey || event.altKey) {
       return;
     }
-    if (this.busy() || this.recordCard() || this.matchCard()) {
+    if (this.busy() || this.recordCard() || this.matchCard() || this.pick()) {
       return;
     }
     if (this.document.querySelector(OPEN_DIALOG) || typing(this.document.activeElement)) {
@@ -470,7 +517,8 @@ export class ReconFlowComponent {
     switch (event.key) {
       case '1':
       case '2':
-      case '3': {
+      case '3':
+      case '4': {
         const answer = step.answers[Number(event.key) - 1];
         if (!answer || event.repeat) {
           return; // a held key must not answer the next question once busy clears
@@ -508,6 +556,7 @@ export class ReconFlowComponent {
     this.rereadFailed.set(null);
     this.recordCard.set(null);
     this.matchCard.set(null);
+    this.pick.set(null);
     this.load.set('loading');
     this.read(true);
   }
@@ -585,8 +634,14 @@ export class ReconFlowComponent {
     }
   }
 
-  /** After the re-read: still open → the refusal text; a refused `case_closed` that left → 這筆已經處理過了. */
+  /**
+   * After the re-read: still open → the refusal text; a refused `case_closed` that left → 這筆已經處理過了. A case
+   * action got here only by going through, so it has no refusal to show.
+   */
   private settle(pending: PendingAnswer, state: FlowState): FlowError | null {
+    if (pending.out === null) {
+      return null;
+    }
     const result = pending.out.results.find((r) => r.case_id === pending.caseId);
     if (state.open.has(pending.caseId)) {
       return flowError(result?.code ?? null);
@@ -659,11 +714,32 @@ export class ReconFlowComponent {
     });
   }
 
-  /**
-   * One `/inbox/apply`. Not tied to the component's life: a request cancelled on close could still have been applied,
-   * so it runs to its end and bumps `entriesChanged`; only the screen work is skipped once the flow is gone.
-   */
+  /** One `/inbox/apply` for the item's case. */
   private send(item: InboxItem, body: InboxApplyBody): void {
+    this.submit(item, this.inbox.apply(body), (out, accountId, statementId) => {
+      this.announce(item, body.answer, out, accountId, statementId);
+      return out;
+    });
+  }
+
+  /** One `/cases/{id}/actions`: 已處理 with 復原 of that action (no rule: these answers never learn). */
+  private sendCaseAction(item: InboxItem, action: CaseAction, params: Record<string, number>, answer: string): void {
+    this.submit(item, this.inbox.caseAction(item.case_id, action, params), (out, accountId, statementId) => {
+      this.undo.offer({ answer, caseId: item.case_id, actionIds: [out.id], accountId, statementId, rule: null });
+      return null;
+    });
+  }
+
+  /**
+   * One answer request. Not tied to the component's life: a request cancelled on close could still have been applied,
+   * so it runs to its end, bumps `entriesChanged` and raises its toast (`announce`, which returns the apply results
+   * the re-read settles, or null for a case action); only the screen work is skipped once the flow is gone.
+   */
+  private submit<T>(
+    item: InboxItem,
+    request: Observable<T>,
+    announce: (out: T, accountId: number, statementId: number) => InboxApplyOut | null,
+  ): void {
     const account = this.account();
     if (this.locked() || !account) {
       return;
@@ -673,18 +749,18 @@ export class ReconFlowComponent {
     const saved = this.snapshot(item);
     this.busy.set(true);
     this.inlineError.set(null);
-    // A background read (after 復原) must not land mid-apply and clear `busy`; `pendingGoTo` stays queued for the
+    // A background read (after 復原) must not land mid-apply and clear `busy`; `pendingRevert` stays queued for the
     // answer's own re-read.
     this.reading?.unsubscribe();
     this.reading = null;
-    this.inbox.apply(body).subscribe({
-      next: (out) => {
+    request.subscribe({
+      next: (response) => {
         this.accounting.markEntriesChanged();
-        this.announce(item, body.answer, out, account.id, statementId);
+        const out = announce(response, account.id, statementId);
         if (this.destroyed || gen !== this.gen) {
           return;
         }
-        if (out.results.some((r) => r.case_id === item.case_id && r.status !== 'refused')) {
+        if (out === null || out.results.some((r) => r.case_id === item.case_id && r.status !== 'refused')) {
           this.saved.set(item.case_id, saved);
         }
         this.pending = { caseId: item.case_id, out };
@@ -701,6 +777,42 @@ export class ReconFlowComponent {
         }
       },
     });
+  }
+
+  /** 改成帳單的轉帳 with its leg known posts at once; the rest ask which row first. */
+  private caseAnswer(item: InboxItem, kind: CaseAction): void {
+    const currency = this.currency();
+    const entryRows = (rows: InboxCandidate[]): FlowPickOption[] =>
+      rows.map((c) => ({ id: c.entry_id, label: matchRowLabel(c, currency) }));
+    switch (kind) {
+      case 'adjust_transfer': {
+        const adjust = item.transfer?.adjust_transfer;
+        if (adjust && adjust.entry_id !== null) {
+          this.sendCaseAction(item, kind, { entry_id: adjust.entry_id, line_id: adjust.line_id }, '改成帳單的轉帳');
+          return;
+        }
+        this.pick.set({ kind, item, heading: '哪一筆是這筆轉帳？', sub: null, options: entryRows(transferLegs(item)) });
+        return;
+      }
+      case 'pair_transfer': {
+        const peers = item.transfer?.pair_transfer?.peer_candidates ?? [];
+        const options = peers.map((p) => ({
+          id: p.line_id,
+          label: `${p.account_name} · ${monthDay(p.posted_date)} · ${formatMoney(p.amount, currency, { sign: true })}`,
+        }));
+        this.pick.set({ kind, item, heading: '配成哪一筆轉帳？', sub: null, options });
+        return;
+      }
+      case 'adjust_amount':
+        this.pick.set({
+          kind,
+          item,
+          heading: '改哪一筆的金額？',
+          sub: `改成銀行的 ${formatMoney(item.line?.amount, currency, { sign: true })}`,
+          options: entryRows(adjustEntries(item)),
+        });
+        return;
+    }
   }
 
   // ----- helpers ---------------------------------------------------------------------------------------------------
