@@ -3,6 +3,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import { Observable, tap } from 'rxjs';
 
 import {
+  CaseAction,
   InboxApplyBody,
   InboxApplyOut,
   InboxCandidate,
@@ -40,6 +41,10 @@ export class InboxService {
 
   apply(body: InboxApplyBody): Observable<InboxApplyOut> {
     return this.bump(this.http.post<InboxApplyOut>(`${this.apiUrl}/inbox/apply`, body));
+  }
+
+  caseAction(caseId: number, action: CaseAction, params: Record<string, number>): Observable<ReconciliationAction> {
+    return this.bump(this.http.post<ReconciliationAction>(`${this.apiUrl}/cases/${caseId}/actions`, { action, params }));
   }
 
   applyProposal(id: number): Observable<unknown> {

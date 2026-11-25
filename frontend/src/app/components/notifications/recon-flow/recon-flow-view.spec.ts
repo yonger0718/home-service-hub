@@ -3,12 +3,14 @@ import { describe, expect, it } from 'vitest';
 
 import { formatMoney } from '../../accounting/format';
 import { questionText } from '../../accounting/inbox/inbox-view';
-import { InboxCandidate, InboxEntry } from '../../accounting/inbox/inbox.model';
+import { InboxCandidate, InboxEntry, InboxPeerCandidate, InboxTransfer } from '../../accounting/inbox/inbox.model';
 import { makeInboxAccount, makeItem as baseItem } from '../../accounting/inbox/testing';
 import { InboxItem } from '../../accounting/inbox/inbox.model';
 import {
   compareRows,
+  adjustEntries,
   flowActions,
+  flowAnswerLabel,
   flowCard,
   flowChip,
   flowEntry,
@@ -19,6 +21,9 @@ import {
   flowLearnable,
   flowNote,
   flowPartOf,
+  isCaseAction,
+  peerRowLabel,
+  transferLegs,
 } from './recon-flow-view';
 
 const entry = (over: Partial<InboxEntry> = {}): InboxEntry => ({
@@ -214,6 +219,240 @@ describe('recon-flow-view', () => {
     expect(card.key).toBe('1');
     expect(card.account).toBe(account);
     expect(flowCard(makeItem(), account).learnable).toBe(true);
+  });
+
+  const NO_PEER_HINT =
+    '另一個帳戶還沒有對得上的那一筆（帳單可能還沒匯入）。已經記過的話選「已記在別處，對到…」；不然先略過，另一邊進來後再配。';
+  const peer = (over: Partial<InboxPeerCandidate> = {}): InboxPeerCandidate => ({
+    line_id: 31,
+    statement_id: 12,
+    account_name: '測試銀行',
+    posted_date: '2026-09-04',
+    amount: '1000.0000',
+    ...over,
+  });
+  const transfer = (over: Partial<InboxTransfer> = {}): InboxTransfer => ({
+    adjust_transfer: null,
+    pair_transfer: null,
+    ...over,
+  });
+
+  it('flowActions: the transfer and amount answers join the server order', () => {
+    const leg = makeItem({
+      question: 'amount_differs',
+      actions: ['match_candidate', 'dismiss'],
+      transfer: transfer({ adjust_transfer: { entry_id: 7, line_id: 5, candidate_entry_ids: [] } }),
+    });
+    expect(flowActions(leg)).toEqual(['adjust_transfer', 'match_candidate', 'dismiss']);
+
+    const ambiguous = makeItem({
+      question: 'ambiguous',
+      actions: ['match_candidate', 'dismiss'],
+      candidates: [
+        candidate({ entry_id: 21 }),
+        candidate({ entry_id: 22 }),
+        candidate({ entry_id: 23 }),
+      ],
+      transfer: transfer({
+        adjust_transfer: { entry_id: null, line_id: 5, candidate_entry_ids: [21, 22] },
+      }),
+    });
+    // ambiguous: 對到… stays first (the primary answer), the transfer and amount answers follow it.
+    expect(flowActions(ambiguous)).toEqual([
+      'match_candidate',
+      'adjust_transfer',
+      'adjust_amount',
+      'dismiss',
+    ]);
+
+    const paired = makeItem({
+      question: 'transfer',
+      actions: ['match_candidate', 'dismiss'],
+      transfer: transfer({ pair_transfer: { peer_candidates: [peer()] } }),
+    });
+    expect(flowActions(paired)).toEqual(['pair_transfer', 'match_candidate', 'dismiss']);
+
+    const lonely = makeItem({
+      question: 'transfer',
+      actions: ['match_candidate', 'dismiss'],
+      transfer: transfer({ pair_transfer: { peer_candidates: [] } }),
+    });
+    expect(flowActions(lonely)).toEqual(['match_candidate', 'dismiss']);
+
+    const allLegs = makeItem({
+      question: 'ambiguous',
+      actions: ['match_candidate', 'dismiss'],
+      candidates: [candidate({ entry_id: 21 }), candidate({ entry_id: 22 })],
+      transfer: transfer({
+        adjust_transfer: { entry_id: null, line_id: 5, candidate_entry_ids: [21, 22] },
+      }),
+    });
+    expect(flowActions(allLegs)).toEqual(['match_candidate', 'adjust_transfer', 'dismiss']);
+
+    const old = makeItem({ question: 'transfer', actions: ['match_candidate', 'dismiss'] });
+    expect(flowActions(old)).toBe(old.actions);
+  });
+
+  it('transferLegs and adjustEntries split the candidates', () => {
+    const base = {
+      question: 'ambiguous' as const,
+      candidates: [
+        candidate({ entry_id: 21 }),
+        candidate({ entry_id: 22 }),
+        candidate({ entry_id: 23 }),
+      ],
+    };
+    const ambiguous = makeItem({
+      ...base,
+      transfer: transfer({
+        adjust_transfer: { entry_id: null, line_id: 5, candidate_entry_ids: [21, 22] },
+      }),
+    });
+    expect(transferLegs(ambiguous).map((c) => c.entry_id)).toEqual([21, 22]);
+    expect(adjustEntries(ambiguous).map((c) => c.entry_id)).toEqual([23]);
+    const known = makeItem({
+      ...base,
+      transfer: transfer({
+        adjust_transfer: { entry_id: 21, line_id: 5, candidate_entry_ids: [] },
+      }),
+    });
+    expect(transferLegs(known)).toEqual([]);
+    expect(adjustEntries(makeItem({ ...base, question: 'amount_differs' }))).toEqual([]);
+    expect(transferLegs(makeItem(base))).toEqual([]);
+  });
+
+  it('flowAnswerLabel: buttons as the inbox names them, case actions as the owner reads them', () => {
+    const known = makeItem({
+      transfer: transfer({ adjust_transfer: { entry_id: 7, line_id: 5, candidate_entry_ids: [] } }),
+    });
+    const unknown = makeItem({
+      transfer: transfer({
+        adjust_transfer: { entry_id: null, line_id: 5, candidate_entry_ids: [21] },
+      }),
+    });
+    expect(flowAnswerLabel('adjust_transfer', known, 'TWD')).toBe('照帳單改這筆轉帳');
+    expect(flowAnswerLabel('adjust_transfer', unknown, 'TWD')).toBe('照帳單改轉帳…');
+    expect(flowAnswerLabel('pair_transfer', known, 'TWD')).toBe('配成轉帳…');
+    expect(flowAnswerLabel('adjust_amount', known, 'TWD')).toBe('改金額…');
+    expect(flowAnswerLabel('dismiss', makeItem(), 'TWD')).toBe('忽略');
+    expect(isCaseAction('adjust_amount')).toBe(true);
+    expect(isCaseAction('dismiss')).toBe(false);
+  });
+
+  it('flowNote: the transfer hint follows the peer candidates', () => {
+    const none = makeItem({
+      question: 'transfer',
+      transfer: transfer({ pair_transfer: { peer_candidates: [] } }),
+    });
+    expect(flowNote(none, 'TWD')).toBe(NO_PEER_HINT);
+    const some = makeItem({
+      question: 'transfer',
+      transfer: transfer({ pair_transfer: { peer_candidates: [peer()] } }),
+    });
+    expect(flowNote(some, 'TWD')).toBe('選「配成轉帳…」把兩個帳戶的這筆對起來。');
+  });
+
+  it('flowNote: a transfer question the API offers no pairing for keeps the plain hint (the peer may exist)', () => {
+    const plain = '已經記過的話，選「已記在別處，對到…」；還沒記就先略過。';
+    expect(flowNote(makeItem({ question: 'transfer', transfer: transfer({ pair_transfer: null }) }), 'TWD')).toBe(plain);
+    expect(flowNote(makeItem({ question: 'transfer', transfer: null }), 'TWD')).toBe(plain);
+  });
+
+  it('flowNote: one transfer leg known says what 照帳單改這筆轉帳 changes, with the bank amount', () => {
+    const leg = makeItem({
+      question: 'amount_differs',
+      line: line('2026-09-05', '-20000.0000', '測試轉出'),
+      transfer: transfer({ adjust_transfer: { entry_id: 7, line_id: 5, candidate_entry_ids: [7] } }),
+    });
+    const sentence = '會同時改另一個帳戶的那一筆。兩邊金額都改成 $20,000；日期各自跟自己的帳單，另一邊沒有帳單就不動。';
+    expect(flowNote(leg, 'TWD')).toBe(sentence);
+    // The item's own note follows on a new line of the same box.
+    expect(flowNote({ ...leg, note: '測試備註' }, 'TWD')).toBe(`${sentence}\n測試備註`);
+    // Ambiguous (the leg is picked later): no sentence, the item note as before.
+    const ambiguous = makeItem({
+      question: 'ambiguous',
+      line: line('2026-09-05', '-20000.0000', '測試轉出'),
+      candidates: [candidate({ entry_id: 21 })],
+      transfer: transfer({ adjust_transfer: { entry_id: null, line_id: 5, candidate_entry_ids: [21] } }),
+    });
+    expect(flowNote(ambiguous, 'TWD')).toBeNull();
+  });
+
+  it('peerRowLabel: 日期 from → to 金額, ordered by the peer amount sign', () => {
+    // The peer line is money in: it went from this account to the peer.
+    expect(peerRowLabel(peer({ amount: '19970.0000' }), '測試卡', 'TWD')).toBe('2026/09/04 測試卡 → 測試銀行 $19,970');
+    // The peer line is money out: it came from the peer to this account.
+    expect(peerRowLabel(peer({ amount: '-19970.0000' }), '測試卡', 'TWD')).toBe('2026/09/04 測試銀行 → 測試卡 $19,970');
+  });
+
+  it('flowError: dirty_disabled (pairing that needs a re-check the system has off) in plain words', () => {
+    expect(flowError('dirty_disabled')).toEqual({ text: '沒成功：這筆轉帳現在不能自動配，先略過或到帳單頁處理', reload: false });
+  });
+
+  it('flowLearnScope counts the case answers among the step answers', () => {
+    const leg = makeItem({
+      question: 'bank_only',
+      actions: ['record', 'dismiss'],
+      transfer: transfer({ adjust_transfer: { entry_id: 7, line_id: 5, candidate_entry_ids: [] } }),
+    });
+    expect(flowLearnScope(leg, 'TWD')).toBe('只有「記為支出…」「忽略」會記住');
+  });
+
+  it('flowError: the transfer and amount refusals', () => {
+    expect(flowError('peer_leg_claimed')).toEqual({
+      text: '沒成功：另一個帳戶的那一筆已經配給別的轉帳了',
+      reload: false,
+    });
+    expect(flowError('entry_out_of_scope')).toEqual({ text: '這一題的資料剛剛變了', reload: true });
+    expect(flowError('fx_pair_required')).toEqual({
+      text: '沒成功：缺少外幣金額資料，不能直接改',
+      reload: false,
+    });
+    const invalid = new HttpErrorResponse({
+      status: 422,
+      error: { detail: [{ msg: 'bad body' }] },
+    });
+    expect(flowError(invalid)).toEqual({
+      text: '沒成功：答案沒有送出去，請再試一次',
+      reload: false,
+    });
+  });
+
+  it('flowError: no plain sentence carries a code', () => {
+    const codes = [
+      'peer_leg_claimed',
+      'peer_ambiguous',
+      'not_standalone',
+      'cross_currency',
+      'peer_is_card',
+      'kind_sign',
+      'fx_pair_required',
+      'has_settlements',
+      'peer_not_live',
+      'peer_statement_busy',
+      'owner_deleted',
+      'duplicate_effect',
+      'wrong_account',
+      'wrong_currency',
+      'not_member',
+      'foreign_zero',
+      'not_found',
+      'case_closed',
+    ];
+    for (const code of codes) {
+      const out = flowError(code);
+      expect(out.text, code).not.toBe('沒成功：答案沒有送出去，請再試一次');
+      expect(out.text, code).not.toMatch(/[a-z_]{4,}/);
+      expect(out.reload, code).toBe(false);
+    }
+    for (const code of [
+      'line_claimed',
+      'line_not_in_case',
+      'line_not_printed',
+      'peer_out_of_scope',
+    ]) {
+      expect(flowError(code).reload, code).toBe(true);
+    }
   });
 
   it('flowActions: 記為… last on a part-of line, the server order otherwise', () => {

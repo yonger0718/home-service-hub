@@ -48,6 +48,16 @@ describe('InboxService', () => {
     expect(service.changed()).toBe(before + 1);
   });
 
+  it('posts a case action and bumps changed', () => {
+    const before = service.changed();
+    service.caseAction(4, 'pair_transfer', { peer_line_id: 9 }).subscribe();
+    const req = http.expectOne(`${BASE}/cases/4/actions`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ action: 'pair_transfer', params: { peer_line_id: 9 } });
+    req.flush({ id: 1 });
+    expect(service.changed()).toBe(before + 1);
+  });
+
   it('applies and rejects proposals, reads and reverts actions', () => {
     service.applyProposal(5).subscribe();
     const apply = http.expectOne(`${BASE}/proposals/5/apply`);

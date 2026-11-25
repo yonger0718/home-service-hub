@@ -9,7 +9,15 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { NotificationCenterService } from '../../../services/notification-center.service';
 import { ToastService } from '../../../services/toast.service';
-import { InboxApplyBody, InboxApplyOut, InboxItem, InboxOut } from '../../accounting/inbox/inbox.model';
+import {
+  InboxApplyBody,
+  InboxApplyOut,
+  InboxCandidate,
+  InboxItem,
+  InboxOut,
+  InboxPeerCandidate,
+  ReconciliationAction,
+} from '../../accounting/inbox/inbox.model';
 import {
   applied,
   button,
@@ -96,6 +104,93 @@ function inbox(items: InboxItem[]): InboxOut {
 
 function refused(caseId: number, code: string): InboxApplyOut {
   return { results: [{ case_id: caseId, status: 'refused', action_id: null, code }], rule_id: null, rule_error: null };
+}
+
+const NO_PEER_HINT =
+  '另一個帳戶還沒有對得上的那一筆（帳單可能還沒匯入）。已經記過的話選「已記在別處，對到…」；不然先略過，另一邊進來後再配。';
+
+function actionsUrl(caseId: number): string {
+  return `/api/accounting/reconciliation/cases/${caseId}/actions`;
+}
+
+function cand(entryId: number, title: string, amount = '20000.0000'): InboxCandidate {
+  return { entry_id: entryId, date: '2026-09-05', title, amount, reason: null, residual: null, date_distance: 0 };
+}
+
+/** amount_differs on a transfer leg (entry 500 known), as the API sends it: no 改成銀行的, the transfer field instead. */
+function leg(caseId: number): InboxItem {
+  return differs(caseId, {
+    actions: ['match_candidate', 'dismiss'],
+    transfer: {
+      adjust_transfer: { entry_id: 500, line_id: 200 + caseId, candidate_entry_ids: [500] },
+      pair_transfer: null,
+    },
+  });
+}
+
+/**
+ * ambiguous −$20,000 (line 300 + id): candidates 610 (−$19,970) / 611 (−$19,950) and the plain expense 612 (−$1,250);
+ * `legs` are the transfer legs.
+ */
+function ambiguous(caseId: number, legs: number[] = [610, 611]): InboxItem {
+  return makeItem({
+    case_id: caseId,
+    question: 'ambiguous',
+    kind: 'ambiguous_match',
+    line: { id: 300 + caseId, date: '2026-09-05', merchant: '測試轉出', amount: '-20000.0000', line_kind: 'withdrawal' },
+    candidates: [
+      cand(610, '測試轉帳 甲', '-19970.0000'),
+      cand(611, '測試轉帳 乙', '-19950.0000'),
+      cand(612, '測試餐費', '-1250.0000'),
+    ],
+    actions: ['match_candidate', 'dismiss'],
+    rule_hint: null,
+    transfer: {
+      adjust_transfer: { entry_id: null, line_id: 300 + caseId, candidate_entry_ids: legs },
+      pair_transfer: null,
+    },
+  });
+}
+
+function peer(): InboxPeerCandidate {
+  return { line_id: 801, statement_id: 20, account_name: '測試銀行', posted_date: '2026-09-06', amount: '20000.0000' };
+}
+
+/** transfer −$20,000 (line 400 + id) waiting for its other leg; `peers` are the other account's lines. */
+function needsPeer(caseId: number, peers: InboxPeerCandidate[] = [peer()]): InboxItem {
+  return makeItem({
+    case_id: caseId,
+    question: 'transfer',
+    kind: 'transfer_needs_peer',
+    line: { id: 400 + caseId, date: '2026-09-05', merchant: '測試轉出', amount: '-20000.0000', line_kind: 'withdrawal' },
+    actions: ['match_candidate', 'dismiss'],
+    rule_hint: null,
+    transfer: { adjust_transfer: null, pair_transfer: { peer_candidates: peers } },
+  });
+}
+
+/** The `/cases/{id}/actions` answer: the applied action `id`. */
+function took(id: number, caseId: number, action: string): ReconciliationAction {
+  return {
+    id,
+    case_id: caseId,
+    proposal_id: null,
+    action,
+    params: {},
+    actor: 'spa',
+    status: 'applied',
+    effect_slot: 'case',
+    created_entry_ids: [],
+    deleted_entry_ids: [],
+    touched_entry_ids: [],
+    touched_group_ids: [],
+    replayed: false,
+    label: 'spa',
+    answer: null,
+    created_at: '2026-10-01T00:00:00Z',
+    reverted_by_action_id: null,
+    line: null,
+  };
 }
 
 describe('ReconFlowComponent', () => {
@@ -479,11 +574,23 @@ describe('ReconFlowComponent', () => {
   it('an HTTP error on apply: inline 沒成功 and no re-read', () => {
     open(ten());
     key('1');
-    apply().flush({ detail: 'case_closed' }, { status: 409, statusText: 'Conflict' });
+    apply().flush({ detail: 'action_busy: try later' }, { status: 409, statusText: 'Conflict' });
     detect();
-    expect(text(el.querySelector('.flow-error[role="alert"]'))).toBe('沒成功：這筆已經處理過了');
+    expect(text(el.querySelector('.flow-error[role="alert"]'))).toBe('沒成功：系統正在處理這張帳單，等一下再試');
     expect(headline()).toBe('測試商家 1 −$101');
     expect(answers()[0].disabled).toBe(false);
+  });
+
+  it('an HTTP 409 case_closed on apply: 這筆已經處理過了 and a re-read that moves on', () => {
+    open(ten());
+    key('1');
+    apply().flush({ detail: 'case_closed' }, { status: 409, statusText: 'Conflict' });
+    detect();
+    expect(TestBed.inject(ToastService).current()?.text).toBe('這筆已經處理過了');
+    reread().flush(inbox(ten().slice(1)));
+    detect();
+    expect(headline()).toBe('測試商家 2 −$102');
+    expect(el.querySelector('.flow-error')).toBeNull();
   });
 
   it('re-read fails: 答案已送出，但清單讀取失敗; 重試 sends a GET and no POST', () => {
@@ -1314,5 +1421,364 @@ describe('ReconFlowComponent', () => {
     firstRead().flush(inbox([line(5, { statement: { id: 99, period_end: '2026-08-31' } })]));
     detect();
     expect(headline()).toBe('測試商家 5 −$105');
+  });
+
+  describe('transfer and amount answers', () => {
+    const toasts = () => TestBed.inject(ToastService);
+    const withUndo = (toast: string) =>
+      expect.objectContaining({ kind: 'done', text: toast, action: expect.objectContaining({ label: '復原' }) });
+
+    function caseAction(caseId: number): TestRequest {
+      return http.expectOne((r) => r.method === 'POST' && r.url === actionsUrl(caseId));
+    }
+
+    function labels(): string[] {
+      return answers().map((b) => text(b.querySelector('.flow-answer-label')));
+    }
+
+    function pickSheet(): HTMLElement | null {
+      return el.querySelector<HTMLElement>('app-flow-pick-sheet');
+    }
+
+    function pickRows(): string[] {
+      return Array.from(pickSheet()!.querySelectorAll('label')).map(text);
+    }
+
+    function pickRow(index: number): void {
+      pickSheet()!.querySelectorAll<HTMLInputElement>('input[type="radio"]')[index].click();
+      detect();
+    }
+
+    function confirmPick(): void {
+      button(pickSheet()!, '確定').click();
+      detect();
+    }
+
+    function noRulePatch(): void {
+      http.expectNone((r) => r.url.includes('/owner-rules/'));
+    }
+
+    it('a transfer leg: key 1 posts adjust_transfer on the case, then 已照帳單改轉帳 with 復原 that reverts it', () => {
+      const marked = vi.spyOn(TestBed.inject(AccountingService), 'markEntriesChanged');
+      open([leg(1), line(2)]);
+      expect(labels()).toEqual(['照帳單改這筆轉帳', '已記在別處，對到…', '不是同一筆']);
+      expect(text(el.querySelector('.flow-note'))).toBe('會同時改另一個帳戶的那一筆。兩邊金額都改成 $2,096；日期各自跟自己的帳單，另一邊沒有帳單就不動。');
+      expect(answers()[0].classList).toContain('solid');
+      key('1');
+      expect(pickSheet()).toBeNull();
+      const req = caseAction(1);
+      expect(req.request.body).toEqual({ action: 'adjust_transfer', params: { entry_id: 500, line_id: 201 } });
+      http.expectNone(APPLY_URL);
+      req.flush(took(951, 1, 'adjust_transfer'));
+      detect();
+      expect(toasts().current()).toEqual(withUndo('已照帳單改轉帳'));
+      expect(marked).toHaveBeenCalled();
+      reread().flush(inbox([line(2)]));
+      detect();
+      expect(headline()).toBe('測試商家 2 −$102');
+      expect(progressText()).toBe('第 2 / 2 筆');
+      expect(el.querySelector('.flow-error')).toBeNull();
+      undoLast(951);
+      noRulePatch();
+      reread().flush(inbox([leg(1), line(2)]));
+      detect();
+      expect(headline()).toBe('銀行多扣了 $30');
+      expect(progressText()).toBe('第 1 / 2 筆');
+    });
+
+    it('a transfer leg with its own note: the transfer sentence first, the note on a new line of the same box', () => {
+      open([{ ...leg(1), note: '測試備註' }]);
+      const notes = el.querySelectorAll('.flow-note');
+      expect(notes.length).toBe(1);
+      expect(notes[0].textContent).toContain('會同時改另一個帳戶的那一筆。兩邊金額都改成 $2,096；日期各自跟自己的帳單，另一邊沒有帳單就不動。\n測試備註');
+      // The box keeps line breaks (pre-line): the template's own whitespace must not add any.
+      expect(notes[0].textContent!.match(/\n/g)?.length).toBe(1);
+    });
+
+    it('ambiguous over two legs: 照帳單改轉帳… asks 哪一筆是這筆轉帳？; the picked leg is posted', () => {
+      open([ambiguous(1)]);
+      key('2');
+      expect(text(pickSheet()!.querySelector('h3'))).toBe('哪一筆是這筆轉帳？');
+      expect(text(pickSheet()!.querySelector('.pick-sub'))).toBe('兩邊一起改金額，日期跟各自的帳單');
+      expect(pickRows()).toEqual([
+        '2026/09/05 測試轉帳 甲 −$19,970 → −$20,000',
+        '2026/09/05 測試轉帳 乙 −$19,950 → −$20,000',
+      ]);
+      http.expectNone((r) => r.method === 'POST');
+      pickRow(1);
+      confirmPick();
+      expect(pickSheet()).toBeNull();
+      expect(caseAction(1).request.body).toEqual({ action: 'adjust_transfer', params: { entry_id: 611, line_id: 301 } });
+    });
+
+    it('ambiguous with one leg and no entry_id: still asks, one row pre-picked; nothing posts until 確定', () => {
+      open([ambiguous(1, [610])]);
+      expect(labels()[1]).toBe('照帳單改轉帳…');
+      key('2');
+      expect(pickRows()).toEqual(['2026/09/05 測試轉帳 甲 −$19,970 → −$20,000']);
+      expect(pickSheet()!.querySelector<HTMLInputElement>('input[type="radio"]')!.checked).toBe(true);
+      http.expectNone((r) => r.method === 'POST');
+      confirmPick();
+      expect(caseAction(1).request.body).toEqual({ action: 'adjust_transfer', params: { entry_id: 610, line_id: 301 } });
+    });
+
+    it('a transfer with one peer: 配成哪一筆轉帳？ lists 「日期 from → to 金額」; 確定 pairs it and moves on', () => {
+      open([needsPeer(1), line(2)]);
+      expect(labels()).toEqual(['配成轉帳…', '已記在別處，對到…', '忽略']);
+      expect(text(el.querySelector('.flow-note'))).toBe('選「配成轉帳…」把兩個帳戶的這筆對起來。');
+      key('1');
+      expect(text(pickSheet()!.querySelector('h3'))).toBe('配成哪一筆轉帳？');
+      // The peer line is money in (+$20,000): it went from this account (玉山) to the peer.
+      expect(pickRows()).toEqual(['2026/09/06 玉山 → 測試銀行 $20,000']);
+      confirmPick();
+      const req = caseAction(1);
+      expect(req.request.body).toEqual({ action: 'pair_transfer', params: { peer_line_id: 801 } });
+      req.flush(took(952, 1, 'pair_transfer'));
+      reread().flush(inbox([line(2)]));
+      detect();
+      expect(headline()).toBe('測試商家 2 −$102');
+      expect(toasts().current()).toEqual(withUndo('已配成轉帳：測試銀行 9/6'));
+    });
+
+    it('a transfer without peers: no 配成轉帳…, the no-candidate hint, two keys', () => {
+      open([needsPeer(1, [])]);
+      expect(labels()).toEqual(['已記在別處，對到…', '忽略']);
+      expect(text(el.querySelector('.flow-note'))).toBe(NO_PEER_HINT);
+      expect(text(el.querySelector('.flow-hint'))).toBe('1–2 選擇 · S 略過 · ← → 上下筆 · Esc 關閉');
+    });
+
+    it('ambiguous 改金額…: 改哪一筆的金額？ lists only the non-leg candidates and posts adjust_amount', () => {
+      open([ambiguous(1, [610])]);
+      expect(labels()).toEqual(['已記在別處，對到…', '照帳單改轉帳…', '改金額…', '不是同一筆']);
+      key('3');
+      expect(text(pickSheet()!.querySelector('h3'))).toBe('改哪一筆的金額？');
+      expect(text(pickSheet()!.querySelector('.pick-sub'))).toBe('改成銀行的 −$20,000');
+      expect(pickRows()).toEqual([
+        '2026/09/05 測試轉帳 乙 −$19,950 → −$20,000',
+        '2026/09/05 測試餐費 −$1,250 → −$20,000',
+      ]);
+      pickRow(1);
+      confirmPick();
+      expect(caseAction(1).request.body).toEqual({ action: 'adjust_amount', params: { entry_id: 612, line_id: 301 } });
+    });
+
+    it('復原 after 配成轉帳: reverts the action, no rule switch; the question is found again under its new case id', () => {
+      open([needsPeer(1), line(2)]);
+      key('1');
+      confirmPick();
+      caseAction(1).flush(took(952, 1, 'pair_transfer'));
+      reread().flush(inbox([line(2)]));
+      detect();
+      undoLast(952);
+      noRulePatch();
+      reread().flush(inbox([{ ...needsPeer(1), case_id: 31 }, line(2)]));
+      detect();
+      expect(text(el.querySelector('.flow-chip'))).toBe('轉帳／繳費');
+      expect(progressText()).toBe('第 1 / 2 筆');
+      expect(el.querySelectorAll('.flow-bar [data-state="done"]').length).toBe(0);
+      key('1');
+      confirmPick();
+      caseAction(31);
+    });
+
+    it('復原 after 改金額: reverts the action, no rule switch; the question is found again under its new case id', () => {
+      open([ambiguous(1), line(2)]);
+      key('3');
+      confirmPick();
+      caseAction(1).flush(took(953, 1, 'adjust_amount'));
+      detect();
+      expect(toasts().current()).toEqual(withUndo('已處理：改金額：測試餐費'));
+      reread().flush(inbox([line(2)]));
+      detect();
+      undoLast(953);
+      noRulePatch();
+      reread().flush(inbox([{ ...ambiguous(1), case_id: 41 }, line(2)]));
+      detect();
+      expect(headline()).toBe('有 3 筆可能是它');
+      expect(progressText()).toBe('第 1 / 2 筆');
+      key('4');
+      expect((apply().request.body as InboxApplyBody).cases).toEqual([{ case_id: 41, case_version: 1 }]);
+    });
+
+    it('the action went in but the re-read fails: 重試 is one GET and no second POST', () => {
+      open([leg(1), line(2)]);
+      key('1');
+      caseAction(1).flush(took(951, 1, 'adjust_transfer'));
+      reread().flush('boom', { status: 500, statusText: 'Server Error' });
+      detect();
+      expect(text(el.querySelector('.flow-error--read span'))).toBe('答案已送出，但清單讀取失敗');
+      expect(toasts().current()).toEqual(withUndo('已照帳單改轉帳'));
+      expect(key('1').defaultPrevented).toBe(false);
+      button(el, '重試').click();
+      detect();
+      http.expectNone((r) => r.method === 'POST');
+      reread().flush(inbox([line(2)]));
+      detect();
+      expect(headline()).toBe('測試商家 2 −$102');
+      expect(el.querySelector('.flow-error')).toBeNull();
+    });
+
+    it('a case action still open after the re-read shows no refusal', () => {
+      open([leg(1)]);
+      key('1');
+      caseAction(1).flush(took(951, 1, 'adjust_transfer'));
+      reread().flush(inbox([leg(1)]));
+      detect();
+      expect(el.querySelector('.flow-error')).toBeNull();
+      expect(answers()[0].disabled).toBe(false);
+    });
+
+    it('a 復原 while the action re-read is in flight supersedes it: a fresh GET restores the question', () => {
+      open([leg(1)]);
+      key('1');
+      caseAction(1).flush(took(951, 1, 'adjust_transfer'));
+      const stale = reread();
+      undoLast(951);
+      expect(stale.cancelled).toBe(true);
+      reread().flush(inbox([leg(1)]));
+      detect();
+      http.expectNone((r) => r.url === INBOX_URL);
+      expect(headline()).toBe('銀行多扣了 $30');
+      expect(el.querySelector('.flow-error')).toBeNull();
+      expect(answers()[0].disabled).toBe(false);
+    });
+
+    it('a late answer after the flow closed: the toast still shows, no re-read', () => {
+      open([leg(1)]);
+      key('1');
+      const post = caseAction(1);
+      fixture.destroy();
+      post.flush(took(951, 1, 'adjust_transfer'));
+      expect(toasts().current()).toEqual(withUndo('已照帳單改轉帳'));
+      http.expectNone((r) => r.url === INBOX_URL);
+    });
+
+    it('a late answer after the flow moved to another statement: the toast shows, the new flow is untouched', () => {
+      open([leg(1)]);
+      key('1');
+      const post = caseAction(1);
+      fixture.componentRef.setInput('statementId', 99);
+      detect();
+      firstRead().flush(inbox([line(5, { statement: { id: 99, period_end: '2026-08-31' } })]));
+      detect();
+      post.flush(took(951, 1, 'adjust_transfer'));
+      detect();
+      expect(toasts().current()).toEqual(withUndo('已照帳單改轉帳'));
+      http.expectNone((r) => r.url === INBOX_URL);
+      expect(headline()).toBe('測試商家 5 −$105');
+      expect(answers()[0].disabled).toBe(false);
+    });
+
+    it('refused 409 candidate_changed: 這一題的資料剛剛變了 with 重新讀取; no re-read', () => {
+      open([leg(1)]);
+      key('1');
+      caseAction(1).flush({ detail: 'candidate_changed: moved' }, { status: 409, statusText: 'Conflict' });
+      detect();
+      http.expectNone((r) => r.url === INBOX_URL);
+      const alert = el.querySelector('.flow-error[role="alert"]')!;
+      expect(text(alert.querySelector('span'))).toBe('這一題的資料剛剛變了');
+      expect(button(alert, '重新讀取')).toBeTruthy();
+      expect(answers()[0].disabled).toBe(false);
+    });
+
+    it('refused 422 peer_leg_claimed: a plain sentence, no 重新讀取, no re-read', () => {
+      open([needsPeer(1)]);
+      key('1');
+      confirmPick();
+      caseAction(1).flush(
+        { detail: [{ loc: ['params'], msg: 'peer_leg_claimed: line 801 is paired' }] },
+        { status: 422, statusText: 'Unprocessable Entity' },
+      );
+      detect();
+      http.expectNone((r) => r.url === INBOX_URL);
+      const alert = el.querySelector('.flow-error[role="alert"]')!;
+      expect(text(alert)).toBe('沒成功：另一個帳戶的那一筆已經配給別的轉帳了');
+      expect(alert.querySelector('button')).toBeNull();
+    });
+
+    it('refused 409 case_closed: 這筆已經處理過了 and a re-read that moves on (answered elsewhere)', () => {
+      open([leg(1), line(2)]);
+      key('1');
+      caseAction(1).flush({ detail: 'case_closed: case 1 is closed' }, { status: 409, statusText: 'Conflict' });
+      detect();
+      expect(toasts().current()?.text).toBe('這筆已經處理過了');
+      expect(answers()[0].disabled).toBe(true);
+      reread().flush(inbox([line(2)]));
+      detect();
+      expect(headline()).toBe('測試商家 2 −$102');
+      expect(el.querySelector('.flow-error')).toBeNull();
+      expect(answers()[0].disabled).toBe(false);
+    });
+
+    it('busy: keys and answers are off until the re-read lands', () => {
+      open([leg(1), line(2)]);
+      key('1');
+      const post = caseAction(1);
+      expect(answers().every((b) => b.disabled)).toBe(true);
+      expect(key('2').defaultPrevented).toBe(false);
+      post.flush(took(951, 1, 'adjust_transfer'));
+      detect();
+      expect(answers().every((b) => b.disabled)).toBe(true);
+      expect(key('s').defaultPrevented).toBe(false);
+      http.expectNone((r) => r.method === 'POST');
+      reread().flush(inbox([line(2)]));
+      detect();
+      expect(answers()[0].disabled).toBe(false);
+    });
+
+    it('a 復原 read in flight is cancelled by the press and issued again after a refusal', () => {
+      open([line(1), leg(2)]);
+      answerWith1(1, [leg(2)]);
+      undoLast(901);
+      const stale = reread();
+      key('1');
+      const post = caseAction(2);
+      expect(stale.cancelled).toBe(true);
+      post.flush({ detail: 'action_busy: try later' }, { status: 409, statusText: 'Conflict' });
+      detect();
+      expect(text(el.querySelector('.flow-error[role="alert"]'))).toBe('沒成功：系統正在處理這張帳單，等一下再試');
+      reread().flush(inbox([fresh(1, 11), leg(2)]));
+      detect();
+      expect(headline()).toBe('測試商家 1 −$101');
+    });
+
+    it('four answers: key 4 answers the fourth, the hint reads 1–4 選擇', () => {
+      open([ambiguous(1)]);
+      expect(labels()).toEqual(['已記在別處，對到…', '照帳單改轉帳…', '改金額…', '不是同一筆']);
+      expect(answers()[0].classList).toContain('solid');
+      expect(answers().map((b) => text(b.querySelector('kbd')))).toEqual(['1', '2', '3', '4']);
+      expect(answers().map((b) => b.getAttribute('aria-keyshortcuts'))).toEqual(['1', '2', '3', '4']);
+      expect(text(el.querySelector('.flow-hint'))).toBe('1–4 選擇 · S 略過 · ← → 上下筆 · Esc 關閉');
+      expect(key('4').defaultPrevented).toBe(true);
+      expect((apply().request.body as InboxApplyBody).action).toBe('dismiss');
+    });
+
+    it('a held key does not answer', () => {
+      open([leg(1)]);
+      expect(key('1', document, { repeat: true }).defaultPrevented).toBe(false);
+      http.expectNone((r) => r.method === 'POST');
+    });
+
+    it('while the picker is open the flow keys do nothing; Esc closes only the sheet', () => {
+      open([ambiguous(1), line(2)]);
+      key('2');
+      for (const k of ['1', '2', '3', '4', 's', 'ArrowRight', 'ArrowLeft']) {
+        expect(key(k).defaultPrevented, k).toBe(false);
+      }
+      expect(pickSheet()).not.toBeNull();
+      expect(headline()).toBe('有 3 筆可能是它');
+      http.expectNone((r) => r.method === 'POST');
+      const escape = key('Escape', pickSheet()!.querySelector('.sheet')!);
+      expect(escape.defaultPrevented).toBe(true);
+      expect(pickSheet()).toBeNull();
+      expect(closed).not.toHaveBeenCalled();
+      expect(headline()).toBe('有 3 筆可能是它');
+      // 取消 also only closes the sheet.
+      key('3');
+      button(pickSheet()!, '取消').click();
+      detect();
+      expect(pickSheet()).toBeNull();
+      http.expectNone((r) => r.method === 'POST');
+    });
   });
 });

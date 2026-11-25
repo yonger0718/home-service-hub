@@ -110,10 +110,10 @@
               type="button"
               [class.solid]="$first && s.highlight"
               [disabled]="locked()"
-              [attr.aria-keyshortcuts]="$index < 3 ? $index + 1 : null"
+              [attr.aria-keyshortcuts]="$index < 4 ? $index + 1 : null"
               (click)="press(answer.action)"
             >
-              @if (panes() && $index < 3) {
+              @if (panes() && $index < 4) {
                 <kbd aria-hidden="true">{{ $index + 1 }}</kbd>
               }
               <span class="flow-answer-label">{{ answer.label }}</span>
@@ -201,6 +201,15 @@
     [exclude]="matchExclude()"
     (confirmed)="match(card, $event)"
     (closed)="matchCard.set(null)"
+  />
+}
+@if (pick(); as p) {
+  <app-flow-pick-sheet
+    [heading]="p.heading"
+    [sub]="p.sub"
+    [options]="p.options"
+    (picked)="picked(p, $event)"
+    (closed)="pick.set(null)"
   />
 }
 

@@ -214,6 +214,8 @@ describe('actionLabel', () => {
     expect(actionLabel('create_entry')).toBe('記為新記錄');
     expect(actionLabel('match')).toBe('對到記錄');
     expect(actionLabel('adjust_amount')).toBe('改成銀行的數');
+    expect(actionLabel('pair_transfer')).toBe('配成轉帳');
+    expect(actionLabel('adjust_transfer')).toBe('照帳單改轉帳');
     expect(actionLabel('defer_next_period')).toBe('等下期');
     expect(actionLabel('dismiss')).toBe('忽略');
     expect(actionLabel('anchor_opening')).toBe('對齊銀行期初');
