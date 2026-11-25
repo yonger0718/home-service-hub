@@ -99,6 +99,10 @@ app-bento {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+
+  &.legend-four {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 .legend-item {
@@ -708,6 +712,10 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
 }
 
 @media (max-width: 759.98px) {
+  .legend.legend-four {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .holdings-head {
     display: none;
   }

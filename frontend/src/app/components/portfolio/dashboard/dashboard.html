@@ -62,7 +62,7 @@
                   <span class="seg-futures" [style.flex-grow]="heroData.futuresPct"></span>
                 }
               </div>
-              <div class="legend">
+              <div class="legend" [class.legend-four]="heroData.futures !== 0">
                 <div class="legend-item">
                   <span class="legend-label"><span class="swatch stocks" aria-hidden="true"></span>股票市值</span>
                   <b class="legend-value">{{ twdPlain(heroData.stocks) }}</b>
@@ -179,8 +179,8 @@
                 </span>
                 @if (!isPhone()) {
                   <span class="chart-legend-item">
-                    <span class="chart-legend-label"><span class="chart-swatch band" aria-hidden="true"></span>兩線差距 = 交割戶現金</span>
-                    <b class="chart-legend-value">{{ money(legendData.cash) }}</b>
+                    <span class="chart-legend-label"><span class="chart-swatch band" aria-hidden="true"></span>{{ legendData.futures !== 0 ? '兩線差距 = 現金 + 期貨權益' : '兩線差距 = 交割戶現金' }}</span>
+                    <b class="chart-legend-value">{{ money(legendData.futures !== 0 ? legendData.total - legendData.holdings : legendData.cash) }}</b>
                   </span>
                 }
               </div>

@@ -70,6 +70,7 @@ interface ChartSeriesValues {
   total: number;
   holdings: number;
   cash: number;
+  futures: number;
 }
 
 @Component({
@@ -188,7 +189,7 @@ export class PortfolioDashboardComponent implements OnInit {
     const today = todayChange(summary);
     const parts = composition(summary);
     return {
-      total: this.twdPlain(summary.total_assets_twd),
+      total: this.twdPlain(assetsTotal(summary)),
       todayAmount: today.amount,
       todayText: this.money(today.amount, 'TWD', 'change'),
       todaySign: displayedSign(today.amount, this.money(today.amount, 'TWD', 'change')),
@@ -743,7 +744,8 @@ export class PortfolioDashboardComponent implements OnInit {
   private seriesValues(point: NetworthPoint): ChartSeriesValues {
     const total = this.totalAssetsValue(point);
     const holdings = this.numberFrom(point.total_market_value);
-    return { total, holdings, cash: Math.max(0, total - holdings - this.numberFrom(point.futures_equity_twd)) };
+    const futures = this.numberFrom(point.futures_equity_twd);
+    return { total, holdings, cash: Math.max(0, total - holdings - futures), futures };
   }
 
   private chartValues(): number[] {

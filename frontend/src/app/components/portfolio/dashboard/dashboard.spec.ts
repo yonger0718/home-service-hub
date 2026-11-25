@@ -542,6 +542,11 @@ describe('PortfolioDashboardComponent', () => {
       expect(Array.from(el.querySelectorAll('.legend-label')).map(l => l.textContent?.trim())).toEqual(['股票市值', '交割戶現金', '待收股利']);
     });
 
+    it('uses a present total for the hero total, even "0"', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ total_assets_twd: '0', futures_equity_twd: '-1250' })));
+      expect(hero(createFixture())!.querySelector('.hero-total')?.textContent?.trim()).toBe('0');
+    });
+
     it('adds a 期貨權益 segment and legend entry when futures equity is not zero', () => {
       portfolioService.getSummary.mockReturnValue(of(buildSummary({
         total_market_value: 600, total_cash_twd: '200', futures_equity_twd: '200', total_assets_twd: '1000',
@@ -1028,6 +1033,22 @@ describe('PortfolioDashboardComponent', () => {
       const datasets = (createFixture().componentInstance.chartData as any).datasets;
       expect(datasets[0].data).toEqual([140, 154, 180]);
       expect(datasets[1].data).toEqual([100, 100, 120]);
+    });
+
+    it('names futures in the legend gap when futures equity is not zero', () => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        point('2026-09-01', '800', '200', '1000'),
+        { ...point('2026-10-22', '1000', '250', '1500'), futures_equity_twd: '250' },
+      ]));
+      const fixture = createFixture();
+      expect(legend(fixture.nativeElement)[2]).toEqual(['兩線差距 = 現金 + 期貨權益', '$500']);
+    });
+
+    it('keeps the cash-only gap label for zero futures', () => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        { ...point('2026-10-22', '1000', '250', '1250'), futures_equity_twd: '0.0000' },
+      ]));
+      expect(legend(createFixture().nativeElement)[2]).toEqual(['兩線差距 = 交割戶現金', '$250']);
     });
 
     it('shows the three legend entries with the latest values and swatches', () => {
