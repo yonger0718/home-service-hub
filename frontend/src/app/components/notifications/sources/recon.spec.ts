@@ -28,8 +28,9 @@ function inboxWith(accountItems: InboxItem[], counts: Partial<InboxCounts> = {})
 }
 
 describe('reconTaskRoute', () => {
-  it('points at the statement page', () => {
-    expect(reconTaskRoute(11, 31)).toBe('/accounting/accounts/11/statements/31');
+  it('points at the review flow of the statement on the notifications page', () => {
+    expect(reconTaskRoute(11, 31)).toBe('/notifications/recon/31');
+    expect(reconTaskRoute(3, 12)).toBe('/notifications/recon/12');
   });
 });
 
@@ -50,7 +51,7 @@ describe('reconTasks', () => {
       amount: null,
       secondary: [],
       progress: { k: 17, n: 28 },
-      primary: { label: '對帳', route: '/accounting/accounts/11/statements/31' },
+      primary: { label: '對帳', route: '/notifications/recon/31' },
       sortKey: '2026-10-05',
       fingerprint: '10',
     });

@@ -45,8 +45,9 @@
       [routerLink]="l.route"
       [queryParams]="l.queryParams"
       [fragment]="l.fragment"
-      [attr.aria-label]="name(l.label)"
-      >{{ l.label }}</a
+      [attr.aria-label]="name(primaryLabel(l.label))"
+      [attr.aria-current]="selected() ? 'true' : null"
+      >{{ primaryLabel(l.label) }}</a
     >
   }
   @for (s of task().secondary; track s.label) {

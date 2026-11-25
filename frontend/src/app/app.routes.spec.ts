@@ -2,11 +2,11 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { Router, provideRouter } from '@angular/router';
+import { Router, UrlSegment, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { routes } from './app.routes';
+import { notificationsMatcher, routes } from './app.routes';
 import { AccountingShortcutsService, EntryCommand } from './components/accounting/keyboard-shortcuts';
 import { DEFAULT_PREFERENCE } from './models/accounting.model';
 import { NAV_GROUPS, navItemForUrl } from './components/shell/navigation';
@@ -296,6 +296,48 @@ describe('wide route matrix (1440 px)', () => {
       expect(headings(root)).toContain(title);
       expect(root.querySelector('a[aria-label="設定"]')).toBeNull();
       expect(root.querySelector('app-sub-nav')).toBeNull();
+    });
+  }
+});
+
+describe('notifications route', () => {
+  const segments = (url: string) => url.split('/').filter(Boolean).map(path => new UrlSegment(path, {}));
+
+  it('matches /notifications with no statement id', () => {
+    const result = notificationsMatcher(segments('notifications'));
+    expect(result?.consumed.map(s => s.path)).toEqual(['notifications']);
+    expect(result?.posParams?.['statementId']).toBeUndefined();
+  });
+
+  it('matches /notifications/recon/12 as the same route, with statementId 12', () => {
+    const result = notificationsMatcher(segments('notifications/recon/12'));
+    expect(result?.consumed.map(s => s.path)).toEqual(['notifications', 'recon', '12']);
+    expect(result?.posParams?.['statementId'].path).toBe('12');
+  });
+
+  for (const url of ['notifications/recon/abc', 'notifications/recon', 'notifications/x', 'notifications/recon/12/x', 'notifications/recon/-1', 'notifications/recon/1.5', 'notifications/recon/0', 'notifications/recon/012', 'settings']) {
+    it(`does not match /${url}`, () => {
+      expect(notificationsMatcher(segments(url))).toBeNull();
+    });
+  }
+
+  it('/notifications/recon/12 keeps 通知 as the current nav item (sidebar 通知, no tab, the phone title)', () => {
+    expect(navItemForUrl('/notifications/recon/12').id).toBe('notifications');
+  });
+
+  it('serves /notifications/recon/12 as the notifications page with the review flow beside the list', async () => {
+    stubViewport(1440);
+    const root = await open('/notifications/recon/12');
+    expect(headings(root)).toEqual(['通知']);
+    expect(root.querySelector('app-notifications app-recon-flow')).not.toBeNull();
+  });
+
+  for (const url of ['/notifications/recon/abc', '/notifications/recon/0', '/notifications/recon/012']) {
+    it(`${url} is not a review-flow URL: it falls through to the landing page`, async () => {
+      stubViewport(1440);
+      const harness = await RouterTestingHarness.create();
+      await harness.navigateByUrl(url);
+      expect(TestBed.inject(Router).url).not.toMatch(/^\/notifications/);
     });
   }
 });

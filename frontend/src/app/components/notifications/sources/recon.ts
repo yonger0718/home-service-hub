@@ -13,9 +13,13 @@ const REMINDERS_TODO: NotifLink = {
   queryParams: { tab: 'todo' },
 };
 
-/** The one place that knows where a statement task goes (PR D changes it to /notifications/recon/:statementId). */
-export function reconTaskRoute(accountId: number, statementId: number): string {
-  return `/accounting/accounts/${accountId}/statements/${statementId}`;
+/**
+ * The one place that knows where a statement task goes: the review flow on the notifications page (beside the list
+ * from 1024 px, full screen below). The statement id alone names it; `_accountId` is kept for the callers' shape. The
+ * statement page stays one tap away through the flow's 看整張帳單.
+ */
+export function reconTaskRoute(_accountId: number, statementId: number): string {
+  return `/notifications/recon/${statementId}`;
 }
 
 /** Ids of the accounts that have an unfolded ask item (whose statement lists carry the progress). */

@@ -79,7 +79,7 @@ export function handledRow(action: ReconciliationAction): HandledRow {
 }
 
 /** A refusal whose code is `not_revertable` / `not_revertible` (a string detail, or FastAPI's `detail[].msg`). */
-function isNotRevertable(err: unknown): boolean {
+export function isNotRevertable(err: unknown): boolean {
   if (!(err instanceof HttpErrorResponse)) {
     return false;
   }

@@ -1,0 +1,666 @@
+/* One-question-at-a-time review flow. Colours: tokens only. The base rules are the phone / sheet variant (a card of
+   its own, so muted text sits on --app-surface, never on --app-bg where it is 4.27:1); `.flow--panes` is the desktop
+   pane, whose surface, radius and shadow the notifications page gives it.
+   Contrast notes: muted text only on --app-surface (light 4.6:1); text on --app-surface-soft and --app-primary-soft is
+   --app-text (muted there is 4.26:1 in light, primary on primary-soft 4.2:1 in dark). */
+:host {
+  background: var(--app-surface);
+  border-radius: 18px;
+  box-shadow: var(--app-card-shadow);
+  box-sizing: border-box;
+  color: var(--app-text);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px;
+
+  &:focus {
+    outline: none; /* a programmatic focus target (the page moves focus here when the flow opens) */
+  }
+}
+
+:host(.flow--panes) {
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  gap: 16px;
+  padding: 18px 20px 20px;
+}
+
+p {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--app-primary);
+  outline-offset: 2px;
+}
+
+/* ---- Header --------------------------------------------------------------------------------------------------- */
+
+.flow-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+}
+
+.flow-back {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 12px;
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  flex: none;
+  font-size: 1.1rem;
+  height: 44px;
+  justify-content: center;
+  margin: -6px 0 0 -10px;
+  width: 44px;
+}
+
+.flow-titles {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.flow-kicker {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
+}
+
+.flow-title {
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.3;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Alone in the header (loading, a failed read): level with the 44 px back button beside it. */
+h1.flow-title:only-child {
+  padding-top: 5px;
+}
+
+:host(.flow--panes) .flow-title {
+  font-size: 20px;
+}
+
+.flow-sub {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+:host(.flow--panes) .flow-sub {
+  font-size: 13px;
+}
+
+.flow-statement {
+  align-items: center;
+  align-self: flex-start;
+  color: var(--app-primary);
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 700;
+  min-height: 44px; /* tap target on phone */
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+:host(.flow--panes) .flow-statement {
+  min-height: 0;
+}
+
+.flow-close {
+  align-items: center;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 50%;
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  flex: none;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+/* The failed first read: one line and 重試, centred on each other (the shared banner tops-aligns for two-line bodies). */
+app-banner ::ng-deep .banner {
+  align-items: center;
+}
+
+.flow-loading {
+  color: var(--app-text-muted);
+  font-size: 14px;
+}
+
+/* ---- Progress ------------------------------------------------------------------------------------------------- */
+
+.flow-progress {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.flow-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.flow-segs {
+  display: grid;
+  gap: 4px;
+
+  span {
+    background: var(--app-surface-soft);
+    border-radius: 3px;
+    display: block;
+    height: 5px;
+  }
+
+  [data-state='done'] {
+    background: var(--app-primary);
+  }
+
+  [data-state='current'] {
+    background: var(--app-text);
+  }
+}
+
+.flow-plain {
+  background: var(--app-surface-soft);
+  border-radius: 3px;
+  height: 5px;
+  overflow: hidden;
+
+  span {
+    background: var(--app-primary);
+    display: block;
+    height: 100%;
+  }
+}
+
+:host(.flow--panes) {
+  .flow-segs span,
+  .flow-plain {
+    height: 6px;
+  }
+}
+
+.flow-progress-text {
+  flex: none;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+/* ---- Step ----------------------------------------------------------------------------------------------------- */
+
+.flow-step {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.flow-chip {
+  align-self: flex-start;
+  background: var(--app-primary-soft);
+  border-radius: var(--radius-sm);
+  color: var(--app-text);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 3px 9px;
+}
+
+.flow-headline {
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.25;
+  margin: 0;
+  overflow-wrap: anywhere;
+
+  &:focus {
+    outline: none; /* moved here for screen readers on a step change; not a control */
+  }
+}
+
+.flow-compare {
+  border: 1px solid var(--app-border);
+  border-collapse: separate;
+  border-radius: 16px;
+  border-spacing: 0;
+  font-size: 14px;
+  overflow: hidden;
+  table-layout: fixed;
+  width: 100%;
+
+  .flow-col-label {
+    width: 56px;
+  }
+
+  th,
+  td {
+    overflow-wrap: anywhere;
+    padding: 10px 8px;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  thead th,
+  thead td {
+    background: var(--app-surface-soft);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  tbody th,
+  tbody td {
+    border-top: 1px solid var(--app-border);
+  }
+
+  tbody th {
+    color: var(--app-text-muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  td.differs {
+    background: var(--app-primary-soft);
+    font-weight: 800;
+  }
+
+  td.missing {
+    color: var(--app-text-muted);
+  }
+}
+
+:host(.flow--panes) .flow-compare {
+  border-radius: 14px;
+
+  .flow-col-label {
+    width: 72px;
+  }
+
+  th,
+  td {
+    padding: 10px 12px;
+  }
+}
+
+/* Full screen: a line of its own under the note (a 44 px tap target inside running text would push the lines apart).
+   In the pane it follows the text. */
+.flow-note-link {
+  align-items: center;
+  color: var(--app-primary);
+  display: flex;
+  font-weight: 700;
+  min-height: 44px;
+  text-decoration: underline;
+  width: fit-content;
+}
+
+:host(.flow--panes) .flow-note-link {
+  display: inline;
+  margin-left: 6px;
+  min-height: 0;
+}
+
+.flow-pair,
+.flow-note {
+  background: var(--app-surface-soft);
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+}
+
+/* ---- Answers -------------------------------------------------------------------------------------------------- */
+
+.flow-answers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  button {
+    align-items: center;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 14px;
+    color: var(--app-text);
+    cursor: pointer;
+    display: flex;
+    font-size: 16px;
+    font-weight: 700;
+    gap: 10px;
+    justify-content: center;
+    min-height: 50px;
+    overflow-wrap: anywhere;
+    padding: 10px 14px;
+    text-align: center;
+    width: 100%;
+  }
+}
+
+:host(.flow--panes) .flow-answers button {
+  border-radius: 12px;
+  font-size: 15px;
+  justify-content: flex-start;
+  min-height: 48px;
+  text-align: left;
+}
+
+/* Shown on the answers 以後都這樣 applies to while the switch is on. Text colour as the button's own. */
+.flow-answer-learns {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 4px 8px;
+}
+
+:host(.flow--panes) .flow-answer-learns {
+  margin-left: auto;
+}
+
+/* White on --app-primary 6.2:1 (light); dark fills --app-primary-ink-bg, 4.86:1. */
+.flow-answers button.solid,
+.flow-end-actions button.solid {
+  background: var(--app-primary-ink-bg, var(--app-primary));
+  border-color: var(--app-primary-ink-bg, var(--app-primary));
+  color: var(--app-on-primary);
+}
+
+.flow-answers button:disabled,
+.flow-end-actions button:disabled,
+.flow-retry:disabled,
+.flow-skip:disabled,
+.flow-switch:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+kbd {
+  align-items: center;
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  color: var(--app-text);
+  display: inline-flex;
+  flex: none;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
+}
+
+.solid kbd {
+  background: var(--app-surface);
+  border-color: transparent;
+}
+
+.flow-error {
+  color: var(--c-red-ink);
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.flow-error--read {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.flow-retry {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  color: var(--app-text);
+  cursor: pointer;
+  font-weight: 700;
+  min-height: 44px;
+  padding: 0 14px;
+}
+
+:host(.flow--panes) .flow-retry {
+  min-height: 36px;
+}
+
+/* ---- Learn switch --------------------------------------------------------------------------------------------- */
+
+.flow-learn {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.flow-learn-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.flow-learn-label {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.flow-learn-sub {
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+
+/* 52 × 32 track inside a 52 × 44 button (tap target). Off track is --app-text-muted: ≥ 3:1 against the surface. */
+.flow-switch {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  flex: none;
+  height: 44px;
+  padding: 0;
+  position: relative;
+  width: 52px;
+
+  &::before {
+    background: var(--app-text-muted);
+    border-radius: 16px;
+    content: '';
+    height: 32px;
+    left: 0;
+    position: absolute;
+    top: 6px;
+    width: 52px;
+  }
+
+  &::after {
+    background: var(--app-surface);
+    border-radius: 50%;
+    content: '';
+    height: 26px;
+    left: 3px;
+    position: absolute;
+    top: 9px;
+    transition: transform 0.15s ease;
+    width: 26px;
+  }
+
+  &[aria-checked='true']::before {
+    background: var(--app-primary-ink-bg, var(--app-primary));
+  }
+
+  &[aria-checked='true']::after {
+    background: var(--app-on-primary);
+    transform: translateX(20px);
+  }
+
+  &:focus-visible {
+    outline: none;
+  }
+
+  &:focus-visible::before {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    &::after {
+      transition: none;
+    }
+  }
+}
+
+/* ---- Footer --------------------------------------------------------------------------------------------------- */
+
+.flow-foot {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  justify-content: center;
+}
+
+/* The pane scrolls when the step is taller than it: 略過 and the key hint stay at its bottom edge, over the pane's own
+   surface (the host is transparent there). The row takes over the host's side and bottom padding so nothing shows
+   beside or under it while stuck. */
+:host(.flow--panes) .flow-foot {
+  background: var(--app-surface);
+  border-radius: 0 0 18px 18px;
+  border-top: 1px solid var(--app-border);
+  bottom: 0;
+  justify-content: space-between;
+  margin: 0 -20px -20px;
+  padding: 8px 20px 12px;
+  position: sticky;
+  z-index: 1;
+}
+
+.flow-skip {
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  min-height: 44px;
+  padding: 0 6px;
+}
+
+.flow-hint {
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+
+/* ---- End state ------------------------------------------------------------------------------------------------ */
+
+.flow-end {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 0;
+  text-align: center;
+}
+
+:host(.flow--panes) .flow-end {
+  align-items: flex-start;
+  text-align: left;
+}
+
+.flow-check {
+  align-items: center;
+  background: var(--app-primary-soft);
+  border-radius: 16px;
+  color: var(--app-primary);
+  display: flex;
+  font-size: 1.4rem;
+  height: 56px;
+  justify-content: center;
+  width: 56px;
+}
+
+:host(.flow--panes) .flow-check {
+  border-radius: 14px;
+  height: 48px;
+  width: 48px;
+}
+
+.flow-end-title {
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.3;
+  margin: 0;
+
+  &:focus {
+    outline: none;
+  }
+}
+
+:host(.flow--panes) .flow-end-title {
+  font-size: 22px;
+}
+
+.flow-end-text {
+  color: var(--app-text-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.flow-end-actions {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  button {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 14px;
+    color: var(--app-text);
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: 700;
+    min-height: 50px;
+    padding: 0 18px;
+  }
+}
+
+:host(.flow--panes) .flow-end-actions {
+  align-self: flex-start;
+  flex-direction: row;
+  flex-wrap: wrap;
+
+  button {
+    border-radius: 12px;
+    font-size: 15px;
+    min-height: 48px;
+  }
+}

@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { routes } from '../../app.routes';
 import {
   COMPACT_QUERY,
+  LayoutModeService,
   MATCH_MEDIA,
   MatchMediaFn,
   PANES_QUERY,
@@ -234,6 +235,56 @@ describe('ShellComponent', () => {
     const { fab } = await render(viewportOf(390), { url: '/portfolio' });
 
     expect(fab()).toBeNull();
+  });
+
+  it('hides the floating 記一筆 on the review flow at every width', async () => {
+    const cases: [number, string, boolean][] = [
+      [390, '/notifications/recon/12', false],
+      [820, '/notifications/recon/12', false],
+      [1100, '/notifications/recon/12', false],
+      [1440, '/notifications/recon/12', false],
+      [820, '/notifications', true],
+      [1440, '/notifications', true],
+      [1440, '/accounting/reports', false],
+      // Not review-flow URLs (the route does not match them): the button stays.
+      [820, '/notifications/recon/0', true],
+      [820, '/notifications/recon/012', true],
+      [820, '/notifications/recon/abc', true],
+    ];
+    for (const [width, url, shown] of cases) {
+      TestBed.resetTestingModule();
+      const { fab, el } = await render(viewportOf(width), { url });
+      expect(fab() !== null, `${width} ${url}`).toBe(shown);
+      // The toast's right clearance follows the button.
+      const clear = el.querySelector<HTMLElement>('app-toast-outlet')!.style.getPropertyValue('--toast-fab-clear');
+      expect(clear === '24px', `${width} ${url}`).toBe(!shown);
+    }
+  });
+
+  it('on the review flow, the floating 記一筆 stays hidden across layout modes', async () => {
+    const { fab, settle } = await render(viewportOf(390), { url: '/notifications/recon/12' });
+    const layout = TestBed.inject(LayoutModeService);
+    for (const mode of ['panes', 'phone', 'sheet', 'panes'] as const) {
+      layout.set(mode);
+      await settle();
+      expect(fab(), mode).toBeNull();
+    }
+  });
+
+  it('brings the floating 記一筆 back when the review flow closes at 1440 px', async () => {
+    const { fab, settle, router } = await render(viewportOf(1440), { url: '/notifications/recon/12' });
+    expect(fab()).toBeNull();
+    await router.navigateByUrl('/notifications');
+    await settle();
+    expect(fab()).not.toBeNull();
+  });
+
+  it('brings the floating 記一筆 back when the review flow closes at 820 px', async () => {
+    const { fab, settle, router } = await render(viewportOf(820), { url: '/notifications/recon/12' });
+    expect(fab()).toBeNull();
+    await router.navigateByUrl('/notifications');
+    await settle();
+    expect(fab()).not.toBeNull();
   });
 
   it('hides the floating button while the entry form is open', async () => {

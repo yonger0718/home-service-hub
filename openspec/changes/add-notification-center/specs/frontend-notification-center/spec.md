@@ -62,15 +62,40 @@ Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and �
 
 ### Requirement: One case at a time reconciliation
 
-`/notifications/recon/:statementId` SHALL show a statement's open questions one at a time: a label and headline, a 日期 / 商家 / 金額 comparison of bank line and ledger entry with differing fields highlighted, the answers as full-width buttons (first one primary), 以後都這樣 as a switch where learning applies, 略過，稍後再看 and progress `n / total`. It SHALL open in the right pane of `/notifications` at ≥ 1024 px and full screen below.
+`/notifications/recon/:statementId` SHALL show a statement's open questions one inbox item at a time: a label and headline, a 日期 / 商家 / 金額 comparison of bank line and ledger entry with differing fields highlighted, the answers as full-width buttons (first one primary), 以後都這樣 as a switch where learning applies, 略過，稍後再看 and progress `n / total`. It SHALL open in the right pane of `/notifications` at ≥ 1024 px and full screen below, and SHALL read the list again after every answer.
 
 #### Scenario: Keyboard
 - **WHEN** the flow is open at 1440 px and no text field has focus
 - **THEN** keys 1–3 SHALL pick an answer, S SHALL skip, ← and → SHALL move without answering and Esc SHALL close
 
+#### Scenario: Keys while a sheet is open
+- **WHEN** the record or match sheet is open
+- **THEN** the flow's keys SHALL do nothing
+
+#### Scenario: Held key
+- **WHEN** an answer key (1–3) or S is held down and repeats
+- **THEN** the repeats SHALL be ignored, so one press sends at most one answer
+
 #### Scenario: Answering moves on
 - **WHEN** the owner presses 1 on the first question
 - **THEN** the answer SHALL be applied through `POST /reconciliation/inbox/apply` and the second question SHALL show with progress `2 / 10`
+
+#### Scenario: Refused because the question changed
+- **WHEN** an answer is refused with `stale_case`
+- **THEN** the flow SHALL show 「這一題的資料剛剛變了」 with 重新讀取, which reads the list again without sending the answer, and SHALL show no refusal code
+
+#### Scenario: Which answers are remembered
+- **GIVEN** a `bank_only` question with 記為支出…, 已記在別處，對到… and 忽略
+- **WHEN** the step is shown
+- **THEN** the switch SHALL sit before the answers and its line SHALL name 記為支出… and 忽略 as the answers that are remembered
+
+#### Scenario: Record sheet shares the switch
+- **WHEN** the owner unticks 以後…都這樣 in the record sheet and cancels it
+- **THEN** the flow's switch SHALL be off
+
+#### Scenario: No floating button over the flow
+- **WHEN** the flow is open at 390, 820 or 1440 px
+- **THEN** the floating 記一筆 SHALL be hidden
 
 #### Scenario: Stop midway
 - **WHEN** the owner closes after answering 4 of 10
@@ -78,16 +103,21 @@ Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and �
 
 #### Scenario: End state
 - **WHEN** the last open question is answered or skipped
-- **THEN** the screen SHALL show how many were handled and how many remain, with 繼續 and 回到通知
+- **THEN** the screen SHALL show how many were handled and how many remain, with 繼續對帳 and 回到通知
 
 ### Requirement: Related questions handled together
 
-When two open questions of a statement reference the same ledger entry, the flow SHALL show them once, with a note naming the other question, and SHALL apply the chosen answer with both cases in one request.
+When two open questions of a statement reference the same ledger entry (a bank-line question and the entry's own 你記了，銀行沒有), the flow SHALL show the bank-line question with a note naming the other one and SHALL apply the answer to that one case; the API rejects a request that mixes questions. The other question SHALL not be asked when the answer closed it, and SHALL be asked next when it is still open.
 
 #### Scenario: Amount difference and missing bank line on one entry
 - **GIVEN** an `amount_differs` question and a `ledger_only` question on entry 812
 - **WHEN** the owner chooses 改成銀行的金額
-- **THEN** one apply request SHALL carry both case ids and the sequence SHALL skip the second question
+- **THEN** one apply request SHALL carry the `amount_differs` case only, and after the list is read again the `ledger_only` question SHALL not be shown
+
+#### Scenario: Not the same entry
+- **GIVEN** the same pair
+- **WHEN** the owner chooses 不是同一筆
+- **THEN** the `ledger_only` question SHALL be the next one asked
 
 ### Requirement: Transfer and amount answers
 

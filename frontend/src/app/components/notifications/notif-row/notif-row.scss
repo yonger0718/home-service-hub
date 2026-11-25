@@ -228,4 +228,30 @@
   .notif-secondary {
     min-height: 44px;
   }
+
+  /* Focus lands on the primary after the review flow closes: scrolled into view, it stays clear of the fixed tab bar
+     and its raised + button (tokens shared with mobile-nav and the toast outlet), plus 12 px of air. */
+  .notif-primary--link,
+  .notif-primary ::ng-deep .btn {
+    scroll-margin-bottom: calc(var(--m-nav-h) + var(--m-plus-lift) + env(safe-area-inset-bottom, 0px) + 12px);
+  }
+}
+
+/* The statement open in the review flow beside the list (from 1024 px). Muted text is 4.26:1 on --app-primary-soft in
+   the light theme, so the row's muted inks turn --app-text; the icon tile and the link primary (both primary-soft
+   themselves) sit on --app-surface to stay visible. */
+:host(.notif-row--selected) {
+  background: var(--app-primary-soft);
+  box-shadow: inset 3px 0 0 var(--app-primary);
+
+  .notif-line,
+  .notif-meta,
+  .notif-secondary {
+    color: var(--app-text);
+  }
+
+  .notif-icon,
+  .notif-primary--link:not(.solid) {
+    background: var(--app-surface);
+  }
 }

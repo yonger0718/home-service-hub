@@ -5,8 +5,9 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { computed, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
-import { provideRouter } from '@angular/router';
-import { Subject } from 'rxjs';
+import { Router, provideRouter } from '@angular/router';
+import { RouterTestingHarness } from '@angular/router/testing';
+import { NEVER, Subject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ScheduleCatchUpResult, ScheduleInstance } from '../../models/accounting.model';
@@ -16,9 +17,12 @@ import { ToastService } from '../../services/toast.service';
 import { IMPORT_RUNNING_TOAST } from '../accounting/schedule-math';
 import { NotificationCenterService } from '../../services/notification-center.service';
 import { PortfolioService } from '../../services/portfolio.service';
-import { MATCH_MEDIA, PHONE_QUERY } from '../../services/layout-mode.service';
+import { notificationsMatcher } from '../../app.routes';
+import { LayoutMode, LayoutModeService, MATCH_MEDIA, PHONE_QUERY } from '../../services/layout-mode.service';
+import { InboxService } from '../accounting/inbox/inbox.service';
 import { NotifSourceKey, NotifSummary, NotifTask, NotifTier, NotifTrackingRow, summarize } from './notif-task';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
+import { ReconFlowComponent } from './recon-flow/recon-flow';
 import { NotificationsComponent } from './notifications';
 
 function task(id: string, tier: NotifTier, over: Partial<NotifTask> = {}): NotifTask {
@@ -39,6 +43,11 @@ function task(id: string, tier: NotifTier, over: Partial<NotifTask> = {}): Notif
     fingerprint: id,
     ...over,
   };
+}
+
+/** The primary control of the row showing task `id`. NOTIF_PRIMARY_CONTROL is a selector list: look inside the row. */
+function rowPrimary(root: ParentNode, id: string): HTMLElement | null {
+  return root.querySelector(`app-notif-row[data-task-id="${id}"]`)?.querySelector<HTMLElement>(NOTIF_PRIMARY_CONTROL) ?? null;
 }
 
 const TASKS: NotifTask[] = [
@@ -715,7 +724,7 @@ describe('NotificationsComponent', () => {
       round.set(4);
       settledRound.set(3);
       const root = mount();
-      const control = () => q(root, `app-notif-row[data-task-id="sched:1"] ${NOTIF_PRIMARY_CONTROL}`) as HTMLButtonElement;
+      const control = () => rowPrimary(root, 'sched:1') as HTMLButtonElement;
       const retryButton = () => q(root, '.notif-failed .banner-action') as HTMLButtonElement;
       control().click();
       await settle();
@@ -1793,6 +1802,267 @@ describe('NotificationsComponent', () => {
     });
   });
 
+  describe('the review flow (/notifications/recon/:statementId)', () => {
+    const RECON = task('recon:12', 'confirm', {
+      from: 'recon',
+      title: '對帳 · 測試銀行卡（至 10/05）',
+      primary: { label: '對帳', route: '/notifications/recon/12' },
+    });
+    const RECON_OTHER = task('recon:13', 'confirm', {
+      from: 'recon',
+      title: '對帳 · 測試信用卡（至 10/08）',
+      primary: { label: '對帳', route: '/notifications/recon/13' },
+    });
+    /** The flow's reads never answer here: it stays on its 讀取中… step. */
+    const inbox = { get: vi.fn(() => NEVER), apply: vi.fn(() => NEVER) };
+
+    let harness: RouterTestingHarness;
+    let router: Router;
+    const root = () => harness.fixture.nativeElement as HTMLElement;
+    const q = (sel: string) => root().querySelector<HTMLElement>(sel);
+    const flow = () => q('app-recon-flow');
+    const rowControl = (id: string) => rowPrimary(root(), id);
+    const settleFlow = async () => {
+      await harness.fixture.whenStable();
+      harness.detectChanges();
+      await harness.fixture.whenStable();
+    };
+
+    async function openAt(mode: LayoutMode, url: string): Promise<void> {
+      TestBed.configureTestingModule({
+        providers: [
+          provideRouter([{ matcher: notificationsMatcher, component: NotificationsComponent }]),
+          { provide: NotificationCenterService, useValue: stub },
+          { provide: AccountingService, useValue: accounting },
+          { provide: PortfolioService, useValue: portfolio },
+          { provide: InboxService, useValue: inbox },
+        ],
+      });
+      TestBed.inject(LayoutModeService).set(mode);
+      tasks.set([...TASKS, RECON, RECON_OTHER]);
+      router = TestBed.inject(Router);
+      harness = await RouterTestingHarness.create();
+      await harness.navigateByUrl(url);
+      await settleFlow();
+    }
+
+    afterEach(() => harness?.fixture.destroy());
+
+    it('at panes width: the list and the flow side by side, the flow in a pane of its own; one h1', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      const split = q('.notif-split')!;
+      expect(split.classList.contains('notif-split--open')).toBe(true);
+      expect(split.querySelector(':scope > .notif-page')).not.toBeNull();
+      const pane = split.querySelector<HTMLElement>(':scope > .notif-pane')!;
+      expect(pane.querySelector('app-recon-flow')).not.toBeNull();
+      expect(root().querySelectorAll('app-notif-row').length).toBe(7);
+      expect(q('.notif-chips')).not.toBeNull();
+      expect(text(q('h1'))).toBe('通知');
+      expect(root().querySelectorAll('h1').length).toBe(1);
+      expect(inbox.get).toHaveBeenCalled();
+    });
+
+    it('at panes width the row of the open statement is selected: 對帳中, aria-current; the others are not', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      const selected = Array.from(root().querySelectorAll('app-notif-row.notif-row--selected')).map(r => r.getAttribute('data-task-id'));
+      expect(selected).toEqual(['recon:12']);
+      expect(text(rowControl('recon:12'))).toBe('對帳中');
+      expect(rowControl('recon:12')!.getAttribute('aria-current')).toBe('true');
+      expect(text(rowControl('recon:13'))).toBe('對帳');
+      expect(rowControl('recon:13')!.hasAttribute('aria-current')).toBe(false);
+    });
+
+    it('opening the flow moves focus to the flow host', async () => {
+      await openAt('panes', '/notifications');
+      expect(flow()).toBeNull();
+      rowControl('recon:12')!.focus();
+      rowControl('recon:12')!.click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications/recon/12');
+        expect(flow()).not.toBeNull();
+        expect(document.activeElement).toBe(flow());
+      });
+    });
+
+    it('a direct load with an id focuses the flow host once it is rendered', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      await vi.waitFor(() => expect(document.activeElement).toBe(flow()));
+    });
+
+    for (const mode of ['phone', 'sheet'] as const) {
+      it(`below panes (${mode}): only the flow renders: no page header, chips, list or links`, async () => {
+        await openAt(mode, '/notifications/recon/12');
+        expect(flow()).not.toBeNull();
+        expect(q('app-page-header')).toBeNull();
+        expect(q('.notif-chips')).toBeNull();
+        expect(root().querySelectorAll('app-notif-row').length).toBe(0);
+        expect(q('a.notif-reminders')).toBeNull();
+        expect(q('.notif-page')).toBeNull();
+        // No card around the flow (it draws its own) and no split row.
+        expect(q('.notif-pane')!.classList.contains('notif-pane--card')).toBe(false);
+        expect(q('.notif-split')!.classList.contains('notif-split--open')).toBe(false);
+      });
+    }
+
+    it('crossing 1024 px with the flow open keeps the same flow (node and component): no remount', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      const layout = TestBed.inject(LayoutModeService);
+      const node = flow();
+      const instance = harness.fixture.debugElement.query(By.directive(ReconFlowComponent)).componentInstance;
+      expect(q('.notif-pane')!.classList.contains('notif-pane--card')).toBe(true);
+      layout.set('sheet');
+      await settleFlow();
+      expect(flow()).toBe(node);
+      expect(harness.fixture.debugElement.query(By.directive(ReconFlowComponent)).componentInstance).toBe(instance);
+      expect(q('.notif-page')).toBeNull();
+      expect(q('.notif-pane')!.classList.contains('notif-pane--card')).toBe(false);
+      layout.set('panes');
+      await settleFlow();
+      expect(flow()).toBe(node);
+      expect(harness.fixture.debugElement.query(By.directive(ReconFlowComponent)).componentInstance).toBe(instance);
+      expect(q('.notif-page')).not.toBeNull();
+      expect(q('.notif-pane')!.classList.contains('notif-pane--card')).toBe(true);
+    });
+
+    describe('scrolling below panes (jsdom has no element scrolling: stubbed)', () => {
+      let scrollTo: ReturnType<typeof vi.fn>;
+      let scrollIntoView: ReturnType<typeof vi.fn>;
+      const proto = Element.prototype as unknown as Record<string, unknown>;
+      const saved = { scrollTo: proto['scrollTo'], scrollIntoView: proto['scrollIntoView'] };
+      beforeEach(() => {
+        scrollTo = vi.fn();
+        scrollIntoView = vi.fn();
+        proto['scrollTo'] = scrollTo;
+        proto['scrollIntoView'] = scrollIntoView;
+      });
+      afterEach(() => {
+        proto['scrollTo'] = saved.scrollTo;
+        proto['scrollIntoView'] = saved.scrollIntoView;
+      });
+      const pageScroller = () => document.scrollingElement ?? document.documentElement;
+
+      it('opening the flow alone scrolls the page to the top', async () => {
+        await openAt('phone', '/notifications');
+        expect(scrollTo).not.toHaveBeenCalled();
+        rowControl('recon:12')!.click();
+        await vi.waitFor(async () => {
+          await settleFlow();
+          expect(flow()).not.toBeNull();
+          expect(scrollTo.mock.contexts).toContain(pageScroller());
+        });
+        expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
+      });
+
+      it('opening the flow beside the list (panes) does not scroll the page', async () => {
+        await openAt('panes', '/notifications');
+        rowControl('recon:12')!.click();
+        await vi.waitFor(async () => {
+          await settleFlow();
+          expect(document.activeElement).toBe(flow());
+        });
+        expect(scrollTo).not.toHaveBeenCalled();
+      });
+
+      it('closing scrolls the focused row into view', async () => {
+        await openAt('phone', '/notifications/recon/12');
+        (flow()!.querySelector('button.flow-back') as HTMLButtonElement).click();
+        await vi.waitFor(async () => {
+          await settleFlow();
+          expect(document.activeElement).toBe(rowControl('recon:12'));
+        });
+        expect(scrollIntoView.mock.contexts).toContain(rowControl('recon:12'));
+        expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+      });
+    });
+
+    it('without an id there is no flow and the page is as before', async () => {
+      await openAt('panes', '/notifications');
+      expect(flow()).toBeNull();
+      expect(q('.notif-pane')).toBeNull();
+      expect(q('.notif-split')!.classList.contains('notif-split--open')).toBe(false);
+      expect(root().querySelectorAll('app-notif-row').length).toBe(7);
+      expect(root().querySelector('app-notif-row.notif-row--selected')).toBeNull();
+    });
+
+    it('a statement id of 0 or with a leading zero is not routed: the list stays, no flow', async () => {
+      await openAt('phone', '/notifications');
+      for (const url of ['/notifications/recon/0', '/notifications/recon/012']) {
+        await expect(router.navigateByUrl(url)).rejects.toThrow();
+        await settleFlow();
+        expect(router.url).toBe('/notifications');
+        expect(flow()).toBeNull();
+        expect(root().querySelectorAll('app-notif-row').length).toBe(7);
+      }
+    });
+
+    it('closing at panes width navigates to /notifications and focuses the row of that statement', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      (flow()!.querySelector('button.flow-close') as HTMLButtonElement).click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications');
+        expect(flow()).toBeNull();
+        expect(document.activeElement).toBe(rowControl('recon:12'));
+      });
+      expect(text(rowControl('recon:12'))).toBe('對帳');
+    });
+
+    it('closing replaces the flow\'s history entry: browser Back does not reopen it', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      const navigate = vi.spyOn(router, 'navigate');
+      (flow()!.querySelector('button.flow-close') as HTMLButtonElement).click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications');
+      });
+      expect(navigate).toHaveBeenCalledWith(['/notifications'], { replaceUrl: true });
+    });
+
+    it('closing when the row has left the list focuses the page heading', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      tasks.set(TASKS);
+      await settleFlow();
+      (flow()!.querySelector('button.flow-close') as HTMLButtonElement).click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications');
+        expect(document.activeElement).toBe(q('h1'));
+      });
+      // Focusable only for this hand-off: the tabindex leaves with the focus.
+      expect(q('h1')!.getAttribute('tabindex')).toBe('-1');
+      q('h1')!.blur();
+      expect(q('h1')!.hasAttribute('tabindex')).toBe(false);
+    });
+
+    it('closing below panes (the flow\'s back button) brings the list back and focuses the row of that statement', async () => {
+      await openAt('phone', '/notifications/recon/12');
+      (flow()!.querySelector('button.flow-back') as HTMLButtonElement).click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications');
+        expect(flow()).toBeNull();
+        expect(root().querySelectorAll('app-notif-row').length).toBe(7);
+        expect(document.activeElement).toBe(rowControl('recon:12'));
+      });
+    });
+
+    it('another statement\'s 對帳 while the flow is open changes the statement in the same flow', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      const before = flow();
+      const page = q('.notif-page');
+      rowControl('recon:13')!.click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications/recon/13');
+        expect(text(rowControl('recon:13'))).toBe('對帳中');
+      });
+      expect(flow()).toBe(before);
+      expect(q('.notif-page')).toBe(page);
+      expect(text(rowControl('recon:12'))).toBe('對帳');
+    });
+  });
+
   describe('scss rules (source pins)', () => {
     const css = readFileSync(join(process.cwd(), 'src/app/components/notifications/notifications.scss'), 'utf8');
 
@@ -1817,6 +2087,63 @@ describe('NotificationsComponent', () => {
     it('the 到提醒中心查看 link in the overflow note is 44 px high on a phone', () => {
       const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
       expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(/\.notif-foot-link\s*\{[^}]*min-height:\s*44px/);
+    });
+
+    const block = (selector: string) => {
+      const start = css.indexOf(`\n${selector} {`);
+      expect(start, selector).toBeGreaterThanOrEqual(0);
+      const rest = css.slice(start + 1);
+      return rest.slice(0, rest.indexOf('\n}\n'));
+    };
+
+    it('the review pane is a card, sticky, and runs to the page padding at both ends (記一筆 is hidden while the flow is open)', () => {
+      const card = block('.notif-pane--card');
+      expect(card).toMatch(/background:\s*var\(--app-surface\)/);
+      expect(card).toMatch(/position:\s*sticky/);
+      // Its top is the page's top padding at rest and when stuck (one offset, every breakpoint); the same below.
+      expect(card).toMatch(/top:\s*var\(--page-pad-y\)/);
+      expect(card).toMatch(/max-height:\s*calc\(100dvh - 2 \* var\(--page-pad-y\)\)/);
+      expect(card).not.toMatch(/--fab-clear/);
+      expect(card).not.toMatch(/top:\s*16px/);
+      expect(card).toMatch(/overflow:\s*auto/);
+      // Below panes the pane is no card: only the --card modifier carries surface, shadow and sticky.
+      expect(css).not.toMatch(/\n\.notif-pane \{/);
+    });
+
+    it('on a phone the page heading (a focus target after the flow closes) scrolls clear of the tab bar and its + button', () => {
+      const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
+      expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(
+        /app-page-header ::ng-deep h1\s*\{[^}]*scroll-margin-bottom:\s*calc\(var\(--m-nav-h\) \+ var\(--m-plus-lift\) \+ env\(safe-area-inset-bottom, 0px\) \+ 12px\)/,
+      );
+    });
+
+    it('with the flow open the row takes back the page\'s 記一筆 padding, so the sticky pane is not pushed out at the page end', () => {
+      expect(block('.notif-split--open')).toMatch(
+        /margin-bottom:\s*calc\(var\(--page-pad-y\) - var\(--page-pad-b\) - var\(--fab-clear, 0px\)\)/,
+      );
+    });
+
+    it('on a phone the full-screen flow ends below the tab bar\'s raised + so 略過 scrolls clear of it', () => {
+      const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
+      expect(phone.slice(0, phone.indexOf('\n}\n'))).toMatch(
+        /\.notif-pane\s*\{[^}]*padding-bottom:\s*calc\(var\(--m-plus-lift\) \+ 24px\)/,
+      );
+    });
+
+    it('on a phone the failure banner centres its heading and icon on the 44 px 重試 (a block after the base rules)', () => {
+      const phone = css.slice(css.lastIndexOf('@media (max-width: 759.98px)'));
+      expect(css.indexOf('\n.notif-failed ::ng-deep {')).toBeLessThan(css.lastIndexOf('@media (max-width: 759.98px)'));
+      const block = phone.slice(0, phone.indexOf('\n}\n'));
+      expect(block).toMatch(/\.banner-body\s*\{[^}]*min-height:\s*44px/);
+      expect(block).toMatch(/top:\s*clamp\(0px, calc\(56px - 100%\), 12px\)/);
+    });
+
+    it('a sheet open in the pane lifts the pane above the sidebar and the 記一筆 (z-index 1000) to the sheet\'s layer', () => {
+      expect(css).toMatch(/\.notif-pane--card:has\(\.overlay\)\s*\{[^}]*z-index:\s*1100/);
+    });
+
+    it('with the split open the list column never gets narrower than a row needs (360 px)', () => {
+      expect(block('.notif-split--open')).toMatch(/> \.notif-page \{[^}]*min-width:\s*360px/);
     });
 
     it('on a phone the header adds no bottom margin of its own: header to chips is the page gap (14 px), as chips to section', () => {

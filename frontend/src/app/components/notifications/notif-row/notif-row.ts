@@ -25,6 +25,7 @@ export const NOTIF_PRIMARY_CONTROL = 'app-btn.notif-primary button, a.notif-prim
     class: 'notif-row',
     '[attr.data-task-id]': 'task().id',
     '[class.notif-row--alert]': 'alert()',
+    '[class.notif-row--selected]': 'selected()',
   },
 })
 export class NotifRowComponent {
@@ -32,6 +33,11 @@ export class NotifRowComponent {
   readonly busy = input(false);
   /** Phone 已逾期: the primary action is solid. */
   readonly solid = input(false);
+  /**
+   * The statement open in the review flow beside the list: the row is highlighted and its primary reads 對帳中 with
+   * `aria-current="true"` (still a link; pressing it again is harmless).
+   */
+  readonly selected = input(false);
   readonly run = output<NotifCommand>();
 
   protected readonly alert = computed(() => ['overdue', 'system'].includes(this.task().tier));
@@ -54,6 +60,11 @@ export class NotifRowComponent {
     const primary = this.task().primary;
     return isCommand(primary) ? null : primary;
   });
+
+  /** The primary's visible label: 對帳中 while the row is selected. */
+  protected primaryLabel(label: string): string {
+    return this.selected() ? '對帳中' : label;
+  }
 
   /** `label：title`: one accessible name per action, distinct between rows. */
   protected name(label: string): string {

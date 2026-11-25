@@ -1,86 +1,100 @@
-<div class="notif-page">
-  <app-page-header [back]="true" backFallback="/accounting" [subtitle]="subtitle()"></app-page-header>
+<div class="notif-split" [class.notif-split--open]="statementId() !== null && panes()">
+  <!-- Below 1024 px with a statement the list (header, chips, rows, links) is not rendered; it returns on close. -->
+  @if (!flowAlone()) {
+    <div class="notif-page">
+      <app-page-header [back]="true" backFallback="/accounting" [subtitle]="subtitle()"></app-page-header>
 
-  <div class="notif-chips" role="radiogroup" aria-label="來源">
-    @for (option of chips; track option.key) {
-      <button type="button" role="radio" [attr.aria-checked]="chip() === option.key" [attr.aria-label]="chipName(option)" (click)="pick(option.key)">
-        {{ option.label }}@if (countsFinal()) {<span class="chip-count" aria-hidden="true">{{ counts()[option.key] }}</span>}
-      </button>
-    }
-  </div>
+      <div class="notif-chips" role="radiogroup" aria-label="來源">
+        @for (option of chips; track option.key) {
+          <button type="button" role="radio" [attr.aria-checked]="chip() === option.key" [attr.aria-label]="chipName(option)" (click)="pick(option.key)">
+            {{ option.label }}@if (countsFinal()) {<span class="chip-count" aria-hidden="true">{{ counts()[option.key] }}</span>}
+          </button>
+        }
+      </div>
 
-  @if (state() === 'empty') {
-    <div class="notif-empty">
-      <i class="pi pi-check-circle" aria-hidden="true"></i>
-      <h2>都處理好了</h2>
-      @if (nextLine(); as next) {
-        <p class="empty-next">{{ next }}</p>
+      @if (state() === 'empty') {
+        <div class="notif-empty">
+          <i class="pi pi-check-circle" aria-hidden="true"></i>
+          <h2>都處理好了</h2>
+          @if (nextLine(); as next) {
+            <p class="empty-next">{{ next }}</p>
+          }
+          @if (trackingCount() > 0) {
+            <button type="button" class="empty-tracking" (click)="openTracking()">看追蹤中的 {{ trackingCount() }} 件 ›</button>
+          }
+        </div>
       }
-      @if (trackingCount() > 0) {
-        <button type="button" class="empty-tracking" (click)="openTracking()">看追蹤中的 {{ trackingCount() }} 件 ›</button>
+
+      @for (section of sections(); track section.tier) {
+        <section class="notif-section" [class.notif-section--alert]="section.tier === 'overdue' || section.tier === 'system'" [attr.aria-labelledby]="'notif-sec-' + section.tier">
+          <h2 [id]="'notif-sec-' + section.tier">
+            <span class="sec-dot" aria-hidden="true"></span>{{ section.label }}@if (countsFinal()) {&ngsp;<span class="sec-count">{{ section.tasks.length }}</span>}
+          </h2>
+          <ul class="notif-card">
+            @for (task of section.tasks; track task.id) {
+              <li>
+                <app-notif-row [task]="task" [busy]="isBusy(task.id)" [solid]="phone() && section.tier === 'overdue'" [selected]="task.id === selectedTaskId()" (run)="onRun(task, $event)" />
+              </li>
+            }
+          </ul>
+        </section>
+      }
+
+      @if (overflow(); as rest) {
+        <p class="notif-overflow">
+          {{ rest.text }} · <a class="notif-foot-link" [routerLink]="rest.link.route" [queryParams]="rest.link.queryParams ?? null">到提醒中心查看&ngsp;<span aria-hidden="true">›</span></a>
+        </p>
+      }
+
+      @if (cathayMore() > 0) {
+        <p class="notif-overflow notif-overflow--portfolio">還有 {{ cathayMore() }} 天未列出，處理完上面的會接著顯示</p>
+      }
+
+      <!-- One element for "no task yet" and "partial list": the same @if spot, so the live region is announced once. -->
+      @if (!center.loaded() || state() === 'loading') {
+        <p class="notif-loading" role="status">讀取中…</p>
+      }
+
+      @if (chipEmpty()) {
+        <p class="notif-none">這個來源目前沒有要處理的事</p>
+      }
+
+      @if (trackingRows().length > 0) {
+        <details class="notif-tracking">
+          <summary>
+            <span class="tracking-head">追蹤中&ngsp;<span class="tracking-note">· 不計入數字</span></span>&ngsp;<span class="tracking-sum">{{ trackingSum() }}</span>
+          </summary>
+          @for (row of trackingRows(); track row.id) {
+            <div class="tracking-row">
+              <span class="tracking-body">
+                <b class="tracking-title">{{ row.title }}</b>
+                @if (row.meta) {
+                  <small class="tracking-meta">{{ row.meta }}</small>
+                }
+              </span>
+              <a class="tracking-link" [routerLink]="row.link.route" [queryParams]="row.link.queryParams ?? null" [attr.aria-label]="row.link.label + '：' + row.title">{{ row.link.label }}</a>
+            </div>
+          }
+        </details>
+      }
+
+      @if (center.handled(); as handled) {
+        <a class="notif-foot-link notif-handled" routerLink="/accounting/reminders" [queryParams]="{ tab: 'todo' }">已處理的對帳（近 7 天）{{ handled }}<span aria-hidden="true">›</span></a>
+      }
+      <a class="notif-foot-link notif-reminders" routerLink="/accounting/reminders">提醒中心（借還款、週期與分期管理）<span aria-hidden="true">›</span></a>
+
+      @if (failure(); as line) {
+        <app-banner class="notif-failed" tone="error" [heading]="line" actionLabel="重試" [actionDisabled]="center.loading()" (action)="retry()" />
       }
     </div>
   }
 
-  @for (section of sections(); track section.tier) {
-    <section class="notif-section" [class.notif-section--alert]="section.tier === 'overdue' || section.tier === 'system'" [attr.aria-labelledby]="'notif-sec-' + section.tier">
-      <h2 [id]="'notif-sec-' + section.tier">
-        <span class="sec-dot" aria-hidden="true"></span>{{ section.label }}@if (countsFinal()) {&ngsp;<span class="sec-count">{{ section.tasks.length }}</span>}
-      </h2>
-      <ul class="notif-card">
-        @for (task of section.tasks; track task.id) {
-          <li>
-            <app-notif-row [task]="task" [busy]="isBusy(task.id)" [solid]="phone() && section.tier === 'overdue'" (run)="onRun(task, $event)" />
-          </li>
-        }
-      </ul>
-    </section>
-  }
-
-  @if (overflow(); as rest) {
-    <p class="notif-overflow">
-      {{ rest.text }} · <a class="notif-foot-link" [routerLink]="rest.link.route" [queryParams]="rest.link.queryParams ?? null">到提醒中心查看&ngsp;<span aria-hidden="true">›</span></a>
-    </p>
-  }
-
-  @if (cathayMore() > 0) {
-    <p class="notif-overflow notif-overflow--portfolio">還有 {{ cathayMore() }} 天未列出，處理完上面的會接著顯示</p>
-  }
-
-  <!-- One element for "no task yet" and "partial list": the same @if spot, so the live region is announced once. -->
-  @if (!center.loaded() || state() === 'loading') {
-    <p class="notif-loading" role="status">讀取中…</p>
-  }
-
-  @if (chipEmpty()) {
-    <p class="notif-none">這個來源目前沒有要處理的事</p>
-  }
-
-  @if (trackingRows().length > 0) {
-    <details class="notif-tracking">
-      <summary>
-        <span class="tracking-head">追蹤中&ngsp;<span class="tracking-note">· 不計入數字</span></span>&ngsp;<span class="tracking-sum">{{ trackingSum() }}</span>
-      </summary>
-      @for (row of trackingRows(); track row.id) {
-        <div class="tracking-row">
-          <span class="tracking-body">
-            <b class="tracking-title">{{ row.title }}</b>
-            @if (row.meta) {
-              <small class="tracking-meta">{{ row.meta }}</small>
-            }
-          </span>
-          <a class="tracking-link" [routerLink]="row.link.route" [queryParams]="row.link.queryParams ?? null" [attr.aria-label]="row.link.label + '：' + row.title">{{ row.link.label }}</a>
-        </div>
-      }
-    </details>
-  }
-
-  @if (center.handled(); as handled) {
-    <a class="notif-foot-link notif-handled" routerLink="/accounting/reminders" [queryParams]="{ tab: 'todo' }">已處理的對帳（近 7 天）{{ handled }}<span aria-hidden="true">›</span></a>
-  }
-  <a class="notif-foot-link notif-reminders" routerLink="/accounting/reminders">提醒中心（借還款、週期與分期管理）<span aria-hidden="true">›</span></a>
-
-  @if (failure(); as line) {
-    <app-banner class="notif-failed" tone="error" [heading]="line" actionLabel="重試" [actionDisabled]="center.loading()" (action)="retry()" />
+  @if (statementId(); as id) {
+    <!-- One flow at one template position for every width, so crossing 1024 px never remounts it (cursor, open sheet,
+         undo offer and focus survive). From 1024 px the pane is its card beside the list; below, the flow draws its
+         own card and header and is the whole page. -->
+    <div class="notif-pane" [class.notif-pane--card]="panes()">
+      <app-recon-flow [statementId]="id" (closed)="closeFlow()" />
+    </div>
   }
 </div>

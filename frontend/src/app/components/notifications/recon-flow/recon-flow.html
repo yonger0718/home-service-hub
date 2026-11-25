@@ -1,0 +1,214 @@
+<header class="flow-head">
+  @if (!panes()) {
+    <button type="button" class="flow-back" aria-label="返回通知" (click)="closed.emit()">
+      <i class="pi pi-arrow-left" aria-hidden="true"></i>
+    </button>
+  }
+  <div class="flow-titles">
+    @if (kicker(); as text) {
+      <p class="flow-kicker">{{ text }}</p>
+    }
+    @if (!panes()) {
+      <!-- Full screen: the page's only h1, in every load state. -->
+      <h1 class="flow-title">{{ heading() }}</h1>
+    } @else if (load() === 'ready' && titleText()) {
+      <p class="flow-title">{{ titleText() }}</p>
+    }
+    @if (load() === 'ready') {
+      @if (subText(); as sub) {
+        <p class="flow-sub">{{ sub }}</p>
+      }
+      @if (statementLink(); as link) {
+        <a class="flow-statement" [routerLink]="link">看整張帳單</a>
+      }
+    }
+  </div>
+  @if (panes()) {
+    <button type="button" class="flow-close" aria-label="關閉對帳" (click)="closed.emit()">
+      <i class="pi pi-times" aria-hidden="true"></i>
+    </button>
+  }
+</header>
+
+@switch (load()) {
+  @case ('loading') {
+    <p class="flow-loading" role="status">讀取中…</p>
+  }
+  @case ('failed') {
+    <app-banner tone="error" heading="對帳資料讀取失敗" actionLabel="重試" (action)="retryLoad()" />
+  }
+  @default {
+    @if (progressInfo().total > 0) {
+      <div class="flow-progress">
+        <div class="flow-bar" aria-hidden="true">
+          @if (segments(); as segs) {
+            <div class="flow-segs" [style.grid-template-columns]="barColumns()">
+              @for (seg of segs; track $index) {
+                <span data-seg [attr.data-state]="seg"></span>
+              }
+            </div>
+          } @else {
+            <div class="flow-plain"><span [style.width.%]="handledPercent()"></span></div>
+          }
+        </div>
+        <p class="flow-progress-text">{{ progressText() }}</p>
+      </div>
+    }
+
+    @if (step(); as s) {
+      <section class="flow-step">
+        <span class="flow-chip">{{ s.chip }}</span>
+        <h2 id="flow-headline" class="flow-headline" tabindex="-1">{{ s.headline }}</h2>
+
+        <table class="flow-compare">
+          <colgroup>
+            <col class="flow-col-label" />
+            <col />
+            <col />
+          </colgroup>
+          <thead>
+            <tr>
+              <td></td>
+              <th scope="col">銀行帳單</th>
+              <th scope="col">你的記錄</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of s.rows; track row.label) {
+              <tr>
+                <th scope="row">{{ row.label }}</th>
+                <td [class.differs]="row.differs" [class.missing]="row.bankMissing">{{ row.bank }}</td>
+                <td [class.differs]="row.differs" [class.missing]="row.ledgerMissing">{{ row.ledger }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+
+        @if (s.pair; as pair) {
+          <p class="flow-pair">{{ pair }}</p>
+        }
+        @if (s.note; as note) {
+          <p class="flow-note">
+            {{ note }}
+            @if (s.noteLink; as link) {
+              <a class="flow-note-link" [routerLink]="link">打開那筆</a>
+            }
+          </p>
+        }
+
+        <!-- Before the answers at every width: it changes what the press below does. -->
+        <ng-container *ngTemplateOutlet="learnTpl; context: { $implicit: s.learn }" />
+
+        <div
+          class="flow-answers"
+          role="group"
+          aria-labelledby="flow-headline"
+          [attr.aria-busy]="busy()"
+        >
+          @for (answer of s.answers; track answer.action) {
+            <button
+              type="button"
+              [class.solid]="$first && s.highlight"
+              [disabled]="locked()"
+              [attr.aria-keyshortcuts]="$index < 3 ? $index + 1 : null"
+              (click)="press(answer.action)"
+            >
+              @if (panes() && $index < 3) {
+                <kbd aria-hidden="true">{{ $index + 1 }}</kbd>
+              }
+              <span class="flow-answer-label">{{ answer.label }}</span>
+              @if (answer.learns && learnOn()) {
+                <span class="flow-answer-learns">會記住</span>
+              }
+            </button>
+          }
+        </div>
+
+        @if (inlineError(); as error) {
+          <div class="flow-error flow-error--read" role="alert">
+            <span>{{ error.text }}</span>
+            @if (error.reload) {
+              <button type="button" class="flow-retry" [disabled]="locked()" (click)="reloadStep()">重新讀取</button>
+            }
+          </div>
+        }
+        <ng-container *ngTemplateOutlet="readErrorTpl" />
+
+        <footer class="flow-foot">
+          <button type="button" class="flow-skip" [disabled]="locked()" (click)="skipStep()">略過，稍後再看</button>
+          @if (panes()) {
+            <p class="flow-hint">{{ s.keys }}</p>
+          }
+        </footer>
+      </section>
+    } @else {
+      <section class="flow-end">
+        <div class="flow-check" aria-hidden="true"><i class="pi pi-check"></i></div>
+        <h2 class="flow-end-title" tabindex="-1">{{ endTitle() }}</h2>
+        <ng-container *ngTemplateOutlet="readErrorTpl" />
+        @if (progressInfo().remaining > 0) {
+          <p class="flow-end-text">剩下的會留在通知裡，帳單對完才會從數字中拿掉。</p>
+          <div class="flow-end-actions">
+            <button type="button" class="solid" [disabled]="locked()" (click)="resumeFlow()">繼續對帳</button>
+            <button type="button" (click)="closed.emit()">回到通知</button>
+          </div>
+        } @else {
+          <div class="flow-end-actions">
+            <button type="button" (click)="closed.emit()">回到通知</button>
+          </div>
+        }
+      </section>
+    }
+  }
+}
+
+<ng-template #learnTpl let-learn>
+  @if (learn) {
+    <div class="flow-learn">
+      <div class="flow-learn-text">
+        <span class="flow-learn-label">{{ learn.label }}</span>
+        <span id="flow-learn-sub" class="flow-learn-sub">{{ learn.scope }}，之後同樣的行自動處理；可在記帳設定關掉</span>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        class="flow-switch"
+        [attr.aria-checked]="learnOn()"
+        [attr.aria-label]="learn.label"
+        aria-describedby="flow-learn-sub"
+        [disabled]="locked()"
+        (click)="toggleLearn()"
+      ></button>
+    </div>
+  }
+</ng-template>
+
+@if (recordCard(); as card) {
+  <app-inbox-record-sheet
+    [card]="card"
+    [currency]="card.account.currency"
+    [learnDefault]="learnOn()"
+    [amountAnyDefault]="false"
+    (learnChange)="setLearn($event)"
+    (confirmed)="record(card, $event)"
+    (closed)="recordCard.set(null)"
+  />
+}
+@if (matchCard(); as card) {
+  <app-inbox-match-sheet
+    [card]="card"
+    [account]="card.account"
+    [exclude]="matchExclude()"
+    (confirmed)="match(card, $event)"
+    (closed)="matchCard.set(null)"
+  />
+}
+
+<ng-template #readErrorTpl>
+  @if (rereadFailed()) {
+    <div class="flow-error flow-error--read" role="alert">
+      <span>{{ rereadText() }}</span>
+      <button type="button" class="flow-retry" (click)="retryRead()">重試</button>
+    </div>
+  }
+</ng-template>

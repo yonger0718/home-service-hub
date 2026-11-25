@@ -8,6 +8,7 @@ import { LayoutModeService } from '../../services/layout-mode.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
 import { PaneStateService } from '../../services/pane-state.service';
 import { isHandledKey } from '../accounting/accounting-ui';
+import { isReviewFlowUrl } from '../notifications/review-flow-url';
 import { MobileNavComponent } from '../mobile-nav/mobile-nav';
 import { SidebarComponent } from '../sidebar/sidebar';
 import { EntryFormLauncher } from './entry-form-launcher';
@@ -55,15 +56,17 @@ export class ShellComponent {
   protected readonly sidebarWidth = computed(() => (this.sidebarExpanded() ? EXPANDED_WIDTH : RAIL_WIDTH));
   private readonly url = signal(this.router.url);
   /**
-   * 記一筆 from 760 px, except over the entry form, the 760–1023 px sheet (a modal dialog) and the report pages (it
-   * covered the table's last column; the N shortcut and the tab bar's + still work there).
+   * 記一筆 from 760 px, except over the entry form, the 760–1023 px sheet (a modal dialog), the report pages (it
+   * covered the table's last column; the N shortcut and the tab bar's + still work there) and the review flow at every
+   * width (full screen its answers sit where the button floats; in the pane it covered the flow's last row).
    */
   protected readonly showFab = computed(
     () =>
       this.layout.mode() !== 'phone' &&
       !this.paneState.formOpen() &&
       !this.paneState.sheetOpen() &&
-      !NO_FAB_URL.test(this.url()),
+      !NO_FAB_URL.test(this.url()) &&
+      !isReviewFlowUrl(this.url()),
   );
 
   /** Space the toast leaves to its right: the floating 記一筆 (right offset + 56 px button + 12 px gap), else a margin. */

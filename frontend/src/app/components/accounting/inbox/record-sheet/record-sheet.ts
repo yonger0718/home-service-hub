@@ -79,6 +79,8 @@ export class AppInboxRecordSheetComponent implements OnInit {
   readonly amountAnyDefault = input(false);
   readonly confirmed = output<InboxRecordResult>();
   readonly closed = output<void>();
+  /** 以後都這樣 as the owner ticks it here, for a caller that shows the same choice outside the sheet. */
+  readonly learnChange = output<boolean>();
 
   readonly amountAnyLabel = AMOUNT_ANY_LABEL;
   readonly kind = computed(() => lineKind(this.card().items[0]));
@@ -135,6 +137,7 @@ export class AppInboxRecordSheetComponent implements OnInit {
 
   setLearn(ticked: boolean): void {
     this.learnTicked.set(ticked);
+    this.learnChange.emit(ticked);
   }
 
   confirm(): void {

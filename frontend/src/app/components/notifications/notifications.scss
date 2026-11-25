@@ -1,6 +1,57 @@
-/* One column at every width (R20). Colours: tokens only. */
+/* One column at every width (R20); with the review flow open at 1024 px and up, the list and the flow side by side.
+   Colours: tokens only. */
 :host {
   display: block;
+}
+
+/* Without a flow: a plain block, the page keeps its own 720 px column. With one at panes width: a row wide enough for
+   both columns, list 5 : pane 6. Below panes width the split stays a plain block holding only the flow (no card here:
+   it draws its own). */
+.notif-split--open {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  /* The page keeps bottom padding for the floating 記一筆 (--page-pad-b + --fab-clear in shell.scss), which is hidden
+     while the flow is open. Taking it back leaves --page-pad-y under the row, so at the end of the page the sticky
+     pane still fits between the paddings instead of being pushed up out of view by the row's bottom edge. */
+  margin-bottom: calc(var(--page-pad-y) - var(--page-pad-b) - var(--fab-clear, 0px));
+  max-width: 1280px;
+
+  /* The floor is what a row needs before its body would drop under the icon: 14 + 40 icon + 12 gap + 280 body
+     (.notif-body's min-width) + 14 = 360 px. The narrowest panes content is 1024 - 72 (rail; the expanded sidebar
+     needs >= 1280 px) - 56 (page padding) = 896 px: list ~411 / pane ~469 by flex, so the floor only guards. */
+  > .notif-page {
+    flex: 5 1 420px;
+    max-width: none;
+    min-width: 360px;
+  }
+
+  > .notif-pane {
+    flex: 6 1 480px;
+    min-width: 0;
+  }
+}
+
+/* The flow is transparent at panes width: the pane is its card (surface, radius and shadow as the list's cards), so
+   muted text inside sits on --app-surface. It stays in view while the list scrolls and scrolls inside when taller.
+   The floating 記一筆 is hidden while the flow is open, so the pane runs to the page's padding at both ends: one offset
+   at rest and stuck (--page-pad-y, 24 px; 12 px on compact-height screens). */
+.notif-pane--card {
+  background: var(--app-surface);
+  border-radius: 18px;
+  box-shadow: var(--app-card-shadow);
+  max-height: calc(100dvh - 2 * var(--page-pad-y));
+  overflow: auto;
+  position: sticky;
+  top: var(--page-pad-y);
+}
+
+/* Sticky makes the pane a stacking context at layer 0, which traps the flow's record / match sheet (.overlay, fixed,
+   z-index 1100 in accounting/sheet.scss) under the sidebar (z-index 1000): they would paint over the
+   backdrop and stay clickable. While a sheet is open the pane itself rises to the sheet's layer. Nothing else relies
+   on the pane's layer (the toasts sit at 10000; the sheets append nothing to <body>). */
+.notif-pane--card:has(.overlay) {
+  z-index: 1100;
 }
 
 .notif-page {
@@ -25,6 +76,18 @@
   /* Tap target: 44 px high, as the rows' controls. */
   .notif-foot-link {
     min-height: 44px;
+  }
+
+  /* Focus lands here after the review flow closes when the row has gone: scrolled into view, it stays clear of the
+     fixed tab bar and its raised + button (tokens shared with mobile-nav and the toast outlet), plus 12 px of air. */
+  app-page-header ::ng-deep h1 {
+    scroll-margin-bottom: calc(var(--m-nav-h) + var(--m-plus-lift) + env(safe-area-inset-bottom, 0px) + 12px);
+  }
+
+  /* The full-screen flow is the page here. The tab bar's raised + reaches above the bar, so the page ends that much
+     lower: the flow's last control (略過) scrolls clear of it with air to spare. */
+  .notif-pane {
+    padding-bottom: calc(var(--m-plus-lift) + 24px);
   }
 }
 
@@ -284,6 +347,21 @@
       display: block;
       position: relative;
       top: clamp(0px, calc(41px - 100%), 7px);
+    }
+  }
+}
+
+/* Phones: the shared banner's 重試 is 44 px high (banner.scss), so the heading centres on 44 px and the icon's glyph
+   (20 px) drops 12 px in a 44 px row and not at all once a wrapped heading makes the row 56 px+. After the rules
+   above so it overrides them. */
+@media (max-width: 759.98px) {
+  .notif-failed ::ng-deep {
+    .banner-body {
+      min-height: 44px;
+    }
+
+    .banner-icon::before {
+      top: clamp(0px, calc(56px - 100%), 12px);
     }
   }
 }

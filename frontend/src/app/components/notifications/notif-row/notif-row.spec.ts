@@ -52,6 +52,7 @@ const linkTask: NotifTask = {
     [task]="task()"
     [busy]="busy()"
     [solid]="solid()"
+    [selected]="selected()"
     (run)="ran.push($event)"
   />`,
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -60,6 +61,7 @@ class HostComponent {
   readonly task = signal<NotifTask>(commandTask);
   readonly busy = signal(false);
   readonly solid = signal(false);
+  readonly selected = signal(false);
   readonly ran: NotifCommand[] = [];
 }
 
@@ -268,6 +270,66 @@ describe('NotifRowComponent', () => {
     ]);
     expect(links[0]).toBe(q(NOTIF_PRIMARY_CONTROL));
     expect(links[1].getAttribute('href')).toBe('/accounting/reminders?tab=bills');
+  });
+
+  describe('selected (the statement open in the review flow)', () => {
+    const reconTask: NotifTask = {
+      ...linkTask,
+      id: 'recon:12',
+      from: 'recon',
+      tier: 'confirm',
+      title: '對帳 · 測試銀行卡（至 10/05）',
+      primary: { label: '對帳', route: '/notifications/recon/12' },
+    };
+
+    it('not selected by default: no class, the label 對帳, no aria-current', () => {
+      const { q } = setup(reconTask);
+      expect(q('app-notif-row')!.classList.contains('notif-row--selected')).toBe(false);
+      const a = q<HTMLAnchorElement>(NOTIF_PRIMARY_CONTROL)!;
+      expect(a.textContent?.trim()).toBe('對帳');
+      expect(a.getAttribute('aria-label')).toBe('對帳：對帳 · 測試銀行卡（至 10/05）');
+      expect(a.hasAttribute('aria-current')).toBe(false);
+    });
+
+    it('selected: the row is marked, the primary reads 對帳中 with aria-current="true" and stays a link', () => {
+      const { q, host, fixture } = setup(reconTask);
+      host.selected.set(true);
+      fixture.detectChanges();
+      expect(q('app-notif-row')!.classList.contains('notif-row--selected')).toBe(true);
+      const a = q<HTMLAnchorElement>(NOTIF_PRIMARY_CONTROL)!;
+      expect(a.tagName).toBe('A');
+      expect(a.textContent?.trim()).toBe('對帳中');
+      expect(a.getAttribute('aria-label')).toBe('對帳中：對帳 · 測試銀行卡（至 10/05）');
+      expect(a.getAttribute('aria-current')).toBe('true');
+      expect(a.getAttribute('href')).toBe('/notifications/recon/12');
+      host.selected.set(false);
+      fixture.detectChanges();
+      expect(q('app-notif-row')!.classList.contains('notif-row--selected')).toBe(false);
+      expect(q(NOTIF_PRIMARY_CONTROL)!.textContent?.trim()).toBe('對帳');
+    });
+
+    it('scss: on a phone the primary control scrolls clear of the tab bar and its + button (focus lands on it after the flow closes)', () => {
+      const css = readFileSync(
+        join(process.cwd(), 'src/app/components/notifications/notif-row/notif-row.scss'),
+        'utf8',
+      );
+      const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
+      const block = phone.slice(0, phone.indexOf('\n}\n'));
+      const clear = 'scroll-margin-bottom: calc(var(--m-nav-h) + var(--m-plus-lift) + env(safe-area-inset-bottom, 0px) + 12px)';
+      const rule = /\.notif-primary--link,\s*\.notif-primary ::ng-deep \.btn\s*\{([^}]*)\}/.exec(block);
+      expect(rule?.[1]).toContain(clear);
+    });
+
+    it('scss: the selected row is on --app-primary-soft with a 3 px inset --app-primary bar at the start side', () => {
+      const css = readFileSync(
+        join(process.cwd(), 'src/app/components/notifications/notif-row/notif-row.scss'),
+        'utf8',
+      );
+      const block = css.slice(css.indexOf(':host(.notif-row--selected) {'));
+      const body = block.slice(0, block.indexOf('\n}\n'));
+      expect(body).toMatch(/background:\s*var\(--app-primary-soft\)/);
+      expect(body).toMatch(/box-shadow:\s*inset 3px 0 0 var\(--app-primary\)/);
+    });
   });
 
   describe('scss rules (source pins)', () => {
