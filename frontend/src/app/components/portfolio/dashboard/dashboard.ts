@@ -103,6 +103,8 @@ export class PortfolioDashboardComponent implements OnInit {
   private readonly clock = inject(DASHBOARD_CLOCK);
   private readonly layoutMode = inject(LayoutModeService);
 
+  /** Bumped by every 刷新行情 so the futures card reads again; the first load is the card's own. */
+  protected readonly futuresRefresh = signal(0);
   @ViewChild('netWorthChart') netWorthChart?: UIChart;
 
   protected readonly Number = Number;
@@ -326,9 +328,14 @@ export class PortfolioDashboardComponent implements OnInit {
     chart.update('none');
     const point = this.chartPoints()[index];
     if (!point) return;
-    const { total, holdings, cash } = this.seriesValues(point);
-    this.focusedPointText.set(
-      `${this.pointDate(point)} · 帳戶總值 ${this.money(total)} · 持股淨值 ${this.money(holdings)} · 現金 ${this.money(cash)}`,
+    this.focusedPointText.set(this.pointSummary(point));
+  }
+
+  private pointSummary(point: NetworthPoint): string {
+    const { total, holdings, cash, futures } = this.seriesValues(point);
+    return (
+      `${this.pointDate(point)} · 帳戶總值 ${this.money(total)} · 持股淨值 ${this.money(holdings)} · 現金 ${this.money(cash)}` +
+      (futures !== 0 ? ` · 期貨權益 ${this.money(futures)}` : '')
     );
   }
 
@@ -465,6 +472,7 @@ export class PortfolioDashboardComponent implements OnInit {
 
   loadSummary(): void {
     this.loading.set(true);
+    this.futuresRefresh.update(n => n + 1);
     this.portfolioService.refreshQuotes().subscribe({
       next: (response) => {
         if (response?.refresh_scheduled) {
@@ -788,7 +796,10 @@ export class PortfolioDashboardComponent implements OnInit {
             label: (ctx: any) => `${ctx.dataset?.label ?? ''} ${this.money(ctx.parsed?.y ?? 0)}`,
             afterBody: (items: any[]) => {
               const point = this.chartPoints()[items[0]?.dataIndex];
-              return point ? `現金 ${this.money(this.seriesValues(point).cash)}` : '';
+              if (!point) return '';
+              const { cash, futures } = this.seriesValues(point);
+              const cashLine = `現金 ${this.money(cash)}`;
+              return futures !== 0 ? [cashLine, `期貨權益 ${this.money(futures)}`] : cashLine;
             },
           },
         },

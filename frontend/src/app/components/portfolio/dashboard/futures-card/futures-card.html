@@ -12,7 +12,6 @@
         <b
           class="futures-value"
           data-testid="futures-equity"
-          [class.up]="sign(v.total_equity) > 0"
           [class.down]="sign(v.total_equity) < 0"
         >{{ money(v.total_equity) }}</b>
       </div>
@@ -36,6 +35,9 @@
           <span class="futures-value">—</span>
         }
       </div>
+      @if (showMarginDate(d)) {
+        <p class="futures-meta">保證金資料日 {{ md(d.latest_daily!.statement_date) }}</p>
+      }
       @if (d.month; as m) {
         <div class="futures-row">
           <span class="futures-label">本月損益</span>

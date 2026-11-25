@@ -107,7 +107,7 @@ function checkedPending(pending: unknown): CathayPending {
  * 國泰 runs: `latest` / `latest_ok` each null or a run with a `run_at` that parses to a finite time and a string
  * `result`; else an error (source fails): an unparseable run_at would render 「上次執行 NaN/NaN NaN:NaN」.
  */
-function checkedRuns(runs: unknown): CathayRuns {
+function checkedRuns(runs: unknown, source = 'cathay'): CathayRuns {
   const run = (r: unknown): r is CathayRun | null =>
     r === null ||
     (isObject(r) &&
@@ -115,7 +115,7 @@ function checkedRuns(runs: unknown): CathayRuns {
       Number.isFinite(new Date(r['run_at']).getTime()) &&
       typeof r['result'] === 'string');
   if (!isObject(runs) || !('latest' in runs) || !('latest_ok' in runs) || !run(runs['latest']) || !run(runs['latest_ok'])) {
-    throw new Error('cathay runs');
+    throw new Error(`${source} runs`);
   }
   return runs as unknown as CathayRuns;
 }
@@ -580,7 +580,7 @@ export class NotificationCenterService {
     // One source over two reads (P1): either failing fails both.
     const cathay = forkJoin({
       pending: this.portfolio.getCathayPending().pipe(map(checkedPending)),
-      runs: this.portfolio.getCathayRuns().pipe(map(checkedRuns)),
+      runs: this.portfolio.getCathayRuns().pipe(map(runs => checkedRuns(runs))),
     });
     this.read(round, cathay, answer => {
       this.cathayData.set(answer ? { ...answer, now } : null);
@@ -589,7 +589,7 @@ export class NotificationCenterService {
     // 永豐期貨對帳單: the same two-read source; an invalid answer fails it alone.
     const futures = forkJoin({
       pending: this.portfolio.getFuturesPending().pipe(map(checkedFuturesPending)),
-      runs: this.portfolio.getFuturesRuns().pipe(map(checkedRuns)),
+      runs: this.portfolio.getFuturesRuns().pipe(map(runs => checkedRuns(runs, 'sinopac futures'))),
     });
     this.read(round, futures, answer => {
       this.futuresData.set(answer ? { ...answer, now } : null);

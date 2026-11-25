@@ -33,6 +33,38 @@ function render(result: FuturesSummary | Error) {
 }
 
 describe('FuturesCardComponent', () => {
+  it('dates the margins when the latest daily is older than the monthly source', () => {
+    const base = summary();
+    const { text } = render(summary({ value: { ...base.value!, source_kind: 'monthly', source_date: '2026-11-30' }, latest_daily: { ...base.latest_daily!, statement_date: '2026-11-23' } }));
+    expect(text()).toContain('保證金資料日 11/23');
+  });
+
+  it('shows no margin date when the daily is the source date', () => {
+    expect(render(summary()).text()).not.toContain('保證金資料日');
+  });
+
+  it('does not colour a positive equity red, keeps the negative style', () => {
+    const pos = render(summary());
+    expect(pos.el.querySelector('[data-testid="futures-equity"]')!.classList.contains('up')).toBe(false);
+    TestBed.resetTestingModule();
+    const base = summary();
+    const neg = render(summary({ value: { ...base.value!, total_equity: '-500' } }));
+    expect(neg.el.querySelector('[data-testid="futures-equity"]')!.classList.contains('down')).toBe(true);
+  });
+
+  it('reloads when the refresh token changes, not on the first input', () => {
+    const { fixture, el } = render(summary());
+    const service = TestBed.inject(PortfolioService) as unknown as { getFuturesSummary: ReturnType<typeof vi.fn> };
+    expect(service.getFuturesSummary).toHaveBeenCalledTimes(1);
+    fixture.componentRef.setInput('refresh', 0);
+    fixture.detectChanges();
+    expect(service.getFuturesSummary).toHaveBeenCalledTimes(1);
+    fixture.componentRef.setInput('refresh', 1);
+    fixture.detectChanges();
+    expect(service.getFuturesSummary).toHaveBeenCalledTimes(2);
+    expect(el.textContent).toContain('永豐期貨');
+  });
+
   it('renders summary fields', () => {
     const { text } = render(summary());
     const t = text();

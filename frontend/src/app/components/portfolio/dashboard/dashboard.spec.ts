@@ -209,6 +209,14 @@ describe('PortfolioDashboardComponent', () => {
     expect(root.querySelectorAll('.kpi-card').length).toBeGreaterThan(0);
   });
 
+  it('reloads the futures card with loadSummary, not twice on first load', () => {
+    const fixture = createFixture();
+    expect(portfolioService.getFuturesSummary).toHaveBeenCalledTimes(1);
+    fixture.componentInstance.loadSummary();
+    fixture.detectChanges();
+    expect(portfolioService.getFuturesSummary).toHaveBeenCalledTimes(2);
+  });
+
   it('refreshes quotes, polls until completed, then reloads summary', () => {
     portfolioService.refreshQuotes.mockReturnValue(of({
       refresh_scheduled: true,
@@ -1034,7 +1042,18 @@ describe('PortfolioDashboardComponent', () => {
       const datasets = (fixture.componentInstance.chartData as any).datasets;
       const callbacks = (fixture.componentInstance.chartOptions as any).plugins.tooltip.callbacks;
       expect(datasets[0].data).toEqual([140, 204, 180]);
-      expect(callbacks.afterBody([{ dataIndex: 1, datasetIndex: 0, dataset: datasets[0], parsed: { y: 204 } }])).toBe('現金 $54');
+      expect(callbacks.afterBody([{ dataIndex: 1, datasetIndex: 0, dataset: datasets[0], parsed: { y: 204 } }])).toEqual(['現金 $54', '期貨權益 $50']);
+    });
+
+    it('names futures in the keyboard summary text only when not zero', () => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        point('2026-10-23', '100', '40', '140'),
+        { ...point('2026-10-24', '100', '40', '190'), futures_equity_twd: '50' },
+      ]));
+      const c = createFixture().componentInstance as any;
+      const points = c.chartPoints();
+      expect(c.pointSummary(points[1])).toContain('現金 $40 · 期貨權益 $50');
+      expect(c.pointSummary(points[0])).not.toContain('期貨權益');
     });
 
     it('draws a zero-futures history exactly as before', () => {

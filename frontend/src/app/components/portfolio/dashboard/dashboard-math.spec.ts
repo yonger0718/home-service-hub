@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { Dividend, NetworthPoint, Paged, StockHolding } from '../../../models/portfolio.model';
 import {
+  assetsTotal,
   ALLOCATION_SERIES,
   abbrInk,
   MARKET_LABELS,
@@ -37,6 +38,18 @@ function dividend(id: number, overrides: Partial<Dividend> = {}): Dividend {
 }
 
 describe('dashboard math', () => {
+  describe('assetsTotal', () => {
+    const parts = { total_market_value: '100', total_cash_twd: '20', futures_equity_twd: '30' };
+
+    it('falls back to the parts when the total is non-numeric', () => {
+      expect(assetsTotal({ ...parts, total_assets_twd: 'n/a' })).toBe(150);
+    });
+
+    it('keeps a present "0" total', () => {
+      expect(assetsTotal({ ...parts, total_assets_twd: '0' })).toBe(0);
+    });
+  });
+
   describe('todayChange', () => {
     it('divides the day P&L by the assets before today', () => {
       const change = todayChange({ total_day_pnl: 10, total_assets_twd: '1250' });

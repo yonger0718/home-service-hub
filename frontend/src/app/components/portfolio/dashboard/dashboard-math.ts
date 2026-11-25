@@ -11,14 +11,15 @@ function num(value: number | string | null | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** A total that is present (including "0") counts as is; only an absent one falls back to the parts. */
+/** A total that is present (including "0") counts as is; only an absent or non-numeric one falls back to the parts. */
 export function assetsTotal(p: {
   total_assets_twd?: number | string | null;
   total_market_value?: number | string | null;
   total_cash_twd?: number | string | null;
   futures_equity_twd?: number | string | null;
 }): number {
-  if (p.total_assets_twd != null && p.total_assets_twd !== '') return num(p.total_assets_twd);
+  const total = p.total_assets_twd;
+  if (total != null && total !== '' && Number.isFinite(Number(total))) return Number(total);
   return num(p.total_market_value) + num(p.total_cash_twd) + num(p.futures_equity_twd);
 }
 
