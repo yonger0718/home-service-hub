@@ -1,6 +1,6 @@
 # 永豐期貨對帳單 auto-import — design
 
-Status: rev 1 (2026-11-25), draft. Owner rulings 2026-11-25: on a day without a statement the account's equity is the
+Status: rev 1.1 (2026-11-25), draft; the builder check is folded in (a day-to-day `prev` finding, the scope of the frozen note, no 永豐 money already in the portfolio). Owner rulings 2026-11-25: on a day without a statement the account's equity is the
 latest statement's value, and the monthly statement's month-end value corrects it (no re-pricing from exchange
 settlement prices); storage is one row per statement day with the fills and positions kept as JSON, not normalised
 tables; net worth uses 權益總值 (it includes the market value of open options). All amounts, product names and order
@@ -42,6 +42,10 @@ Non-goals:
   difference falls in one of the four months with a missing daily statement (or, for the continuity check of A, in the
   month after one). Per trade date, the monthly 交易稅 / 手續費 equal the daily `總計` (73 of 73 dates present in both).
   In the 12 months whose last daily statement shows no open position, the monthly 權益總值 equals that daily value.
+- Day to day: a daily 前日餘額 equals the previous daily statement's 本日餘額 in 82 of 87 pairs; the 5 exceptions are
+  exactly the first daily statements after the 5 activity dates without one.
+- The portfolio has no 永豐 broker account, cash transaction or transaction (brokers on record: 國泰, IB, Firstrade,
+  CS), so nothing already counts this money.
 - Every daily statement has four sections, each opened by a marker line `交易幣別：新台幣(NTT) ＊國內市場<name>＊`:
   `存提`, `交易紀錄`, `留倉彙總`, `權益帳`. Header lines: the title `國內期貨日對帳單`, a greeting with the name the
   broker already masks, and `期貨帳號：… 證券帳號：…` (masked by the broker).
@@ -180,6 +184,7 @@ the combination-margin lines) as label → amount, for the record.
   - latest attempt: `last_sha256`, `last_status` ∈ {`imported`, `duplicate`, `conflict`}, `last_detail`, `last_at`,
     `since`;
   - acknowledgement: `ack_sha256`, `ack_status`, `ack_at`.
+  - `findings` (JSONB, §6.4) and `ack_findings` (the findings at the moment of the ack).
 - `futures_statement_month`, primary key `month` (first day of the month): the same acceptance / attempt / ack columns,
   `month_end`, one Numeric column per `lines` key, `activity_dates`, `open_positions`, and `findings` (JSONB, §6.4).
 - `futures_statement_run`: the 國泰 run table's shape (`kind` latest / ok, `run_at`, `result`, `code`, `files_seen`,
@@ -205,17 +210,22 @@ statement there is no value (0 in totals). With it come `source_date` and `posit
 `open_positions` > 0): a value with open positions and `source_date` < D is frozen, and every view that shows it says
 「持倉中，數字停在 <source_date>」.
 
-### 6.4 Monthly findings
+### 6.4 Findings
 
-After a monthly row is accepted, and again whenever a daily row of that month is accepted:
+A daily row is checked when it is accepted: `prev:<date>` when its `prev_balance` differs from the `balance` of the
+latest accepted daily row before it (`<date>` = that row's date) — activity on a day without a statement, reported
+with the next statement. The first statement has no predecessor. A daily statement accepted later for a date in
+between re-checks the row after it.
+
+A monthly row is checked after it is accepted, and again whenever a daily row of that month is accepted:
 
 - `gap`: every `activity_dates` entry with no accepted daily row;
 - `diff`: only when there is no gap — the lines B, G, H, K differ from the sums over the month's daily rows
   (`deposits_net`, `premium_net`, `fees_and_tax`, `futures_realized`), or M differs from the last daily row's
   `balance`; each differing letter is listed.
 
-Findings never change a row. A month with findings is pending (§8) until acknowledged; the acknowledgement is keyed
-to the findings, so a new finding shows again.
+Findings (`findings` JSONB on both tables) never change a row. A day or month with findings is pending (§8) until
+acknowledged; the acknowledgement is keyed to the findings, so a new finding shows again.
 
 ### 6.5 Net worth
 
@@ -229,7 +239,10 @@ to the findings, so a new finding shows again.
   the same transaction, like `refresh_snapshot_cash_range` does for cash.
 - `GET /api/portfolio/ledger-feed/valuation?broker=sinopac_futures&as_of=D`: `total` = `futures_equity(D)`,
   `cash` = the source's `balance`, `market_value` = `total` − `cash`, `priced_through` = `source_date`,
-  `complete` = a value exists, `missing` = `[]`. Account 147 then shows it as 市值 like 117.
+  `complete` = a value exists, `missing` = `[]`. Account 147 then shows it as 市值 like 117. The response shape does
+  not change, so the accounting side needs no code; the frozen note of §6.3 is not shown on account 147, on the
+  dashboard total or on the 淨值走勢 chart — only on the futures card and the import card (§9). Known limit, kept
+  to stay inside the existing valuation contract.
 
 ## 7. Worker contract
 
@@ -245,11 +258,13 @@ to the findings, so a new finding shows again.
 ## 8. Notifications
 
 - `GET …/sinopac-futures-statement/pending` → the 國泰 envelope (`items` of `{"key", "status", "reason", "since",
-  "last_at"}`, `total`, `truncated`, cap 50), where `key` is a date or a month: every unacknowledged `conflict`, and
-  every month with unacknowledged findings (`reason` `gap:<n>` / `diff:<letters>`). `POST …/runs`,
+  "last_at"}`, `total`, `truncated`, cap 50), where `key` is a date or a month: every unacknowledged `conflict`, every
+  day with an unacknowledged `prev` finding (`reason` `prev:<date>`), and every month with unacknowledged findings
+  (`reason` `gap:<n>` / `diff:<letters>`). `POST …/runs`,
   `GET …/runs/latest`, `POST …/days/<key>/ack` as for 國泰.
 - Notifier: a section 「永豐期貨對帳單」 built like `notify/cathay.py` (own client, strict validation, one 「讀不到」 item on
   any failure, run deadline `sinopac_futures_run_time` 06:45 + grace 15): `11/03 收到不同版本的日對帳單`,
+  `11/05 前日餘額接不上 10/28（中間有一天沒有日對帳單）`,
   `2026-03 月對帳單有 1 天沒有日對帳單`, `2026-03 月對帳單對不上：B K`; weekly block 「永豐期貨對帳單待處理」.
 - SPA notification center: source `sinopac_futures` (「永豐期貨對帳單」) registered the way `cathay` is, primary
   command 「知道了」 (ack), 查看 → `/portfolio/import#sinopac-futures`.
@@ -273,7 +288,7 @@ to the findings, so a new finding shows again.
 3. Timer, notifier release, SPA.
 4. Set `valuation_source = portfolio:sinopac_futures` on account 147 (admin PATCH, with the owner's go).
 
-The four archived months with a missing daily statement come in as pending findings; the owner acknowledges them once.
+The archive comes in with 9 pending findings (5 `prev` days, 4 months with a gap); the owner acknowledges each once.
 
 ## 11. Tests (fictional fixtures only; never a real statement)
 
@@ -283,7 +298,8 @@ fixture; each grammar failure (unknown line, unknown section, foreign currency, 
 each identity broken alone with the others intact (rejected, nothing posted, latched); response validation; state file;
 `--validate-history`. Portfolio: migration; the three cases of §6.2 for daily and monthly; 422 on a broken identity;
 the series (carry, monthly wins on a tie, frozen flag, before the first statement); monthly findings (gap, diff, a late
-daily statement clearing a gap, ack keyed to findings); snapshot refresh on import and in the replay; ledger-feed
+daily statement clearing a gap, `prev` on a gap and its re-check when the missing day arrives, ack keyed to
+findings); snapshot refresh on import and in the replay; ledger-feed
 valuation for `sinopac_futures`; pending envelope and cap. Notifier and SPA: the 國泰 test set for the new source.
 
 ## 12. Review focus
@@ -292,5 +308,6 @@ valuation for `sinopac_futures`; pending envelope and cap. Notifier and SPA: the
 2. A repeated or corrected statement never changes an accepted row (§6.2).
 3. Net worth counts the futures equity exactly once, in every total of §6.5, and the replay agrees with the live
    writer.
-4. A day without a statement shows a frozen value as frozen, never as current (§6.3).
-5. A missing daily statement or a monthly difference reaches the owner within a day (§6.4, §8).
+4. On the futures card and the import card, a frozen value shows as frozen, never as current (§6.3).
+5. Activity without a daily statement reaches the owner within a day of the next statement (daily or monthly), and a
+   monthly difference within a day of the monthly statement (§6.4, §8).
