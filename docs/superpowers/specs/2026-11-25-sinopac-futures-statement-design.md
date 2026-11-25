@@ -1,6 +1,6 @@
 # 永豐期貨對帳單 auto-import — design
 
-Status: rev 1.2 (2026-11-25). Rev 1.1 folds the builder check (a day-to-day `prev` finding, the scope of the frozen
+Status: rev 1.6 (2026-11-25). Rev 1.1 folds the builder check (a day-to-day `prev` finding, the scope of the frozen
 note, no 永豐 money already in the portfolio); rev 1.2 folds the AGENT-589 review (text columns read in order, the
 per-broker valuation dispatch, the cash-refresh interplay and no commit inside the futures refresh, the monthly
 `carry` finding, the lock tag, the missing-snapshot-row limit); rev 1.3 folds the AGENT-591 re-check (one futures
@@ -10,7 +10,9 @@ round on the spec (owner rule: one review plus one re-check); the plan review co
 review AGENT-592): the §5.1 example is made internally consistent (it is the shared test fixture), and
 `--validate-history` replays the whole archive in one rolled-back portfolio transaction (§7). Rev 1.5 (owner-requested
 re-check AGENT-594): the history fill is a futures-only backfill, not the networth replay (§6.5, §10), and the month
-P&L carries completeness (§9). Owner rulings 2026-11-25: on a day without a statement the account's equity is the
+P&L carries completeness (§9). Rev 1.6 (owner design review of PR #438 screenshots, 2026-11-25): the 永豐期貨 card's
+layout, margin date, margin warning style and empty state (§9), the composition clamp (§6.5), and two known display
+limits (§9). Owner rulings 2026-11-25: on a day without a statement the account's equity is the
 latest statement's value, and the monthly statement's month-end value corrects it (no re-pricing from exchange
 settlement prices); storage is one row per statement day with the fills and positions kept as JSON, not normalised
 tables; net worth uses 權益總值 (it includes the market value of open options). All amounts, product names and order
@@ -286,6 +288,9 @@ is set when `findings_sha` changes. A day or month with findings is pending (§8
   `carryHoldings` / `todayChange` helpers and `dashboard.ts` `totalAssetsValue`. There an absent or non-numeric
   `total_assets_twd` falls back to market value + cash + futures equity, and a present `0` is a valid total (today
   any 0 falls back, so market 100, cash 0, futures −100 would chart 100).
+- The composition bar clamps each part at zero, as it already does for a negative cash balance: a negative futures
+  equity draws no 期貨權益 segment, while the hero total and the legend keep the signed amount (e.g. 期貨權益 −100).
+  This is deliberate: a bar of shares cannot show a negative share, and the signed figure stays visible next to it.
 - Writers: `write_today_snapshot` and the backfill replay (`replay_snapshots_range`, every `PortfolioSnapshot(...)`
   site) set it from §6.3. In `refresh_snapshot_cash_range` and the replay's cash-only gating, a row with zero cash is
   deleted only when its `futures_equity_twd` is also 0, and a row it inserts takes `futures_equity_twd` from §6.3 (not
@@ -361,6 +366,18 @@ is set when `findings_sha` changes. A day or month with findings is pending (§8
   month's deposits come from daily statements and any of them, or the month, has a finding) and
   本月期貨平倉損益, the source date, and the frozen note of §6.3. Read from a new
   `GET /api/portfolio/futures/summary`.
+- Card layout: on wide screens two columns. Left: 權益總值 (large), 本月損益, 本月期貨平倉損益, and at its foot 資料日 with
+  the frozen note 「持倉中，數字停在 MM/DD」. Right: 可動用(出金)保證金, 原始 / 維持保證金, 超額 / 追繳保證金, and at its foot
+  「保證金資料日 MM/DD」 (shown only when the margins come from an older daily statement than 資料日). Phones keep one
+  column in the same order, with 保證金資料日 directly under the margin rows, never above 本月損益.
+- Margin warning: when 超額保證金 < 0 or 追繳保證金 > 0 the margin row uses a warning style in amber / orange, never red
+  (on this card red means up and green means down, so red would read as a gain), plus a ⚠ icon and the word 追繳 so
+  colour is not the only signal; contrast is checked in light and dark. With 追繳 $0 and 超額 ≥ 0 both stay in the
+  plain text colour (no accent purple).
+- Before any futures statement exists the card is one compact line, 「永豐期貨 · 尚無期貨對帳單」: not hidden, and not a
+  full block that pushes the chart down.
+- Known display limits: when the total is exactly 0 the 淨值走勢 y-axis repeats 「0.000M」 on every tick (the chart's
+  existing tick format; left as is).
 - No 風險指標: the statement does not print one and the broker's formula is not on it; the card shows the printed
   margins instead.
 
