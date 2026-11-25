@@ -201,7 +201,7 @@ describe('recon-flow-view', () => {
   it('flowNote', () => {
     const partOf = makeItem({ part_of: [entry({ amount: '-5000' })] });
     expect(flowNote(partOf, 'TWD')).toBe(questionText(partOf, 'TWD'));
-    expect(flowNote(makeItem({ question: 'transfer' }), 'TWD')).toBe(NO_PEER_HINT);
+    expect(flowNote(makeItem({ question: 'transfer' }), 'TWD')).toBe('已經記過的話，選「已記在別處，對到…」；還沒記就先略過。');
     expect(flowNote(makeItem({ note: '提早入帳' }), 'TWD')).toBe('提早入帳');
     expect(flowNote(makeItem(), 'TWD')).toBeNull();
   });
@@ -348,6 +348,16 @@ describe('recon-flow-view', () => {
       transfer: transfer({ pair_transfer: { peer_candidates: [peer()] } }),
     });
     expect(flowNote(some, 'TWD')).toBe('選「配成轉帳…」把兩個帳戶的這筆對起來。');
+  });
+
+  it('flowNote: a transfer question the API offers no pairing for keeps the plain hint (the peer may exist)', () => {
+    const plain = '已經記過的話，選「已記在別處，對到…」；還沒記就先略過。';
+    expect(flowNote(makeItem({ question: 'transfer', transfer: transfer({ pair_transfer: null }) }), 'TWD')).toBe(plain);
+    expect(flowNote(makeItem({ question: 'transfer', transfer: null }), 'TWD')).toBe(plain);
+  });
+
+  it('flowError: dirty_disabled (pairing that needs a re-check the system has off) in plain words', () => {
+    expect(flowError('dirty_disabled')).toEqual({ text: '沒成功：這筆轉帳現在不能自動配，先略過或到帳單頁處理', reload: false });
   });
 
   it('flowLearnScope counts the case answers among the step answers', () => {

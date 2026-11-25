@@ -567,11 +567,23 @@ describe('ReconFlowComponent', () => {
   it('an HTTP error on apply: inline 沒成功 and no re-read', () => {
     open(ten());
     key('1');
-    apply().flush({ detail: 'case_closed' }, { status: 409, statusText: 'Conflict' });
+    apply().flush({ detail: 'action_busy: try later' }, { status: 409, statusText: 'Conflict' });
     detect();
-    expect(text(el.querySelector('.flow-error[role="alert"]'))).toBe('沒成功：這筆已經處理過了');
+    expect(text(el.querySelector('.flow-error[role="alert"]'))).toBe('沒成功：系統正在處理這張帳單，等一下再試');
     expect(headline()).toBe('測試商家 1 −$101');
     expect(answers()[0].disabled).toBe(false);
+  });
+
+  it('an HTTP 409 case_closed on apply: 這筆已經處理過了 and a re-read that moves on', () => {
+    open(ten());
+    key('1');
+    apply().flush({ detail: 'case_closed' }, { status: 409, statusText: 'Conflict' });
+    detect();
+    expect(TestBed.inject(ToastService).current()?.text).toBe('這筆已經處理過了');
+    reread().flush(inbox(ten().slice(1)));
+    detect();
+    expect(headline()).toBe('測試商家 2 −$102');
+    expect(el.querySelector('.flow-error')).toBeNull();
   });
 
   it('re-read fails: 答案已送出，但清單讀取失敗; 重試 sends a GET and no POST', () => {
@@ -1657,6 +1669,20 @@ describe('ReconFlowComponent', () => {
       const alert = el.querySelector('.flow-error[role="alert"]')!;
       expect(text(alert)).toBe('沒成功：另一個帳戶的那一筆已經配給別的轉帳了');
       expect(alert.querySelector('button')).toBeNull();
+    });
+
+    it('refused 409 case_closed: 這筆已經處理過了 and a re-read that moves on (answered elsewhere)', () => {
+      open([leg(1), line(2)]);
+      key('1');
+      caseAction(1).flush({ detail: 'case_closed: case 1 is closed' }, { status: 409, statusText: 'Conflict' });
+      detect();
+      expect(toasts().current()?.text).toBe('這筆已經處理過了');
+      expect(answers()[0].disabled).toBe(true);
+      reread().flush(inbox([line(2)]));
+      detect();
+      expect(headline()).toBe('測試商家 2 −$102');
+      expect(el.querySelector('.flow-error')).toBeNull();
+      expect(answers()[0].disabled).toBe(false);
     });
 
     it('busy: keys and answers are off until the re-read lands', () => {

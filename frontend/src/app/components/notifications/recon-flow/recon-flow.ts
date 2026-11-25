@@ -78,6 +78,7 @@ import {
   FlowError,
   adjustEntries,
   compareRows,
+  errorCode,
   flowActions,
   flowAnswerLabel,
   flowCard,
@@ -768,6 +769,12 @@ export class ReconFlowComponent {
       },
       error: (err: unknown) => {
         if (this.destroyed || gen !== this.gen) {
+          return;
+        }
+        if (errorCode(err) === 'case_closed') {
+          // Answered elsewhere: say so and read again (busy stays on) so the flow moves on, as an inbox answer does.
+          this.toasts.done('這筆已經處理過了');
+          this.read(false);
           return;
         }
         this.busy.set(false);

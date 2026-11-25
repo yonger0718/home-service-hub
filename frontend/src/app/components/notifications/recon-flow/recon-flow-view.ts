@@ -99,7 +99,11 @@ export function flowNote(item: InboxItem, currency: string): string | null {
     return questionText(item, currency);
   }
   if (item.question === 'transfer') {
-    return (item.transfer?.pair_transfer?.peer_candidates.length ?? 0) > 0
+    // No pair_transfer at all: the API offers no pairing here (e.g. the case has ledger candidates), so do not claim
+    // the other line is missing.
+    const peers = item.transfer?.pair_transfer?.peer_candidates;
+    if (!peers) return '已經記過的話，選「已記在別處，對到…」；還沒記就先略過。';
+    return peers.length > 0
       ? '選「配成轉帳…」把兩個帳戶的這筆對起來。'
       : '另一個帳戶還沒有對得上的那一筆（帳單可能還沒匯入）。已經記過的話選「已記在別處，對到…」；不然先略過，另一邊進來後再配。';
   }
@@ -261,12 +265,13 @@ const PLAIN: Readonly<Record<string, string>> = {
   not_member: '那一筆不在這個群組裡',
   foreign_zero: '外幣金額是 0，不能改',
   not_found: '找不到那一筆記錄',
+  dirty_disabled: '這筆轉帳現在不能自動配，先略過或到帳單頁處理',
 };
 
 const KNOWN_CODES = [...CHANGED_CODES, ...Object.keys(PLAIN)];
 
 /** The business code of a refusal: the string itself, a 409 / string `detail` text, or one named in a 422 `detail[].msg`. */
-function errorCode(codeOrErr: unknown): string | null {
+export function errorCode(codeOrErr: unknown): string | null {
   if (typeof codeOrErr === 'string') {
     return codeOrErr;
   }
