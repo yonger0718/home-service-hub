@@ -66,14 +66,14 @@ Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and �
 
 #### Scenario: Keyboard
 - **WHEN** the flow is open at 1440 px and no text field has focus
-- **THEN** keys 1–3 SHALL pick an answer, S SHALL skip, ← and → SHALL move without answering and Esc SHALL close
+- **THEN** keys 1–4 SHALL pick an answer, S SHALL skip, ← and → SHALL move without answering and Esc SHALL close
 
 #### Scenario: Keys while a sheet is open
 - **WHEN** the record or match sheet is open
 - **THEN** the flow's keys SHALL do nothing
 
 #### Scenario: Held key
-- **WHEN** an answer key (1–3) or S is held down and repeats
+- **WHEN** an answer key (1–4) or S is held down and repeats
 - **THEN** the repeats SHALL be ignored, so one press sends at most one answer
 
 #### Scenario: Answering moves on
@@ -121,7 +121,7 @@ When two open questions of a statement reference the same ledger entry (a bank-l
 
 ### Requirement: Transfer and amount answers
 
-When an item carries `transfer.adjust_transfer`, the flow SHALL offer 改成帳單的轉帳; when `transfer.pair_transfer.peer_candidates` is non-empty it SHALL offer 配成轉帳 with a picker of the candidates (account, date, amount); on an `ambiguous` case that allows `adjust_amount` it SHALL offer 改金額. These SHALL call `POST /reconciliation/cases/{id}/actions` and show a refusal code as an inline error.
+When an item carries `transfer.adjust_transfer`, the flow SHALL offer 改成帳單的轉帳; when `transfer.pair_transfer.peer_candidates` is non-empty it SHALL offer 配成轉帳 with a picker of the candidates (account, date, amount); on an `ambiguous` case with a candidate that is not a transfer leg it SHALL offer 改金額. These SHALL call `POST /reconciliation/cases/{id}/actions` and show a refusal in plain words under the answers, never as a code.
 
 #### Scenario: Pair a transfer
 - **GIVEN** a `needs_peer` case with one peer candidate on 玉山銀行
@@ -132,6 +132,11 @@ When an item carries `transfer.adjust_transfer`, the flow SHALL offer 改成帳�
 - **GIVEN** `adjust_transfer.entry_id` is null with two `candidate_entry_ids`
 - **WHEN** the owner picks 改成帳單的轉帳
 - **THEN** the SPA SHALL ask which entry first and send its id
+
+#### Scenario: Transfer without a peer
+- **GIVEN** a `needs_peer` case whose `peer_candidates` is empty
+- **WHEN** the question shows
+- **THEN** there SHALL be no 配成轉帳 answer and the hint SHALL say the other account's line has not arrived yet
 
 ### Requirement: Portfolio and system task sources
 

@@ -31,15 +31,17 @@
 - [x] 4.1 Move inbox answer labels into a shared map used by the panel and the flow (the labels were already one function, `buttonLabel()` in `inbox-view.ts`; the flow imports it and adds its own chip, headline and comparison copy in `recon-flow-view.ts`)
 - [x] 4.2 `/notifications/recon/:statementId`: pane at ≥ 1024 px, full screen below; comparison grid; answers; learn switch; progress; end state (one inbox item per step; the list is read again after each answer; header shows 已對上 k / n 行 from the statement task; end state 繼續對帳 / 回到通知; one flow instance across widths; 「看整張帳單」 links to the old statement page. Not in D: transfer answers, 改金額 on ambiguous — 5.1; 金額不同也算 is offered only in the record sheet. Owner design review 2026-11-24: 記一筆 hidden while the flow is open; switch before the answers and shared with the record sheet; 略過 row fixed at the pane's bottom; refusals in plain words with 重新讀取; the compared entry left out of 對到…)
 - [x] 4.3 Related questions on one entry applied in one request (as built: one request with the bank-line case only — the API rejects mixed questions; the server closes the entry's own question when the answer matches or adjusts it, otherwise it is asked next)
-- [x] 4.4 Keys 1–3 / S / ← → / Esc, off while a text field has focus (also off while a sheet or dialog is open, while an answer is being sent, and for auto-repeat)
+- [x] 4.4 Keys 1–3 (1–4 since PR E1) / S / ← → / Esc, off while a text field has focus (also off while a sheet or dialog is open, while an answer is being sent, and for auto-repeat)
 - [x] 4.5 Tests: answering advances; related pair sends both case ids; closing midway keeps the task with the remaining count (the pair test asserts one case id and that the second question is not shown, plus the 不是同一筆 and 對到-another-entry variants; 復原: revert → rule off → reconcile, wired through `ReconUndoService` — this is the 復原 scenario 1.1 deferred)
 
 ## 5. Answers, auto-pay, snooze (PR E)
 
-- [ ] 5.1 改成帳單的轉帳, 配成轉帳 (candidate picker), 改金額 on ambiguous (#150); refusal codes inline
+PR E is split (2026-11-25): E1 = 5.1 (+ its 5.4 tests); E2 = 5.3 snooze; E3 = 5.2 auto-pay, with a write-scope auto-pay endpoint first (owner ruling 2026-11-25: `PUT /settings/reconciliation` is admin and replaces the whole document).
+
+- [x] 5.1 改成帳單的轉帳, 配成轉帳 (candidate picker), 改金額 on ambiguous (#150); refusals inline in plain words (PR E1: also on amount/date questions with a transfer leg; keys 1–4; one picker sheet `app-flow-pick-sheet`)
 - [ ] 5.2 Auto-pay: pill text, 記帳設定 switch + 起始日, skipped audit events → 系統 tasks with the reason copy from D9
 - [ ] 5.3 Snooze (D4) with fingerprint wake-up
-- [ ] 5.4 Tests: pair_transfer payload; ambiguous adjust asks for the entry; snooze hides and wakes
+- [ ] 5.4 Tests: pair_transfer payload; ambiguous adjust asks for the entry; snooze hides and wakes (PR E1: the pair_transfer and ambiguous-leg tests are in `recon-flow.spec.ts`; snooze comes with E2)
 
 ## 6. E-invoices (PR F)
 
