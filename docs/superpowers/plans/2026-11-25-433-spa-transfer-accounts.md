@@ -70,3 +70,9 @@
 - [ ] **Step 1:** OpenSpec `add-notification-center`: design D5 Transfers bullet (rows, named note, toast), spec "Transfer and amount answers" scenarios "Transfer leg known" (named note, toast with the peer sentence when `peer_case_id`) and "Ambiguous transfer leg" (row format), tasks.md note under 5.1 (#433 follow-up done). Requirement ≤ 500 chars; `openspec validate add-notification-center --strict` valid.
 - [ ] **Step 2: Commit** `docs(openspec): #433 transfer answers name the accounts`.
 - [ ] **Step 3: Evidence** (kit `~/reports/home-hub-playwright-stubs/notif_e1_*`, fictional data, clock fixed): stubs gain `legs` and `peer_case_id`; three owner screenshots at 390/1100/1440 light+dark — leg picker with 「來源 → 目的 … 改成 …」, one-leg note naming 測試銀行, toast 「已照帳單改轉帳。另一個帳戶的那一題也處理了」 — plus probes for the fallbacks (no counter, `peer_case_id` null). Gallery for the owner.
+
+## Plan review fold (AGENT-598, PASS-with-minor, 2026-11-25)
+
+1. View tests pin the live card leg in full: account 測試銀行卡, counter 測試銀行, `out`, 19970 / 20000 → `'2026/09/30 測試銀行卡 → 測試銀行 $19,970 改成 $20,000'`; the flow's named-note test asserts the whole sentence (and the `\n` + item note form in the view spec).
+2. The two E1 leg-picker tests without `legs` now expect the title fallback (`'2026/09/05 測試轉帳 甲 $19,970 改成 $20,000'`, …); a flow test with `legs` shorter than the candidates pins one named row + one title row; the adjust_transfer options use `legRowLabel` only and `entryRows` stays for 改金額… (its signed `→` rows unchanged, existing test).
+3. `adjustTransferToast` is pinned for `{replayed: true, peer_case_id}` (long text), and the flow flushes a replayed 200 with `peer_case_id` → long toast with 復原.

@@ -526,6 +526,10 @@ describe('recon-flow-view', () => {
     const out = candidate({ entry_id: 22, date: '2026-09-30', title: '測試轉帳 乙', amount: '-19950.0000' });
     expect(legRowLabel(out, leg433({ entry_id: 22, account_name: '測試銀行', counter_account_name: '測試銀行卡', direction: 'out' }), '-20000.0000', 'TWD'))
       .toBe('2026/09/30 測試銀行 → 測試銀行卡 $19,950 改成 $20,000');
+    // The live card leg (AGENT-598 finding 1): account is the card, money out to the bank.
+    const card = candidate({ entry_id: 23, date: '2026-09-30', title: '測試轉帳 丙', amount: '-19970.0000' });
+    expect(legRowLabel(card, leg433({ entry_id: 23, direction: 'out' }), '-20000.0000', 'TWD'))
+      .toBe('2026/09/30 測試銀行卡 → 測試銀行 $19,970 改成 $20,000');
     // No single other leg, or no leg data at all (an older payload): the title stands in for the accounts.
     expect(legRowLabel(c, leg433({ counter_account_name: null }), '20000.0000', 'TWD')).toBe('2026/09/30 測試轉帳 甲 $19,970 改成 $20,000');
     expect(legRowLabel(c, undefined, '20000.0000', 'TWD')).toBe('2026/09/30 測試轉帳 甲 $19,970 改成 $20,000');
@@ -566,5 +570,8 @@ describe('recon-flow-view', () => {
     expect(adjustTransferToast(out(9))).toBe('已照帳單改轉帳。另一個帳戶的那一題也處理了');
     expect(adjustTransferToast(out(null))).toBe('已照帳單改轉帳');
     expect(adjustTransferToast(out(undefined))).toBe('已照帳單改轉帳');
+    // A replayed 200 carries the original action's peer_case_id (AGENT-598 finding 3).
+    const replayed = { id: 1, replayed: true, peer_case_id: 7 } as unknown as ReconciliationAction;
+    expect(adjustTransferToast(replayed)).toBe('已照帳單改轉帳。另一個帳戶的那一題也處理了');
   });
 });

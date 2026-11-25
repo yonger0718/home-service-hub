@@ -1527,6 +1527,19 @@ describe('ReconFlowComponent', () => {
       ]);
     });
 
+    it('#433 legs shorter than the candidates (an older or partial payload): the listed leg names its accounts, the other keeps its title', () => {
+      const item = ambiguous(1);
+      item.transfer!.adjust_transfer!.legs = [
+        { entry_id: 611, account_name: '測試銀行', counter_account_name: '測試銀行卡', direction: 'out' },
+      ];
+      open([item]);
+      key('2');
+      expect(pickRows()).toEqual([
+        '2026/09/05 測試轉帳 甲 $19,970 改成 $20,000',
+        '2026/09/05 測試銀行 → 測試銀行卡 $19,950 改成 $20,000',
+      ]);
+    });
+
     it('#433 a transfer leg whose other account is known: the note names it; the toast adds the peer sentence when the response says the peer question was resolved', () => {
       const item = leg(1);
       item.transfer!.adjust_transfer!.legs = [
