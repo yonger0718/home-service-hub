@@ -13,6 +13,7 @@ import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
 import { ToastService } from '../../../services/toast.service';
 import { DASHBOARD_CLOCK, PortfolioDashboardComponent } from './dashboard';
+import { FuturesCardComponent } from './futures-card/futures-card';
 import { hoverGuidePlugin } from './chart-guide.plugin';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { BtnComponent } from '../../ui/btn/btn';
@@ -101,6 +102,7 @@ describe('PortfolioDashboardComponent', () => {
     refreshQuotes: ReturnType<typeof vi.fn>;
     getRecalcStatus: ReturnType<typeof vi.fn>;
     getSummary: ReturnType<typeof vi.fn>;
+    getFuturesSummary: ReturnType<typeof vi.fn>;
     getUpcomingExDividends: ReturnType<typeof vi.fn>;
     getNetworthHistory: ReturnType<typeof vi.fn>;
     getDividends: ReturnType<typeof vi.fn>;
@@ -128,6 +130,7 @@ describe('PortfolioDashboardComponent', () => {
       refreshQuotes: vi.fn().mockReturnValue(of(null)),
       getRecalcStatus: vi.fn().mockReturnValue(of(null)),
       getSummary: vi.fn().mockReturnValue(of(buildSummary())),
+      getFuturesSummary: vi.fn().mockReturnValue(of({ as_of: '2026-11-23', value: null, latest_daily: null, month: null })),
       getUpcomingExDividends: vi.fn().mockReturnValue(of([])),
       getNetworthHistory: vi.fn().mockReturnValue(of([
         { date: '2026-01-01', total_market_value: '100', total_cash_twd: '40', total_assets_twd: '140', total_cost: '80', total_unrealized_pnl: '20', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
@@ -159,6 +162,7 @@ describe('PortfolioDashboardComponent', () => {
             BentoComponent,
             PctBadgeComponent,
             TooltipModule,
+            FuturesCardComponent,
             SkeletonModule,
             NativeAmountPipe,
           ],
@@ -195,6 +199,15 @@ describe('PortfolioDashboardComponent', () => {
     portfolioService.getNetworthHistory.mockClear();
     return fixture;
   }
+
+  it('renders the rest of the dashboard when the futures summary fails', () => {
+    portfolioService.getFuturesSummary.mockReturnValue(throwError(() => new Error('boom')));
+    const fixture = createFixture();
+    const root = fixture.nativeElement as HTMLElement;
+
+    expect(root.querySelector('app-futures-card')?.textContent).toContain('期貨資料載入失敗');
+    expect(root.querySelectorAll('.kpi-card').length).toBeGreaterThan(0);
+  });
 
   it('refreshes quotes, polls until completed, then reloads summary', () => {
     portfolioService.refreshQuotes.mockReturnValue(of({

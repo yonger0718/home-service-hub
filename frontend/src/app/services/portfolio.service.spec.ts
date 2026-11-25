@@ -29,6 +29,17 @@ describe('PortfolioService', () => {
     runs.flush({ latest: null, latest_ok: null });
   });
 
+  it('reads the futures summary, sending as_of only when given', () => {
+    service.getFuturesSummary().subscribe();
+    const plain = httpMock.expectOne(r => r.url === '/api/portfolio/futures/summary');
+    expect(plain.request.params.has('as_of')).toBe(false);
+    plain.flush({ as_of: '2026-11-23', value: null, latest_daily: null, month: null });
+    service.getFuturesSummary('2026-10-31').subscribe();
+    const dated = httpMock.expectOne(r => r.url === '/api/portfolio/futures/summary');
+    expect(dated.request.params.get('as_of')).toBe('2026-10-31');
+    dated.flush({ as_of: '2026-10-31', value: null, latest_daily: null, month: null });
+  });
+
   it('acks a 國泰 day with a body-less POST', () => {
     service.ackCathayDay('2026-10-28').subscribe();
     const req = httpMock.expectOne('/api/portfolio/imports/cathay-statement/days/2026-10-28/ack');

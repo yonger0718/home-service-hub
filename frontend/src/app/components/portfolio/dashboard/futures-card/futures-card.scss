@@ -1,0 +1,63 @@
+:host {
+  display: block;
+}
+
+.futures-row {
+  align-items: baseline;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+.futures-label,
+.futures-muted,
+.futures-meta,
+.futures-note {
+  color: var(--app-text-muted);
+}
+
+.futures-equity-row .futures-value {
+  font-size: 22px;
+}
+
+.futures-value {
+  color: var(--app-text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  text-align: right;
+
+  &.up,
+  .up {
+    color: var(--app-trend-positive);
+  }
+
+  &.down,
+  .down {
+    color: var(--app-trend-negative);
+  }
+}
+
+.futures-muted {
+  font-size: 12px;
+  font-weight: 400;
+  margin-left: 6px;
+}
+
+.margin-call {
+  color: var(--app-danger);
+}
+
+.futures-meta {
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+
+.futures-frozen {
+  color: var(--app-warning);
+  margin-left: 8px;
+}
+
+.futures-note {
+  margin: 0;
+}

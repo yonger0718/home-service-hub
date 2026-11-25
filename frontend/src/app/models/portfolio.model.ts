@@ -547,3 +547,37 @@ export interface FxFetchResult {
   upserted_count: number;
   error: string | null;
 }
+
+export interface FuturesSummaryValue {
+  total_equity: string;
+  balance: string;
+  source_date: string;
+  source_kind: 'daily' | 'monthly';
+  positions_open: boolean;
+  frozen: boolean;
+}
+
+export interface FuturesLatestDaily {
+  statement_date: string;
+  withdrawable: string;
+  initial_margin: string;
+  maintenance_margin: string;
+  excess_margin: string;
+  margin_call: string;
+}
+
+export interface FuturesMonth {
+  month: string;
+  pnl: string | null;
+  pnl_complete: boolean;
+  pnl_reason: 'no_baseline' | 'findings' | null;
+  futures_realized: string;
+}
+
+/** `GET /api/portfolio/futures/summary`; `month` is null only when `value` is null. */
+export interface FuturesSummary {
+  as_of: string;
+  value: FuturesSummaryValue | null;
+  latest_daily: FuturesLatestDaily | null;
+  month: FuturesMonth | null;
+}

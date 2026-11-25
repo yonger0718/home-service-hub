@@ -3,6 +3,7 @@ import { HttpParams } from '@angular/common/http';
 import { Observable, Subject, tap } from 'rxjs';
 import { BaseApiService } from './base-api.service';
 import {
+  FuturesSummary,
   HoldingIdentity,
   HoldingKey,
   PortfolioSummary,
@@ -68,6 +69,11 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.get<PortfolioSummary>('/api/portfolio/summary').pipe(
       tap(summary => this.cacheHoldings(summary.holdings)),
     );
+  }
+
+  getFuturesSummary(asOf?: string): Observable<FuturesSummary> {
+    const params = asOf ? new HttpParams().set('as_of', asOf) : undefined;
+    return this.http.get<FuturesSummary>('/api/portfolio/futures/summary', { params });
   }
 
   getCachedHolding(key: HoldingKey | HoldingIdentity): StockHolding | undefined {

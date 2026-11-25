@@ -52,6 +52,7 @@ import {
   todayChange,
   assetsTotal,
 } from './dashboard-math';
+import { FuturesCardComponent } from './futures-card/futures-card';
 import { hoverGuidePlugin } from './chart-guide.plugin';
 import { Amount, displayedSign, formatMoney, formatPct } from '../../ui/format';
 import { isTwdCurrency } from '../money';
@@ -76,6 +77,7 @@ interface ChartSeriesValues {
 @Component({
   selector: 'app-portfolio-dashboard',
   imports: [
+    FuturesCardComponent,
     PageHeaderComponent,
     CommonModule,
     RouterLink,
