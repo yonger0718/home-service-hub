@@ -17,7 +17,7 @@
       <small class="futures-equity-none">尚無期貨對帳單</small>
     }
   } @else if (e.state === 'error') {
-    <small class="futures-equity-none">讀不到期貨權益</small>
+    <small class="futures-equity-none" role="alert">讀不到期貨權益</small>
   }
 
   <!-- Gated on the 永豐期貨 source alone (not the whole round): its answer or failure shows as soon as it lands. -->

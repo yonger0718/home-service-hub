@@ -1715,6 +1715,30 @@ describe('NotificationCenterService', () => {
       expect(svc.futures()?.state).toBe('failed');
     });
 
+    it('never run (latest and latest_ok null): automatic import not enabled yet — no run task, no 匯入 dot, nothing counted', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { futuresRuns: { latest: null, latest_ok: null } });
+      expect(svc.failedSources()).toEqual([]);
+      expect(ids(svc)).toEqual([]);
+      expect(svc.summary()).toEqual(NO_TASKS);
+      expect('import' in svc.badges()).toBe(false);
+      expect(svc.futures()).toMatchObject({ state: 'never', runLine: '尚未啟用自動匯入', banner: null, dotLabel: null });
+    });
+
+    it('a month key and a day key both pass; the first run (stale since yesterday) raises the run task and the red dot', async () => {
+      const svc = service();
+      svc.start();
+      const yesterday = run(clockNow, 'ok', 24 * 60);
+      await answer(0, {
+        futuresPending: { items: [futuresItem('2026-09', { kind: 'month' }), futuresItem('2026-10-23')], total: 2, truncated: false },
+        futuresRuns: { latest: yesterday, latest_ok: yesterday },
+      });
+      expect(svc.failedSources()).toEqual([]);
+      expect(ids(svc)).toEqual(['sinopac_futures:2026-09:findings', 'sinopac_futures:2026-10-23:findings', 'sinopac_futures:run']);
+      expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label: '永豐期貨對帳單今天沒有執行' });
+    });
+
     it('futuresMore is total − listed and 0 while unread', async () => {
       const svc = service();
       expect(svc.futuresMore()).toBe(0);
@@ -1730,6 +1754,9 @@ describe('NotificationCenterService', () => {
       ['an unknown kind', { futuresPending: { items: [futuresItem('2026-10-23', { kind: 'week' as never })], total: 1, truncated: false } }],
       ['a numeric reason', { futuresPending: { items: [futuresItem('2026-10-23', { reason: 5 as never })], total: 1, truncated: false } }],
       ['no total', { futuresPending: { items: [] } }],
+      ['a garbage key', { futuresPending: { items: [futuresItem('2026-1-23')], total: 1, truncated: false } }],
+      ['a month key on a day item', { futuresPending: { items: [futuresItem('2026-10')], total: 1, truncated: false } }],
+      ['a date key on a month item', { futuresPending: { items: [futuresItem('2026-10-23', { kind: 'month' })], total: 1, truncated: false } }],
       ['an unreadable run_at', { futuresRuns: { latest: { run_at: 'nope', result: 'ok', code: null, files_seen: 1, posted: 1 }, latest_ok: null } }],
       ['runs without latest_ok', { futuresRuns: { latest: null } }],
     ])('invalid payload marks the source unreadable without touching 國泰 (%s)', async (_name, values) => {

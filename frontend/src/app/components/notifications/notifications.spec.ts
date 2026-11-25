@@ -21,6 +21,7 @@ import { notificationsMatcher } from '../../app.routes';
 import { LayoutMode, LayoutModeService, MATCH_MEDIA, PHONE_QUERY } from '../../services/layout-mode.service';
 import { InboxService } from '../accounting/inbox/inbox.service';
 import { NotifSourceKey, NotifSummary, NotifTask, NotifTier, NotifTrackingRow, summarize } from './notif-task';
+import { futuresTasks } from './sources/sinopac-futures';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
 import { ReconFlowComponent } from './recon-flow/recon-flow';
 import { NotificationsComponent } from './notifications';
@@ -1803,6 +1804,25 @@ describe('NotificationsComponent', () => {
         );
         expect(document.body.textContent).not.toContain('db down');
         expect(invalidate).toHaveBeenCalledTimes(2);
+      });
+
+      it('two incidents on one key get distinct button names (the conflict one ends · 不同版本)', () => {
+        const run = { run_at: new Date().toISOString(), result: 'ok' as const, code: null, files_seen: 1, posted: 1 };
+        const both = futuresTasks(
+          {
+            items: [
+              { key: '2026-10-27', kind: 'day', status: 'conflict', reason: null, since: null, last_at: null },
+              { key: '2026-10-27', kind: 'day', status: 'findings', reason: 'prev:10/23', since: null, last_at: null },
+            ],
+            total: 2,
+            truncated: false,
+          },
+          { latest: run, latest_ok: run },
+          new Date(),
+        );
+        const root = open(both);
+        const names = Array.from(root.querySelectorAll('app-notif-row')).map(r => r.querySelector(NOTIF_PRIMARY_CONTROL)!.getAttribute('aria-label'));
+        expect(names).toEqual(['知道了：永豐期貨對帳單 10/27 · 不同版本', '知道了：永豐期貨對帳單 10/27']);
       });
 
       it('futuresMore 7: 還有 7 件永豐期貨對帳單未列出 under 全部 and 投資, after the 國泰 note, not under 財務', async () => {

@@ -144,11 +144,19 @@ describe('FuturesStatusCardComponent', () => {
     expect(text(el.querySelector('.futures-unlatch'))).toBe('排除原因後，在主機執行：python -m worker sinopac-futures --unlatch');
     expect(el.querySelector('.futures-unlatch code')?.textContent).toBe('python -m worker sinopac-futures --unlatch');
 
-    futures.set(view([], { latest: null, latest_ok: null }));
+    futures.set(view([], { latest: run({ run_at: YESTERDAY_0646 }), latest_ok: run({ run_at: YESTERDAY_0646 }) }));
     await settle();
     expect(el.querySelector('app-banner .banner--warn')).not.toBeNull();
-    expect(text(el.querySelector('app-banner .banner-detail'))).toBe('06:45 的排程沒有回報 · 還沒有執行紀錄');
+    expect(text(el.querySelector('app-banner .banner-detail'))).toBe('06:45 的排程沒有回報 · 上次執行 昨天 06:46');
     expect(el.querySelector('.futures-unlatch')).toBeNull();
+  });
+
+  it('never run: the neutral line 尚未啟用自動匯入, no banner', () => {
+    futures.set(view([], { latest: null, latest_ok: null }));
+    const el = mount();
+    expect(el.querySelector('app-banner')).toBeNull();
+    expect(text(el.querySelector('.futures-run-line'))).toBe('尚未啟用自動匯入');
+    expect(text(el.querySelector('.futures-none'))).toBe('沒有需要處理的對帳單');
   });
 
   it('lists pending items with ack: one row per incident, labelled by key, with 知道了 named after the item', () => {
@@ -164,7 +172,7 @@ describe('FuturesStatusCardComponent', () => {
     const btn = ackButton('2026-10-27:findings')!;
     expect(text(btn)).toBe('知道了');
     expect(btn.getAttribute('aria-label')).toBe('知道了：永豐期貨對帳單 10/27 前日餘額接不上（10/23）');
-    expect(ackButton('2026-10-27:conflict')!.getAttribute('aria-label')).toBe('知道了：永豐期貨對帳單 10/27 收到內容不同的同日對帳單');
+    expect(ackButton('2026-10-27:conflict')!.getAttribute('aria-label')).toBe('知道了：永豐期貨對帳單 10/27 · 不同版本 收到內容不同的同日對帳單');
     expect(el.querySelector('.futures-none')).toBeNull();
   });
 
@@ -191,7 +199,7 @@ describe('FuturesStatusCardComponent', () => {
     acks[0].next(undefined);
     acks[0].complete();
     await settle();
-    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：永豐期貨對帳單 10/27' }));
+    expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：永豐期貨對帳單 10/27 · 不同版本' }));
     expect(invalidate).toHaveBeenCalledTimes(1);
     expect(ackButton('2026-10-27:conflict')!.disabled).toBe(true);
     settledRound.set(4);
@@ -271,10 +279,12 @@ describe('FuturesStatusCardComponent', () => {
       const el = mount();
       expect(text(el.querySelector('.futures-equity-none'))).toBe('尚無期貨對帳單');
       expect(el.querySelector('[data-testid="futures-status-equity"]')).toBeNull();
+      expect(el.querySelector('.futures-equity-none')!.getAttribute('role')).toBeNull();
       TestBed.resetTestingModule();
       summaryAnswer = throwError(() => new HttpErrorResponse({ status: 500 }));
       const failed = mount();
       expect(text(failed.querySelector('.futures-equity-none'))).toBe('讀不到期貨權益');
+      expect(failed.querySelector('.futures-equity-none')!.getAttribute('role')).toBe('alert');
     });
   });
 });

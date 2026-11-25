@@ -121,17 +121,19 @@ function checkedRuns(runs: unknown): CathayRuns {
 }
 
 const FUTURES_STATUSES: readonly unknown[] = ['conflict', 'findings'] satisfies FuturesPendingItem['status'][];
-const FUTURES_KINDS: readonly unknown[] = ['day', 'month'] satisfies FuturesPendingItem['kind'][];
+/** A pending key per kind, as the ack route accepts it (`^\d{4}-\d{2}(-\d{2})?$`): a date for a day, `YYYY-MM` for a month. */
+const FUTURES_KEY: Readonly<Record<FuturesPendingItem['kind'], RegExp>> = { day: /^\d{4}-\d{2}-\d{2}$/, month: /^\d{4}-\d{2}$/ };
 
 /**
- * 永豐期貨 pending: items with a string `key`, a known `kind` and `status`, and `reason` / `since` / `last_at` each null
+ * 永豐期貨 pending: items with a known `kind`, a `key` of that kind's shape, a known `status`, and `reason` / `since` / `last_at` each null
  * or a string, plus a numeric total; else an error, so the futures source alone fails.
  */
 function checkedFuturesPending(pending: unknown): FuturesPending {
   const item = (i: unknown) =>
     isObject(i) &&
+    (i['kind'] === 'day' || i['kind'] === 'month') &&
     typeof i['key'] === 'string' &&
-    FUTURES_KINDS.includes(i['kind']) &&
+    FUTURES_KEY[i['kind']].test(i['key']) &&
     FUTURES_STATUSES.includes(i['status']) &&
     optionalText(i['reason']) &&
     optionalText(i['since']) &&

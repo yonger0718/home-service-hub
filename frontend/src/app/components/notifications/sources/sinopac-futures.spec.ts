@@ -42,13 +42,19 @@ describe('sinopac futures pending items', () => {
     });
   });
 
-  it('conflict and findings on one key give two tasks', () => {
+  it('conflict and findings on one key give two tasks, with distinct titles (the conflict one suffixed · 不同版本)', () => {
     const items = [item({ status: 'findings' }), item({ status: 'conflict', reason: null })];
     const tasks = futuresTasks(pending(items), okRuns, now);
-    expect(tasks.map(t => [t.id, t.when])).toEqual([
-      ['sinopac_futures:2026-10-27:conflict', '收到內容不同的同日對帳單'],
-      ['sinopac_futures:2026-10-27:findings', '前日餘額接不上（10/23）'],
+    expect(tasks.map(t => [t.id, t.title, t.when])).toEqual([
+      ['sinopac_futures:2026-10-27:conflict', '永豐期貨對帳單 10/27 · 不同版本', '收到內容不同的同日對帳單'],
+      ['sinopac_futures:2026-10-27:findings', '永豐期貨對帳單 10/27', '前日餘額接不上（10/23）'],
     ]);
+    expect(tasks.map(t => (t.primary as { command: { name: string } }).command.name)).toEqual([
+      '永豐期貨對帳單 10/27 · 不同版本',
+      '永豐期貨對帳單 10/27',
+    ]);
+    const month = futuresTasks(pending([item({ key: '2026-09', kind: 'month', status: 'conflict', reason: null })]), okRuns, now);
+    expect(month[0].title).toBe('永豐期貨 2026/09 月對帳單 · 不同版本');
     expect(tasks.map(t => (t.primary as { command: { status: string } }).command.status)).toEqual(['conflict', 'findings']);
   });
 
@@ -64,7 +70,8 @@ describe('sinopac futures pending items', () => {
 
   it('查看 links to /portfolio/import#sinopac-futures (items and the run task)', () => {
     expect(FUTURES_CARD_FRAGMENT).toBe('sinopac-futures');
-    const tasks = futuresTasks(pending([item()]), { latest: null, latest_ok: null }, now);
+    const yesterday = run({ run_at: '2026-10-27T06:46:00+08:00' });
+    const tasks = futuresTasks(pending([item()]), { latest: yesterday, latest_ok: yesterday }, now);
     expect(tasks[0].secondary).toEqual([LOOK]);
     expect(tasks[1]).toMatchObject({ id: 'sinopac_futures:run', primary: LOOK, secondary: [] });
   });
@@ -118,13 +125,13 @@ describe('sinopac futures run rule (06:45 Asia/Taipei + 15 minutes, the 國泰 r
     ['2026-10-28T06:59:00+08:00', 'ok'],
     ['2026-10-28T07:00:00+08:00', 'stale'],
   ])('latest yesterday 06:46, now %s → %s', (n, state) => {
-    expect(futuresRunState(run({ run_at: '2026-10-27T06:46:00+08:00' }), at(n))).toBe(state);
+    expect(futuresRunState({ latest: run({ run_at: '2026-10-27T06:46:00+08:00' }), latest_ok: null }, at(n))).toBe(state);
   });
 
   it('a run exactly at 06:45:00 is ok; one second earlier is stale; an unreadable run_at is stale', () => {
-    expect(futuresRunState(run({ run_at: '2026-10-28T06:45:00+08:00' }), now)).toBe('ok');
-    expect(futuresRunState(run({ run_at: '2026-10-28T06:44:59+08:00' }), now)).toBe('stale');
-    expect(futuresRunState(run({ run_at: 'not a time' }), now)).toBe('stale');
+    expect(futuresRunState({ latest: run({ run_at: '2026-10-28T06:45:00+08:00' }), latest_ok: null }, now)).toBe('ok');
+    expect(futuresRunState({ latest: run({ run_at: '2026-10-28T06:44:59+08:00' }), latest_ok: null }, now)).toBe('stale');
+    expect(futuresRunState({ latest: run({ run_at: 'not a time' }), latest_ok: null }, now)).toBe('stale');
   });
 
   it('run task when latched / failed / stale; none when ok', () => {
@@ -144,8 +151,22 @@ describe('sinopac futures run rule (06:45 Asia/Taipei + 15 minutes, the 國泰 r
     expect(futuresTasks(NONE, { latest: yesterday, latest_ok: yesterday }, now)).toEqual([expect.objectContaining({
       id: 'sinopac_futures:run', title: '永豐期貨對帳單今天沒有執行', when: '06:45 的排程沒有回報', meta: '上次執行 昨天 06:46',
       fingerprint: 'stale|2026-10-27T22:45:00.000Z' })]);
-    expect(futuresTasks(NONE, { latest: null, latest_ok: null }, now)).toEqual([expect.objectContaining({
-      id: 'sinopac_futures:run', meta: '還沒有執行紀錄' })]);
+  });
+
+  it('never run (latest and latest_ok both null): automatic import not enabled yet — no run task', () => {
+    expect(futuresRunState({ latest: null, latest_ok: null }, now)).toBe('never');
+    expect(futuresTasks(NONE, { latest: null, latest_ok: null }, now)).toEqual([]);
+    // Pending items still give their tasks.
+    expect(futuresTasks(pending([item()]), { latest: null, latest_ok: null }, now).map(t => t.id)).toEqual(['sinopac_futures:2026-10-27:findings']);
+  });
+
+  it('once either run exists the 國泰 rules apply: latest_ok alone (latest null) is stale with 還沒有執行紀錄', () => {
+    const ok = run({ run_at: '2026-10-27T06:46:00+08:00' });
+    expect(futuresRunState({ latest: null, latest_ok: ok }, now)).toBe('stale');
+    expect(futuresTasks(NONE, { latest: null, latest_ok: ok }, now)).toEqual([expect.objectContaining({
+      id: 'sinopac_futures:run', title: '永豐期貨對帳單今天沒有執行', when: '06:45 的排程沒有回報', meta: '還沒有執行紀錄' })]);
+    // A first run that failed raises the alarm at once.
+    expect(futuresTasks(NONE, { latest: run({ result: 'failed' }), latest_ok: null }, now).map(t => t.id)).toEqual(['sinopac_futures:run']);
   });
 });
 
@@ -162,15 +183,21 @@ describe('futuresView', () => {
       banner: { tone: 'error', heading: '永豐期貨對帳單匯入失敗', detail: '今天 06:46 · 讀不到對帳單密碼檔' } });
     expect(futuresView(NONE, { latest: run({ result: 'latched' }), latest_ok: null }, now).banner)
       .toEqual({ tone: 'error', heading: '永豐期貨對帳單匯入已停用', detail: '今天 06:46 · 排程已停用，之後不會自動匯入' });
-    expect(futuresView(NONE, { latest: null, latest_ok: null }, now).banner)
-      .toEqual({ tone: 'warn', heading: '永豐期貨對帳單今天沒有執行', detail: '06:45 的排程沒有回報 · 還沒有執行紀錄' });
+    const yesterday = run({ run_at: '2026-10-27T06:46:00+08:00' });
+    expect(futuresView(NONE, { latest: yesterday, latest_ok: yesterday }, now).banner)
+      .toEqual({ tone: 'warn', heading: '永豐期貨對帳單今天沒有執行', detail: '06:45 的排程沒有回報 · 上次執行 昨天 06:46' });
+  });
+
+  it('never run: a neutral 尚未啟用自動匯入 line, no banner, no dot', () => {
+    expect(futuresView(NONE, { latest: null, latest_ok: null }, now)).toEqual({ state: 'never', runLine: '尚未啟用自動匯入', banner: null,
+      runDetails: null, lastOk: null, items: [], more: 0, dotLabel: null, pendingLabel: null });
   });
 
   it('items: id, key, status, label, text, name; pendingLabel counts the server total when truncated', () => {
     const items = [item({ status: 'findings' }), item({ status: 'conflict', reason: null })];
     const v = futuresView(pending(items, { total: 5, truncated: true }), okRuns, now);
     expect(v.items).toEqual([
-      { id: '2026-10-27:conflict', key: '2026-10-27', status: 'conflict', label: '10/27', text: '收到內容不同的同日對帳單', name: '永豐期貨對帳單 10/27' },
+      { id: '2026-10-27:conflict', key: '2026-10-27', status: 'conflict', label: '10/27', text: '收到內容不同的同日對帳單', name: '永豐期貨對帳單 10/27 · 不同版本' },
       { id: '2026-10-27:findings', key: '2026-10-27', status: 'findings', label: '10/27', text: '前日餘額接不上（10/23）', name: '永豐期貨對帳單 10/27' },
     ]);
     expect(v.more).toBe(3);
