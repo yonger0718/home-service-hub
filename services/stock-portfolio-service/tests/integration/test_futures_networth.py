@@ -381,25 +381,36 @@ def test_history_total_on_gap_source_date(client, db_session):
 WEEKEND = date(2026, 3, 7)  # Saturday at the range start: stock held, no prior mv>0 row, so no held forward fill
 
 
-@pytest.mark.parametrize("with_futures", [True, False])
-def test_replay_skip_day_futures_row_kept(db_session, with_futures):
-    """R15: a skip-day row the stale delete would drop (mv 0, cost > 0) is kept when the series is non-zero, with
-    only its futures column set; a zero-series control is still deleted."""
+@pytest.mark.parametrize("prior", ["surviving", "none", "zero_series"])
+def test_replay_skip_day_futures_row_kept(db_session, prior):
+    """R15 + R17: a skip-day row the stale delete would drop (mv 0, cost > 0) is kept when the series is non-zero
+    and rewritten with the R16 carry: market and cost of the latest surviving row before it (``last_trading_mv`` is
+    None at the range start), else 0 / 0; that day's cash; the series futures; XIRR NULL. A zero-series control is
+    still deleted."""
+    sunday = date(2026, 3, 8)
     _buy(db_session, date(2026, 3, 2))
-    if with_futures:
-        _day(db_session, date(2026, 3, 6), "300")  # Friday source; the Saturday is not a source date
-    _snap(db_session, WEEKEND, mv="0", cost="100", cash="7", futures="50" if with_futures else "0", dividends="3",
-          realized="4", xirr="0.1234")
-    before = _columns(db_session.get(PortfolioSnapshot, WEEKEND))
+    if prior != "zero_series":
+        _day(db_session, date(2026, 3, 6), "300")  # Friday source; the weekend is not a source date
+    start = sunday
+    if prior == "surviving":  # a kept Saturday row in range (mv > 0, never stale-deleted) is the carry source
+        _snap(db_session, WEEKEND, mv="150", cost="100", cash="5")
+        start = WEEKEND
+    _snap(db_session, sunday, mv="0", cost="100", cash="7", futures="0" if prior == "zero_series" else "50",
+          dividends="3", realized="4", xirr="0.1234")
     with _cash("999"):
-        nb.replay_snapshots_range(db_session, WEEKEND, WEEKEND)
-    row = _rows(db_session).get(WEEKEND)
-    if not with_futures:
+        nb.replay_snapshots_range(db_session, start, sunday)
+    row = _rows(db_session).get(sunday)
+    if prior == "zero_series":
         assert row is None
         return
     assert row is not None
+    expected = (Decimal("150"), Decimal("100")) if prior == "surviving" else (ZERO, ZERO)
+    assert (row.total_market_value, row.total_cost) == expected
+    assert row.total_unrealized_pnl == expected[0] - expected[1]
+    assert row.total_cash_twd == Decimal("999")
     assert row.futures_equity_twd == Decimal("300")
-    assert _columns(row) == before
+    assert (row.total_dividends, row.total_realized_pnl) == (ZERO, ZERO)  # the replay's running totals
+    assert row.portfolio_xirr is None
 
 
 def test_replay_gap_non_source_zero_series_still_deleted(db_session):

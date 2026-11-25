@@ -490,27 +490,6 @@ def _load_price_map(
     }
 
 
-_FORWARD_FILL_COLUMNS = (
-    "total_market_value",
-    "total_cost",
-    "total_unrealized_pnl",
-    "total_dividends",
-    "total_realized_pnl",
-    "total_cash_twd",
-    "portfolio_xirr",
-)
-
-
-def _forward_fill_columns(template: Optional[PortfolioSnapshot]) -> dict:
-    """Every non-futures column of ``template``; zeros and a NULL XIRR when
-    there is none (the rule of ``sinopac_futures_backfill``)."""
-    if template is None:
-        columns = {c: Decimal("0") for c in _FORWARD_FILL_COLUMNS}
-        columns["portfolio_xirr"] = None
-        return columns
-    return {c: getattr(template, c) for c in _FORWARD_FILL_COLUMNS}
-
-
 def _phantom_row_filter() -> tuple:
     """An all-zero row: the shape the replay's phantom delete removes."""
     return (
@@ -771,6 +750,37 @@ def replay_snapshots_range(
             )
         return cash_total
 
+    def carried_row(snapshot_date: dt_date, futures: Decimal) -> PortfolioSnapshot:
+        """A row kept for futures (R16 / R17), written like the skip-day
+        forward fill: no price is fetched or invented, and market 0 /
+        cost > 0 (a full stock dip on /history) is never written. Market and
+        cost carry the last trading day's, else the latest surviving row's
+        before ``snapshot_date``, else 0; dividends and realised P&L are the
+        running totals; cash as computed for the date; XIRR NULL."""
+        if last_trading_mv is not None and last_trading_cost is not None:
+            carry_mv, carry_cost = last_trading_mv, last_trading_cost
+        else:
+            template = latest_surviving_row_before(snapshot_date)
+            carry_mv = (
+                Decimal(template.total_market_value)
+                if template is not None
+                else Decimal("0")
+            )
+            carry_cost = (
+                Decimal(template.total_cost) if template is not None else Decimal("0")
+            )
+        return PortfolioSnapshot(
+            date=snapshot_date,
+            total_market_value=carry_mv,
+            total_cost=carry_cost,
+            total_unrealized_pnl=carry_mv - carry_cost,
+            total_dividends=cumulative_dividends,
+            total_realized_pnl=cumulative_realized,
+            total_cash_twd=total_cash_twd(snapshot_date),
+            futures_equity_twd=futures,
+            portfolio_xirr=None,
+        )
+
     tx_i = 0
     div_i = 0
     cur = from_d
@@ -877,8 +887,8 @@ def replay_snapshots_range(
                     )
             if not wrote_forward_fill:
                 # A row the stale delete would drop (mv 0, cost > 0) is
-                # kept on a futures source date or a non-zero series date,
-                # with only its futures column set (the gap-day rule below).
+                # kept on a futures source date or a non-zero series date and
+                # rewritten as a carried row (R17, the gap-day rule below).
                 skip_futures = futures_equity(cur)
                 existing = (
                     db.get(PortfolioSnapshot, cur)
@@ -890,14 +900,7 @@ def replay_snapshots_range(
                     and existing.total_market_value == 0
                     and existing.total_cost > 0
                 ):
-                    write_snapshot(
-                        cur,
-                        PortfolioSnapshot(
-                            date=cur,
-                            futures_equity_twd=skip_futures,
-                            **_forward_fill_columns(existing),
-                        ),
-                    )
+                    write_snapshot(cur, carried_row(cur, skip_futures))
                 else:
                     stale_candidates.append(cur)
             cur += timedelta(days=1)
@@ -977,7 +980,7 @@ def replay_snapshots_range(
         # Futures history survives the gap (spec §6.5): on a futures
         # source date, or a date whose series value is non-zero, an
         # existing row is kept (never a stale candidate) and a source date
-        # with no row gets one. Either is written as a forward-filled row
+        # with no row gets one. Either is written as a carried row
         # (see below) with the series futures value.
         if mv == 0 and total_cost > 0:
             gap_futures = futures_equity(cur)
@@ -988,38 +991,7 @@ def replay_snapshots_range(
                 else None
             )
             if existing is not None or is_source:
-                # Written like the skip-day forward fill (R16): no price is
-                # fetched or invented, and market 0 / cost > 0 (a full stock
-                # dip on /history) is never written. Market and cost carry
-                # the last trading day's, else the latest surviving row's.
-                if last_trading_mv is not None and last_trading_cost is not None:
-                    carry_mv, carry_cost = last_trading_mv, last_trading_cost
-                else:
-                    template = latest_surviving_row_before(cur)
-                    carry_mv = (
-                        Decimal(template.total_market_value)
-                        if template is not None
-                        else Decimal("0")
-                    )
-                    carry_cost = (
-                        Decimal(template.total_cost)
-                        if template is not None
-                        else Decimal("0")
-                    )
-                write_snapshot(
-                    cur,
-                    PortfolioSnapshot(
-                        date=cur,
-                        total_market_value=carry_mv,
-                        total_cost=carry_cost,
-                        total_unrealized_pnl=carry_mv - carry_cost,
-                        total_dividends=cumulative_dividends,
-                        total_realized_pnl=cumulative_realized,
-                        total_cash_twd=total_cash_twd(cur),
-                        futures_equity_twd=gap_futures,
-                        portfolio_xirr=None,
-                    ),
-                )
+                write_snapshot(cur, carried_row(cur, gap_futures))
             else:
                 stale_candidates.append(cur)
             cur += timedelta(days=1)
