@@ -22,7 +22,7 @@ import {
   summarize,
 } from '../components/notifications/notif-task';
 import { billTasks } from '../components/notifications/sources/bills';
-import { CathayView, cathayMore, cathayTasks, cathayView } from '../components/notifications/sources/cathay';
+import { CathayView, RUN_RESULTS, cathayMore, cathayTasks, cathayView } from '../components/notifications/sources/cathay';
 import { debtsRow, handledText, importReviewTask, upcomingRow } from '../components/notifications/sources/ledger-misc';
 import {
   INBOX_READ_LIMIT,
@@ -107,7 +107,7 @@ function checkedPending(pending: unknown): CathayPending {
  * 國泰 runs: `latest` / `latest_ok` each null or a run with a `run_at` that parses to a finite time and a string
  * `result`; else an error (source fails): an unparseable run_at would render 「上次執行 NaN/NaN NaN:NaN」.
  */
-function checkedRuns(runs: unknown, source = 'cathay'): CathayRuns {
+function checkedRuns(runs: unknown): CathayRuns {
   const run = (r: unknown): r is CathayRun | null =>
     r === null ||
     (isObject(r) &&
@@ -115,9 +115,34 @@ function checkedRuns(runs: unknown, source = 'cathay'): CathayRuns {
       Number.isFinite(new Date(r['run_at']).getTime()) &&
       typeof r['result'] === 'string');
   if (!isObject(runs) || !('latest' in runs) || !('latest_ok' in runs) || !run(runs['latest']) || !run(runs['latest_ok'])) {
-    throw new Error(`${source} runs`);
+    throw new Error('cathay runs');
   }
   return runs as unknown as CathayRuns;
+}
+
+/** A non-negative integer count (`files_seen`, `posted`): anything else would print 「已匯入 undefined 份」. */
+const isCount = (value: unknown): boolean => typeof value === 'number' && Number.isInteger(value) && value >= 0;
+
+/**
+ * 永豐期貨 runs, stricter than 國泰's: `latest` / `latest_ok` each null or a run with a parseable `run_at`, a `result`
+ * the card can name (RUN_RESULTS), `code` null or a string, and integer `files_seen` / `posted` ≥ 0; else an error,
+ * so the futures source alone fails.
+ */
+function checkedFuturesRuns(runs: unknown): FuturesRuns {
+  const run = (r: unknown): boolean =>
+    r === null ||
+    (isObject(r) &&
+      typeof r['run_at'] === 'string' &&
+      Number.isFinite(new Date(r['run_at']).getTime()) &&
+      typeof r['result'] === 'string' &&
+      RUN_RESULTS.includes(r['result']) &&
+      (r['code'] === null || typeof r['code'] === 'string') &&
+      isCount(r['files_seen']) &&
+      isCount(r['posted']));
+  if (!isObject(runs) || !('latest' in runs) || !('latest_ok' in runs) || !run(runs['latest']) || !run(runs['latest_ok'])) {
+    throw new Error('sinopac futures runs');
+  }
+  return runs as unknown as FuturesRuns;
 }
 
 const FUTURES_STATUSES: readonly unknown[] = ['conflict', 'findings'] satisfies FuturesPendingItem['status'][];
@@ -580,7 +605,7 @@ export class NotificationCenterService {
     // One source over two reads (P1): either failing fails both.
     const cathay = forkJoin({
       pending: this.portfolio.getCathayPending().pipe(map(checkedPending)),
-      runs: this.portfolio.getCathayRuns().pipe(map(runs => checkedRuns(runs))),
+      runs: this.portfolio.getCathayRuns().pipe(map(checkedRuns)),
     });
     this.read(round, cathay, answer => {
       this.cathayData.set(answer ? { ...answer, now } : null);
@@ -589,7 +614,7 @@ export class NotificationCenterService {
     // 永豐期貨對帳單: the same two-read source; an invalid answer fails it alone.
     const futures = forkJoin({
       pending: this.portfolio.getFuturesPending().pipe(map(checkedFuturesPending)),
-      runs: this.portfolio.getFuturesRuns().pipe(map(runs => checkedRuns(runs, 'sinopac futures'))),
+      runs: this.portfolio.getFuturesRuns().pipe(map(checkedFuturesRuns)),
     });
     this.read(round, futures, answer => {
       this.futuresData.set(answer ? { ...answer, now } : null);

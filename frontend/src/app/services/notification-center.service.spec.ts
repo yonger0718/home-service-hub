@@ -1759,6 +1759,15 @@ describe('NotificationCenterService', () => {
       ['a date key on a month item', { futuresPending: { items: [futuresItem('2026-10-23', { kind: 'month' })], total: 1, truncated: false } }],
       ['an unreadable run_at', { futuresRuns: { latest: { run_at: 'nope', result: 'ok', code: null, files_seen: 1, posted: 1 }, latest_ok: null } }],
       ['runs without latest_ok', { futuresRuns: { latest: null } }],
+      ['an unexpected result', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'unexpected', code: null, files_seen: 1, posted: 1 }, latest_ok: null } }],
+      ['a run without posted', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'ok', code: null, files_seen: 1 }, latest_ok: null } }],
+      ['an object code on a failed run', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'failed', code: { toString: null }, files_seen: 0, posted: 0 }, latest_ok: null } }],
+      ['a numeric code', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'failed', code: 5, files_seen: 0, posted: 0 }, latest_ok: null } }],
+      ['a negative files_seen', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'ok', code: null, files_seen: -1, posted: 0 }, latest_ok: null } }],
+      ['a fractional posted', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'ok', code: null, files_seen: 2, posted: 1.5 }, latest_ok: null } }],
+      ['a string posted', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'ok', code: null, files_seen: 1, posted: '1' }, latest_ok: null } }],
+      ['an invalid latest_ok', { futuresRuns: { latest: null, latest_ok: { run_at: '2026-10-24T01:00:00Z', result: 'ok', code: null, files_seen: Infinity, posted: 0 } } }],
+      ['a run without code', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'ok', files_seen: 1, posted: 1 }, latest_ok: null } }],
     ])('invalid payload marks the source unreadable without touching 國泰 (%s)', async (_name, values) => {
       const svc = service();
       svc.start();

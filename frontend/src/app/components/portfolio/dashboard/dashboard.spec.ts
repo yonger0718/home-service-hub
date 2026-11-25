@@ -217,6 +217,80 @@ describe('PortfolioDashboardComponent', () => {
     expect(portfolioService.getFuturesSummary).toHaveBeenCalledTimes(2);
   });
 
+  describe('the futures card outside the portfolio gate', () => {
+    const emptySummary = (overrides: Partial<PortfolioSummary> = {}) => buildSummary({
+      holdings: [],
+      total_market_value: 0,
+      total_cash_twd: '0',
+      futures_equity_twd: '0',
+      total_assets_twd: '0',
+      total_dividends: 0,
+      total_pending_dividends_net: 0,
+      ...overrides,
+    });
+    const futuresWith = (equity: string) => ({
+      as_of: '2026-11-23',
+      value: { total_equity: equity, balance: equity, source_date: '2026-11-23', source_kind: 'daily', positions_open: false, frozen: false },
+      latest_daily: null,
+      month: { month: '2026-11', pnl: null, pnl_complete: false, pnl_reason: 'no_baseline', futures_realized: '0' },
+    });
+
+    it('shows the populated view and the card for offsetting parts (no holdings, cash 100, futures −100, total "0")', () => {
+      portfolioService.getSummary.mockReturnValue(of(emptySummary({ total_cash_twd: '100', futures_equity_twd: '-100' })));
+      portfolioService.getFuturesSummary.mockReturnValue(of(futuresWith('-100')));
+      const root = createFixture().nativeElement as HTMLElement;
+
+      expect(root.querySelector('.empty')).toBeNull();
+      expect(root.querySelector('.hero .hero-total')?.textContent?.trim()).toBe('0');
+      const card = root.querySelectorAll('app-futures-card');
+      expect(card.length).toBe(1);
+      expect(card[0].querySelector('[data-testid="futures-equity"]')?.textContent?.trim()).toBe('−$100');
+    });
+
+    it('keeps the empty view for an entirely empty portfolio and adds the card in its empty state below it', () => {
+      portfolioService.getSummary.mockReturnValue(of(emptySummary()));
+      const root = createFixture().nativeElement as HTMLElement;
+
+      const empty = root.querySelector('.empty');
+      expect(empty?.querySelector('h4')?.textContent?.trim()).toBe('尚未建立投資組合');
+      expect(root.querySelector('.kpi-card')).toBeNull();
+      const card = root.querySelectorAll('app-futures-card');
+      expect(card.length).toBe(1);
+      expect(card[0].textContent).toContain('尚無期貨對帳單');
+      expect(empty!.compareDocumentPosition(card[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('shows futures data under the empty view when only the futures summary has some', () => {
+      portfolioService.getSummary.mockReturnValue(of(emptySummary()));
+      portfolioService.getFuturesSummary.mockReturnValue(of(futuresWith('300')));
+      const root = createFixture().nativeElement as HTMLElement;
+
+      expect(root.querySelector('.empty h4')?.textContent?.trim()).toBe('尚未建立投資組合');
+      expect(root.querySelector('app-futures-card [data-testid="futures-equity"]')?.textContent?.trim()).toBe('$300');
+    });
+
+    it('shows the card error state under the empty view', () => {
+      portfolioService.getSummary.mockReturnValue(of(emptySummary()));
+      portfolioService.getFuturesSummary.mockReturnValue(throwError(() => new Error('boom')));
+      const root = createFixture().nativeElement as HTMLElement;
+
+      expect(root.querySelector('.empty')).not.toBeNull();
+      expect(root.querySelector('app-futures-card')?.textContent).toContain('期貨資料載入失敗');
+    });
+
+    it.each([
+      ['cash only', { total_cash_twd: '100', total_assets_twd: '100' }],
+      ['futures only with a total of "0"', { futures_equity_twd: '50', total_assets_twd: '0' }],
+      ['pending dividends only', { total_pending_dividends_net: '5' }],
+    ])('treats any non-zero asset part as populated (%s)', (_name, overrides) => {
+      portfolioService.getSummary.mockReturnValue(of(emptySummary(overrides as Partial<PortfolioSummary>)));
+      const root = createFixture().nativeElement as HTMLElement;
+      expect(root.querySelector('.empty')).toBeNull();
+      expect(root.querySelectorAll('.kpi-card').length).toBe(4);
+      expect(root.querySelectorAll('app-futures-card').length).toBe(1);
+    });
+  });
+
   it('refreshes quotes, polls until completed, then reloads summary', () => {
     portfolioService.refreshQuotes.mockReturnValue(of({
       refresh_scheduled: true,

@@ -711,6 +711,13 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
   }
 }
 
+/* The futures card under the empty-portfolio block: compact and centred. */
+.empty-futures {
+  display: block;
+  margin: 0 auto;
+  max-width: 28rem;
+}
+
 @media (max-width: 759.98px) {
   .legend.legend-four {
     grid-template-columns: repeat(2, minmax(0, 1fr));

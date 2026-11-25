@@ -109,7 +109,8 @@ function isTemporaryStatus(status: string): boolean {
  * there is no code. The one mapping for the 通知 task's meta and the card banner.
  */
 export function runCodeText(code: string | null): string | null {
-  if (!code) return null;
+  // Defensive: a non-string code (an invalid body) names nothing rather than throwing while a task is computed.
+  if (typeof code !== 'string' || !code) return null;
   if (Object.hasOwn(RUN_CODE_TEXT, code)) return RUN_CODE_TEXT[code];
   const status = /^portfolio:(\d{3})$/.exec(code);
   // A failed (not latched) run carries only 5xx / 408 / 429 (worker/cathay.py): temporary, not a refusal.
@@ -170,6 +171,9 @@ export function runTask(
 }
 
 const RESULT_TEXT = { ok: '成功', failed: '失敗', latched: '已停用' } as const;
+
+/** The run results a status card can name (RESULT_TEXT's keys): a body with any other result is invalid. */
+export const RUN_RESULTS: readonly string[] = Object.keys(RESULT_TEXT);
 
 /** The run part of a status card's view. */
 export interface RunStatusView {

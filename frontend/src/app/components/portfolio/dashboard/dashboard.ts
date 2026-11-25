@@ -107,7 +107,6 @@ export class PortfolioDashboardComponent implements OnInit {
   protected readonly futuresRefresh = signal(0);
   @ViewChild('netWorthChart') netWorthChart?: UIChart;
 
-  protected readonly Number = Number;
   readonly summary = signal<PortfolioSummary | null>(null);
   readonly upcomingExDividends = signal<ExDividendRecord[]>([]);
   readonly loading = signal(false);
@@ -186,6 +185,28 @@ export class PortfolioDashboardComponent implements OnInit {
     { label: '全部', value: 'ALL' },
     ...this.availableMarkets().map(m => ({ label: MARKET_LABELS[m], value: m })),
   ]);
+
+  /**
+   * The populated view: any holding, or any non-zero asset part (total, cash, futures, dividends, pending), so
+   * offsetting parts with a total of "0" (cash 100, futures −100) still show it (spec §6.5 valid zero).
+   */
+  readonly hasPortfolio = computed(() => {
+    const s = this.summary();
+    if (!s) return false;
+    const part = (value: Amount | undefined) => {
+      const n = Number(value ?? 0);
+      return Number.isFinite(n) && n !== 0;
+    };
+    return (
+      s.holdings.length > 0 ||
+      Number(s.total_assets_twd) !== 0 ||
+      Number(s.total_pending_dividends_net ?? 0) !== 0 ||
+      Number(s.total_dividends) !== 0 ||
+      part(s.total_cash_twd) ||
+      part(s.futures_equity_twd) ||
+      part(s.total_market_value)
+    );
+  });
 
   readonly hero = computed(() => {
     const summary = this.summary();

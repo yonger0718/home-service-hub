@@ -39,7 +39,7 @@
         </app-bento>
       }
     </div>
-  } @else if (summary() && (summary()!.holdings.length > 0 || Number(summary()!.total_assets_twd) !== 0 || Number(summary()!.total_pending_dividends_net ?? 0) !== 0 || Number(summary()!.total_dividends) !== 0)) {
+  } @else if (hasPortfolio()) {
     <div class="bento-grid">
       @let heroData = hero();
       @if (!isMarketFiltered() && heroData) {
@@ -379,5 +379,7 @@
       <h4>尚未建立投資組合</h4>
       <p>記錄你的第一筆股票交易，開始追蹤投資績效。</p>
     </div>
+    <!-- Outside the stock gate (D6): the card shows its own empty / data / error states. -->
+    <app-futures-card class="empty-futures" [refresh]="futuresRefresh()"></app-futures-card>
   }
 </div>
