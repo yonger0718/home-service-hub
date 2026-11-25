@@ -712,6 +712,21 @@ def replay_snapshots_range(
             result.errors.append(BackfillError(date=snapshot_date, reason=str(exc)))
             return False
 
+    def phantom_delete_dates() -> list[dt_date]:
+        """Gated dates whose all-zero row the phantom delete removes.
+
+        A futures source date keeps its row even when every column is 0 (a
+        positive → zero transition, spec §6.5; the trading-day gate never
+        queues one, this keeps it true by construction), and so does a date
+        whose series value is non-zero (R20): that row is kept and the
+        kept-row refresh below sets its futures from the series.
+        """
+        return [
+            d
+            for d in gated_phantom_candidates
+            if d not in futures_source_dates and futures_equity(d) == 0
+        ]
+
     def latest_surviving_row_before(snapshot_date: dt_date) -> Optional[PortfolioSnapshot]:
         """Latest row before ``snapshot_date`` that the end-of-run deletes keep.
 
@@ -723,7 +738,7 @@ def replay_snapshots_range(
         skipped: they are about to disappear.
         """
         doomed_phantom = and_(
-            PortfolioSnapshot.date.in_(gated_phantom_candidates),
+            PortfolioSnapshot.date.in_(phantom_delete_dates()),
             *_phantom_row_filter(),
         )
         return (
@@ -1069,12 +1084,7 @@ def replay_snapshots_range(
         )
         result.stale_rows_deleted += max(delete_result.rowcount or 0, 0)
 
-    # A futures source date keeps its row even when every column is 0 (a
-    # positive → zero transition, spec §6.5). The trading-day gate already
-    # never queues one; the filter here keeps that true by construction.
-    phantom_dates = [
-        d for d in gated_phantom_candidates if d not in futures_source_dates
-    ]
+    phantom_dates = phantom_delete_dates()
     if phantom_dates and not dry_run:
         phantom_result = db.execute(
             delete(PortfolioSnapshot).where(

@@ -490,20 +490,26 @@ def test_replay_skip_day_kept_row_gets_series_futures(db_session):
 
 
 def test_replay_trading_day_phantom_kept_row_gets_series_futures(db_session):
-    """M2 (trading-day gate): a non-source, no-activity trading day whose row the phantom filter keeps (stale
-    futures 50) gets the series value 300; an all-zero row on such a day is still phantom-deleted."""
-    mon, tue, wed = date(2026, 3, 9), date(2026, 3, 10), date(2026, 3, 11)
+    """M2 + R20 (trading-day gate): on non-source, no-activity trading days with a non-zero series (300 from the
+    Monday source), an all-zero row is no longer phantom-deleted and a row with stale futures 50 is kept; both get
+    futures 300 (total 300). Control: an all-zero row before any source (series 0) is still phantom-deleted."""
+    fri, mon, tue, wed = date(2026, 3, 6), date(2026, 3, 9), date(2026, 3, 10), date(2026, 3, 11)
     _day(db_session, mon, "300")
-    for d in (mon, tue, wed):
+    for d in (fri, mon, tue, wed):
         _price(db_session, d)
+    _snap(db_session, fri)
     _snap(db_session, tue)
     _snap(db_session, wed, futures="50")
     with _cash("0"):
-        nb.replay_snapshots_range(db_session, mon, wed)
+        nb.replay_snapshots_range(db_session, fri, wed)
     rows = _rows(db_session)
-    assert tue not in rows
-    assert rows[wed].futures_equity_twd == Decimal("300")
-    assert (rows[wed].total_market_value, rows[wed].total_cost, rows[wed].total_cash_twd) == (ZERO, ZERO, ZERO)
+    assert fri not in rows
+    for d in (tue, wed):
+        row = rows.get(d)
+        assert row is not None
+        assert row.futures_equity_twd == Decimal("300")
+        assert (row.total_market_value, row.total_cost, row.total_cash_twd) == (ZERO, ZERO, ZERO)
+        assert row.total_market_value + row.total_cash_twd + row.futures_equity_twd == Decimal("300")
 
 
 def test_replay_skip_day_dip_row_without_stock_is_zeroed(db_session):
