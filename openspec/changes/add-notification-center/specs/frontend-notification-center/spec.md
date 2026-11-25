@@ -121,7 +121,7 @@ When two open questions of a statement reference the same ledger entry (a bank-l
 
 ### Requirement: Transfer and amount answers
 
-When an item carries `transfer.adjust_transfer`, the flow SHALL offer 照帳單改這筆轉帳 (leg known: one tap) or 照帳單改轉帳… (pick the leg); when `transfer.pair_transfer.peer_candidates` is non-empty, 配成轉帳… with rows 「date from → to amount」; on an `ambiguous` case with a non-leg candidate, 改金額…. On `ambiguous` 對到… stays first. These SHALL call `POST /reconciliation/cases/{id}/actions` and show a refusal in plain words, never as a code.
+When an item carries `transfer.adjust_transfer`, the flow SHALL offer 照帳單改這筆轉帳 (leg known: one tap) or 照帳單改轉帳… (pick the leg); when `transfer.pair_transfer.peer_candidates` is non-empty, 配成轉帳… with rows 「date from → to amount」, the amount without a sign; on an `ambiguous` case with a non-leg candidate, 改金額…. On `ambiguous` 對到… stays first. These SHALL call `POST /reconciliation/cases/{id}/actions` and show a refusal in plain words, never as a code.
 
 #### Scenario: Pair a transfer
 - **GIVEN** a `needs_peer` case with one peer candidate on 玉山銀行

@@ -123,11 +123,12 @@ export function flowNote(item: InboxItem, currency: string): string | null {
 
 /**
  * A 配成轉帳… row: 「2026/09/30 測試卡 → 測試銀行 $20,000」. The peer line's sign says which way the money went: money
- * out of the peer account (< 0) reads peer → this account, else this account → peer.
+ * out of the peer account (< 0) reads peer → this account, else this account → peer. The arrow already says the
+ * direction, so the amount shows without a sign.
  */
 export function peerRowLabel(peer: InboxPeerCandidate, accountName: string, currency: string): string {
   const [from, to] = Number(peer.amount) < 0 ? [peer.account_name, accountName] : [accountName, peer.account_name];
-  return `${slashDate(peer.posted_date)} ${from} → ${to} ${formatMoney(peer.amount, currency)}`;
+  return `${slashDate(peer.posted_date)} ${from} → ${to} ${formatMoney(Math.abs(Number(peer.amount)), currency)}`;
 }
 
 /** An answer the flow lists: an inbox button or one of the case actions (`/cases/{id}/actions`). */

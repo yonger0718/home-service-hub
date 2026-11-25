@@ -382,7 +382,7 @@ describe('recon-flow-view', () => {
     // The peer line is money in: it went from this account to the peer.
     expect(peerRowLabel(peer({ amount: '19970.0000' }), '測試卡', 'TWD')).toBe('2026/09/04 測試卡 → 測試銀行 $19,970');
     // The peer line is money out: it came from the peer to this account.
-    expect(peerRowLabel(peer({ amount: '-19970.0000' }), '測試卡', 'TWD')).toBe('2026/09/04 測試銀行 → 測試卡 −$19,970');
+    expect(peerRowLabel(peer({ amount: '-19970.0000' }), '測試卡', 'TWD')).toBe('2026/09/04 測試銀行 → 測試卡 $19,970');
   });
 
   it('flowError: dirty_disabled (pairing that needs a re-check the system has off) in plain words', () => {
