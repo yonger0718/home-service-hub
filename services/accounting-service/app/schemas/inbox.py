@@ -65,11 +65,22 @@ class InboxStatementRef(BaseModel):
     period_end: date
 
 
+class InboxTransferLeg(BaseModel):
+    """#433: one `adjust_transfer` candidate leg. The SPA reads 來源 → 目的 as account → counter for `out` and
+    counter → account for `in`."""
+    model_config = Strict
+    entry_id: int
+    account_name: str
+    counter_account_name: str | None  # the other leg's account (`peer_leg`); None when there is no single other leg
+    direction: Literal["out", "in"]
+
+
 class InboxTransferAdjust(BaseModel):
     model_config = Strict
     entry_id: int | None  # None on an ambiguous case: the owner picks one of `candidate_entry_ids`
     line_id: int
     candidate_entry_ids: list[int]
+    legs: list[InboxTransferLeg]  # #433: one per `candidate_entry_ids`, same order
 
 
 class InboxPeerCandidate(BaseModel):

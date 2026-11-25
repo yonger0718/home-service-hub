@@ -21,7 +21,7 @@
 - `app/services/inbox_service.py:379-401` `_transfer_out`: `adjust = {"entry_id", "line_id", "candidate_entry_ids": legs}`; ambiguous → `entry_id None`, legs = candidates passing `reconciliation_actions._transfer_leg` (`__init__.py:112-115`: entry has a `transfer_group_id`); else `legs = [entry_id]`. Pair part already resolves account names with a per-call `names` cache.
 - `app/schemas/inbox.py:68-72` `InboxTransferAdjust(entry_id: int | None, line_id: int, candidate_entry_ids: list[int])`, `model_config = Strict`.
 - `app/services/reconciliation_actions/transfer_support.py:34-41` `peer_leg(db, leg)`: the other top-level entry of the transfer group, `None` unless exactly one.
-- `transfer_actions.py:153-170`: `adjust_transfer` refuses `not_standalone` when `peer_leg` is None and `kind_sign` unless (leg, peer) kinds are (transfer_out, transfer_in) or the reverse → a leg's direction is its `kind`.
+- `transfer_actions.py:155-156` / `:172-174`: `adjust_transfer` refuses `not_standalone` when `peer_leg` is None and `kind_sign` unless (leg, peer) kinds are (transfer_out, transfer_in) or the reverse. That runs only when the action applies; `_transfer_leg` accepts any entry with a `transfer_group_id`, whatever its kind (a MOZE refund record keeps its `transfer_group_id`: `moze_backup_json.py:571-572`, `moze_backup_import_service.py:659-666`). AGENT-593 finding 1.
 - `transfer_actions.py:212-219` (`adjust_transfer`) and `:463-468` (`pair_transfer`): `peer_case_id = resolve_peer_case(...)` (`transfer_support.py:90-114`, `None` when the peer line has no open/proposed case), stored as `effect.inverse["peer_case_id"]` in both.
 - `app/routers/reconciliation.py:31-35` `_action_out(row, …)`: copies every `ActionOut.model_fields` name from the row except `replayed, label, answer, line`. Used by `POST /cases/{id}/actions` (201, or 200 when replayed), `/dismiss`, `GET /reconciliation/actions`, `/actions/{id}/revert`, `/proposals/{id}/apply`.
 - `app/schemas/reconciliation.py:29-48` `ActionOut` (`extra="forbid"`).
@@ -29,6 +29,7 @@
 
 ## Review Focus
 
+0. A leg whose kind is neither `transfer_out` nor `transfer_in` (AGENT-593 finding 1): direction from the amount sign, no 500.
 1. A leg whose group has no single peer (`peer_leg` None — three-leg group or deleted peer): `counter_account_name` is `null`, the item still renders, nothing raises.
 2. Leg order: `legs[i].entry_id == candidate_entry_ids[i]` always.
 3. `peer_case_id` is `null` when the transfer action found no open peer case, and on every other action (`match`, `dismiss`, a revert row).
@@ -45,7 +46,7 @@
 - Test: `services/accounting-service/tests/integration/test_inbox_api.py`
 
 **Interfaces:**
-- Produces: `InboxTransferLeg(entry_id: int, account_name: str, counter_account_name: str | None, direction: Literal["out", "in"])`; `InboxTransferAdjust.legs: list[InboxTransferLeg]` (same order as `candidate_entry_ids`). `direction` = `"out"` for `transfer_out`, `"in"` for `transfer_in`. `account_name` = the leg's own account; `counter_account_name` = `peer_leg(db, leg)`'s account, or `None`. The SPA reads 來源 → 目的 as `account → counter` for `out`, `counter → account` for `in`.
+- Produces: `InboxTransferLeg(entry_id: int, account_name: str, counter_account_name: str | None, direction: Literal["out", "in"])`; `InboxTransferAdjust.legs: list[InboxTransferLeg]` (same order as `candidate_entry_ids`). `direction` = `"out"` for `transfer_out`, `"in"` for `transfer_in`; any other kind → the amount sign (`"out"` when `amount < 0`, else `"in"`) so the inbox never 500s on an odd leg (AGENT-593 finding 1). `account_name` = the leg's own account; `counter_account_name` = `peer_leg(db, leg)`'s account, or `None`. The SPA reads 來源 → 目的 as `account → counter` for `out`, `counter → account` for `in`.
 
 - [ ] **Step 1: Update the two shape tests and add the null-peer test**
 
@@ -54,10 +55,12 @@
 `test_ambiguous_item_offers_adjust_transfer_over_its_transfer_leg_candidates` expects `legs` for `[pair.in_leg, second_in]`, both `{"account_name": "卡", "counter_account_name": "銀行", "direction": "in"}`, in that order.
 New `test_adjust_transfer_leg_without_a_single_peer_has_no_counter_account(pair, seed, db_session, client)`: ambiguous case over `[pair.in_leg, lone]` where `lone` is a `transfer_in` on the card with its own fresh `transfer_group_id` and no other leg; expects `lone`'s leg `counter_account_name is None`, `direction == "in"`, and `pair.in_leg`'s leg unchanged.
 
+New `test_adjust_transfer_leg_of_another_kind_takes_its_direction_from_the_amount_sign(pair, seed, db_session, client)`: ambiguous case over `[pair.in_leg, odd]` where `odd` is a `refund` of −100 on the card in a fresh transfer group with one `transfer_in` partner on the bank; inbox 200, `odd`'s leg `direction == "out"`, `counter_account_name == "銀行"`.
+
 - [ ] **Step 2: Run them — expect FAIL (no `legs` key)**
 
 Run: `… -m pytest tests/integration/test_inbox_api.py -k "transfer" -q`
-Expected: the three tests fail on the missing `legs` key.
+Expected: the four tests fail on the missing `legs` key.
 
 - [ ] **Step 3: Implement**
 

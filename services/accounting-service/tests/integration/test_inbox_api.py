@@ -1,4 +1,5 @@
 """Inbox read model and batch apply (spec 2026-10-21 §4–§5). Synthetic data only."""
+import uuid
 from datetime import date
 from decimal import Decimal
 
@@ -709,8 +710,13 @@ def test_transfer_delta_item_is_amount_differs_with_the_transfer_field_and_no_ac
     item = next(i for i in _items(_inbox(client), "amount_differs") if i["case_id"] == _delta(db_session, pair.cstmt).id)
     assert item["actions"] == ["match_candidate", "dismiss"]
     assert item["transfer"] == {"adjust_transfer": {"entry_id": pair.in_leg.id, "line_id": pair.cline.id,
-                                                    "candidate_entry_ids": [pair.in_leg.id]},
+                                                    "candidate_entry_ids": [pair.in_leg.id],
+                                                    "legs": [_leg(pair.in_leg.id, "卡", "銀行", "in")]},
                                 "pair_transfer": None}
+
+
+def _leg(entry_id, account, counter, direction):
+    return {"entry_id": entry_id, "account_name": account, "counter_account_name": counter, "direction": direction}
 
 
 def test_needs_peer_item_lists_peer_candidates(orphan_pair, client, db_session):
@@ -737,4 +743,30 @@ def test_ambiguous_item_offers_adjust_transfer_over_its_transfer_leg_candidates(
     case = _ambiguous_case(db_session, pair.cstmt, pair.cline, [pair.in_leg, plain, second_in])
     item = next(i for i in _items(_inbox(client)) if i["case_id"] == case.id)
     assert item["transfer"]["adjust_transfer"] == {"entry_id": None, "line_id": pair.cline.id,
-                                                   "candidate_entry_ids": [pair.in_leg.id, second_in.id]}
+                                                   "candidate_entry_ids": [pair.in_leg.id, second_in.id],
+                                                   "legs": [_leg(pair.in_leg.id, "卡", "銀行", "in"),
+                                                            _leg(second_in.id, "卡", "銀行", "in")]}
+
+
+def test_adjust_transfer_leg_without_a_single_peer_has_no_counter_account(pair, seed, db_session, client):
+    """#433: `peer_leg` finds no single other leg (here a lone leg in its own group) → no counter account."""
+    lone = seed.entry(pair.card, "20050", kind="transfer_in", day=date(2026, 9, 5), transfer_group_id=uuid.uuid4())
+    db_session.commit()
+    case = _ambiguous_case(db_session, pair.cstmt, pair.cline, [pair.in_leg, lone])
+    item = next(i for i in _items(_inbox(client)) if i["case_id"] == case.id)
+    assert item["transfer"]["adjust_transfer"]["legs"] == [_leg(pair.in_leg.id, "卡", "銀行", "in"),
+                                                           _leg(lone.id, "卡", None, "in")]
+
+
+def test_adjust_transfer_leg_of_another_kind_takes_its_direction_from_the_amount_sign(pair, seed, db_session,
+                                                                                      client):
+    """#433 / AGENT-593 finding 1: a grouped entry of another kind (a MOZE refund keeps its transfer group) is still
+    listed; its direction is the amount sign and the inbox does not fail."""
+    group = uuid.uuid4()
+    odd = seed.entry(pair.card, "-100", kind="refund", day=date(2026, 9, 5), transfer_group_id=group)
+    seed.entry(pair.bank, "100", kind="transfer_in", day=date(2026, 9, 5), transfer_group_id=group)
+    db_session.commit()
+    case = _ambiguous_case(db_session, pair.cstmt, pair.cline, [pair.in_leg, odd])
+    item = next(i for i in _items(_inbox(client)) if i["case_id"] == case.id)  # `_inbox` asserts the 200
+    assert item["transfer"]["adjust_transfer"]["legs"] == [_leg(pair.in_leg.id, "卡", "銀行", "in"),
+                                                           _leg(odd.id, "卡", "銀行", "out")]
