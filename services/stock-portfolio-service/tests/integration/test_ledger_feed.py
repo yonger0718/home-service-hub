@@ -225,3 +225,53 @@ def test_dividends_reuse_the_unknown_broker_404_and_the_row_cap(client, cathay, 
 
 def test_dividends_without_a_cathay_account_are_empty_and_complete(client):
     assert client.get(DIVIDENDS, params=D("2026-09-01", "2026-09-30")).json() == {"rows": [], "complete": True}
+
+
+FUTURES = "sinopac_futures"
+
+
+def _futures_day(db, d, total, balance, open_positions=0):
+    from app.models.sinopac_futures_statement import DAY_AMOUNTS, FuturesStatementDay
+
+    row = FuturesStatementDay(
+        statement_date=d, accepted_sha256="a" * 64, accepted_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        open_positions=open_positions, **{k: Decimal("0") for k in DAY_AMOUNTS},
+    )
+    row.total_equity = Decimal(total)
+    row.balance = Decimal(balance)
+    db.add(row)
+    db.commit()
+
+
+def test_valuation_sinopac_futures(client, db_session):
+    _futures_day(db_session, date(2026, 3, 5), "1300.5", "1000")
+    body = client.get(VALUATION, params={"broker": FUTURES, "as_of": "2026-03-09"}).json()
+    assert body == {
+        "broker": FUTURES, "currency": "TWD", "as_of": "2026-03-09", "priced_through": "2026-03-05",
+        "market_value": "300.5000", "cash": "1000.0000", "total": "1300.5000", "complete": True, "missing": [],
+    }
+
+
+def test_valuation_sinopac_futures_before_first(client, db_session):
+    _futures_day(db_session, date(2026, 3, 5), "1300", "1000")
+    body = client.get(VALUATION, params={"broker": FUTURES, "as_of": "2026-03-04"}).json()
+    assert body["broker"] == FUTURES
+    assert (body["total"], body["cash"], body["market_value"]) == ("0", "0", "0")
+    assert body["priced_through"] is None
+    assert body["complete"] is False
+    assert body["missing"] == []
+
+
+def test_settlements_and_dividends_reject_sinopac_futures(client):
+    r = client.get(SETTLEMENTS, params=Q("2026-03-01", "2026-03-31", "2026-03-01", "2026-03-31", broker=FUTURES))
+    assert r.status_code == 404 and r.json() == {"detail": "unknown_broker"}
+    r = client.get(DIVIDENDS, params={"broker": FUTURES, "from": "2026-03-01", "to": "2026-03-31"})
+    assert r.status_code == 404 and r.json() == {"detail": "unknown_broker"}
+
+
+def test_valuation_cathay_unchanged(client, db_session):
+    _futures_day(db_session, date(2026, 3, 5), "1300", "1000")
+    body = client.get(VALUATION, params={"broker": "cathay", "as_of": "2026-03-09"}).json()
+    assert body["broker"] == "cathay"
+    assert body["total"] == "0.0000" and body["priced_through"] is None and body["complete"] is True
+    assert client.get(VALUATION, params={"broker": "nope", "as_of": "2026-03-09"}).status_code == 404

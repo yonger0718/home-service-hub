@@ -13,11 +13,12 @@ from ..models import portfolio as models
 from ..models.cash_transaction import CashTransaction, CashTxnType
 from ..models.cathay_statement import CathayStatementDay
 from ..models.price_history import PriceHistory
-from . import cash_account_service, portfolio_service
+from . import cash_account_service, portfolio_service, sinopac_futures_series
 from .broker_cathay_statement_service import TW_CATHAY_FILTER
 
 ROW_CAP = 2000
 BROKER = "cathay"
+FUTURES_BROKER = "sinopac_futures"
 LEG_TYPES = (CashTxnType.BUY_SETTLE, CashTxnType.SELL_SETTLE, CashTxnType.FEE, CashTxnType.TAX)
 ZERO = Decimal("0")
 
@@ -170,7 +171,31 @@ def dividends(db: Session, broker: str, *, date_from: date, date_to: date) -> di
     }
 
 
+def _futures_valuation(db: Session, as_of: date) -> dict:
+    """永豐期貨 equity series (spec §6.5): total = series value, cash = the source's balance."""
+    value = sinopac_futures_series.equity_at(db, as_of)
+    if value is None:  # before the first statement: spec §6.3 answers a bare "0"
+        return {
+            "broker": FUTURES_BROKER, "currency": "TWD", "as_of": as_of.isoformat(), "priced_through": None,
+            "market_value": "0", "cash": "0", "total": "0", "complete": False, "missing": [],
+        }
+    total, cash = value.total_equity, value.balance
+    return {
+        "broker": FUTURES_BROKER,
+        "currency": "TWD",
+        "as_of": as_of.isoformat(),
+        "priced_through": value.source_date.isoformat(),
+        "market_value": _amount(total - cash),
+        "cash": _amount(cash),
+        "total": _amount(total),
+        "complete": True,
+        "missing": [],
+    }
+
+
 def valuation(db: Session, broker: str, as_of: date) -> dict:
+    if broker == FUTURES_BROKER:
+        return _futures_valuation(db, as_of)
     _check_broker(broker)
     end = datetime(as_of.year, as_of.month, as_of.day, tzinfo=timezone.utc) + timedelta(days=1)
     transactions = (
