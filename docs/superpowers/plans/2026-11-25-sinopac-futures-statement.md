@@ -15,7 +15,8 @@ source read the pending and run endpoints.
 **Tech Stack:** Python 3.13, FastAPI, SQLAlchemy 2, Alembic, Postgres (SQLite in unit and most integration tests),
 pydantic 2, httpx, pdfplumber 0.11.10 (already pinned in `requirements-worker.txt`), Angular 21 + Vitest.
 
-**Spec:** `docs/superpowers/specs/2026-11-25-sinopac-futures-statement-design.md` rev 1.3 (`67ad2f1d`). Section
+**Spec:** `docs/superpowers/specs/2026-11-25-sinopac-futures-statement-design.md` rev 1.4 (plan review AGENT-592
+folded: consistent fixture, archive validation in one rolled-back transaction). Section
 numbers (§x) refer to it. Read it before any task. Precedent: the 國泰 plan
 `docs/superpowers/plans/2026-10-29-cathay-daily-statement.md` and its code; where a task says "as 國泰", copy that
 code's shape, not its semantics.
@@ -119,7 +120,9 @@ Migration `revision = "f1futures"`, `down_revision = "e9settle"`; JSON columns
 **Files:**
 - Create: `app/schemas/sinopac_futures_statement.py`
 - Test: `tests/unit/test_futures_statement_payload.py`, fixtures `tests/fixtures/futures_daily_payload.json`,
-  `tests/fixtures/futures_monthly_payload.json` (the §5.1 / §5.2 examples verbatim)
+  `tests/fixtures/futures_monthly_payload.json`: the §5.1 / §5.2 examples (rev 1.4, internally consistent) with
+  `source` = `{"drive_file_id": "fixture-daily" | "fixture-monthly", "sha256": "a"*64 | "b"*64, "file_name":
+  "fixture.pdf"}`. The worker's Task 8 builds positioned-word fixtures that parse to exactly these two files.
 
 **Interfaces:**
 - Produces: `DailyPayload`, `MonthlyPayload`, `FuturesPayload = Annotated[DailyPayload | MonthlyPayload,
@@ -193,6 +196,10 @@ last day of `month`; `activity_dates` inside the month.
   - `refresh_snapshot_futures_range(db, start: date, end: date) -> int` in `portfolio_snapshot_service` — updates
     `futures_equity_twd` of existing rows in `[start, end]` from `equity_by_date`, returns rows touched; no commit, no
     insert, no delete.
+  - `validate_archive(db, payloads: list[FuturesPayload]) -> dict` — `{"items": [{"file_name", "key", "outcome"}],
+    "findings": {key: findings}}`: in one transaction under `futures_lock`, imports each payload in order (dailies by
+    date, then monthlies) through the commit path without its commit, collects the final findings of every row, then
+    rolls back.
   - `pending(db) -> dict` (§8 envelope), `acknowledge(db, key: str, status: Literal["conflict", "findings"]) -> bool`,
     `record_run(db, report) -> None`, `latest_runs(db) -> dict`.
 
@@ -218,6 +225,10 @@ statement date or month_end, end = the next source date − 1 day or today)`. `s
     `test_ack_findings_then_identical_recompute_stays_acked`, `test_ack_404_when_not_pending`,
     `test_pending_envelope_and_cap` (51 → 50 items, total 51, truncated), `test_reason_codes_and_cut`
     (`prev:03/02,gap:2` style, ≤ 40 characters), `test_run_report_latest_rows`.
+  - validation: `test_validate_archive_empty_db_multi_file` (empty DB; dailies 03-02, 03-09 with a gap between,
+    monthly 2026-03 listing 03-05, then the same 03-02 file again and a second sha for 03-09 → outcomes imported,
+    imported, imported, duplicate, conflict; findings `prev` on 03-09 and `gap` on 2026-03; afterwards zero rows in
+    both tables and every snapshot row's `futures_equity_twd` unchanged).
 - [ ] **Step 2: Run** — FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** — PASS; then the full portfolio suite — no new failures.
@@ -235,7 +246,8 @@ statement date or month_end, end = the next source date − 1 day or today)`. `s
 - Consumes: Task 4 service.
 - Produces (prefix `/api/portfolio/imports`): `POST /sinopac-futures-statement?dry_run=` (body `FuturesPayload`,
   response `{outcome, key, findings, errors}`, 500 when rolled back); `GET /sinopac-futures-statement/pending`;
-  `POST /sinopac-futures-statement/runs` (body as `CathayRunReport`, 204); `GET /sinopac-futures-statement/runs/latest`;
+  `POST /sinopac-futures-statement/validate` (body `{"payloads": [FuturesPayload, …]}`, ≤ 200 payloads, response of
+  `validate_archive`); `POST /sinopac-futures-statement/runs` (body as `CathayRunReport`, 204); `GET /sinopac-futures-statement/runs/latest`;
   `POST /sinopac-futures-statement/days/{key}/ack?status=conflict|findings` (`key` `\d{4}-\d{2}(-\d{2})?`; 204 / 404).
   `GET /api/portfolio/futures/summary?as_of=` → `FuturesSummary{as_of, value: {total_equity, balance, source_date,
   source_kind, positions_open, frozen} | null, latest_daily: {statement_date, withdrawable, initial_margin,
@@ -246,7 +258,7 @@ statement date or month_end, end = the next source date − 1 day or today)`. `s
   Ledger feed: `valuation(db, broker, as_of)` dispatches `cathay` (unchanged) / `sinopac_futures` (§6.5 fields, `currency`
   `TWD`) and echoes `broker`; `settlements` / `dividends` keep `_check_broker` = cathay only.
 
-- [ ] **Step 1: Write the failing tests**: routes — `test_post_daily_imports`, `test_post_identity_broken_422_writes_nothing`,
+- [ ] **Step 1: Write the failing tests**: routes — `test_validate_route_rolls_back`, `test_post_daily_imports`, `test_post_identity_broken_422_writes_nothing`,
   `test_post_500_when_rolled_back`, `test_pending_shape`, `test_ack_by_status`, `test_ack_bad_key_422`,
   `test_runs_latest`, `test_runs_invalid_422`; ledger feed — `test_valuation_sinopac_futures`,
   `test_valuation_sinopac_futures_before_first` (`"0"`, `priced_through` null, `complete` false),
@@ -266,7 +278,10 @@ statement date or month_end, end = the next source date − 1 day or today)`. `s
   `PortfolioSnapshot(...)` sites near :765 / :781 / :894, `write_snapshot` near :649, the gates near :776 / :879, the
   phantom-delete filter near :922), `app/routers/history.py:73`, `app/services/portfolio_service.py:1412-1413`,
   `app/schemas/portfolio.py:280` (`futures_equity_twd` field on `PortfolioSummary`)
-- Test: `tests/integration/test_futures_networth.py`
+  `app/services/networth_backfill_service.py:1016-1075` (`_main`: add `--from YYYY-MM-DD`, `--to YYYY-MM-DD`
+  (default today, Asia/Taipei) and `--phase prices|snapshots|both`; with `--from` it calls
+  `run_backfill(db, from_d, to_d, phase=phase)` instead of deriving the start; without it, today's behaviour)
+- Test: `tests/integration/test_futures_networth.py`, `tests/unit/test_networth_backfill_cli.py`
 
 **Interfaces:**
 - Consumes: Task 3 (`futures_lock(shared=True)`, `equity_by_date`, `equity_at`, `source_dates`).
@@ -281,7 +296,9 @@ deletes a row only when `futures_equity_twd == 0`; inserted rows take the series
   `test_summary_total_includes_futures`, `test_zero_cash_row_with_futures_kept`, `test_cash_insert_carries_futures`,
   `test_replay_writes_futures_only_date` (no stock / cash activity on a statement date → row with futures),
   `test_replay_matches_live_writer` (same day, replay vs `write_today_snapshot` → equal `futures_equity_twd` and total),
-  `test_negative_futures_equity_in_total` (Review Focus 5), `test_phantom_filter_keeps_futures_row`.
+  `test_negative_futures_equity_in_total` (Review Focus 5), `test_phantom_filter_keeps_futures_row`; CLI —
+  `test_cli_from_calls_run_backfill_snapshots_only` (`--from 2024-08-27 --phase snapshots` → `run_backfill(…,
+  date(2024, 8, 27), today, phase="snapshots")`), `test_cli_without_from_unchanged`, `test_cli_bad_phase_exits_2`.
 - [ ] **Step 2: Run** — FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** — PASS; full suite — no new failures.
@@ -335,9 +352,13 @@ recipe's variables.
   `test_daily_option_and_futures_positions` (signed premium value), `test_daily_combo_margin_lines`,
   `test_equity_row_with_blank_columns`, `test_monthly_month_end_block`, `test_value_between_labels_rejected`
   (Review Focus 1), `test_value_matching_two_labels_rejected`, `test_unknown_line_rejected`,
-  `test_missing_section_rejected`, `test_repeated_header_rejected`, `test_foreign_currency_rejected`,
-  `test_two_dates_rejected`, `test_page2_dated_line_rejected`, `test_taiwan_f_sequence_required`
-  (`Taiwan` without `F` → `sequence`), parametrised `test_identity_broken_alone` (each §2 identity broken with the
+  parametrised `test_daily_layout_rejected` with one case per §5.3 guard: section missing, repeated, out of order;
+  header row missing, repeated; an 權益帳 label missing, repeated; an 權益帳 value row missing, doubled; page count 1
+  and 3; page 2 with a section marker, a header row, a dated line, `總計`, `小計`; foreign currency; two dates; fill
+  sequence `Taiwan` without `F`; an option fill with a strike and no right; a right and no strike; a futures fill with
+  a right; position side not 買 / 賣 — each asserting `StatementError` with its code; parametrised
+  `test_monthly_layout_rejected`: unknown line in each monthly section, section missing, repeated, a numeric word
+  matching no label, a month-end label missing; parametrised `test_identity_broken_alone` (each §2 identity broken with the
   others intact → `identity:<name>`), `test_filename_date_differs_warning`, `test_payload_matches_portfolio_fixture`
   (equal to PR A's `futures_daily_payload.json` / `futures_monthly_payload.json`).
 - [ ] **Step 3: Run** — FAIL.
@@ -365,11 +386,15 @@ Order: daily files by statement date, then monthly files by month. Password cand
 (`cfg.sinopac_futures_daily_folder` / `cfg.sinopac_futures_monthly_folder`, as `_Job.candidates` does for 國泰).
 Only a plain commit run reports a run.
 
-- [ ] **Step 1: Write the failing tests** (fake drive, fake portfolio): `test_posts_daily_then_monthly_in_order`,
+- [ ] **Step 1: Write the failing tests** (fake drive, fake portfolio): parametrised
+  `test_malformed_statement_rejected_at_job_boundary` (three of Task 8's malformed daily fixtures and one monthly →
+  no POST, latch file written, summary codes `["latched", <code>]`), `test_validate_history_posts_one_batch` (one
+  `/validate` call with every parsed payload in order; report = its answer; no state written),
+  `test_posts_daily_then_monthly_in_order`,
   `test_state_skips_known_sha`, `test_same_statement_twice_in_run` (Review Focus 3),
   `test_portfolio_5xx_stops_without_latch` (Review Focus 4), `test_parse_failure_latches_and_posts_nothing`,
   `test_422_latches`, `test_decrypt_failure_latches`, `test_unlatch`, `test_dry_run_never_writes_state`,
-  `test_validate_history_report` (per-file outcomes, findings), `test_ack_posts_status`,
+  `test_ack_posts_status`,
   `test_only_plain_run_reports`, `test_missing_password_file_reports_failed`.
 - [ ] **Step 2: Run** — FAIL.
 - [ ] **Step 3: Implement.**
@@ -469,12 +494,15 @@ date; when `frozen`: 「持倉中，數字停在 <MM/DD>」; `value` null → th
 **Files:**
 - Create: `src/app/components/portfolio/import/futures-status-card/futures-status-card.{ts,html,scss,spec.ts}`,
   `src/app/components/notifications/sources/sinopac-futures.ts` (+ spec)
-- Modify: `import.html:288` (card `id="sinopac-futures"` after the 國泰 card), `import.ts` (fragment list),
+- Modify: `import.html:288` (card `id="sinopac-futures"` after the 國泰 card; it also reads
+  `getFuturesSummary()` from Task 13 and shows 權益總值 with the source date and, when `frozen`, 「持倉中，數字停在
+  <MM/DD>」), `import.ts` (fragment list),
   `notif-task.ts` (`NotifSourceKey` `'sinopac_futures'`, `SOURCE_NAMES` 「永豐期貨對帳單」, command `ackFutures`),
   `notification-center.service.ts` (status entry, data signal, tasks, load round, validators, import-dot badges),
   `notifications.ts` (ack handler), `portfolio.service.ts` (pending, runs, ack calls)
 
-- [ ] **Step 1: Write the failing tests**: status card — `lists pending items with ack`, `shows run state`; source —
+- [ ] **Step 1: Write the failing tests**: status card — `lists pending items with ack`, `shows run state`,
+  `frozen note for an old source with open positions`, `no frozen note when the source is today or flat`; source —
   `one task per item with id sinopac_futures:<key>:<status>`, `conflict and findings on one key give two tasks`,
   `run task when latched / failed / stale`, `查看 links to /portfolio/import#sinopac-futures`; service —
   `invalid payload marks the source unreadable without touching 國泰`.
@@ -490,8 +518,10 @@ date; when `frozen`: 「持倉中，數字停在 <MM/DD>」; `value` null → th
 1. PR A: deploy the portfolio release (migration `f1futures`); `/history` unchanged except `futures_equity_twd` 0.
 2. The owner adds `投資/永豐期貨/日對帳單=$ID` and `投資/永豐期貨/月對帳單=$ID` to the worker password file.
 3. PR B: update the worker checkout; `--validate-history` report to the owner (Task 10 Step 3); then one plain commit
-   run imports the archive; then `run_backfill` from 2024-08-27 (`networth_backfill_service` CLI) and a check that
-   `/history` totals changed only by `futures_equity_twd`; enable the timer.
+   run imports the archive; then, from `services/stock-portfolio-service` in the release checkout with the
+   production env as the portfolio service runs it, `python -m app.services.networth_backfill_service --from
+   2024-08-27 --phase snapshots --dry-run`, review, then the same without `--dry-run`; check that `/history` totals
+   changed only by `futures_equity_twd`; enable the timer.
 4. PR C: notifier release; the 9 archive findings appear; the owner acks them.
 5. PR D: SPA publish (preview first, owner go).
 6. Account 147: `valuation_source = portfolio:sinopac_futures` by admin PATCH with the owner's go; the accounts page

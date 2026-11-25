@@ -6,7 +6,9 @@ per-broker valuation dispatch, the cash-refresh interplay and no commit inside t
 `carry` finding, the lock tag, the missing-snapshot-row limit); rev 1.3 folds the AGENT-591 re-check (one futures
 lock for every futures write and every snapshot writer, futures source dates in the replay, the remaining grammar
 guards, a valid zero total in the chart, the findings / ack wire contract, the successor recheck). No further Multica
-round on the spec (owner rule: one review plus one re-check); the plan review covers what follows. Owner rulings 2026-11-25: on a day without a statement the account's equity is the
+round on the spec (owner rule: one review plus one re-check); the plan review covers what follows. Rev 1.4 (plan
+review AGENT-592): the §5.1 example is made internally consistent (it is the shared test fixture), and
+`--validate-history` replays the whole archive in one rolled-back portfolio transaction (§7). Owner rulings 2026-11-25: on a day without a statement the account's equity is the
 latest statement's value, and the monthly statement's month-end value corrects it (no re-pricing from exchange
 settlement prices); storage is one row per statement day with the fills and positions kept as JSON, not normalised
 tables; net worth uses 權益總值 (it includes the market value of open options). All amounts, product names and order
@@ -124,18 +126,23 @@ posted.
 {"kind": "daily",
  "source": {"drive_file_id": "…", "sha256": "…", "file_name": "…"},
  "statement_date": "2026-03-09",
- "equity": {"prev_balance": "100000", "deposits_net": "0", "fees_and_tax": "64",
-            "futures_realized": "1500", "premium_net": "-300", "balance": "101136",
-            "futures_unrealized": "-200", "equity": "100936", "total_equity": "101236",
+ "equity": {"prev_balance": "100000", "deposits_net": "50000", "fees_and_tax": "34",
+            "futures_realized": "1500", "premium_net": "-300", "balance": "151166",
+            "futures_unrealized": "-200", "equity": "150966", "total_equity": "151266",
             "initial_margin": "20000", "maintenance_margin": "15000", "securities_collateral": "0",
-            "excess_margin": "81236", "margin_call": "0", "additional_margin": "0", "withdrawable": "80936"},
+            "excess_margin": "131266", "margin_call": "0", "additional_margin": "0", "withdrawable": "130966"},
  "deposits": [{"seq": "1", "direction": "in", "amount": "50000"}],
  "fills": [{"order_no": "sA1B2-01", "product": "範例期貨", "month": "2026/03", "strike": null, "right": null,
             "action": "平賣", "qty": 1, "price": "21000", "tax": "4", "fee": "20", "pnl": "1500",
-            "closes": [{"date": "2026-03-02", "order_no": "sA0Z9-01", "qty": 1, "price": "20700"}]}],
- "fills_total": {"tax": "8", "fee": "56", "pnl": "1200"},
- "positions": [{"opened": "2026-03-09", "product": "範例選", "month": "2026/03", "strike": "21000",
-                "right": "Call", "side": "買", "entry_price": "60", "mark_price": "60", "qty": 1,
+            "closes": [{"date": "2026-03-02", "order_no": "sA0Z9-01", "qty": 1, "price": "20850"}]},
+           {"order_no": "sA1B3-01", "product": "範例選", "month": "2026/03", "strike": "21000", "right": "Call",
+            "action": "新買", "qty": 1, "price": "6", "tax": "0", "fee": "10", "pnl": "-300", "closes": []}],
+ "fills_total": {"tax": "4", "fee": "30", "pnl": "1200"},
+ "positions": [{"opened": "2026-03-05", "product": "範例期貨", "month": "2026/04", "strike": null,
+                "right": null, "side": "買", "entry_price": "21020", "mark_price": "21000", "qty": 1,
+                "initial_margin": "20000", "premium_value": "0", "unrealized": "-200"},
+               {"opened": "2026-03-09", "product": "範例選", "month": "2026/03", "strike": "21000",
+                "right": "Call", "side": "買", "entry_price": "6", "mark_price": "6", "qty": 1,
                 "initial_margin": "0", "premium_value": "300", "unrealized": "0"}],
  "position_lines": {"option_value_net": "300"},
  "warnings": []}
@@ -309,8 +316,11 @@ is set when `findings_sha` changes. A day or month with findings is pending (§8
   date or a month. Response, state file (keyed by Drive file id + sha256; every outcome is terminal for its sha),
   latch file `sinopac-futures-disabled.json` (decrypt failure with every candidate, any §5.3 failure, HTTP 422), lock,
   run report and exit codes follow the 國泰 job (`worker/cathay.py`); only a plain commit run reports a run.
-- No cutover: nothing else writes futures data, so every archived statement imports. `--validate-history` is a dry run
-  over both folders that writes a report of per-file outcomes and the monthly findings it would record.
+- No cutover: nothing else writes futures data, so every archived statement imports. `--validate-history` parses
+  both folders, then posts every payload in one request to `POST …/sinopac-futures-statement/validate`: the portfolio
+  imports them in order (dailies by date, then monthlies) inside one transaction under the futures lock and rolls it
+  back, answering per-file outcomes (repeats → `duplicate`, a second sha → `conflict`) and the findings every row would
+  carry at the end. Nothing persists; the worker writes the answer as its report.
 
 ## 8. Notifications
 
