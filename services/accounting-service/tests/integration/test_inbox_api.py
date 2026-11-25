@@ -1,4 +1,5 @@
 """Inbox read model and batch apply (spec 2026-10-21 §4–§5). Synthetic data only."""
+import uuid
 from datetime import date
 from decimal import Decimal
 
@@ -11,7 +12,7 @@ from tests.integration.statement_fixtures import (  # noqa: F401
 )
 # top-level import is safe: test_reconciliation_actions_transfer does not import this module
 from tests.integration.test_reconciliation_actions_transfer import (  # noqa: E402,F401
-    _ambiguous_case, _delta, _needs_peer, orphan_pair, pair,
+    _adjust, _ambiguous_case, _delta, _fresh, _needs_peer, _pair_params, orphan_pair, pair,
 )
 
 TOKENS = "spa:spa-token,hermes:hermes-token"
@@ -709,8 +710,13 @@ def test_transfer_delta_item_is_amount_differs_with_the_transfer_field_and_no_ac
     item = next(i for i in _items(_inbox(client), "amount_differs") if i["case_id"] == _delta(db_session, pair.cstmt).id)
     assert item["actions"] == ["match_candidate", "dismiss"]
     assert item["transfer"] == {"adjust_transfer": {"entry_id": pair.in_leg.id, "line_id": pair.cline.id,
-                                                    "candidate_entry_ids": [pair.in_leg.id]},
+                                                    "candidate_entry_ids": [pair.in_leg.id],
+                                                    "legs": [_leg(pair.in_leg.id, "卡", "銀行", "in")]},
                                 "pair_transfer": None}
+
+
+def _leg(entry_id, account, counter, direction):
+    return {"entry_id": entry_id, "account_name": account, "counter_account_name": counter, "direction": direction}
 
 
 def test_needs_peer_item_lists_peer_candidates(orphan_pair, client, db_session):
@@ -737,4 +743,89 @@ def test_ambiguous_item_offers_adjust_transfer_over_its_transfer_leg_candidates(
     case = _ambiguous_case(db_session, pair.cstmt, pair.cline, [pair.in_leg, plain, second_in])
     item = next(i for i in _items(_inbox(client)) if i["case_id"] == case.id)
     assert item["transfer"]["adjust_transfer"] == {"entry_id": None, "line_id": pair.cline.id,
-                                                   "candidate_entry_ids": [pair.in_leg.id, second_in.id]}
+                                                   "candidate_entry_ids": [pair.in_leg.id, second_in.id],
+                                                   "legs": [_leg(pair.in_leg.id, "卡", "銀行", "in"),
+                                                            _leg(second_in.id, "卡", "銀行", "in")]}
+
+
+def test_adjust_transfer_leg_without_a_single_peer_has_no_counter_account(pair, seed, db_session, client):
+    """#433: `peer_leg` finds no single other leg (here a lone leg in its own group) → no counter account."""
+    lone = seed.entry(pair.card, "20050", kind="transfer_in", day=date(2026, 9, 5), transfer_group_id=uuid.uuid4())
+    db_session.commit()
+    case = _ambiguous_case(db_session, pair.cstmt, pair.cline, [pair.in_leg, lone])
+    item = next(i for i in _items(_inbox(client)) if i["case_id"] == case.id)
+    assert item["transfer"]["adjust_transfer"]["legs"] == [_leg(pair.in_leg.id, "卡", "銀行", "in"),
+                                                           _leg(lone.id, "卡", None, "in")]
+
+
+def test_adjust_transfer_leg_of_another_kind_takes_its_direction_from_the_amount_sign(pair, seed, db_session,
+                                                                                      client):
+    """#433 / AGENT-593 finding 1: a grouped entry of another kind (a MOZE refund keeps its transfer group) is still
+    listed; its direction is the amount sign and the inbox does not fail."""
+    group = uuid.uuid4()
+    odd = seed.entry(pair.card, "-100", kind="refund", day=date(2026, 9, 5), transfer_group_id=group)
+    seed.entry(pair.bank, "100", kind="transfer_in", day=date(2026, 9, 5), transfer_group_id=group)
+    db_session.commit()
+    case = _ambiguous_case(db_session, pair.cstmt, pair.cline, [pair.in_leg, odd])
+    item = next(i for i in _items(_inbox(client)) if i["case_id"] == case.id)  # `_inbox` asserts the 200
+    assert item["transfer"]["adjust_transfer"]["legs"] == [_leg(pair.in_leg.id, "卡", "銀行", "in"),
+                                                           _leg(odd.id, "卡", "銀行", "out")]
+
+
+# --- #433: the action response names the peer case a transfer action resolved ---------------------------------------
+
+def _post(client, case, action, params):
+    return client.post(f"/reconciliation/cases/{case.id}/actions", headers=S,
+                       json={"action": action, "params": params})
+
+
+def test_adjust_transfer_response_names_the_peer_case_it_resolved(pair, client, db_session):
+    peer = _delta(db_session, pair.bstmt)
+    assert peer is not None
+    res = _post(client, _delta(db_session, pair.cstmt), "adjust_transfer", _adjust(pair))
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["peer_case_id"] == peer.id
+    resolved = _fresh(db_session, ReconciliationCase, peer.id)
+    assert (resolved.status, resolved.resolved_action_id) == ("resolved", body["id"])
+
+
+def test_adjust_transfer_response_peer_case_is_null_without_an_open_peer_case(pair, client, db_session):
+    peer = _delta(db_session, pair.bstmt)
+    assert client.post(f"/reconciliation/cases/{peer.id}/dismiss", headers=S,
+                       json={"note": "elsewhere"}).status_code == 201
+    res = _post(client, _delta(db_session, pair.cstmt), "adjust_transfer", _adjust(pair))
+    assert res.status_code == 201, res.text
+    assert res.json()["peer_case_id"] is None
+
+
+def test_pair_transfer_response_names_the_peer_case_it_resolved(orphan_pair, client, db_session):
+    peer = _needs_peer(db_session, orphan_pair.bstmt)
+    res = _post(client, _needs_peer(db_session, orphan_pair.cstmt), "pair_transfer", _pair_params(orphan_pair.bline))
+    assert res.status_code == 201, res.text
+    assert res.json()["peer_case_id"] == peer.id
+
+
+def test_replayed_transfer_action_returns_the_same_peer_case_id(pair, client, db_session):
+    case = _delta(db_session, pair.cstmt)
+    first = _post(client, case, "adjust_transfer", _adjust(pair))
+    assert first.status_code == 201, first.text
+    second = _post(client, case, "adjust_transfer", _adjust(pair))
+    assert second.status_code == 200, second.text
+    assert second.json()["replayed"] is True and second.json()["id"] == first.json()["id"]
+    assert second.json()["peer_case_id"] == first.json()["peer_case_id"] is not None
+
+
+def test_other_actions_and_the_action_list_carry_peer_case_id(pair, client, db_session):
+    case = _delta(db_session, pair.cstmt)
+    applied = _post(client, case, "adjust_transfer", _adjust(pair)).json()
+    reverted = client.post(f"/reconciliation/actions/{applied['id']}/revert", headers=S)
+    assert reverted.status_code == 201, reverted.text
+    assert reverted.json()["action"] == "revert" and reverted.json()["peer_case_id"] is None
+    rows = {r["id"]: r for r in client.get("/reconciliation/actions", headers=S,
+                                           params={"case_id": case.id}).json()}
+    assert rows[applied["id"]]["peer_case_id"] == applied["peer_case_id"] is not None  # stored, kept after revert
+    assert rows[reverted.json()["id"]]["peer_case_id"] is None
+    dismissed = client.post(f"/reconciliation/cases/{case.id}/dismiss", headers=S, json={"note": "x"})
+    assert dismissed.status_code == 201, dismissed.text
+    assert dismissed.json()["peer_case_id"] is None

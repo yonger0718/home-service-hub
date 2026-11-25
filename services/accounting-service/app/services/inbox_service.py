@@ -28,6 +28,7 @@ from app.services.errors import (
 )
 from app.services.reconciliation_actions import OPEN_STATUSES, audit, base, engine
 from app.services.reconciliation_actions.base import Context
+from app.services.reconciliation_actions.transfer_support import peer_leg
 from app.services.reconciliation_hints import PEER_HINT
 from app.services.statements import matching
 
@@ -374,9 +375,29 @@ def _buttons(db: Session, case: ReconciliationCase, question: str, allowed: list
     return buttons(question, allowed, adjustable=question == "amount_differs" and adjustable(db, case))
 
 
+_LEG_DIRECTION = {"transfer_out": "out", "transfer_in": "in"}
+
+
+def _transfer_leg_out(db: Session, leg: LedgerEntry, name: Callable[[int], str]) -> dict:
+    """#433: the leg's account, the other leg's account (`peer_leg`; None without a single other leg) and the money's
+    direction. `_transfer_leg` accepts any grouped entry, so a kind other than transfer_out / transfer_in (a MOZE
+    refund keeps its group) takes the amount sign instead (AGENT-593 finding 1)."""
+    peer = peer_leg(db, leg)
+    direction = _LEG_DIRECTION.get(leg.kind) or ("out" if Decimal(leg.amount) < 0 else "in")
+    return {"entry_id": leg.id, "account_name": name(leg.account_id),
+            "counter_account_name": None if peer is None else name(peer.account_id), "direction": direction}
+
+
 def _transfer_out(db: Session, case: ReconciliationCase, allowed: list[str]) -> dict | None:
     """Spec §7: the parameters of the transfer actions, which have no inbox button (`actions` is unchanged)."""
     adjust = pair = None
+    names: dict[int, str] = {}
+
+    def name(account_id: int) -> str:
+        if account_id not in names:
+            names[account_id] = db.get(Account, account_id).name
+        return names[account_id]
+
     if "adjust_transfer" in allowed:
         if case.kind == "ambiguous":
             entry_id = None
@@ -385,16 +406,14 @@ def _transfer_out(db: Session, case: ReconciliationCase, allowed: list[str]) -> 
         else:
             entry_id = (case.context or {}).get("entry_id") or case.entry_id
             legs = [entry_id]
-        adjust = {"entry_id": entry_id, "line_id": case.line_id, "candidate_entry_ids": legs}
+        adjust = {"entry_id": entry_id, "line_id": case.line_id, "candidate_entry_ids": legs,
+                  "legs": [_transfer_leg_out(db, db.get(LedgerEntry, leg_id), name) for leg_id in legs]}
     if "pair_transfer" in allowed:
         action = reconciliation_actions.ACTIONS["pair_transfer"]
-        names = {}
         candidates = []
         for peer_statement, peer_line in action.peer_candidates(db, case):
-            if peer_statement.account_id not in names:
-                names[peer_statement.account_id] = db.get(Account, peer_statement.account_id).name
             candidates.append({"line_id": peer_line.id, "statement_id": peer_statement.id,
-                               "account_name": names[peer_statement.account_id],
+                               "account_name": name(peer_statement.account_id),
                                "posted_date": peer_line.posted_date, "amount": peer_line.flow_amount})
         pair = {"peer_candidates": candidates}
     return None if adjust is None and pair is None else {"adjust_transfer": adjust, "pair_transfer": pair}

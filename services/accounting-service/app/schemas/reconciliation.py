@@ -46,6 +46,8 @@ class ActionOut(BaseModel):
     label: str | None = None
     answer: str | None = None
     line: ActionLine | None = None  # filled by GET /reconciliation/actions only
+    # #433: the peer line's case an adjust_transfer / pair_transfer resolved (its stored `inverse`); None otherwise
+    peer_case_id: int | None = None
 
 
 class AuditOut(BaseModel):
