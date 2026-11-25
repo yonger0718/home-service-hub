@@ -533,7 +533,9 @@ returns 204 with no body (Task 14 client parses none); the summary's `month` is 
 ## Rollout (after each PR's merge; owner go per step)
 
 1. PR A: deploy the portfolio release (migration `f1futures`); `/history` unchanged except `futures_equity_twd` 0.
-2. PR D: SPA publish (preview first, owner go). It renders exactly as today while futures is 0, and it must be live
+2. PR D: SPA publish (preview first, owner go). While futures is 0 every existing view renders as today; the only
+   additions are the two empty-state cards (/portfolio 「永豐期貨 · 尚無期貨對帳單」, /portfolio/import 永豐期貨對帳單 with
+   「尚未啟用自動匯入」, no dot or count before the first worker run). It must be live
    before step 4: the current SPA rewrites cash-only points to carried market + cash and draws a two-segment bar, so
    it would drop futures from the 淨值走勢 chart once the history fill runs (PR A final review).
 3. The owner adds `投資/永豐期貨/日對帳單=$ID` and `投資/永豐期貨/月對帳單=$ID` to the worker password file.
@@ -543,7 +545,10 @@ returns 204 with no body (Task 14 client parses none); the summary's `month` is 
    app.services.sinopac_futures_backfill --from 2024-08-27 --dry-run` (counts to the owner), then the same without
    `--dry-run`; check on a before/after export of `/history` that every point changed by exactly its
    `futures_equity_twd`; enable the timer.
-5. PR C: notifier release; the 9 archive findings appear; the owner acks them.
+   Enable the timer on the same day as the first commit run: from that run on, a morning without a timer run raises
+   「永豐期貨對帳單今天沒有執行」 in the SPA. The 9 archive findings appear in 通知 / the import card right after the
+   archive import (counted tasks); the owner acks them there.
+5. PR C: notifier release (Discord section for the same pending items).
 6. Account 147: `valuation_source = portfolio:sinopac_futures` by admin PATCH with the owner's go; the accounts page
    shows 市值 for 147.
 7. Clean up `~homehub-worker/tmp/sinopac-spike*` and the census scratch.
