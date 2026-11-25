@@ -31,7 +31,7 @@ from datetime import date as dt_date, timedelta
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
-from sqlalchemy import and_, case, delete, func, literal, select, union_all
+from sqlalchemy import and_, case, delete, func, literal, not_, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as portfolio_models
@@ -42,6 +42,7 @@ from ..models.portfolio_snapshot import PortfolioSnapshot
 from ..models.price_history import PriceHistory
 from . import cash_account_service
 from . import market_data_service
+from . import sinopac_futures_series
 from .portfolio_service import _load_adjusted_transactions, _pence_divisor
 from .quotes import fx_rate_service
 from .realized_pnl_service import iter_realized_events
@@ -489,6 +490,19 @@ def _load_price_map(
     }
 
 
+def _phantom_row_filter() -> tuple:
+    """An all-zero row: the shape the replay's phantom delete removes."""
+    return (
+        PortfolioSnapshot.total_market_value == 0,
+        PortfolioSnapshot.total_cost == 0,
+        PortfolioSnapshot.total_cash_twd == 0,
+        PortfolioSnapshot.futures_equity_twd == 0,
+        PortfolioSnapshot.total_dividends == 0,
+        PortfolioSnapshot.total_realized_pnl == 0,
+        PortfolioSnapshot.portfolio_xirr.is_(None),
+    )
+
+
 def replay_snapshots_range(
     db: Session,
     from_d: dt_date,
@@ -510,6 +524,18 @@ def replay_snapshots_range(
     going forward).
     """
     result = SnapshotReplayResult()
+    # Shared futures lock (spec §6.2) in the outer transaction, before any
+    # futures read, held until the final commit; the per-date SAVEPOINTs
+    # below never release it.
+    sinopac_futures_series.futures_lock(db, shared=True)
+    futures_by_date = sinopac_futures_series.equity_by_date(db, from_d, to_d)
+    # Futures source dates join the eligibility gates (spec §6.5).
+    futures_source_dates = sinopac_futures_series.source_dates(db)
+
+    def futures_equity(snapshot_date: dt_date) -> Decimal:
+        value = futures_by_date[snapshot_date]
+        return value.total_equity if value is not None else Decimal("0")
+
     held_calendar = compute_active_dates(
         db, from_d, to_d, include_non_trading=True
     )
@@ -654,6 +680,7 @@ def replay_snapshots_range(
         row.total_dividends = _snapshot_amount(row.total_dividends)
         row.total_realized_pnl = _snapshot_amount(row.total_realized_pnl)
         row.total_cash_twd = _snapshot_amount(row.total_cash_twd)
+        row.futures_equity_twd = _snapshot_amount(row.futures_equity_twd)
         if dry_run:
             existing = db.get(PortfolioSnapshot, snapshot_date)
             old = (
@@ -685,6 +712,49 @@ def replay_snapshots_range(
             result.errors.append(BackfillError(date=snapshot_date, reason=str(exc)))
             return False
 
+    def phantom_delete_dates() -> list[dt_date]:
+        """Gated dates whose all-zero row the phantom delete removes.
+
+        A futures source date keeps its row even when every column is 0 (a
+        positive → zero transition, spec §6.5; the trading-day gate never
+        queues one, this keeps it true by construction), and so does a date
+        whose series value is non-zero (R20): that row is kept and the
+        kept-row refresh below sets its futures from the series.
+        """
+        return [
+            d
+            for d in gated_phantom_candidates
+            if d not in futures_source_dates and futures_equity(d) == 0
+        ]
+
+    def latest_surviving_row_before(snapshot_date: dt_date) -> Optional[PortfolioSnapshot]:
+        """Latest row before ``snapshot_date`` that the end-of-run deletes keep.
+
+        Rows the replay already wrote are visible (each SAVEPOINT flushes).
+        A stale-shaped row (market 0, cost > 0: a data-gap dip, the shape
+        the stale delete removes) is never a template, in or before the
+        range, consistent with ``prior_snapshot`` (R19 M1). Rows on dates
+        already queued for the phantom delete and matching its filter are
+        skipped: they are about to disappear.
+        """
+        doomed_phantom = and_(
+            PortfolioSnapshot.date.in_(phantom_delete_dates()),
+            *_phantom_row_filter(),
+        )
+        return (
+            db.query(PortfolioSnapshot)
+            .filter(
+                PortfolioSnapshot.date < snapshot_date,
+                or_(
+                    PortfolioSnapshot.total_market_value > 0,
+                    PortfolioSnapshot.total_cost == 0,
+                ),
+                not_(doomed_phantom),
+            )
+            .order_by(PortfolioSnapshot.date.desc())
+            .first()
+        )
+
     def total_cash_twd(snapshot_date: dt_date) -> Decimal:
         cash_total, skipped = cash_account_service.get_total_balance_in(
             db, "TWD", asof=snapshot_date
@@ -695,6 +765,53 @@ def replay_snapshots_range(
                 extra={"date": snapshot_date.isoformat(), "skipped": skipped},
             )
         return cash_total
+
+    def stockless_row(
+        snapshot_date: dt_date, cash: Decimal, futures: Decimal
+    ) -> PortfolioSnapshot:
+        """Market 0 / cost 0 with the running dividend and realised totals."""
+        return PortfolioSnapshot(
+            date=snapshot_date,
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("0"),
+            total_unrealized_pnl=Decimal("0"),
+            total_dividends=cumulative_dividends,
+            total_realized_pnl=cumulative_realized,
+            total_cash_twd=cash,
+            futures_equity_twd=futures,
+            portfolio_xirr=None,
+        )
+
+    def carried_row(snapshot_date: dt_date, futures: Decimal) -> PortfolioSnapshot:
+        """A row kept for futures (R16 / R17), written like the skip-day
+        forward fill: no price is fetched or invented, and market 0 /
+        cost > 0 (a full stock dip on /history) is never written. Market and
+        cost carry the last trading day's, else the latest surviving row's
+        before ``snapshot_date``, else 0; dividends and realised P&L are the
+        running totals; cash as computed for the date; XIRR NULL."""
+        if last_trading_mv is not None and last_trading_cost is not None:
+            carry_mv, carry_cost = last_trading_mv, last_trading_cost
+        else:
+            template = latest_surviving_row_before(snapshot_date)
+            carry_mv = (
+                Decimal(template.total_market_value)
+                if template is not None
+                else Decimal("0")
+            )
+            carry_cost = (
+                Decimal(template.total_cost) if template is not None else Decimal("0")
+            )
+        return PortfolioSnapshot(
+            date=snapshot_date,
+            total_market_value=carry_mv,
+            total_cost=carry_cost,
+            total_unrealized_pnl=carry_mv - carry_cost,
+            total_dividends=cumulative_dividends,
+            total_realized_pnl=cumulative_realized,
+            total_cash_twd=total_cash_twd(snapshot_date),
+            futures_equity_twd=futures,
+            portfolio_xirr=None,
+        )
 
     tx_i = 0
     div_i = 0
@@ -770,27 +887,57 @@ def replay_snapshots_range(
                         total_dividends=cumulative_dividends,
                         total_realized_pnl=cumulative_realized,
                         total_cash_twd=total_cash_twd(cur),
+                        futures_equity_twd=futures_equity(cur),
                         portfolio_xirr=None,
                     ),
                 )
-            if not wrote_forward_fill and cur in cash_activity_dates:
+            if not wrote_forward_fill and (
+                cur in cash_activity_dates or cur in futures_source_dates
+            ):
                 cash_total = total_cash_twd(cur)
-                if cash_total != 0:
+                # A futures source date is admitted even when its value
+                # and the cash are 0: that row records a positive → zero
+                # transition (spec §6.5 source-date eligibility).
+                futures_eligible = (
+                    cur in futures_source_dates or futures_equity(cur) != 0
+                )
+                if futures_eligible and sum(qty.values()) > 0:
+                    # Stock is held but the held forward fill could not run
+                    # (no last trading day yet): carry the last good market
+                    # value, never market 0 / cost 0 (R18).
                     wrote_forward_fill = write_snapshot(
-                        cur,
-                        PortfolioSnapshot(
-                            date=cur,
-                            total_market_value=Decimal("0"),
-                            total_cost=Decimal("0"),
-                            total_unrealized_pnl=Decimal("0"),
-                            total_dividends=cumulative_dividends,
-                            total_realized_pnl=cumulative_realized,
-                            total_cash_twd=cash_total,
-                            portfolio_xirr=None,
-                        ),
+                        cur, carried_row(cur, futures_equity(cur))
+                    )
+                elif cash_total != 0 or futures_eligible:
+                    wrote_forward_fill = write_snapshot(
+                        cur, stockless_row(cur, cash_total, futures_equity(cur))
                     )
             if not wrote_forward_fill:
-                stale_candidates.append(cur)
+                # A row the stale delete would drop (mv 0, cost > 0) is
+                # kept on a futures source date or a non-zero series date and
+                # rewritten as a carried row (R17, the gap-day rule below).
+                skip_futures = futures_equity(cur)
+                existing = (
+                    db.get(PortfolioSnapshot, cur)
+                    if cur in futures_source_dates or skip_futures != 0
+                    else None
+                )
+                if (
+                    existing is not None
+                    and existing.total_market_value == 0
+                    and existing.total_cost > 0
+                ):
+                    # Stock held: carry the last good market value (R17).
+                    # None held: the cost is not real, rewrite it stockless
+                    # with that day's cash and the series (R19 M3).
+                    write_snapshot(
+                        cur,
+                        carried_row(cur, skip_futures)
+                        if sum(qty.values()) > 0
+                        else stockless_row(cur, total_cash_twd(cur), skip_futures),
+                    )
+                else:
+                    stale_candidates.append(cur)
             cur += timedelta(days=1)
             continue
 
@@ -864,8 +1011,24 @@ def replay_snapshots_range(
         # Treat as a stale candidate so the bulk DELETE removes any
         # pre-existing bad row and the chart bridges the gap via
         # interpolation against the prior good snapshot.
+        #
+        # Futures history survives the gap (spec §6.5): on a futures
+        # source date, or a date whose series value is non-zero, an
+        # existing row is kept (never a stale candidate) and a source date
+        # with no row gets one. Either is written as a carried row
+        # (see below) with the series futures value.
         if mv == 0 and total_cost > 0:
-            stale_candidates.append(cur)
+            gap_futures = futures_equity(cur)
+            is_source = cur in futures_source_dates
+            existing = (
+                db.get(PortfolioSnapshot, cur)
+                if is_source or gap_futures != 0
+                else None
+            )
+            if existing is not None or is_source:
+                write_snapshot(cur, carried_row(cur, gap_futures))
+            else:
+                stale_candidates.append(cur)
             cur += timedelta(days=1)
             continue
 
@@ -881,6 +1044,7 @@ def replay_snapshots_range(
             and total_cost == 0
             and cur not in cash_activity_dates
             and cur not in stock_activity_dates
+            and cur not in futures_source_dates
         ):
             # Pre-existing all-zero rows on a now-gated date must be
             # cleaned up by the end-of-run DELETE, otherwise a prior
@@ -899,6 +1063,7 @@ def replay_snapshots_range(
                 total_dividends=cumulative_dividends,
                 total_realized_pnl=cumulative_realized,
                 total_cash_twd=total_cash_twd(cur),
+                futures_equity_twd=futures_equity(cur),
                 portfolio_xirr=None,
             ),
         )
@@ -919,19 +1084,38 @@ def replay_snapshots_range(
         )
         result.stale_rows_deleted += max(delete_result.rowcount or 0, 0)
 
-    if gated_phantom_candidates and not dry_run:
+    phantom_dates = phantom_delete_dates()
+    if phantom_dates and not dry_run:
         phantom_result = db.execute(
             delete(PortfolioSnapshot).where(
-                PortfolioSnapshot.date.in_(gated_phantom_candidates),
-                PortfolioSnapshot.total_market_value == 0,
-                PortfolioSnapshot.total_cost == 0,
-                PortfolioSnapshot.total_cash_twd == 0,
-                PortfolioSnapshot.total_dividends == 0,
-                PortfolioSnapshot.total_realized_pnl == 0,
-                PortfolioSnapshot.portfolio_xirr.is_(None),
+                PortfolioSnapshot.date.in_(phantom_dates),
+                *_phantom_row_filter(),
             )
         )
         result.stale_rows_deleted += max(phantom_result.rowcount or 0, 0)
+
+    # Rows the replay kept without rewriting (dates it declined to write,
+    # surviving the deletes above) take the series futures value, only that
+    # column (R19 M2): the live writer may have stored an older value. Only
+    # on futures-eligible dates (a source date or a non-zero series); a
+    # series-0 non-source date keeps its row untouched (legacy).
+    kept_dates = {
+        d
+        for d in (*stale_candidates, *gated_phantom_candidates)
+        if d in futures_source_dates or futures_equity(d) != 0
+    }
+    if kept_dates and not dry_run:
+        for kept in (
+            db.query(PortfolioSnapshot)
+            .filter(PortfolioSnapshot.date >= from_d, PortfolioSnapshot.date <= to_d)
+            .all()
+        ):
+            if kept.date not in kept_dates:
+                continue
+            series = _snapshot_amount(futures_equity(kept.date))
+            if Decimal(kept.futures_equity_twd) != series:
+                kept.futures_equity_twd = series
+        db.flush()
 
     if dry_run:
         return result

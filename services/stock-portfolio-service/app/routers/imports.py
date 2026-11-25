@@ -20,7 +20,7 @@ from dataclasses import asdict
 from datetime import date as dt_date, datetime, timedelta, timezone
 from typing import Literal, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Path, Query, Response, UploadFile
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
@@ -28,7 +28,8 @@ from sqlalchemy.orm import Session
 from ..database import SessionLocal, get_db
 from ..models import portfolio as portfolio_models
 from ..schemas.cathay_statement import StatementPayload
-from ..services import broker_cathay_service, broker_cathay_statement_service, broker_ib_flex_service, import_service, per_date_verify, post_import_orchestrator
+from ..schemas.sinopac_futures_statement import FuturesPayload
+from ..services import broker_cathay_service, broker_cathay_statement_service, broker_ib_flex_service, import_service, sinopac_futures_statement_service, per_date_verify, post_import_orchestrator
 
 router = APIRouter(prefix="/api/portfolio/imports", tags=["Portfolio Imports"])
 
@@ -541,3 +542,62 @@ def cathay_statement_ack(trade_date: dt_date, db: Session = Depends(get_db)) -> 
     if day is None:
         raise HTTPException(status_code=404, detail="no pending statement for this date")
     return {"trade_date": day.trade_date.isoformat(), "ack_status": day.ack_status}
+
+
+# --- 永豐期貨 statements (spec 8) -------------------------------------------
+
+
+class FuturesValidateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    payloads: list[FuturesPayload] = Field(max_length=200)
+
+
+@router.post("/sinopac-futures-statement")
+def import_sinopac_futures_statement(
+    payload: FuturesPayload,
+    response: Response,
+    dry_run: bool = Query(default=False),
+    db: Session = Depends(get_db),
+) -> dict:
+    outcome = sinopac_futures_statement_service.import_statement(db, payload, dry_run=dry_run)
+    if outcome.errors:
+        # A rolled-back attempt must read as transient to the worker.
+        response.status_code = 500
+    return {"outcome": outcome.outcome, "key": outcome.key, "findings": outcome.findings, "errors": outcome.errors}
+
+
+@router.get("/sinopac-futures-statement/pending")
+def sinopac_futures_pending(db: Session = Depends(get_db)) -> dict:
+    return sinopac_futures_statement_service.pending(db)
+
+
+@router.post("/sinopac-futures-statement/validate")
+def sinopac_futures_validate(body: FuturesValidateBody, db: Session = Depends(get_db)) -> dict:
+    return sinopac_futures_statement_service.validate_archive(db, body.payloads)
+
+
+@router.post("/sinopac-futures-statement/runs", status_code=204)
+def sinopac_futures_record_run(report: CathayRunReport, db: Session = Depends(get_db)) -> Response:
+    sinopac_futures_statement_service.record_run(db, report.model_dump())
+    return Response(status_code=204)
+
+
+@router.get("/sinopac-futures-statement/runs/latest")
+def sinopac_futures_latest_run(db: Session = Depends(get_db)) -> dict:
+    return sinopac_futures_statement_service.latest_runs(db)
+
+
+@router.post("/sinopac-futures-statement/days/{key}/ack", status_code=204)
+def sinopac_futures_ack(
+    key: str = Path(pattern=r"^\d{4}-\d{2}(-\d{2})?$"),
+    status: Literal["conflict", "findings"] = Query(),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        acknowledged = sinopac_futures_statement_service.acknowledge(db, key, status)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="bad key")
+    if not acknowledged:
+        raise HTTPException(status_code=404, detail="nothing pending for this key")
+    return Response(status_code=204)

@@ -1,0 +1,10 @@
+{"kind": "monthly",
+ "source": {"drive_file_id": "fixture-monthly", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "file_name": "fixture.pdf"},
+ "month": "2026-03", "month_end": "2026-03-31",
+ "lines": {"A": "90000", "B": "10000", "G": "-300", "H": "120", "K": "1500", "M": "101080",
+           "N": "-200", "Q": "100880", "P": "0", "U": "20000", "V": "15000", "W": "80880",
+           "securities_collateral": "0", "additional_margin": "0", "withdrawable": "80580",
+           "long_premium_value": "300", "short_premium_value": "0", "total_equity": "101180"},
+ "activity_dates": ["2026-03-02", "2026-03-09"],
+ "open_positions": 1,
+ "warnings": []}

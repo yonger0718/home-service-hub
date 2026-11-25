@@ -278,7 +278,8 @@ class PortfolioSummary(BaseModel):
     total_dividends: Decimal
     total_realized_pnl: Decimal = Decimal("0.0")     # 累積已實現損益（含當沖）
     total_cash_twd: Decimal = Decimal("0")
-    total_assets_twd: Decimal = Decimal("0")
+    futures_equity_twd: Decimal = Decimal("0")       # 永豐期貨權益 at today (spec §6.3); 0 before the first statement
+    total_assets_twd: Decimal = Decimal("0")          # market value + cash + futures equity
     holdings: List[StockHolding]
     portfolio_xirr: Optional[Decimal] = None          # 整體投資組合年化報酬率
     portfolio_xirr_1m: Optional[Decimal] = None

@@ -19,6 +19,7 @@ from ..schemas import portfolio as schemas
 from .twse_service import get_stock_quotes
 from . import symbol_map_service
 from . import cash_account_service
+from . import sinopac_futures_series
 from .quotes import fx_rate_service as live_fx_rate_service
 from shared_lib import get_tracer
 tracer = get_tracer("stock-portfolio-service")
@@ -1365,6 +1366,8 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
         total_cash_twd, _skipped = cash_account_service.get_total_balance_in(db, "TWD", asof=today)
+        futures_value = sinopac_futures_series.equity_at(db, today)
+        futures_equity_twd = futures_value.total_equity if futures_value is not None else Decimal("0")
 
         total_pending = sum(pending_map.values(), Decimal(0))
         complete = all(h.estimated_pnl_with_dividends is not None for h in holdings_list)
@@ -1410,7 +1413,8 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             total_dividends=total_dividends.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             total_realized_pnl=total_realized_pnl.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             total_cash_twd=total_cash_twd,
-            total_assets_twd=total_market_value_twd + total_cash_twd,
+            futures_equity_twd=futures_equity_twd,
+            total_assets_twd=total_market_value_twd + total_cash_twd + futures_equity_twd,
             holdings=holdings_list,
             portfolio_xirr=portfolio_xirr,
             portfolio_xirr_1m=portfolio_windowed_xirr["1m"],
