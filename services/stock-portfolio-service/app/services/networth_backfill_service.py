@@ -42,6 +42,7 @@ from ..models.portfolio_snapshot import PortfolioSnapshot
 from ..models.price_history import PriceHistory
 from . import cash_account_service
 from . import market_data_service
+from . import sinopac_futures_series
 from .portfolio_service import _load_adjusted_transactions, _pence_divisor
 from .quotes import fx_rate_service
 from .realized_pnl_service import iter_realized_events
@@ -510,6 +511,18 @@ def replay_snapshots_range(
     going forward).
     """
     result = SnapshotReplayResult()
+    # Shared futures lock (spec §6.2) in the outer transaction, before any
+    # futures read, held until the final commit; the per-date SAVEPOINTs
+    # below never release it.
+    sinopac_futures_series.futures_lock(db, shared=True)
+    futures_by_date = sinopac_futures_series.equity_by_date(db, from_d, to_d)
+    # Futures source dates join the eligibility gates (spec §6.5).
+    futures_source_dates = sinopac_futures_series.source_dates(db)
+
+    def futures_equity(snapshot_date: dt_date) -> Decimal:
+        value = futures_by_date[snapshot_date]
+        return value.total_equity if value is not None else Decimal("0")
+
     held_calendar = compute_active_dates(
         db, from_d, to_d, include_non_trading=True
     )
@@ -654,6 +667,7 @@ def replay_snapshots_range(
         row.total_dividends = _snapshot_amount(row.total_dividends)
         row.total_realized_pnl = _snapshot_amount(row.total_realized_pnl)
         row.total_cash_twd = _snapshot_amount(row.total_cash_twd)
+        row.futures_equity_twd = _snapshot_amount(row.futures_equity_twd)
         if dry_run:
             existing = db.get(PortfolioSnapshot, snapshot_date)
             old = (
@@ -770,12 +784,15 @@ def replay_snapshots_range(
                         total_dividends=cumulative_dividends,
                         total_realized_pnl=cumulative_realized,
                         total_cash_twd=total_cash_twd(cur),
+                        futures_equity_twd=futures_equity(cur),
                         portfolio_xirr=None,
                     ),
                 )
-            if not wrote_forward_fill and cur in cash_activity_dates:
+            if not wrote_forward_fill and (
+                cur in cash_activity_dates or cur in futures_source_dates
+            ):
                 cash_total = total_cash_twd(cur)
-                if cash_total != 0:
+                if cash_total != 0 or futures_equity(cur) != 0:
                     wrote_forward_fill = write_snapshot(
                         cur,
                         PortfolioSnapshot(
@@ -786,6 +803,7 @@ def replay_snapshots_range(
                             total_dividends=cumulative_dividends,
                             total_realized_pnl=cumulative_realized,
                             total_cash_twd=cash_total,
+                            futures_equity_twd=futures_equity(cur),
                             portfolio_xirr=None,
                         ),
                     )
@@ -881,6 +899,7 @@ def replay_snapshots_range(
             and total_cost == 0
             and cur not in cash_activity_dates
             and cur not in stock_activity_dates
+            and cur not in futures_source_dates
         ):
             # Pre-existing all-zero rows on a now-gated date must be
             # cleaned up by the end-of-run DELETE, otherwise a prior
@@ -899,6 +918,7 @@ def replay_snapshots_range(
                 total_dividends=cumulative_dividends,
                 total_realized_pnl=cumulative_realized,
                 total_cash_twd=total_cash_twd(cur),
+                futures_equity_twd=futures_equity(cur),
                 portfolio_xirr=None,
             ),
         )
@@ -926,6 +946,7 @@ def replay_snapshots_range(
                 PortfolioSnapshot.total_market_value == 0,
                 PortfolioSnapshot.total_cost == 0,
                 PortfolioSnapshot.total_cash_twd == 0,
+                PortfolioSnapshot.futures_equity_twd == 0,
                 PortfolioSnapshot.total_dividends == 0,
                 PortfolioSnapshot.total_realized_pnl == 0,
                 PortfolioSnapshot.portfolio_xirr.is_(None),

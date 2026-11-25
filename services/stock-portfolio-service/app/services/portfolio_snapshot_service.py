@@ -44,9 +44,16 @@ def _snapshot_realized_pnl(db: Session) -> Decimal:
 def write_today_snapshot(
     db: Session, *, today: Optional[dt_date] = None
 ) -> PortfolioSnapshot:
-    """Build the live summary and upsert a row for ``today`` (TW calendar)."""
+    """Build the live summary and upsert a row for ``today`` (TW calendar).
+
+    The shared futures lock (spec §6.2) is taken after the stock summary (its own futures value is not used here, and
+    anything it might commit cannot release the lock) and before the cash and futures reads, so the series written is
+    the committed one; it is held until the commit below.
+    """
     target = today or _today_tw()
     summary = portfolio_service.get_portfolio_summary(db)
+    sinopac_futures_series.futures_lock(db, shared=True)
+    futures = sinopac_futures_series.equity_at(db, target)
     cash_total_twd, skipped = cash_account_service.get_total_balance_in(
         db, "TWD", asof=target
     )
@@ -60,6 +67,7 @@ def write_today_snapshot(
         total_dividends=summary.total_dividends,
         total_realized_pnl=_snapshot_realized_pnl(db),
         total_cash_twd=cash_total_twd,
+        futures_equity_twd=futures.total_equity if futures is not None else Decimal("0"),
         portfolio_xirr=summary.portfolio_xirr,
     )
     merged = db.merge(row)
@@ -70,10 +78,12 @@ def write_today_snapshot(
 
 def _is_cash_only_row(row: PortfolioSnapshot) -> bool:
     """Match the shape inserted by ``refresh_snapshot_cash_range`` — all stock
-    columns zero and no XIRR. Used to safely prune helper-created rows when
-    a later refresh drops cash back to zero."""
+    columns zero, no futures equity and no XIRR. Used to safely prune
+    helper-created rows when a later refresh drops cash back to zero; a row
+    carrying futures equity is kept (spec §6.5)."""
     return (
-        row.total_market_value == 0
+        row.futures_equity_twd == 0
+        and row.total_market_value == 0
         and row.total_cost == 0
         and row.total_unrealized_pnl == 0
         and row.total_dividends == 0
@@ -95,6 +105,10 @@ def refresh_snapshot_cash_range(
     for accounts with ``opening_balance != 0``). Without this gate a single
     backdated CRUD over a long range could insert one phantom cash-only
     row per calendar day where the running cash balance is non-zero.
+
+    Futures (spec §6.5): takes the shared futures lock before it reads the
+    series; a zero-cash row is deleted only when its ``futures_equity_twd``
+    is 0 too, and an inserted row takes the series value.
     """
     if end_date < start_date:
         logger.debug(
@@ -106,6 +120,8 @@ def refresh_snapshot_cash_range(
         )
         return
 
+    sinopac_futures_series.futures_lock(db, shared=True)
+    futures_by_date = sinopac_futures_series.equity_by_date(db, start_date, end_date)
     cash_activity_dates = _cash_activity_dates(db)
 
     cur = start_date
@@ -123,6 +139,7 @@ def refresh_snapshot_cash_range(
             else:
                 existing.total_cash_twd = cash_total_twd
         elif cash_total_twd != 0 and cur in cash_activity_dates:
+            futures = futures_by_date[cur]
             db.add(
                 PortfolioSnapshot(
                     date=cur,
@@ -132,6 +149,7 @@ def refresh_snapshot_cash_range(
                     total_dividends=0,
                     total_realized_pnl=0,
                     total_cash_twd=cash_total_twd,
+                    futures_equity_twd=futures.total_equity if futures is not None else Decimal("0"),
                     portfolio_xirr=None,
                 )
             )
