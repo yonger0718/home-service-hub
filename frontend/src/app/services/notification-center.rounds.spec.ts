@@ -33,6 +33,8 @@ interface RoundRequests {
   dividends: TestRequest;
   cathayPending: TestRequest;
   cathayRuns: TestRequest;
+  futuresPending: TestRequest;
+  futuresRuns: TestRequest;
   recalc: TestRequest;
 }
 
@@ -90,6 +92,8 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
       dividends,
       cathayPending: http.expectOne(get('/api/portfolio/imports/cathay-statement/pending')),
       cathayRuns: http.expectOne(get('/api/portfolio/imports/cathay-statement/runs/latest')),
+      futuresPending: http.expectOne(get('/api/portfolio/imports/sinopac-futures-statement/pending')),
+      futuresRuns: http.expectOne(get('/api/portfolio/imports/sinopac-futures-statement/runs/latest')),
       recalc: http.expectOne(get('/api/portfolio/imports/recalc/status')),
     };
   }
@@ -115,6 +119,8 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
     if (open('dividends')) round.dividends.flush({ items: [], total: 0 });
     if (open('cathayPending')) round.cathayPending.flush({ items: [], total: 0, truncated: false });
     if (open('cathayRuns')) round.cathayRuns.flush(healthyRuns());
+    if (open('futuresPending')) round.futuresPending.flush({ items: [], total: 0, truncated: false });
+    if (open('futuresRuns')) round.futuresRuns.flush(healthyRuns());
     if (open('recalc')) round.recalc.flush({ state: 'idle' });
     await settle();
   }

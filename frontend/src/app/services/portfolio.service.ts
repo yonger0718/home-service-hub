@@ -1,8 +1,11 @@
 import { Injectable } from '@angular/core';
 import { HttpParams } from '@angular/common/http';
-import { Observable, Subject, tap } from 'rxjs';
+import { Observable, Subject, map, tap } from 'rxjs';
 import { BaseApiService } from './base-api.service';
 import {
+  FuturesPending,
+  FuturesPendingStatus,
+  FuturesRuns,
   FuturesSummary,
   HoldingIdentity,
   HoldingKey,
@@ -245,6 +248,24 @@ export class PortfolioService extends BaseApiService<Transaction> {
       `/api/portfolio/imports/cathay-statement/days/${tradeDate}/ack`,
       null,
     );
+  }
+
+  getFuturesPending(): Observable<FuturesPending> {
+    return this.http.get<FuturesPending>('/api/portfolio/imports/sinopac-futures-statement/pending');
+  }
+
+  getFuturesRuns(): Observable<FuturesRuns> {
+    return this.http.get<FuturesRuns>('/api/portfolio/imports/sinopac-futures-statement/runs/latest');
+  }
+
+  /** Acknowledges one pending incident (`key` a date or `YYYY-MM`); the route answers 204 with no body (none is parsed). */
+  ackFuturesItem(key: string, status: FuturesPendingStatus): Observable<void> {
+    return this.http
+      .post(`/api/portfolio/imports/sinopac-futures-statement/days/${key}/ack`, null, {
+        params: new HttpParams().set('status', status),
+        responseType: 'text',
+      })
+      .pipe(map(() => undefined));
   }
 
   getRecalcStatus(): Observable<RecalcStatus> {

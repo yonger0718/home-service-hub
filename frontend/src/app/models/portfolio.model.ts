@@ -185,6 +185,21 @@ export interface CathayPending { items: CathayPendingDay[]; total: number; trunc
 export interface CathayRun { run_at: string; result: 'ok' | 'latched' | 'failed'; code: string | null; files_seen: number; posted: number; }
 export interface CathayRuns { latest: CathayRun | null; latest_ok: CathayRun | null; }
 
+/** 永豐期貨對帳單 pending (`GET …/sinopac-futures-statement/pending`): `key` a date (`day`) or `YYYY-MM` (`month`). */
+export type FuturesPendingStatus = 'conflict' | 'findings';
+export interface FuturesPendingItem {
+  key: string;
+  kind: 'day' | 'month';
+  status: FuturesPendingStatus;
+  /** Findings codes joined by `,` (`prev:MM/DD`, `gap:n`, `carry`, `diff:BK`), cut at 40 characters; null on a conflict. */
+  reason: string | null;
+  since: string | null;
+  last_at: string | null;
+}
+export interface FuturesPending { items: FuturesPendingItem[]; total: number; truncated: boolean; }
+/** `GET …/sinopac-futures-statement/runs/latest`: the 國泰 run vocabulary. */
+export type FuturesRuns = CathayRuns;
+
 export interface RecalcStatus {
   kind?: 'import' | 'quotes';
   quote_refresh?: RecalcStatus;

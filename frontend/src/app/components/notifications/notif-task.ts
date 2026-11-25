@@ -1,6 +1,15 @@
 export type NotifTier = 'overdue' | 'today' | 'confirm' | 'system' | 'tracking';
 export type NotifSource = 'ledger' | 'portfolio';
-export type NotifSourceKey = 'bills' | 'schedules' | 'recon' | 'importReview' | 'debts' | 'dividends' | 'imports' | 'cathay';
+export type NotifSourceKey =
+  | 'bills'
+  | 'schedules'
+  | 'recon'
+  | 'importReview'
+  | 'debts'
+  | 'dividends'
+  | 'imports'
+  | 'cathay'
+  | 'sinopac_futures';
 
 export interface NotifLink {
   readonly label: string;
@@ -13,7 +22,8 @@ export interface NotifLink {
 export type NotifCommand =
   | { readonly kind: 'postInstance'; readonly instanceId: number; readonly name: string }
   | { readonly kind: 'catchUp'; readonly definitionId: number; readonly name: string }
-  | { readonly kind: 'ackCathay'; readonly tradeDate: string; readonly name: string };
+  | { readonly kind: 'ackCathay'; readonly tradeDate: string; readonly name: string }
+  | { readonly kind: 'ackFutures'; readonly key: string; readonly status: 'conflict' | 'findings'; readonly name: string };
 
 export interface NotifCommandAction {
   readonly label: string;
@@ -80,6 +90,7 @@ export const SOURCE_NAMES: Record<NotifSourceKey, string> = {
   dividends: '股利',
   imports: '匯入',
   cathay: '國泰對帳單',
+  sinopac_futures: '永豐期貨對帳單',
 };
 export const NO_TASKS: NotifSummary = { total: 0, overdue: 0, tone: 'primary', label: '通知' };
 

@@ -8,6 +8,10 @@ export const CATHAY_GRACE_MINUTES = 15;
 
 export type CathayRunState = 'ok' | 'failed' | 'latched' | 'stale';
 
+/** A daily job's scheduled Asia/Taipei time; its run is due `CATHAY_GRACE_MINUTES` after it. */
+export interface RunSchedule { readonly hour: number; readonly minute: number }
+const CATHAY_SCHEDULE: RunSchedule = { hour: CATHAY_RUN_HOUR, minute: CATHAY_RUN_MINUTE };
+
 // Asia/Taipei has no DST: a fixed +08:00 offset, read through UTC getters only.
 const TAIPEI_MS = 8 * 3600_000;
 const DAY_MS = 86_400_000;
@@ -26,21 +30,24 @@ const taipei = (d: Date): Date => new Date(d.getTime() + TAIPEI_MS);
 const pad = (n: number): string => String(n).padStart(2, '0');
 const taipeiDay = (t: Date): number => Math.floor(t.getTime() / DAY_MS);
 
-/** The most recent 06:40 Asia/Taipei that is at least 15 minutes before `now` (as notify/cathay.py last_scheduled_run). */
-export function lastScheduledRun(now: Date): Date {
+/**
+ * The most recent 06:40 Asia/Taipei (or `at`) that is at least 15 minutes before `now` (as notify/cathay.py
+ * last_scheduled_run).
+ */
+export function lastScheduledRun(now: Date, at: RunSchedule = CATHAY_SCHEDULE): Date {
   const cutoff = now.getTime() - CATHAY_GRACE_MINUTES * 60_000;
   const t = taipei(new Date(cutoff));
-  let candidate = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), CATHAY_RUN_HOUR, CATHAY_RUN_MINUTE) - TAIPEI_MS;
+  let candidate = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), at.hour, at.minute) - TAIPEI_MS;
   if (candidate > cutoff) candidate -= DAY_MS;
   return new Date(candidate);
 }
 
-/** latched → 'latched'; failed → 'failed'; null, or run_at before lastScheduledRun(now) → 'stale'; else 'ok'. */
-export function cathayRunState(latest: CathayRun | null, now: Date): CathayRunState {
+/** latched → 'latched'; failed → 'failed'; null, or run_at before lastScheduledRun(now, at) → 'stale'; else 'ok'. */
+export function cathayRunState(latest: CathayRun | null, now: Date, at: RunSchedule = CATHAY_SCHEDULE): CathayRunState {
   if (latest?.result === 'latched') return 'latched';
   if (latest?.result === 'failed') return 'failed';
   // `!(a >= b)` rather than `a < b`: an unreadable run_at (NaN) is stale, never ok.
-  if (!latest || !(new Date(latest.run_at).getTime() >= lastScheduledRun(now).getTime())) return 'stale';
+  if (!latest || !(new Date(latest.run_at).getTime() >= lastScheduledRun(now, at).getTime())) return 'stale';
   return 'ok';
 }
 
@@ -119,7 +126,7 @@ function runFingerprint(state: CathayRunState, latest: CathayRun | null, now: Da
   return state === 'stale' ? `stale|${lastScheduledRun(now).toISOString()}` : `${state}|${latest?.run_at ?? ''}`;
 }
 
-function sinceMeta(since: string | null): string | null {
+export function sinceMeta(since: string | null): string | null {
   if (!since) return null;
   const t = taipei(new Date(since));
   return `自 ${pad(t.getUTCMonth() + 1)}/${pad(t.getUTCDate())} 起`;
@@ -186,7 +193,7 @@ export interface CathayView {
   readonly pendingLabel: string | null;
 }
 
-const RESULT_TEXT = { ok: '成功', failed: '失敗', latched: '已停用' } as const;
+export const RESULT_TEXT = { ok: '成功', failed: '失敗', latched: '已停用' } as const;
 
 export function cathayView(pending: CathayPending, runs: CathayRuns, now: Date): CathayView {
   const { latest, latest_ok } = runs;

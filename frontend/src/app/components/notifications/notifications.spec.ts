@@ -74,6 +74,7 @@ describe('NotificationsComponent', () => {
   const failedSources = signal<readonly NotifSourceKey[]>([]);
   const nextUpcoming = signal<NotifTask | null>(null);
   const cathayMore = signal(0);
+  const futuresMore = signal(0);
   const refresh = vi.fn();
   /** As the service: starts the next round and returns its id. */
   const invalidate = vi.fn(() => {
@@ -99,10 +100,17 @@ describe('NotificationsComponent', () => {
   };
   /** One Subject per 確認, in call order. */
   let acks: Subject<{ trade_date: string; ack_status: string }>[] = [];
+  /** One Subject per 知道了 on a 永豐期貨 row, in call order. */
+  let futuresAcks: Subject<void>[] = [];
   const portfolio = {
     ackCathayDay: vi.fn((_tradeDate: string) => {
       const s = new Subject<{ trade_date: string; ack_status: string }>();
       acks.push(s);
+      return s.asObservable();
+    }),
+    ackFuturesItem: vi.fn((_key: string, _status: string) => {
+      const s = new Subject<void>();
+      futuresAcks.push(s);
       return s.asObservable();
     }),
   };
@@ -120,6 +128,7 @@ describe('NotificationsComponent', () => {
     failedSources,
     nextUpcoming,
     cathayMore,
+    futuresMore,
     summary: computed<NotifSummary>(() => summarize(tasks())),
     badges: signal({}),
     refresh,
@@ -168,6 +177,7 @@ describe('NotificationsComponent', () => {
     failedSources.set([]);
     nextUpcoming.set(null);
     cathayMore.set(0);
+    futuresMore.set(0);
     refresh.mockClear();
     invalidate.mockClear();
     accounting.postScheduleInstance.mockClear();
@@ -176,6 +186,8 @@ describe('NotificationsComponent', () => {
     catchUps = [];
     portfolio.ackCathayDay.mockClear();
     acks = [];
+    portfolio.ackFuturesItem.mockClear();
+    futuresAcks = [];
   });
   afterEach(() => TestBed.resetTestingModule());
 
@@ -1726,6 +1738,84 @@ describe('NotificationsComponent', () => {
       expect(portfolio.ackCathayDay.mock.calls).toEqual([['2026-10-28'], ['2026-10-28']]);
       await fail(404, null, 1);
       expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '國泰對帳單 10/28：已經不需要處理', action: null }));
+    });
+
+    describe('永豐期貨對帳單 rows', () => {
+      const FUTURES = task('sinopac_futures:2026-10-27:findings', 'system', {
+        source: 'portfolio',
+        from: 'sinopac_futures',
+        icon: 'pi-file',
+        title: '永豐期貨對帳單 10/27',
+        when: '前日餘額接不上（10/23）',
+        meta: null,
+        amount: null,
+        primary: { label: '知道了', command: { kind: 'ackFutures', key: '2026-10-27', status: 'findings', name: '永豐期貨對帳單 10/27' } },
+        secondary: [{ label: '查看', route: '/portfolio/import', fragment: 'sinopac-futures' }],
+        sortKey: '2026-10-27',
+      });
+      const futuresAck = (root: HTMLElement) =>
+        q(root, `app-notif-row[data-task-id="${FUTURES.id}"]`)!.querySelector<HTMLButtonElement>(NOTIF_PRIMARY_CONTROL)!;
+      const failFutures = async (status: number, error: unknown = null, index = 0) => {
+        futuresAcks[index].error(new HttpErrorResponse({ status, error, url: '/api/portfolio/imports/sinopac-futures-statement/days/2026-10-27/ack' }));
+        await settle();
+      };
+
+      it('知道了 acks that key with that status, then 已處理：永豐期貨對帳單 10/27 and one invalidate(); 查看 links to #sinopac-futures', async () => {
+        round.set(4);
+        settledRound.set(4);
+        const root = open([...MIXED, FUTURES]);
+        expect(text(futuresAck(root))).toBe('知道了');
+        expect(futuresAck(root).getAttribute('aria-label')).toBe('知道了：永豐期貨對帳單 10/27');
+        const look = q(root, `app-notif-row[data-task-id="${FUTURES.id}"]`)!.querySelector('a.notif-secondary')!;
+        expect(look.getAttribute('href')).toBe('/portfolio/import#sinopac-futures');
+        futuresAck(root).click();
+        futuresAck(root).click();
+        await settle();
+        expect(portfolio.ackFuturesItem).toHaveBeenCalledTimes(1);
+        expect(portfolio.ackFuturesItem).toHaveBeenCalledWith('2026-10-27', 'findings');
+        expect(portfolio.ackCathayDay).not.toHaveBeenCalled();
+        expect(futuresAck(root).disabled).toBe(true);
+        // 204, no body.
+        futuresAcks[0].next(undefined);
+        futuresAcks[0].complete();
+        await settle();
+        expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：永豐期貨對帳單 10/27', action: null }));
+        expect(invalidate).toHaveBeenCalledTimes(1);
+        await settleRound(5);
+        expect(futuresAck(root).disabled).toBe(false);
+      });
+
+      it('404 reads as done (someone else acked) and re-reads; 500 is a 標記失敗 toast with 重試', async () => {
+        const root = open([...MIXED, FUTURES]);
+        futuresAck(root).click();
+        await settle();
+        await failFutures(404, { detail: 'nothing pending for this key' });
+        expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '永豐期貨對帳單 10/27：已經不需要處理', action: null }));
+        expect(invalidate).toHaveBeenCalledTimes(1);
+        expect(logged.mock.calls.length).toBe(0);
+
+        await settleRound(2);
+        futuresAck(root).click();
+        await settle();
+        await failFutures(500, { message: 'db down' }, 1);
+        expect(toasts.current()).toEqual(
+          expect.objectContaining({ kind: 'error', text: '永豐期貨對帳單 10/27 標記失敗', action: expect.objectContaining({ label: '重試' }) }),
+        );
+        expect(document.body.textContent).not.toContain('db down');
+        expect(invalidate).toHaveBeenCalledTimes(2);
+      });
+
+      it('futuresMore 7: 還有 7 件永豐期貨對帳單未列出 under 全部 and 投資, after the 國泰 note, not under 財務', async () => {
+        cathayMore.set(23);
+        futuresMore.set(7);
+        const root = open();
+        const notes = () => Array.from(root.querySelectorAll('p.notif-overflow')).map(n => text(n));
+        expect(notes()).toEqual(['還有 23 天未列出，處理完上面的會接著顯示', '還有 7 件永豐期貨對帳單未列出，處理完上面的會接著顯示']);
+        expect(chips(root).map(c => c.getAttribute('aria-label'))).toEqual(['全部，5 件', '財務，2 件', '投資，3 件']);
+        chips(root)[1].click();
+        await settle();
+        expect(notes()).toEqual([]);
+      });
     });
 
     it('the dividends tracking row shows under 全部 and 投資, the ledger rows under 全部 and 財務', async () => {
