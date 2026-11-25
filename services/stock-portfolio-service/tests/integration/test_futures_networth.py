@@ -447,6 +447,82 @@ def test_replay_skip_day_source_date_without_stock_stays_zero(db_session):
     assert (row.total_cash_twd, row.futures_equity_twd) == (Decimal("999"), Decimal("300"))
 
 
+# ---------- replay: R19 path-review minors ----------
+
+
+def _sell(db, d, symbol="9999", qty=10, price="15"):
+    from app.models import portfolio as portfolio_models
+
+    db.add(portfolio_models.Transaction(
+        symbol=symbol, type=portfolio_models.TransactionType.SELL, quantity=qty, price=Decimal(price),
+        fee=Decimal("0"), tax=Decimal("0"), trade_date=datetime(d.year, d.month, d.day, tzinfo=timezone.utc),
+    ))
+    db.commit()
+
+
+def test_replay_carry_skips_stale_shaped_template(db_session):
+    """M1: a pre-range market 0 / cost > 0 row (an old data-gap row) is never the carry template; with nothing
+    valid to carry the source-date row is 0 / 0, not a cost-without-market dip."""
+    sunday = date(2026, 3, 8)
+    _buy(db_session, date(2026, 3, 2))
+    _snap(db_session, date(2026, 3, 6), mv="0", cost="100", cash="5")
+    _day(db_session, sunday, "300")
+    with _cash("999"):
+        nb.replay_snapshots_range(db_session, WEEKEND, sunday)
+    row = _rows(db_session)[sunday]
+    assert (row.total_market_value, row.total_cost) == (ZERO, ZERO)
+    assert (row.total_cash_twd, row.futures_equity_twd) == (Decimal("999"), Decimal("300"))
+
+
+def test_replay_skip_day_kept_row_gets_series_futures(db_session):
+    """M2 (skip path): a non-source weekend row the replay keeps without rewriting (150 / 100, not stale-shaped)
+    gets only its futures column set from the series."""
+    _buy(db_session, date(2026, 3, 2))
+    _day(db_session, date(2026, 3, 6), "300")
+    _snap(db_session, WEEKEND, mv="150", cost="100", cash="5", futures="50", dividends="3", realized="4",
+          xirr="0.1234")
+    before = _columns(db_session.get(PortfolioSnapshot, WEEKEND))
+    with _cash("999"):
+        nb.replay_snapshots_range(db_session, WEEKEND, WEEKEND)
+    row = _rows(db_session)[WEEKEND]
+    assert row.futures_equity_twd == Decimal("300")
+    assert _columns(row) == before
+
+
+def test_replay_trading_day_phantom_kept_row_gets_series_futures(db_session):
+    """M2 (trading-day gate): a non-source, no-activity trading day whose row the phantom filter keeps (stale
+    futures 50) gets the series value 300; an all-zero row on such a day is still phantom-deleted."""
+    mon, tue, wed = date(2026, 3, 9), date(2026, 3, 10), date(2026, 3, 11)
+    _day(db_session, mon, "300")
+    for d in (mon, tue, wed):
+        _price(db_session, d)
+    _snap(db_session, tue)
+    _snap(db_session, wed, futures="50")
+    with _cash("0"):
+        nb.replay_snapshots_range(db_session, mon, wed)
+    rows = _rows(db_session)
+    assert tue not in rows
+    assert rows[wed].futures_equity_twd == Decimal("300")
+    assert (rows[wed].total_market_value, rows[wed].total_cost, rows[wed].total_cash_twd) == (ZERO, ZERO, ZERO)
+
+
+def test_replay_skip_day_dip_row_without_stock_is_zeroed(db_session):
+    """M3: after a pre-range close-out, a stale-shaped weekend row (0 / 100, futures 50, series 300) is not a dip
+    to carry over: it is rewritten 0 / 0 with that day's cash and the series futures."""
+    _buy(db_session, date(2026, 3, 2))
+    _snap(db_session, date(2026, 3, 5), mv="150", cost="100")  # seeds last_trading_mv before the close-out
+    _sell(db_session, date(2026, 3, 6))
+    _day(db_session, date(2026, 3, 6), "300")
+    _snap(db_session, WEEKEND, mv="0", cost="100", futures="50", xirr="0.1234")
+    with _cash("999"):
+        nb.replay_snapshots_range(db_session, WEEKEND, WEEKEND)
+    row = _rows(db_session).get(WEEKEND)
+    assert row is not None
+    assert (row.total_market_value, row.total_cost, row.total_unrealized_pnl) == (ZERO, ZERO, ZERO)
+    assert (row.total_cash_twd, row.futures_equity_twd) == (Decimal("999"), Decimal("300"))
+    assert row.portfolio_xirr is None
+
+
 def test_replay_gap_non_source_zero_series_still_deleted(db_session):
     """Pre-futures history: a gap day with no futures source and a zero series keeps the legacy stale delete."""
     _buy(db_session, date(2026, 3, 2))

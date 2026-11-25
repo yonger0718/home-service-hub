@@ -31,7 +31,7 @@ from datetime import date as dt_date, timedelta
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
-from sqlalchemy import and_, case, delete, func, literal, not_, select, union_all
+from sqlalchemy import and_, case, delete, func, literal, not_, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as portfolio_models
@@ -716,14 +716,12 @@ def replay_snapshots_range(
         """Latest row before ``snapshot_date`` that the end-of-run deletes keep.
 
         Rows the replay already wrote are visible (each SAVEPOINT flushes).
-        Rows on dates already queued for the stale / phantom deletes and
-        matching their filters are skipped: they are about to disappear.
+        A stale-shaped row (market 0, cost > 0: a data-gap dip, the shape
+        the stale delete removes) is never a template, in or before the
+        range, consistent with ``prior_snapshot`` (R19 M1). Rows on dates
+        already queued for the phantom delete and matching its filter are
+        skipped: they are about to disappear.
         """
-        doomed_stale = and_(
-            PortfolioSnapshot.date.in_(stale_candidates),
-            PortfolioSnapshot.total_market_value == 0,
-            PortfolioSnapshot.total_cost > 0,
-        )
         doomed_phantom = and_(
             PortfolioSnapshot.date.in_(gated_phantom_candidates),
             *_phantom_row_filter(),
@@ -732,7 +730,10 @@ def replay_snapshots_range(
             db.query(PortfolioSnapshot)
             .filter(
                 PortfolioSnapshot.date < snapshot_date,
-                not_(doomed_stale),
+                or_(
+                    PortfolioSnapshot.total_market_value > 0,
+                    PortfolioSnapshot.total_cost == 0,
+                ),
                 not_(doomed_phantom),
             )
             .order_by(PortfolioSnapshot.date.desc())
@@ -749,6 +750,22 @@ def replay_snapshots_range(
                 extra={"date": snapshot_date.isoformat(), "skipped": skipped},
             )
         return cash_total
+
+    def stockless_row(
+        snapshot_date: dt_date, cash: Decimal, futures: Decimal
+    ) -> PortfolioSnapshot:
+        """Market 0 / cost 0 with the running dividend and realised totals."""
+        return PortfolioSnapshot(
+            date=snapshot_date,
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("0"),
+            total_unrealized_pnl=Decimal("0"),
+            total_dividends=cumulative_dividends,
+            total_realized_pnl=cumulative_realized,
+            total_cash_twd=cash,
+            futures_equity_twd=futures,
+            portfolio_xirr=None,
+        )
 
     def carried_row(snapshot_date: dt_date, futures: Decimal) -> PortfolioSnapshot:
         """A row kept for futures (R16 / R17), written like the skip-day
@@ -878,18 +895,7 @@ def replay_snapshots_range(
                     )
                 elif cash_total != 0 or futures_eligible:
                     wrote_forward_fill = write_snapshot(
-                        cur,
-                        PortfolioSnapshot(
-                            date=cur,
-                            total_market_value=Decimal("0"),
-                            total_cost=Decimal("0"),
-                            total_unrealized_pnl=Decimal("0"),
-                            total_dividends=cumulative_dividends,
-                            total_realized_pnl=cumulative_realized,
-                            total_cash_twd=cash_total,
-                            futures_equity_twd=futures_equity(cur),
-                            portfolio_xirr=None,
-                        ),
+                        cur, stockless_row(cur, cash_total, futures_equity(cur))
                     )
             if not wrote_forward_fill:
                 # A row the stale delete would drop (mv 0, cost > 0) is
@@ -906,7 +912,15 @@ def replay_snapshots_range(
                     and existing.total_market_value == 0
                     and existing.total_cost > 0
                 ):
-                    write_snapshot(cur, carried_row(cur, skip_futures))
+                    # Stock held: carry the last good market value (R17).
+                    # None held: the cost is not real, rewrite it stockless
+                    # with that day's cash and the series (R19 M3).
+                    write_snapshot(
+                        cur,
+                        carried_row(cur, skip_futures)
+                        if sum(qty.values()) > 0
+                        else stockless_row(cur, total_cash_twd(cur), skip_futures),
+                    )
                 else:
                     stale_candidates.append(cur)
             cur += timedelta(days=1)
@@ -1069,6 +1083,29 @@ def replay_snapshots_range(
             )
         )
         result.stale_rows_deleted += max(phantom_result.rowcount or 0, 0)
+
+    # Rows the replay kept without rewriting (dates it declined to write,
+    # surviving the deletes above) take the series futures value, only that
+    # column (R19 M2): the live writer may have stored an older value. Only
+    # on futures-eligible dates (a source date or a non-zero series); a
+    # series-0 non-source date keeps its row untouched (legacy).
+    kept_dates = {
+        d
+        for d in (*stale_candidates, *gated_phantom_candidates)
+        if d in futures_source_dates or futures_equity(d) != 0
+    }
+    if kept_dates and not dry_run:
+        for kept in (
+            db.query(PortfolioSnapshot)
+            .filter(PortfolioSnapshot.date >= from_d, PortfolioSnapshot.date <= to_d)
+            .all()
+        ):
+            if kept.date not in kept_dates:
+                continue
+            series = _snapshot_amount(futures_equity(kept.date))
+            if Decimal(kept.futures_equity_twd) != series:
+                kept.futures_equity_twd = series
+        db.flush()
 
     if dry_run:
         return result
