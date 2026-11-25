@@ -1,6 +1,9 @@
 # 永豐期貨對帳單 auto-import — design
 
-Status: rev 1.1 (2026-11-25), draft; the builder check is folded in (a day-to-day `prev` finding, the scope of the frozen note, no 永豐 money already in the portfolio). Owner rulings 2026-11-25: on a day without a statement the account's equity is the
+Status: rev 1.2 (2026-11-25). Rev 1.1 folds the builder check (a day-to-day `prev` finding, the scope of the frozen
+note, no 永豐 money already in the portfolio); rev 1.2 folds the AGENT-589 review (text columns read in order, the
+per-broker valuation dispatch, the cash-refresh interplay and no commit inside the futures refresh, the monthly
+`carry` finding, the lock tag, the missing-snapshot-row limit). Owner rulings 2026-11-25: on a day without a statement the account's equity is the
 latest statement's value, and the monthly statement's month-end value corrects it (no re-pricing from exchange
 settlement prices); storage is one row per statement day with the fills and positions kept as JSON, not normalised
 tables; net worth uses 權益總值 (it includes the market value of open options). All amounts, product names and order
@@ -42,6 +45,7 @@ Non-goals:
   difference falls in one of the four months with a missing daily statement (or, for the continuity check of A, in the
   month after one). Per trade date, the monthly 交易稅 / 手續費 equal the daily `總計` (73 of 73 dates present in both).
   In the 12 months whose last daily statement shows no open position, the monthly 權益總值 equals that daily value.
+  Month to month: A equals the previous monthly statement's M in 26 of 26.
 - Day to day: a daily 前日餘額 equals the previous daily statement's 本日餘額 in 82 of 87 pairs; the 5 exceptions are
   exactly the first daily statements after the 5 activity dates without one.
 - The portfolio has no 永豐 broker account, cash transaction or transaction (brokers on record: 國泰, IB, Firstrade,
@@ -49,8 +53,11 @@ Non-goals:
 - Every daily statement has four sections, each opened by a marker line `交易幣別：新台幣(NTT) ＊國內市場<name>＊`:
   `存提`, `交易紀錄`, `留倉彙總`, `權益帳`. Header lines: the title `國內期貨日對帳單`, a greeting with the name the
   broker already masks, and `期貨帳號：… 證券帳號：…` (masked by the broker).
-- Numbers are right-aligned: a value's right edge equals its column label's right edge within 3 pt, and an empty
-  value is simply absent from the value row. Columns must therefore be read by x position, not by token order.
+- Numbers are right-aligned: a value's right edge equals its column label's right edge within 3 pt (every numeric
+  word on every fill and position line: 1502 and 748 of them), and an empty value is simply absent from the value row.
+  Numeric columns must therefore be read by x position, not by token order. Text values are not aligned to their
+  labels: the exchange `Taiwan F` extracts as two words 1.7 pt apart whose right edge matches no label, and product
+  names on position lines miss their label in 42 cases; the gaps between other adjacent text words are 4.4 pt or more.
 - Products in the archive: 微型臺指期貨, 台指選擇權, weekly options (`W1週台選` … `W5週台選`, `F1週台選` … `F3週台選`),
   stock futures (two names). Exchange column always `Taiwan F`; currency always 新台幣. An option line carries a 履約價格
   and a 權別 of `Call` / `Put`; a futures line has neither.
@@ -157,7 +164,15 @@ the combination-margin lines) as label → amount, for the record.
 - Text source: the worker's `pdf.extract_lines` (pdfplumber 0.11.10, pinned in `requirements-worker.txt`), which
   keeps each word's x position; `pdf.unlock` picks the password candidate. Not the pypdfium2 text range the 國泰
   parser uses: the columns here can only be told apart by position.
-- A column value belongs to the label whose right edge is within 3 pt of its own; a value with no such label fails.
+- Numeric words (amounts, prices, quantities, strikes) belong to the column whose label's right edge is within 3 pt of
+  their own; a numeric word with no such label, or two in one column, fails the statement.
+- Text words are read in order, not by position. On a fill line the non-numeric words must be exactly: the date
+  (`NNN/NN/NN`, ROC), the order number (`[A-Za-z0-9]{5}-[0-9]{2}`), `Taiwan`, `F` (the literal pair, nothing else),
+  one product word, the contract month (`YYYY/MM`), for an option `Call` or `Put`, then the action (新買 / 新賣 / 平買
+  / 平賣). On a position line: the date, one product word, the contract month, for an option `Call` or `Put`, then the
+  side (買 / 賣). An option line has both a strike (numeric) and a right; a futures line has neither. Any other
+  sequence fails. The plan's first task confirms these sequences against the 88 archived files before the parser is
+  written.
 - Daily: title `國內期貨日對帳單`; the four section markers in the order of §2, each exactly once, each with
   `新台幣(NTT)`; any other currency or a `國外` / `海外` marker fails. Every line of page 1 between the markers is one of
   the line kinds of §2 (header row, dated data line, `無存提` / `無交易` / `無留倉`, `平倉->` link, `商品小計`, `<商品> 小計`,
@@ -192,7 +207,10 @@ the combination-margin lines) as label → amount, for the record.
 
 ### 6.2 A statement
 
-Under `pg_advisory_xact_lock` on (`futures_day`, date) — the statement date, or the month end for a monthly one:
+Under `pg_advisory_xact_lock` on `_LOCK_TAG << 32 | date.toordinal()` with its own tag `0x46555455` ("FUTU", not
+the 國泰 tag `0x43415448`), where date is the statement date or, for a monthly statement, its month end. Daily and
+monthly share the namespace on purpose: a daily statement on the last calendar day and that month's statement then
+serialise, and either one's findings see the other.
 
 1. Not accepted → write the row, `imported`; recompute the snapshot rows of §6.5 in the same transaction.
 2. Accepted, same sha → `duplicate`, nothing written.
@@ -220,6 +238,7 @@ between re-checks the row after it.
 A monthly row is checked after it is accepted, and again whenever a daily row of that month is accepted:
 
 - `gap`: every `activity_dates` entry with no accepted daily row;
+- `carry`: A differs from the previous accepted monthly row's M (that row is the month before; none → no check);
 - `diff`: only when there is no gap — the lines B, G, H, K differ from the sums over the month's daily rows
   (`deposits_net`, `premium_net`, `fees_and_tax`, `futures_realized`), or M differs from the last daily row's
   `balance`; each differing letter is listed.
@@ -234,9 +253,20 @@ acknowledged; the acknowledgement is keyed to the findings, so a new finding sho
   `PortfolioSummary.total_assets_twd`, the SPA dashboard composition (a fourth segment 期貨權益) and its
   `carryHoldings` / `todayChange` helpers.
 - Writers: `write_today_snapshot` and the backfill replay (`replay_snapshots_range`, every `PortfolioSnapshot(...)`
-  site) set it from §6.3; a row that has only cash and futures counts as a cash-only row. An import (§6.2 case 1)
-  updates `futures_equity_twd` of the existing snapshot rows from its date up to the next source date (or today) in
-  the same transaction, like `refresh_snapshot_cash_range` does for cash.
+  site) set it from §6.3. In `refresh_snapshot_cash_range` and the replay's cash-only gating, a row with zero cash is
+  deleted only when its `futures_equity_twd` is also 0, and a row it inserts takes `futures_equity_twd` from §6.3 (not
+  the default 0).
+- An import (§6.2 case 1) calls a new `refresh_snapshot_futures_range(db, start, end)`, which updates
+  `futures_equity_twd` on the existing snapshot rows from the statement date (a monthly one: its month end) up to the
+  next source date (or today). It never commits and never deletes or inserts rows: the import's transaction commits
+  once, after the statement row and the refresh, so the advisory lock of §6.2 is held until then.
+  (`refresh_snapshot_cash_range` commits by itself and must not be called from the import.)
+- Known limit: a date with no snapshot row (no holdings and no cash activity) gets none from a futures import, so the
+  futures equity of such a day is absent from the 淨值走勢 history until a snapshot row exists. The daily snapshot
+  job writes a row every day, so this affects backfilled history only.
+- Ledger feed: `ledger_feed_service` today accepts only `BROKER = "cathay"` and echoes it. Valuation dispatches by
+  broker (`cathay` → today's code, `sinopac_futures` → the series) and echoes the requested broker; `settlements` and
+  `dividends` keep answering 404 `unknown_broker` for anything but `cathay`.
 - `GET /api/portfolio/ledger-feed/valuation?broker=sinopac_futures&as_of=D`: `total` = `futures_equity(D)`,
   `cash` = the source's `balance`, `market_value` = `total` − `cash`, `priced_through` = `source_date`,
   `complete` = a value exists, `missing` = `[]`. Account 147 then shows it as 市值 like 117. The response shape does
@@ -288,7 +318,8 @@ acknowledged; the acknowledgement is keyed to the findings, so a new finding sho
 3. Timer, notifier release, SPA.
 4. Set `valuation_source = portfolio:sinopac_futures` on account 147 (admin PATCH, with the owner's go).
 
-The archive comes in with 9 pending findings (5 `prev` days, 4 months with a gap); the owner acknowledges each once.
+The archive comes in with 9 pending findings (5 `prev` days, 4 months with a gap; no `carry`); the owner acknowledges
+each once.
 
 ## 11. Tests (fictional fixtures only; never a real statement)
 
@@ -299,7 +330,9 @@ each identity broken alone with the others intact (rejected, nothing posted, lat
 `--validate-history`. Portfolio: migration; the three cases of §6.2 for daily and monthly; 422 on a broken identity;
 the series (carry, monthly wins on a tie, frozen flag, before the first statement); monthly findings (gap, diff, a late
 daily statement clearing a gap, `prev` on a gap and its re-check when the missing day arrives, ack keyed to
-findings); snapshot refresh on import and in the replay; ledger-feed
+findings); snapshot refresh on import and in the replay (a zero-cash day with futures equity keeps its row; a row the cash
+refresh inserts carries the futures equity; the futures refresh commits nothing — a failure after it rolls back the
+statement row too); `carry`; ledger feed: valuation for `sinopac_futures`, settlements / dividends still 404 for it; ledger-feed
 valuation for `sinopac_futures`; pending envelope and cap. Notifier and SPA: the 國泰 test set for the new source.
 
 ## 12. Review focus
