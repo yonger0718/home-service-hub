@@ -53,7 +53,7 @@ describe('reconTasks', () => {
       progress: { k: 17, n: 28 },
       primary: { label: '對帳', route: '/notifications/recon/31' },
       sortKey: '2026-10-05',
-      fingerprint: '10',
+      wake: { count: 10 },
     });
   });
 
@@ -112,14 +112,14 @@ describe('einvoiceTask', () => {
       primary: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } },
       secondary: [],
       sortKey: '9999-12-31',
-      fingerprint: '3',
+      wake: { count: 3 },
     });
   });
 
   it('comes from counts.einvoice_ask alone: a truncated inbox (6 of 10 ask items listed) still gives 2, and the item list adds none', () => {
     const inbox = inboxWith(items(6, 31), { ask_items: 10, einvoice_ask: 2 });
     expect(inboxMissing(inbox)).toBe(4);
-    expect(einvoiceTask(inbox.counts)).toMatchObject({ id: 'einvoice', title: '2 張發票要確認', fingerprint: '2' });
+    expect(einvoiceTask(inbox.counts)).toMatchObject({ id: 'einvoice', title: '2 張發票要確認', wake: { count: 2 } });
     expect(reconTasks(inbox, new Map()).map((t) => t.id)).toEqual(['recon:31']);
   });
 
@@ -189,7 +189,7 @@ describe('inboxMissing without counts', () => {
       id: 'recon:more',
       title: '還有對帳項目未列出',
       when: '',
-      fingerprint: 'more',
+      wake: { key: 'more' },
     });
   });
 });
@@ -222,7 +222,7 @@ describe('reconOverflowTask', () => {
       primary: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } },
       secondary: [],
       sortKey: '9999-12-30',
-      fingerprint: '4',
+      wake: { count: 4 },
     });
   });
 

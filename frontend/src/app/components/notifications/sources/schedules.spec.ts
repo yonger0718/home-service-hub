@@ -37,7 +37,7 @@ describe('scheduleTasks', () => {
       amount: formatSigned(-1170, 'TWD'),
       primary: { label: '全部入帳', command: { kind: 'catchUp', definitionId: 1, name: '測試月費' } },
       sortKey: '2026-08-20',
-      fingerprint: '3|2026-08-20',
+      wake: { count: 3 },
     });
     expect(t.amount).toBe('−$1,170');
     expect(t.secondary).toEqual([link]);
@@ -55,7 +55,7 @@ describe('scheduleTasks', () => {
       title: '測試分期 第 5 / 12 期',
       when: '10/10 · 逾期 14 天',
       primary: { label: '入帳', command: { kind: 'postInstance', instanceId: 5, name: '測試分期' } },
-      fingerprint: '1|2026-10-10',
+      wake: { count: 1 },
     });
     expect(t.secondary).toEqual([link]);
   });
@@ -84,7 +84,7 @@ describe('scheduleTasks', () => {
       when: '最早 10/20',
       amount: '−$780',
       primary: { label: '入帳', command: { kind: 'postInstance', instanceId: 1, name: '測試月費' } },
-      fingerprint: '2|2026-10-20',
+      wake: { count: 2 },
     });
   });
 
@@ -107,7 +107,7 @@ describe('scheduleTasks', () => {
       primary: link,
       secondary: [],
       sortKey: '2026-10-01',
-      fingerprint: '0|2026-10-01',
+      wake: { count: 0 },
     });
   });
 
@@ -117,7 +117,7 @@ describe('scheduleTasks', () => {
       TODAY,
     );
     expect(rest).toEqual([]);
-    expect(t).toMatchObject({ tier: 'overdue', title: '測試月費', amount: '−$390', fingerprint: '1|2026-10-20' });
+    expect(t).toMatchObject({ tier: 'overdue', title: '測試月費', amount: '−$390', wake: { count: 1 } });
   });
 
   it('two currencies are joined with 、', () => {

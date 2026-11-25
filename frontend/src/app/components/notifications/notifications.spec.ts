@@ -40,7 +40,7 @@ function task(id: string, tier: NotifTier, over: Partial<NotifTask> = {}): Notif
     primary: { label: '記繳款', route: '/accounting/accounts/1' },
     secondary: [],
     sortKey: '2026-10-24',
-    fingerprint: id,
+    wake: { key: id },
     ...over,
   };
 }

@@ -26,7 +26,7 @@ function task(overrides: Partial<NotifTask> = {}): NotifTask {
     primary: { label: '記繳款', route: '/accounting' },
     secondary: [],
     sortKey: '2026-10-24',
-    fingerprint: 'f',
+    wake: {},
     ...overrides,
   };
 }

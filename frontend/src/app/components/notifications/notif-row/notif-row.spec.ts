@@ -29,7 +29,7 @@ const commandTask: NotifTask = {
     { label: '逐期處理', route: '/accounting/reminders', queryParams: { tab: 'pending' } },
   ],
   sortKey: '2026-08-20',
-  fingerprint: 'f',
+  wake: {},
 };
 
 const linkTask: NotifTask = {

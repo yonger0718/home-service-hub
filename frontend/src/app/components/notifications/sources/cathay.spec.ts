@@ -18,7 +18,7 @@ describe('cathay run rule', () => {
     expect(cathayTasks(NONE, runs, n)).toEqual([expect.objectContaining({
       id: 'cathay:run', tier: 'system', source: 'portfolio', from: 'cathay', title: '國泰對帳單今天沒有執行',
       when: '06:40 的排程沒有回報', meta: '上次執行 昨天 06:41', primary: { label: '查看', route: '/portfolio/import', fragment: 'cathay' },
-      fingerprint: 'stale|2026-10-27T22:40:00.000Z' })]);
+      wake: { key: 'stale|2026-10-27T22:40:00.000Z' } })]);
   });
 
   it.each([
@@ -68,7 +68,7 @@ describe('cathay run rule', () => {
     const latest = run({ result: 'failed', code: 'password_file' });
     const [t] = cathayTasks(NONE, { latest, latest_ok: null }, now);
     expect(t).toMatchObject({ id: 'cathay:run', title: '國泰對帳單匯入失敗', when: '今天 06:41', meta: '讀不到對帳單密碼檔',
-      icon: 'pi-exclamation-triangle', sortKey: '9999-12-31', fingerprint: `failed|${latest.run_at}`, amount: null, progress: null, secondary: [] });
+      icon: 'pi-exclamation-triangle', sortKey: '9999-12-31', wake: { key: `failed|${latest.run_at}` }, amount: null, progress: null, secondary: [] });
   });
 
   it('failed yesterday and nothing since stays failed (notifier precedence), when 昨天 06:41', () => {
@@ -81,7 +81,7 @@ describe('cathay run rule', () => {
     const latest = run({ result: 'latched' });
     expect(cathayRunState(latest, now)).toBe('latched');
     expect(cathayTasks(NONE, { latest, latest_ok: null }, now)[0]).toMatchObject({
-      title: '國泰對帳單匯入已停用', meta: '排程已停用，之後不會自動匯入', fingerprint: `latched|${latest.run_at}` });
+      title: '國泰對帳單匯入已停用', meta: '排程已停用，之後不會自動匯入', wake: { key: `latched|${latest.run_at}` } });
   });
 
   it('a failed run without a code has no meta; an unknown code reads 錯誤代碼 <code>', () => {
@@ -131,7 +131,7 @@ describe('cathay pending dates', () => {
     const [t] = cathayTasks({ items: [{ trade_date: '2026-10-28', status: 'held', reason: 'unresolved_symbol:測試股票', since: '2026-10-29T06:41:00+08:00', last_at: '2026-10-29T06:41:00+08:00' }], total: 1, truncated: false }, okRuns, now);
     expect(t).toMatchObject({ id: 'cathay:2026-10-28', tier: 'system', source: 'portfolio', from: 'cathay', icon: 'pi-file', title: '國泰對帳單 10/28', when: '保留：名稱對不到代號 測試股票', meta: '自 10/29 起',
       primary: { label: '已處理', command: { kind: 'ackCathay', tradeDate: '2026-10-28', name: '國泰對帳單 10/28' } },
-      secondary: [{ label: '查看', route: '/portfolio/import', fragment: 'cathay' }], sortKey: '2026-10-28', fingerprint: 'held|unresolved_symbol:測試股票', amount: null, progress: null });
+      secondary: [{ label: '查看', route: '/portfolio/import', fragment: 'cathay' }], sortKey: '2026-10-28', wake: { key: 'held|unresolved_symbol:測試股票' }, amount: null, progress: null });
   });
 
   it('no since → no meta; since is read by the Taipei calendar', () => {
@@ -149,10 +149,10 @@ describe('cathay pending dates', () => {
     expect(dayStatusText(d)).toBe(text);
   });
 
-  it('a date whose status changed has a new fingerprint; a newer last_at alone does not', () => {
-    const f = (d: ReturnType<typeof day>) => cathayTasks({ items: [d], total: 1, truncated: false }, okRuns, now)[0].fingerprint;
-    expect(f(day({ status: 'mismatch' }))).not.toBe(f(day()));
-    expect(f(day({ last_at: '2026-10-30T06:41:00+08:00' }))).toBe(f(day({ last_at: '2026-10-29T06:41:00+08:00' })));
+  it('a date whose status changed has a new wake key; a newer last_at alone does not', () => {
+    const f = (d: ReturnType<typeof day>) => cathayTasks({ items: [d], total: 1, truncated: false }, okRuns, now)[0].wake;
+    expect(f(day({ status: 'mismatch' }))).not.toEqual(f(day()));
+    expect(f(day({ last_at: '2026-10-30T06:41:00+08:00' }))).toEqual(f(day({ last_at: '2026-10-29T06:41:00+08:00' })));
   });
 
   it('dates come oldest first and the run task last', () => {

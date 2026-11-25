@@ -43,7 +43,7 @@ function bill(title: string, sortKey: string): NotifTask {
     primary: { label: '查看', route: '/x' },
     secondary: [],
     sortKey,
-    fingerprint: '',
+    wake: {},
   };
 }
 
@@ -63,7 +63,7 @@ describe('importReviewTask', () => {
       primary: { label: '查看', route: '/accounting/accounts' },
       secondary: [],
       sortKey: '2026-10-24T09:05:00',
-      fingerprint: '4',
+      wake: { count: 4 },
     });
   });
 
@@ -114,7 +114,7 @@ describe('debtsRow', () => {
 describe('importReviewTask wire format', () => {
   it('falls back to the unpaired transfers when there is no needs_review', () => {
     const r = run({ summary: { unpaired_transfers: [{}, {}] } as unknown as ImportRun['summary'] });
-    expect(importReviewTask(r)).toMatchObject({ title: '匯入紀錄 · 2 筆待確認', fingerprint: '2' });
+    expect(importReviewTask(r)).toMatchObject({ title: '匯入紀錄 · 2 筆待確認', wake: { count: 2 } });
   });
 
   it('shows the local date of an offset-aware started_at near midnight', () => {

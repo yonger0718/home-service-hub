@@ -32,7 +32,7 @@ export function importReviewTask(run: ImportRun | null): NotifTask | null {
     primary: { label: '查看', route: '/accounting/accounts' },
     secondary: [],
     sortKey: run.started_at,
-    fingerprint: `${n}`,
+    wake: { count: n },
   };
 }
 
