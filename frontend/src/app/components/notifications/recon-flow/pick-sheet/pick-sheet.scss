@@ -1,0 +1,32 @@
+.pick-sub {
+  color: var(--app-text-muted);
+  font-size: 0.85rem;
+  margin: 0 0 6px;
+  text-align: center;
+}
+
+.pick-options {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+.pick-row {
+  align-items: center;
+  border-bottom: 1px solid var(--app-border);
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  min-height: 46px;
+  overflow-wrap: anywhere;
+  padding: 6px 0;
+
+  input {
+    flex: 0 0 auto;
+  }
+}
+
+.btnrow button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
