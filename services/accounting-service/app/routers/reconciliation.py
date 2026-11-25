@@ -29,11 +29,16 @@ INBOX_STATUSES = ("open", "proposed")
 router = APIRouter(tags=["Reconciliation"], dependencies=[Depends(require_feature())])
 
 
+PEER_CASE_ACTIONS = ("adjust_transfer", "pair_transfer")  # #433: the actions that resolve the peer line's case
+
+
 def _action_out(row, *, replayed: bool = False, label: str | None = None, answer: str | None = None,
                 line: dict | None = None) -> dict:
     fields = {name: getattr(row, name) for name in ActionOut.model_fields
-              if name not in ("replayed", "label", "answer", "line")}
-    return {**fields, "replayed": replayed, "label": label, "answer": answer, "line": line}
+              if name not in ("replayed", "label", "answer", "line", "peer_case_id")}
+    peer_case_id = (row.inverse or {}).get("peer_case_id") if row.action in PEER_CASE_ACTIONS else None
+    return {**fields, "replayed": replayed, "label": label, "answer": answer, "line": line,
+            "peer_case_id": peer_case_id}
 
 
 def _apply(db: Session, request: Request, response: Response, case_id: int, action: str, params: dict) -> dict:

@@ -12,7 +12,7 @@ from tests.integration.statement_fixtures import (  # noqa: F401
 )
 # top-level import is safe: test_reconciliation_actions_transfer does not import this module
 from tests.integration.test_reconciliation_actions_transfer import (  # noqa: E402,F401
-    _ambiguous_case, _delta, _needs_peer, orphan_pair, pair,
+    _adjust, _ambiguous_case, _delta, _fresh, _needs_peer, _pair_params, orphan_pair, pair,
 )
 
 TOKENS = "spa:spa-token,hermes:hermes-token"
@@ -770,3 +770,62 @@ def test_adjust_transfer_leg_of_another_kind_takes_its_direction_from_the_amount
     item = next(i for i in _items(_inbox(client)) if i["case_id"] == case.id)  # `_inbox` asserts the 200
     assert item["transfer"]["adjust_transfer"]["legs"] == [_leg(pair.in_leg.id, "卡", "銀行", "in"),
                                                            _leg(odd.id, "卡", "銀行", "out")]
+
+
+# --- #433: the action response names the peer case a transfer action resolved ---------------------------------------
+
+def _post(client, case, action, params):
+    return client.post(f"/reconciliation/cases/{case.id}/actions", headers=S,
+                       json={"action": action, "params": params})
+
+
+def test_adjust_transfer_response_names_the_peer_case_it_resolved(pair, client, db_session):
+    peer = _delta(db_session, pair.bstmt)
+    assert peer is not None
+    res = _post(client, _delta(db_session, pair.cstmt), "adjust_transfer", _adjust(pair))
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["peer_case_id"] == peer.id
+    resolved = _fresh(db_session, ReconciliationCase, peer.id)
+    assert (resolved.status, resolved.resolved_action_id) == ("resolved", body["id"])
+
+
+def test_adjust_transfer_response_peer_case_is_null_without_an_open_peer_case(pair, client, db_session):
+    peer = _delta(db_session, pair.bstmt)
+    assert client.post(f"/reconciliation/cases/{peer.id}/dismiss", headers=S,
+                       json={"note": "elsewhere"}).status_code == 201
+    res = _post(client, _delta(db_session, pair.cstmt), "adjust_transfer", _adjust(pair))
+    assert res.status_code == 201, res.text
+    assert res.json()["peer_case_id"] is None
+
+
+def test_pair_transfer_response_names_the_peer_case_it_resolved(orphan_pair, client, db_session):
+    peer = _needs_peer(db_session, orphan_pair.bstmt)
+    res = _post(client, _needs_peer(db_session, orphan_pair.cstmt), "pair_transfer", _pair_params(orphan_pair.bline))
+    assert res.status_code == 201, res.text
+    assert res.json()["peer_case_id"] == peer.id
+
+
+def test_replayed_transfer_action_returns_the_same_peer_case_id(pair, client, db_session):
+    case = _delta(db_session, pair.cstmt)
+    first = _post(client, case, "adjust_transfer", _adjust(pair))
+    assert first.status_code == 201, first.text
+    second = _post(client, case, "adjust_transfer", _adjust(pair))
+    assert second.status_code == 200, second.text
+    assert second.json()["replayed"] is True and second.json()["id"] == first.json()["id"]
+    assert second.json()["peer_case_id"] == first.json()["peer_case_id"] is not None
+
+
+def test_other_actions_and_the_action_list_carry_peer_case_id(pair, client, db_session):
+    case = _delta(db_session, pair.cstmt)
+    applied = _post(client, case, "adjust_transfer", _adjust(pair)).json()
+    reverted = client.post(f"/reconciliation/actions/{applied['id']}/revert", headers=S)
+    assert reverted.status_code == 201, reverted.text
+    assert reverted.json()["action"] == "revert" and reverted.json()["peer_case_id"] is None
+    rows = {r["id"]: r for r in client.get("/reconciliation/actions", headers=S,
+                                           params={"case_id": case.id}).json()}
+    assert rows[applied["id"]]["peer_case_id"] == applied["peer_case_id"] is not None  # stored, kept after revert
+    assert rows[reverted.json()["id"]]["peer_case_id"] is None
+    dismissed = client.post(f"/reconciliation/cases/{case.id}/dismiss", headers=S, json={"note": "x"})
+    assert dismissed.status_code == 201, dismissed.text
+    assert dismissed.json()["peer_case_id"] is None
