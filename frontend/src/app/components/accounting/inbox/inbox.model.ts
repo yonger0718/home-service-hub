@@ -80,8 +80,25 @@ export interface InboxPeerCandidate {
 
 /** What a transfer-shaped case can be answered with (absent on an older API). */
 export interface InboxTransfer {
-  adjust_transfer: { entry_id: number | null; line_id: number; candidate_entry_ids: number[] } | null;
+  adjust_transfer: {
+    entry_id: number | null;
+    line_id: number;
+    candidate_entry_ids: number[];
+    /** #433: one per `candidate_entry_ids`, same order (absent on an older payload). */
+    legs?: InboxTransferLeg[];
+  } | null;
   pair_transfer: { peer_candidates: InboxPeerCandidate[] } | null;
+}
+
+/**
+ * #433: one `adjust_transfer` leg. 來源 → 目的 is account → counter for `out`, counter → account for `in`;
+ * `counter_account_name` is null when the leg has no single other leg.
+ */
+export interface InboxTransferLeg {
+  entry_id: number;
+  account_name: string;
+  counter_account_name: string | null;
+  direction: 'out' | 'in';
 }
 
 /** Actions posted to `/cases/{id}/actions`. */
@@ -199,6 +216,8 @@ export interface ReconciliationAction {
   reverted_by_action_id: number | null;
   /** The case's current bank line; only `GET /reconciliation/actions` fills it (null without a line). */
   line: ReconciliationActionLine | null;
+  /** #433: the peer line's case an adjust_transfer / pair_transfer resolved; null otherwise (absent on older APIs). */
+  peer_case_id?: number | null;
 }
 
 export interface ReconciliationActionLine {

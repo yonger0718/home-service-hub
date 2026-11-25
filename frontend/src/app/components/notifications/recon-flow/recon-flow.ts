@@ -44,6 +44,7 @@ import {
   InboxCandidate,
   InboxItem,
   InboxOut,
+  ReconciliationAction,
 } from '../../accounting/inbox/inbox.model';
 import { InboxService } from '../../accounting/inbox/inbox.service';
 import {
@@ -74,6 +75,7 @@ import {
   startFlow,
 } from './recon-flow-state';
 import {
+  adjustTransferToast,
   FlowAnswer,
   FlowError,
   adjustEntries,
@@ -92,7 +94,9 @@ import {
   flowNote,
   flowPartOf,
   isCaseAction,
+  legRowLabel,
   peerRowLabel,
+  transferLeg,
   transferLegs,
 } from './recon-flow-view';
 import { ReconReverted, ReconUndoService } from './recon-undo.service';
@@ -726,17 +730,18 @@ export class ReconFlowComponent {
   }
 
   /**
-   * One `/cases/{id}/actions`: 已處理：<answer>, or `text` as is, with 復原 of that action (no rule: these answers never
-   * learn).
+   * One `/cases/{id}/actions`: 已處理：<answer>, or `text` as is (a function of the response when the toast depends on
+   * it), with 復原 of that action (no rule: these answers never learn).
    */
   private sendCaseAction(
     item: InboxItem,
     action: CaseAction,
     params: Record<string, number>,
     answer: string,
-    text?: string,
+    toast?: string | ((out: ReconciliationAction) => string),
   ): void {
     this.submit(item, this.inbox.caseAction(item.case_id, action, params), (out, accountId, statementId) => {
+      const text = typeof toast === 'function' ? toast(out) : toast;
       this.undo.offer({ answer, text, caseId: item.case_id, actionIds: [out.id], accountId, statementId, rule: null });
       return null;
     });
@@ -744,7 +749,7 @@ export class ReconFlowComponent {
 
   private adjustTransfer(item: InboxItem, entryId: number, lineId: number): void {
     const params = { entry_id: entryId, line_id: lineId };
-    this.sendCaseAction(item, 'adjust_transfer', params, '照帳單改轉帳', '已照帳單改轉帳');
+    this.sendCaseAction(item, 'adjust_transfer', params, '照帳單改轉帳', adjustTransferToast);
   }
 
   /**
@@ -803,8 +808,8 @@ export class ReconFlowComponent {
   }
 
   /**
-   * 照帳單改這筆轉帳 (its leg known) posts at once; the rest ask which row first. Entry rows read like 對到…'s, plus the
-   * bank amount they will take: 「2026/09/05 標題 −$19,970 → −$20,000」.
+   * 照帳單改這筆轉帳 (its leg known) posts at once; the rest ask which row first. 改金額… rows read like 對到…'s, plus the
+   * bank amount they will take: 「2026/09/05 標題 −$19,970 → −$20,000」; 照帳單改轉帳… rows name the accounts (#433).
    */
   private caseAnswer(item: InboxItem, kind: CaseAction): void {
     const currency = this.currency();
@@ -818,7 +823,11 @@ export class ReconFlowComponent {
           this.adjustTransfer(item, adjust.entry_id, adjust.line_id);
           return;
         }
-        const options = entryRows(transferLegs(item));
+        // #433: 「日期 來源 → 目的 原金額 改成 銀行金額」 (the title when the API names no other account).
+        const options = transferLegs(item).map((c) => ({
+          id: c.entry_id,
+          label: legRowLabel(c, transferLeg(item, c.entry_id), item.line?.amount, currency),
+        }));
         this.pick.set({ kind, item, heading: '哪一筆是這筆轉帳？', sub: '兩邊一起改金額，日期跟各自的帳單', options });
         return;
       }

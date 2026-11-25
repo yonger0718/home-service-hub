@@ -1500,9 +1500,10 @@ describe('ReconFlowComponent', () => {
       key('2');
       expect(text(pickSheet()!.querySelector('h3'))).toBe('哪一筆是這筆轉帳？');
       expect(text(pickSheet()!.querySelector('.pick-sub'))).toBe('兩邊一起改金額，日期跟各自的帳單');
+      // No leg data in this payload: the title stands in for the accounts (#433 rows: unsigned, 「改成」).
       expect(pickRows()).toEqual([
-        '2026/09/05 測試轉帳 甲 −$19,970 → −$20,000',
-        '2026/09/05 測試轉帳 乙 −$19,950 → −$20,000',
+        '2026/09/05 測試轉帳 甲 $19,970 改成 $20,000',
+        '2026/09/05 測試轉帳 乙 $19,950 改成 $20,000',
       ]);
       http.expectNone((r) => r.method === 'POST');
       pickRow(1);
@@ -1511,11 +1512,62 @@ describe('ReconFlowComponent', () => {
       expect(caseAction(1).request.body).toEqual({ action: 'adjust_transfer', params: { entry_id: 611, line_id: 301 } });
     });
 
+    it('#433 ambiguous legs with account data: rows read 「日期 來源 → 目的 原金額 改成 銀行金額」', () => {
+      const item = ambiguous(1);
+      item.transfer!.adjust_transfer!.legs = [
+        { entry_id: 610, account_name: '測試銀行', counter_account_name: '測試銀行卡', direction: 'out' },
+        { entry_id: 611, account_name: '測試銀行', counter_account_name: null, direction: 'out' },
+      ];
+      open([item]);
+      key('2');
+      expect(text(pickSheet()!.querySelector('.pick-sub'))).toBe('兩邊一起改金額，日期跟各自的帳單');
+      expect(pickRows()).toEqual([
+        '2026/09/05 測試銀行 → 測試銀行卡 $19,970 改成 $20,000',
+        '2026/09/05 測試轉帳 乙 $19,950 改成 $20,000',
+      ]);
+    });
+
+    it('#433 legs shorter than the candidates (an older or partial payload): the listed leg names its accounts, the other keeps its title', () => {
+      const item = ambiguous(1);
+      item.transfer!.adjust_transfer!.legs = [
+        { entry_id: 611, account_name: '測試銀行', counter_account_name: '測試銀行卡', direction: 'out' },
+      ];
+      open([item]);
+      key('2');
+      expect(pickRows()).toEqual([
+        '2026/09/05 測試轉帳 甲 $19,970 改成 $20,000',
+        '2026/09/05 測試銀行 → 測試銀行卡 $19,950 改成 $20,000',
+      ]);
+    });
+
+    it('#433 a transfer leg whose other account is known: the note names it; the toast adds the peer sentence when the response says the peer question was resolved', () => {
+      const item = leg(1);
+      item.transfer!.adjust_transfer!.legs = [
+        { entry_id: 500, account_name: '測試銀行卡', counter_account_name: '測試銀行', direction: 'in' },
+      ];
+      open([item, line(2)]);
+      expect(text(el.querySelector('.flow-note'))).toBe('會同時改測試銀行的那一筆。兩邊金額都改成 $2,096；日期各自跟自己的帳單，另一邊沒有帳單就不動。');
+      key('1');
+      caseAction(1).flush({ ...took(951, 1, 'adjust_transfer'), peer_case_id: 77 });
+      detect();
+      expect(toasts().current()).toEqual(withUndo('已照帳單改轉帳。另一個帳戶的那一題也處理了'));
+      reread().flush(inbox([line(2)]));
+    });
+
+    it('#433 a replayed adjust_transfer (200) that names the peer case: the same long toast', () => {
+      open([leg(1), line(2)]);
+      key('1');
+      caseAction(1).flush({ ...took(951, 1, 'adjust_transfer'), replayed: true, peer_case_id: 77 });
+      detect();
+      expect(toasts().current()).toEqual(withUndo('已照帳單改轉帳。另一個帳戶的那一題也處理了'));
+      reread().flush(inbox([line(2)]));
+    });
+
     it('ambiguous with one leg and no entry_id: still asks, one row pre-picked; nothing posts until 確定', () => {
       open([ambiguous(1, [610])]);
       expect(labels()[1]).toBe('照帳單改轉帳…');
       key('2');
-      expect(pickRows()).toEqual(['2026/09/05 測試轉帳 甲 −$19,970 → −$20,000']);
+      expect(pickRows()).toEqual(['2026/09/05 測試轉帳 甲 $19,970 改成 $20,000']);
       expect(pickSheet()!.querySelector<HTMLInputElement>('input[type="radio"]')!.checked).toBe(true);
       http.expectNone((r) => r.method === 'POST');
       confirmPick();
