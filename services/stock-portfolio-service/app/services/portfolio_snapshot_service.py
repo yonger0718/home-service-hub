@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from ..models.broker_account import BrokerAccount
 from ..models.cash_transaction import CashTransaction
 from ..models.portfolio_snapshot import PortfolioSnapshot
-from . import cash_account_service, portfolio_service
+from . import cash_account_service, portfolio_service, sinopac_futures_series
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +139,33 @@ def refresh_snapshot_cash_range(
         cur += timedelta(days=1)
 
     db.commit()
+
+
+def refresh_snapshot_futures_range(
+    db: Session,
+    start_date: dt_date,
+    end_date: dt_date,
+) -> int:
+    """Set ``futures_equity_twd`` on the existing rows in ``[start_date, end_date]`` from the futures series (spec
+    §6.5); return the number of rows touched.
+
+    Runs inside the caller's transaction, which holds the futures lock: it never commits, inserts or deletes a row.
+    """
+    if end_date < start_date:
+        return 0
+    rows = (
+        db.query(PortfolioSnapshot)
+        .filter(PortfolioSnapshot.date >= start_date, PortfolioSnapshot.date <= end_date)
+        .all()
+    )
+    if not rows:
+        return 0
+    values = sinopac_futures_series.equity_by_date(db, start_date, end_date)
+    for row in rows:
+        value = values[row.date]
+        row.futures_equity_twd = value.total_equity if value is not None else Decimal("0")
+    db.flush()
+    return len(rows)
 
 
 def _cash_activity_dates(db: Session) -> set[dt_date]:
