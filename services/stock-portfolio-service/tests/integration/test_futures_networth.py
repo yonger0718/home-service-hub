@@ -347,6 +347,30 @@ def test_replay_gap_source_date_forward_filled(db_session, prior):
         assert template["total_market_value"] > 0
 
 
+WEEKEND = date(2026, 3, 7)  # Saturday at the range start: stock held, no prior mv>0 row, so no held forward fill
+
+
+@pytest.mark.parametrize("with_futures", [True, False])
+def test_replay_skip_day_futures_row_kept(db_session, with_futures):
+    """R15: a skip-day row the stale delete would drop (mv 0, cost > 0) is kept when the series is non-zero, with
+    only its futures column set; a zero-series control is still deleted."""
+    _buy(db_session, date(2026, 3, 2))
+    if with_futures:
+        _day(db_session, date(2026, 3, 6), "300")  # Friday source; the Saturday is not a source date
+    _snap(db_session, WEEKEND, mv="0", cost="100", cash="7", futures="50" if with_futures else "0", dividends="3",
+          realized="4", xirr="0.1234")
+    before = _columns(db_session.get(PortfolioSnapshot, WEEKEND))
+    with _cash("999"):
+        nb.replay_snapshots_range(db_session, WEEKEND, WEEKEND)
+    row = _rows(db_session).get(WEEKEND)
+    if not with_futures:
+        assert row is None
+        return
+    assert row is not None
+    assert row.futures_equity_twd == Decimal("300")
+    assert _columns(row) == before
+
+
 def test_replay_gap_non_source_zero_series_still_deleted(db_session):
     """Pre-futures history: a gap day with no futures source and a zero series keeps the legacy stale delete."""
     _buy(db_session, date(2026, 3, 2))

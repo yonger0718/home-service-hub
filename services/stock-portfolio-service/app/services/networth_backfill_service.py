@@ -876,7 +876,30 @@ def replay_snapshots_range(
                         ),
                     )
             if not wrote_forward_fill:
-                stale_candidates.append(cur)
+                # A row the stale delete would drop (mv 0, cost > 0) is
+                # kept on a futures source date or a non-zero series date,
+                # with only its futures column set (the gap-day rule below).
+                skip_futures = futures_equity(cur)
+                existing = (
+                    db.get(PortfolioSnapshot, cur)
+                    if cur in futures_source_dates or skip_futures != 0
+                    else None
+                )
+                if (
+                    existing is not None
+                    and existing.total_market_value == 0
+                    and existing.total_cost > 0
+                ):
+                    write_snapshot(
+                        cur,
+                        PortfolioSnapshot(
+                            date=cur,
+                            futures_equity_twd=skip_futures,
+                            **_forward_fill_columns(existing),
+                        ),
+                    )
+                else:
+                    stale_candidates.append(cur)
             cur += timedelta(days=1)
             continue
 
