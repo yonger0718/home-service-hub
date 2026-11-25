@@ -121,17 +121,23 @@ When two open questions of a statement reference the same ledger entry (a bank-l
 
 ### Requirement: Transfer and amount answers
 
-When an item carries `transfer.adjust_transfer`, the flow SHALL offer 改成帳單的轉帳; when `transfer.pair_transfer.peer_candidates` is non-empty it SHALL offer 配成轉帳 with a picker of the candidates (account, date, amount); on an `ambiguous` case with a candidate that is not a transfer leg it SHALL offer 改金額. These SHALL call `POST /reconciliation/cases/{id}/actions` and show a refusal in plain words under the answers, never as a code.
+When an item carries `transfer.adjust_transfer`, the flow SHALL offer 照帳單改這筆轉帳 (leg known: one tap) or 照帳單改轉帳… (pick the leg); when `transfer.pair_transfer.peer_candidates` is non-empty, 配成轉帳… with rows 「date from → to amount」; on an `ambiguous` case with a non-leg candidate, 改金額…. On `ambiguous` 對到… stays first. These SHALL call `POST /reconciliation/cases/{id}/actions` and show a refusal in plain words, never as a code.
 
 #### Scenario: Pair a transfer
 - **GIVEN** a `needs_peer` case with one peer candidate on 玉山銀行
-- **WHEN** the owner picks 配成轉帳 and the candidate
-- **THEN** the SPA SHALL post `{action: 'pair_transfer', params: {peer_line_id}}` and move to the next question
+- **WHEN** the owner picks 配成轉帳… and the candidate
+- **THEN** the SPA SHALL post `{action: 'pair_transfer', params: {peer_line_id}}`, toast 「已配成轉帳：<account> <M/D>」 with 復原 and move to the next question
+
+#### Scenario: Transfer leg known
+- **GIVEN** an `amount_differs` case whose `adjust_transfer.entry_id` is set
+- **WHEN** the owner picks 照帳單改這筆轉帳
+- **THEN** the SPA SHALL post `{entry_id, line_id}` at once (no picker; the note said both legs take the bank amount and date) and toast 「已照帳單改轉帳」 with 復原
 
 #### Scenario: Ambiguous transfer leg
-- **GIVEN** `adjust_transfer.entry_id` is null with two `candidate_entry_ids`
-- **WHEN** the owner picks 改成帳單的轉帳
-- **THEN** the SPA SHALL ask which entry first and send its id
+- **GIVEN** an `ambiguous` case where `adjust_transfer.entry_id` is null with two `candidate_entry_ids` and one other candidate
+- **THEN** the answers SHALL read 已記在別處，對到…, 照帳單改轉帳…, 改金額…, 不是同一筆
+- **WHEN** the owner picks 照帳單改轉帳…
+- **THEN** the SPA SHALL ask which entry first (rows 「date title amount → bank amount」) and send its id
 
 #### Scenario: Transfer without a peer
 - **GIVEN** a `needs_peer` case whose `peer_candidates` is empty
