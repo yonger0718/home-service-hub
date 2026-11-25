@@ -371,7 +371,8 @@ is set when `findings_sha` changes. A day or month with findings is pending (§8
    the first commit run imports the archive, then the futures-only history fill of §6.5 from 2024-08-27 (dry run
    first, its counts to the owner, then for real) writes the futures equity into the history, including rows on
    futures-only dates; the 淨值走勢 history changes from that date by the futures equity and by nothing else.
-3. Timer, notifier release, SPA.
+3. Timer, notifier release. The SPA (§9) is published right after the portfolio release, before the archive import
+   and the history fill, because the current SPA drops futures from cash-only chart points.
 4. Set `valuation_source = portfolio:sinopac_futures` on account 147 (admin PATCH, with the owner's go).
 
 The archive comes in with 9 pending findings (5 `prev` days, 4 months with a gap; no `carry`); the owner acknowledges
