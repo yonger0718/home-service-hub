@@ -92,6 +92,7 @@ import {
   flowNote,
   flowPartOf,
   isCaseAction,
+  peerRowLabel,
   transferLegs,
 } from './recon-flow-view';
 import { ReconReverted, ReconUndoService } from './recon-undo.service';
@@ -148,7 +149,7 @@ type SegmentState = 'done' | 'current' | 'rest';
  * 對帳 one question at a time for one statement (spec D5): reads the inbox, shows the statement's open ask items as
  * steps, applies one answer per press through `/inbox/apply` (the inbox panel's body shape, one case), re-reads with
  * the account id and moves on. 記為… / 對到… open the panel's record / match sheets. The transfer and amount answers
- * post to `/cases/{id}/actions` instead; 改成帳單的轉帳… / 配成轉帳… / 改金額… first ask which row in the pick sheet.
+ * post to `/cases/{id}/actions` instead; 照帳單改轉帳… / 配成轉帳… / 改金額… first ask which row in the pick sheet.
  */
 @Component({
   selector: 'app-recon-flow',
@@ -213,7 +214,7 @@ export class ReconFlowComponent {
 
   readonly recordCard = signal<InboxCard | null>(null);
   readonly matchCard = signal<InboxCard | null>(null);
-  /** 改成帳單的轉帳… / 配成轉帳… / 改金額…: which row the answer is about. */
+  /** 照帳單改轉帳… / 配成轉帳… / 改金額…: which row the answer is about. */
   readonly pick = signal<FlowPick | null>(null);
   /** The entry the open 對到… sheet must not offer (the one the question already compares). */
   readonly matchExclude = computed<readonly number[]>(() => {
@@ -428,11 +429,12 @@ export class ReconFlowComponent {
     const { item, kind } = pick;
     switch (kind) {
       case 'adjust_transfer':
-        this.sendCaseAction(item, kind, { entry_id: id, line_id: item.transfer!.adjust_transfer!.line_id }, '改成帳單的轉帳');
+        this.adjustTransfer(item, id, item.transfer!.adjust_transfer!.line_id);
         return;
       case 'pair_transfer': {
         const peer = item.transfer?.pair_transfer?.peer_candidates.find((p) => p.line_id === id);
-        this.sendCaseAction(item, kind, { peer_line_id: id }, `配成轉帳：${peer?.account_name ?? ''}`);
+        const named = peer ? `${peer.account_name} ${monthDay(peer.posted_date)}` : '';
+        this.sendCaseAction(item, kind, { peer_line_id: id }, `配成轉帳：${named}`, `已配成轉帳：${named}`);
         return;
       }
       case 'adjust_amount': {
@@ -723,12 +725,26 @@ export class ReconFlowComponent {
     });
   }
 
-  /** One `/cases/{id}/actions`: 已處理 with 復原 of that action (no rule: these answers never learn). */
-  private sendCaseAction(item: InboxItem, action: CaseAction, params: Record<string, number>, answer: string): void {
+  /**
+   * One `/cases/{id}/actions`: 已處理：<answer>, or `text` as is, with 復原 of that action (no rule: these answers never
+   * learn).
+   */
+  private sendCaseAction(
+    item: InboxItem,
+    action: CaseAction,
+    params: Record<string, number>,
+    answer: string,
+    text?: string,
+  ): void {
     this.submit(item, this.inbox.caseAction(item.case_id, action, params), (out, accountId, statementId) => {
-      this.undo.offer({ answer, caseId: item.case_id, actionIds: [out.id], accountId, statementId, rule: null });
+      this.undo.offer({ answer, text, caseId: item.case_id, actionIds: [out.id], accountId, statementId, rule: null });
       return null;
     });
+  }
+
+  private adjustTransfer(item: InboxItem, entryId: number, lineId: number): void {
+    const params = { entry_id: entryId, line_id: lineId };
+    this.sendCaseAction(item, 'adjust_transfer', params, '照帳單改轉帳', '已照帳單改轉帳');
   }
 
   /**
@@ -786,27 +802,30 @@ export class ReconFlowComponent {
     });
   }
 
-  /** 改成帳單的轉帳 with its leg known posts at once; the rest ask which row first. */
+  /**
+   * 照帳單改這筆轉帳 (its leg known) posts at once; the rest ask which row first. Entry rows read like 對到…'s, plus the
+   * bank amount they will take: 「2026/09/05 標題 −$19,970 → −$20,000」.
+   */
   private caseAnswer(item: InboxItem, kind: CaseAction): void {
     const currency = this.currency();
+    const bank = formatMoney(item.line?.amount, currency, { sign: true });
     const entryRows = (rows: InboxCandidate[]): FlowPickOption[] =>
-      rows.map((c) => ({ id: c.entry_id, label: matchRowLabel(c, currency) }));
+      rows.map((c) => ({ id: c.entry_id, label: `${matchRowLabel(c, currency)} → ${bank}` }));
     switch (kind) {
       case 'adjust_transfer': {
         const adjust = item.transfer?.adjust_transfer;
         if (adjust && adjust.entry_id !== null) {
-          this.sendCaseAction(item, kind, { entry_id: adjust.entry_id, line_id: adjust.line_id }, '改成帳單的轉帳');
+          this.adjustTransfer(item, adjust.entry_id, adjust.line_id);
           return;
         }
-        this.pick.set({ kind, item, heading: '哪一筆是這筆轉帳？', sub: null, options: entryRows(transferLegs(item)) });
+        const options = entryRows(transferLegs(item));
+        this.pick.set({ kind, item, heading: '哪一筆是這筆轉帳？', sub: '兩邊一起改，日期跟帳單', options });
         return;
       }
       case 'pair_transfer': {
+        const name = this.account()?.name ?? '';
         const peers = item.transfer?.pair_transfer?.peer_candidates ?? [];
-        const options = peers.map((p) => ({
-          id: p.line_id,
-          label: `${p.account_name} · ${monthDay(p.posted_date)} · ${formatMoney(p.amount, currency, { sign: true })}`,
-        }));
+        const options = peers.map((p) => ({ id: p.line_id, label: peerRowLabel(p, name, currency) }));
         this.pick.set({ kind, item, heading: '配成哪一筆轉帳？', sub: null, options });
         return;
       }
@@ -815,7 +834,7 @@ export class ReconFlowComponent {
           kind,
           item,
           heading: '改哪一筆的金額？',
-          sub: `改成銀行的 ${formatMoney(item.line?.amount, currency, { sign: true })}`,
+          sub: `改成銀行的 ${bank}`,
           options: entryRows(adjustEntries(item)),
         });
         return;

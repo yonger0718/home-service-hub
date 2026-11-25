@@ -9,6 +9,7 @@ import {
   InboxButton,
   InboxCandidate,
   InboxItem,
+  InboxPeerCandidate,
   InboxQuestion,
 } from '../../accounting/inbox/inbox.model';
 import { apiErrorText, splitApiCode } from '../../accounting/statements/statement-view';
@@ -92,7 +93,9 @@ export function flowPartOf(item: InboxItem): boolean {
 
 /**
  * Extra line under the grid: the part-of warning, the transfer hint, or the item's note; null when none. The transfer
- * hint says which answer fits: pair the two accounts when a peer line exists, else wait for the other statement.
+ * hint says which answer fits: pair the two accounts when a peer line exists, else wait for the other statement. With
+ * one transfer leg known, 照帳單改這筆轉帳 is one tap, so the note says what it changes (the item's note follows on a
+ * new line).
  */
 export function flowNote(item: InboxItem, currency: string): string | null {
   if (flowPartOf(item)) {
@@ -107,7 +110,22 @@ export function flowNote(item: InboxItem, currency: string): string | null {
       ? '選「配成轉帳…」把兩個帳戶的這筆對起來。'
       : '另一個帳戶還沒有對得上的那一筆（帳單可能還沒匯入）。已經記過的話選「已記在別處，對到…」；不然先略過，另一邊進來後再配。';
   }
-  return item.note || null;
+  const note = item.note || null;
+  if (item.transfer?.adjust_transfer?.entry_id != null) {
+    const bank = formatMoney(item.line?.amount, currency, { sign: true });
+    const sentence = `會把這筆轉帳的兩邊都改成 ${bank}，日期改成帳單上的日期。`;
+    return note ? `${sentence}\n${note}` : sentence;
+  }
+  return note;
+}
+
+/**
+ * A 配成轉帳… row: 「2026/09/30 測試卡 → 測試銀行 $20,000」. The peer line's sign says which way the money went: money
+ * out of the peer account (< 0) reads peer → this account, else this account → peer.
+ */
+export function peerRowLabel(peer: InboxPeerCandidate, accountName: string, currency: string): string {
+  const [from, to] = Number(peer.amount) < 0 ? [peer.account_name, accountName] : [accountName, peer.account_name];
+  return `${slashDate(peer.posted_date)} ${from} → ${to} ${formatMoney(peer.amount, currency)}`;
 }
 
 /** An answer the flow lists: an inbox button or one of the case actions (`/cases/{id}/actions`). */
@@ -123,7 +141,7 @@ export function isCaseAction(answer: FlowAnswer): answer is CaseAction {
   return CASE_ACTIONS.has(answer);
 }
 
-/** The ledger legs an ambiguous question could mean for 改成帳單的轉帳; none when the entry is already known. */
+/** The ledger legs an ambiguous question could mean for 照帳單改轉帳…; none when the entry is already known. */
 export function transferLegs(item: InboxItem): InboxCandidate[] {
   const adjust = item.transfer?.adjust_transfer;
   if (!adjust || adjust.entry_id !== null) {
@@ -144,7 +162,7 @@ export function adjustEntries(item: InboxItem): InboxCandidate[] {
 
 /**
  * The answers in the order the flow lists them: the server's, except 記為… goes last on a part-of line, with the
- * transfer answers ahead of them and 改金額… after 對到….
+ * transfer answers ahead of them. On an ambiguous question 對到… stays first and 照帳單改轉帳… then 改金額… follow it.
  */
 export function flowActions(item: InboxItem): FlowAnswer[] {
   const base: FlowAnswer[] =
@@ -153,16 +171,21 @@ export function flowActions(item: InboxItem): FlowAnswer[] {
       : [...item.actions];
   const adjust = item.transfer?.adjust_transfer;
   const peers = item.transfer?.pair_transfer?.peer_candidates ?? [];
+  const ambiguous = item.question === 'ambiguous';
   const lead: FlowAnswer[] = [];
+  const afterMatch: FlowAnswer[] = [];
   if (adjust && (adjust.entry_id !== null || transferLegs(item).length > 0)) {
-    lead.push('adjust_transfer');
+    (ambiguous ? afterMatch : lead).push('adjust_transfer');
   }
   if (item.question === 'transfer' && peers.length > 0) {
     lead.push('pair_transfer');
   }
-  if (item.question === 'ambiguous' && adjustEntries(item).length > 0) {
+  if (ambiguous && adjustEntries(item).length > 0) {
+    afterMatch.push('adjust_amount');
+  }
+  if (afterMatch.length > 0) {
     const at = base.indexOf('match_candidate');
-    base.splice(at < 0 ? base.length : at + 1, 0, 'adjust_amount');
+    base.splice(at < 0 ? base.length : at + 1, 0, ...afterMatch);
   }
   return lead.length === 0 &&
     base.length === item.actions.length &&
@@ -175,8 +198,8 @@ export function flowAnswerLabel(answer: FlowAnswer, item: InboxItem, currency: s
   switch (answer) {
     case 'adjust_transfer':
       return item.transfer?.adjust_transfer?.entry_id === null
-        ? '改成帳單的轉帳…'
-        : '改成帳單的轉帳';
+        ? '照帳單改轉帳…'
+        : '照帳單改這筆轉帳';
     case 'pair_transfer':
       return '配成轉帳…';
     case 'adjust_amount':

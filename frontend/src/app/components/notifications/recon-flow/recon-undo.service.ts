@@ -27,6 +27,8 @@ export interface UndoOffer {
   readonly statementId: number;
   /** The owner rule the answer taught (the apply's `rule_id`, the item's merchant pattern), if any. */
   readonly rule: { readonly id: number; readonly pattern: string } | null;
+  /** The toast as is, instead of 已處理：<answer> (e.g. 已照帳單改轉帳). */
+  readonly text?: string;
 }
 
 /**
@@ -52,7 +54,7 @@ export class ReconUndoService {
 
   /** Raise 完成 with 復原 for one applied answer (no 復原 without an action id). */
   offer(offer: UndoOffer): void {
-    const text = '已處理：' + offer.answer;
+    const text = offer.text ?? '已處理：' + offer.answer;
     if (offer.actionIds.length === 0) {
       this.toasts.done(text);
       return;

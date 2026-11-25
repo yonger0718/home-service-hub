@@ -664,3 +664,8 @@ kbd {
     min-height: 48px;
   }
 }
+
+/* 照帳單改這筆轉帳's sentence and the item's own note share the box, one per line. */
+.flow-note {
+  white-space: pre-line;
+}

@@ -128,14 +128,21 @@ function leg(caseId: number): InboxItem {
   });
 }
 
-/** ambiguous +$20,000 (line 300 + id): candidates 610 / 611 and the plain income 612; `legs` are the transfer legs. */
+/**
+ * ambiguous −$20,000 (line 300 + id): candidates 610 (−$19,970) / 611 (−$19,950) and the plain expense 612 (−$1,250);
+ * `legs` are the transfer legs.
+ */
 function ambiguous(caseId: number, legs: number[] = [610, 611]): InboxItem {
   return makeItem({
     case_id: caseId,
     question: 'ambiguous',
     kind: 'ambiguous_match',
-    line: { id: 300 + caseId, date: '2026-09-05', merchant: '測試轉入', amount: '20000.0000', line_kind: 'deposit' },
-    candidates: [cand(610, '測試轉帳 甲'), cand(611, '測試轉帳 乙'), cand(612, '測試收入', '20050.0000')],
+    line: { id: 300 + caseId, date: '2026-09-05', merchant: '測試轉出', amount: '-20000.0000', line_kind: 'withdrawal' },
+    candidates: [
+      cand(610, '測試轉帳 甲', '-19970.0000'),
+      cand(611, '測試轉帳 乙', '-19950.0000'),
+      cand(612, '測試餐費', '-1250.0000'),
+    ],
     actions: ['match_candidate', 'dismiss'],
     rule_hint: null,
     transfer: {
@@ -1418,8 +1425,8 @@ describe('ReconFlowComponent', () => {
 
   describe('transfer and amount answers', () => {
     const toasts = () => TestBed.inject(ToastService);
-    const withUndo = (answer: string) =>
-      expect.objectContaining({ kind: 'done', text: `已處理：${answer}`, action: expect.objectContaining({ label: '復原' }) });
+    const withUndo = (toast: string) =>
+      expect.objectContaining({ kind: 'done', text: toast, action: expect.objectContaining({ label: '復原' }) });
 
     function caseAction(caseId: number): TestRequest {
       return http.expectOne((r) => r.method === 'POST' && r.url === actionsUrl(caseId));
@@ -1451,10 +1458,11 @@ describe('ReconFlowComponent', () => {
       http.expectNone((r) => r.url.includes('/owner-rules/'));
     }
 
-    it('a transfer leg: key 1 posts adjust_transfer on the case, then 已處理 with 復原 that reverts it', () => {
+    it('a transfer leg: key 1 posts adjust_transfer on the case, then 已照帳單改轉帳 with 復原 that reverts it', () => {
       const marked = vi.spyOn(TestBed.inject(AccountingService), 'markEntriesChanged');
       open([leg(1), line(2)]);
-      expect(labels()).toEqual(['改成帳單的轉帳', '已記在別處，對到…', '不是同一筆']);
+      expect(labels()).toEqual(['照帳單改這筆轉帳', '已記在別處，對到…', '不是同一筆']);
+      expect(text(el.querySelector('.flow-note'))).toBe('會把這筆轉帳的兩邊都改成 −$2,096，日期改成帳單上的日期。');
       expect(answers()[0].classList).toContain('solid');
       key('1');
       expect(pickSheet()).toBeNull();
@@ -1463,7 +1471,7 @@ describe('ReconFlowComponent', () => {
       http.expectNone(APPLY_URL);
       req.flush(took(951, 1, 'adjust_transfer'));
       detect();
-      expect(toasts().current()).toEqual(withUndo('改成帳單的轉帳'));
+      expect(toasts().current()).toEqual(withUndo('已照帳單改轉帳'));
       expect(marked).toHaveBeenCalled();
       reread().flush(inbox([line(2)]));
       detect();
@@ -1478,11 +1486,24 @@ describe('ReconFlowComponent', () => {
       expect(progressText()).toBe('第 1 / 2 筆');
     });
 
-    it('ambiguous over two legs: 改成帳單的轉帳… asks 哪一筆是這筆轉帳？; the picked leg is posted', () => {
+    it('a transfer leg with its own note: the transfer sentence first, the note on a new line of the same box', () => {
+      open([{ ...leg(1), note: '測試備註' }]);
+      const notes = el.querySelectorAll('.flow-note');
+      expect(notes.length).toBe(1);
+      expect(notes[0].textContent).toContain('會把這筆轉帳的兩邊都改成 −$2,096，日期改成帳單上的日期。\n測試備註');
+      // The box keeps line breaks (pre-line): the template's own whitespace must not add any.
+      expect(notes[0].textContent!.match(/\n/g)?.length).toBe(1);
+    });
+
+    it('ambiguous over two legs: 照帳單改轉帳… asks 哪一筆是這筆轉帳？; the picked leg is posted', () => {
       open([ambiguous(1)]);
-      key('1');
+      key('2');
       expect(text(pickSheet()!.querySelector('h3'))).toBe('哪一筆是這筆轉帳？');
-      expect(pickRows()).toEqual(['2026/09/05 測試轉帳 甲 $20,000', '2026/09/05 測試轉帳 乙 $20,000']);
+      expect(text(pickSheet()!.querySelector('.pick-sub'))).toBe('兩邊一起改，日期跟帳單');
+      expect(pickRows()).toEqual([
+        '2026/09/05 測試轉帳 甲 −$19,970 → −$20,000',
+        '2026/09/05 測試轉帳 乙 −$19,950 → −$20,000',
+      ]);
       http.expectNone((r) => r.method === 'POST');
       pickRow(1);
       confirmPick();
@@ -1492,22 +1513,23 @@ describe('ReconFlowComponent', () => {
 
     it('ambiguous with one leg and no entry_id: still asks, one row pre-picked; nothing posts until 確定', () => {
       open([ambiguous(1, [610])]);
-      expect(labels()[0]).toBe('改成帳單的轉帳…');
-      key('1');
-      expect(pickRows()).toEqual(['2026/09/05 測試轉帳 甲 $20,000']);
+      expect(labels()[1]).toBe('照帳單改轉帳…');
+      key('2');
+      expect(pickRows()).toEqual(['2026/09/05 測試轉帳 甲 −$19,970 → −$20,000']);
       expect(pickSheet()!.querySelector<HTMLInputElement>('input[type="radio"]')!.checked).toBe(true);
       http.expectNone((r) => r.method === 'POST');
       confirmPick();
       expect(caseAction(1).request.body).toEqual({ action: 'adjust_transfer', params: { entry_id: 610, line_id: 301 } });
     });
 
-    it('a transfer with one peer: 配成哪一筆轉帳？ lists 「account · M/D · amount」; 確定 pairs it and moves on', () => {
+    it('a transfer with one peer: 配成哪一筆轉帳？ lists 「日期 from → to 金額」; 確定 pairs it and moves on', () => {
       open([needsPeer(1), line(2)]);
       expect(labels()).toEqual(['配成轉帳…', '已記在別處，對到…', '忽略']);
       expect(text(el.querySelector('.flow-note'))).toBe('選「配成轉帳…」把兩個帳戶的這筆對起來。');
       key('1');
       expect(text(pickSheet()!.querySelector('h3'))).toBe('配成哪一筆轉帳？');
-      expect(pickRows()).toEqual(['測試銀行 · 9/6 · +$20,000']);
+      // The peer line is money in (+$20,000): it went from this account (玉山) to the peer.
+      expect(pickRows()).toEqual(['2026/09/06 玉山 → 測試銀行 $20,000']);
       confirmPick();
       const req = caseAction(1);
       expect(req.request.body).toEqual({ action: 'pair_transfer', params: { peer_line_id: 801 } });
@@ -1515,7 +1537,7 @@ describe('ReconFlowComponent', () => {
       reread().flush(inbox([line(2)]));
       detect();
       expect(headline()).toBe('測試商家 2 −$102');
-      expect(toasts().current()).toEqual(withUndo('配成轉帳：測試銀行'));
+      expect(toasts().current()).toEqual(withUndo('已配成轉帳：測試銀行 9/6'));
     });
 
     it('a transfer without peers: no 配成轉帳…, the no-candidate hint, two keys', () => {
@@ -1527,11 +1549,14 @@ describe('ReconFlowComponent', () => {
 
     it('ambiguous 改金額…: 改哪一筆的金額？ lists only the non-leg candidates and posts adjust_amount', () => {
       open([ambiguous(1, [610])]);
-      expect(labels()).toEqual(['改成帳單的轉帳…', '已記在別處，對到…', '改金額…', '不是同一筆']);
+      expect(labels()).toEqual(['已記在別處，對到…', '照帳單改轉帳…', '改金額…', '不是同一筆']);
       key('3');
       expect(text(pickSheet()!.querySelector('h3'))).toBe('改哪一筆的金額？');
-      expect(text(pickSheet()!.querySelector('.pick-sub'))).toBe('改成銀行的 +$20,000');
-      expect(pickRows()).toEqual(['2026/09/05 測試轉帳 乙 $20,000', '2026/09/05 測試收入 $20,050']);
+      expect(text(pickSheet()!.querySelector('.pick-sub'))).toBe('改成銀行的 −$20,000');
+      expect(pickRows()).toEqual([
+        '2026/09/05 測試轉帳 乙 −$19,950 → −$20,000',
+        '2026/09/05 測試餐費 −$1,250 → −$20,000',
+      ]);
       pickRow(1);
       confirmPick();
       expect(caseAction(1).request.body).toEqual({ action: 'adjust_amount', params: { entry_id: 612, line_id: 301 } });
@@ -1562,7 +1587,7 @@ describe('ReconFlowComponent', () => {
       confirmPick();
       caseAction(1).flush(took(953, 1, 'adjust_amount'));
       detect();
-      expect(toasts().current()).toEqual(withUndo('改金額：測試收入'));
+      expect(toasts().current()).toEqual(withUndo('已處理：改金額：測試餐費'));
       reread().flush(inbox([line(2)]));
       detect();
       undoLast(953);
@@ -1582,7 +1607,7 @@ describe('ReconFlowComponent', () => {
       reread().flush('boom', { status: 500, statusText: 'Server Error' });
       detect();
       expect(text(el.querySelector('.flow-error--read span'))).toBe('答案已送出，但清單讀取失敗');
-      expect(toasts().current()).toEqual(withUndo('改成帳單的轉帳'));
+      expect(toasts().current()).toEqual(withUndo('已照帳單改轉帳'));
       expect(key('1').defaultPrevented).toBe(false);
       button(el, '重試').click();
       detect();
@@ -1624,7 +1649,7 @@ describe('ReconFlowComponent', () => {
       const post = caseAction(1);
       fixture.destroy();
       post.flush(took(951, 1, 'adjust_transfer'));
-      expect(toasts().current()).toEqual(withUndo('改成帳單的轉帳'));
+      expect(toasts().current()).toEqual(withUndo('已照帳單改轉帳'));
       http.expectNone((r) => r.url === INBOX_URL);
     });
 
@@ -1638,7 +1663,7 @@ describe('ReconFlowComponent', () => {
       detect();
       post.flush(took(951, 1, 'adjust_transfer'));
       detect();
-      expect(toasts().current()).toEqual(withUndo('改成帳單的轉帳'));
+      expect(toasts().current()).toEqual(withUndo('已照帳單改轉帳'));
       http.expectNone((r) => r.url === INBOX_URL);
       expect(headline()).toBe('測試商家 5 −$105');
       expect(answers()[0].disabled).toBe(false);
@@ -1719,7 +1744,8 @@ describe('ReconFlowComponent', () => {
 
     it('four answers: key 4 answers the fourth, the hint reads 1–4 選擇', () => {
       open([ambiguous(1)]);
-      expect(labels()).toEqual(['改成帳單的轉帳…', '已記在別處，對到…', '改金額…', '不是同一筆']);
+      expect(labels()).toEqual(['已記在別處，對到…', '照帳單改轉帳…', '改金額…', '不是同一筆']);
+      expect(answers()[0].classList).toContain('solid');
       expect(answers().map((b) => text(b.querySelector('kbd')))).toEqual(['1', '2', '3', '4']);
       expect(answers().map((b) => b.getAttribute('aria-keyshortcuts'))).toEqual(['1', '2', '3', '4']);
       expect(text(el.querySelector('.flow-hint'))).toBe('1–4 選擇 · S 略過 · ← → 上下筆 · Esc 關閉');
@@ -1735,7 +1761,7 @@ describe('ReconFlowComponent', () => {
 
     it('while the picker is open the flow keys do nothing; Esc closes only the sheet', () => {
       open([ambiguous(1), line(2)]);
-      key('1');
+      key('2');
       for (const k of ['1', '2', '3', '4', 's', 'ArrowRight', 'ArrowLeft']) {
         expect(key(k).defaultPrevented, k).toBe(false);
       }

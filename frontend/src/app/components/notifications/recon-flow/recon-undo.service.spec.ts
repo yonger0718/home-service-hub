@@ -51,6 +51,13 @@ describe('ReconUndoService', () => {
     );
   });
 
+  it('a set text is the toast as is (no 已處理：), still with 復原', () => {
+    svc.offer(offerOf({ answer: '照帳單改轉帳', text: '已照帳單改轉帳' }));
+    expect(toast.current()).toEqual(
+      expect.objectContaining({ kind: 'done', text: '已照帳單改轉帳', action: expect.objectContaining({ label: '復原' }) }),
+    );
+  });
+
   it('without a rule: 復原中… while the revert runs, then reconcile, then 已復原', () => {
     svc.offer(offerOf());
     runUndo();

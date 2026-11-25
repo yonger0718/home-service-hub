@@ -22,6 +22,7 @@ import {
   flowNote,
   flowPartOf,
   isCaseAction,
+  peerRowLabel,
   transferLegs,
 } from './recon-flow-view';
 
@@ -256,9 +257,10 @@ describe('recon-flow-view', () => {
         adjust_transfer: { entry_id: null, line_id: 5, candidate_entry_ids: [21, 22] },
       }),
     });
+    // ambiguous: 對到… stays first (the primary answer), the transfer and amount answers follow it.
     expect(flowActions(ambiguous)).toEqual([
-      'adjust_transfer',
       'match_candidate',
+      'adjust_transfer',
       'adjust_amount',
       'dismiss',
     ]);
@@ -285,7 +287,7 @@ describe('recon-flow-view', () => {
         adjust_transfer: { entry_id: null, line_id: 5, candidate_entry_ids: [21, 22] },
       }),
     });
-    expect(flowActions(allLegs)).toEqual(['adjust_transfer', 'match_candidate', 'dismiss']);
+    expect(flowActions(allLegs)).toEqual(['match_candidate', 'adjust_transfer', 'dismiss']);
 
     const old = makeItem({ question: 'transfer', actions: ['match_candidate', 'dismiss'] });
     expect(flowActions(old)).toBe(old.actions);
@@ -328,8 +330,8 @@ describe('recon-flow-view', () => {
         adjust_transfer: { entry_id: null, line_id: 5, candidate_entry_ids: [21] },
       }),
     });
-    expect(flowAnswerLabel('adjust_transfer', known, 'TWD')).toBe('改成帳單的轉帳');
-    expect(flowAnswerLabel('adjust_transfer', unknown, 'TWD')).toBe('改成帳單的轉帳…');
+    expect(flowAnswerLabel('adjust_transfer', known, 'TWD')).toBe('照帳單改這筆轉帳');
+    expect(flowAnswerLabel('adjust_transfer', unknown, 'TWD')).toBe('照帳單改轉帳…');
     expect(flowAnswerLabel('pair_transfer', known, 'TWD')).toBe('配成轉帳…');
     expect(flowAnswerLabel('adjust_amount', known, 'TWD')).toBe('改金額…');
     expect(flowAnswerLabel('dismiss', makeItem(), 'TWD')).toBe('忽略');
@@ -354,6 +356,33 @@ describe('recon-flow-view', () => {
     const plain = '已經記過的話，選「已記在別處，對到…」；還沒記就先略過。';
     expect(flowNote(makeItem({ question: 'transfer', transfer: transfer({ pair_transfer: null }) }), 'TWD')).toBe(plain);
     expect(flowNote(makeItem({ question: 'transfer', transfer: null }), 'TWD')).toBe(plain);
+  });
+
+  it('flowNote: one transfer leg known says what 照帳單改這筆轉帳 changes, with the bank amount', () => {
+    const leg = makeItem({
+      question: 'amount_differs',
+      line: line('2026-09-05', '-20000.0000', '測試轉出'),
+      transfer: transfer({ adjust_transfer: { entry_id: 7, line_id: 5, candidate_entry_ids: [7] } }),
+    });
+    const sentence = '會把這筆轉帳的兩邊都改成 −$20,000，日期改成帳單上的日期。';
+    expect(flowNote(leg, 'TWD')).toBe(sentence);
+    // The item's own note follows on a new line of the same box.
+    expect(flowNote({ ...leg, note: '測試備註' }, 'TWD')).toBe(`${sentence}\n測試備註`);
+    // Ambiguous (the leg is picked later): no sentence, the item note as before.
+    const ambiguous = makeItem({
+      question: 'ambiguous',
+      line: line('2026-09-05', '-20000.0000', '測試轉出'),
+      candidates: [candidate({ entry_id: 21 })],
+      transfer: transfer({ adjust_transfer: { entry_id: null, line_id: 5, candidate_entry_ids: [21] } }),
+    });
+    expect(flowNote(ambiguous, 'TWD')).toBeNull();
+  });
+
+  it('peerRowLabel: 日期 from → to 金額, ordered by the peer amount sign', () => {
+    // The peer line is money in: it went from this account to the peer.
+    expect(peerRowLabel(peer({ amount: '19970.0000' }), '測試卡', 'TWD')).toBe('2026/09/04 測試卡 → 測試銀行 $19,970');
+    // The peer line is money out: it came from the peer to this account.
+    expect(peerRowLabel(peer({ amount: '-19970.0000' }), '測試卡', 'TWD')).toBe('2026/09/04 測試銀行 → 測試卡 −$19,970');
   });
 
   it('flowError: dirty_disabled (pairing that needs a re-check the system has off) in plain words', () => {
