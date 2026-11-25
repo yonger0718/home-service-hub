@@ -3,7 +3,14 @@ import { describe, expect, it } from 'vitest';
 
 import { formatMoney } from '../../accounting/format';
 import { questionText } from '../../accounting/inbox/inbox-view';
-import { InboxCandidate, InboxEntry, InboxPeerCandidate, InboxTransfer } from '../../accounting/inbox/inbox.model';
+import {
+  InboxCandidate,
+  InboxEntry,
+  InboxPeerCandidate,
+  InboxTransfer,
+  InboxTransferLeg,
+  ReconciliationAction,
+} from '../../accounting/inbox/inbox.model';
 import { makeInboxAccount, makeItem as baseItem } from '../../accounting/inbox/testing';
 import { InboxItem } from '../../accounting/inbox/inbox.model';
 import {
@@ -20,9 +27,12 @@ import {
   flowLearnScope,
   flowLearnable,
   flowNote,
+  adjustTransferToast,
   flowPartOf,
   isCaseAction,
+  legRowLabel,
   peerRowLabel,
+  transferLeg,
   transferLegs,
 } from './recon-flow-view';
 
@@ -496,5 +506,65 @@ describe('recon-flow-view', () => {
     const invalid = new HttpErrorResponse({ status: 422, error: { detail: [{ msg: 'Value error, entry_claimed' }] } });
     expect(flowError(invalid).text).toBe('沒成功：這筆記錄已經對到別的行了');
     expect(flowError(new HttpErrorResponse({ status: 500 })).text).toBe('沒成功：答案沒有送出去，請再試一次');
+  });
+
+  // ----- #433: the transfer answers name the accounts -----------------------------------------------------------
+
+  const leg433 = (over: Partial<InboxTransferLeg> = {}): InboxTransferLeg => ({
+    entry_id: 21,
+    account_name: '測試銀行卡',
+    counter_account_name: '測試銀行',
+    direction: 'in',
+    ...over,
+  });
+
+  it('legRowLabel: 日期 來源 → 目的 原金額 改成 銀行金額, amounts without a sign', () => {
+    const c = candidate({ entry_id: 21, date: '2026-09-30', title: '測試轉帳 甲', amount: '19970.0000' });
+    // An in leg on the card: the money came from the counter account.
+    expect(legRowLabel(c, leg433(), '20000.0000', 'TWD')).toBe('2026/09/30 測試銀行 → 測試銀行卡 $19,970 改成 $20,000');
+    // An out leg: from this leg's account to the counter.
+    const out = candidate({ entry_id: 22, date: '2026-09-30', title: '測試轉帳 乙', amount: '-19950.0000' });
+    expect(legRowLabel(out, leg433({ entry_id: 22, account_name: '測試銀行', counter_account_name: '測試銀行卡', direction: 'out' }), '-20000.0000', 'TWD'))
+      .toBe('2026/09/30 測試銀行 → 測試銀行卡 $19,950 改成 $20,000');
+    // No single other leg, or no leg data at all (an older payload): the title stands in for the accounts.
+    expect(legRowLabel(c, leg433({ counter_account_name: null }), '20000.0000', 'TWD')).toBe('2026/09/30 測試轉帳 甲 $19,970 改成 $20,000');
+    expect(legRowLabel(c, undefined, '20000.0000', 'TWD')).toBe('2026/09/30 測試轉帳 甲 $19,970 改成 $20,000');
+  });
+
+  it('transferLeg: the leg of an entry, if the payload carries it', () => {
+    const adjust = { entry_id: null, line_id: 5, candidate_entry_ids: [21, 22] };
+    const item = makeItem({ transfer: transfer({ adjust_transfer: { ...adjust, legs: [leg433(), leg433({ entry_id: 22 })] } }) });
+    expect(transferLeg(item, 22)?.entry_id).toBe(22);
+    expect(transferLeg(item, 99)).toBeUndefined();
+    expect(transferLeg(makeItem({ transfer: transfer({ adjust_transfer: adjust }) }), 21)).toBeUndefined();
+    expect(transferLeg(makeItem({ transfer: null }), 21)).toBeUndefined();
+  });
+
+  it('flowNote: one transfer leg known names the other account when the API knows it', () => {
+    const named = makeItem({
+      question: 'amount_differs',
+      line: line('2026-09-05', '-20000.0000', '測試轉出'),
+      transfer: transfer({
+        adjust_transfer: { entry_id: 7, line_id: 5, candidate_entry_ids: [7], legs: [leg433({ entry_id: 7, direction: 'out' })] },
+      }),
+    });
+    const sentence = '會同時改測試銀行的那一筆。兩邊金額都改成 $20,000；日期各自跟自己的帳單，另一邊沒有帳單就不動。';
+    expect(flowNote(named, 'TWD')).toBe(sentence);
+    expect(flowNote({ ...named, note: '測試備註' }, 'TWD')).toBe(`${sentence}\n測試備註`);
+    // No single other leg: the E1 sentence.
+    const unnamed = makeItem({
+      ...named,
+      transfer: transfer({
+        adjust_transfer: { entry_id: 7, line_id: 5, candidate_entry_ids: [7], legs: [leg433({ entry_id: 7, counter_account_name: null })] },
+      }),
+    });
+    expect(flowNote(unnamed, 'TWD')).toBe('會同時改另一個帳戶的那一筆。兩邊金額都改成 $20,000；日期各自跟自己的帳單，另一邊沒有帳單就不動。');
+  });
+
+  it('adjustTransferToast: adds the peer sentence only when the action resolved the peer question', () => {
+    const out = (peer: number | null | undefined) => ({ id: 1, peer_case_id: peer }) as unknown as ReconciliationAction;
+    expect(adjustTransferToast(out(9))).toBe('已照帳單改轉帳。另一個帳戶的那一題也處理了');
+    expect(adjustTransferToast(out(null))).toBe('已照帳單改轉帳');
+    expect(adjustTransferToast(out(undefined))).toBe('已照帳單改轉帳');
   });
 });

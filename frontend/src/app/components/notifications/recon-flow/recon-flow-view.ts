@@ -11,6 +11,8 @@ import {
   InboxItem,
   InboxPeerCandidate,
   InboxQuestion,
+  InboxTransferLeg,
+  ReconciliationAction,
 } from '../../accounting/inbox/inbox.model';
 import { apiErrorText, splitApiCode } from '../../accounting/statements/statement-view';
 
@@ -115,7 +117,9 @@ export function flowNote(item: InboxItem, currency: string): string | null {
     // Both legs take the line's magnitude (out negative, in positive), so the amount carries no sign; each leg takes
     // its own statement's dates (the peer keeps its dates when its statement prints no line).
     const bank = formatMoney(Math.abs(Number(item.line?.amount ?? 0)), currency);
-    const sentence = `會同時改另一個帳戶的那一筆。兩邊金額都改成 ${bank}；日期各自跟自己的帳單，另一邊沒有帳單就不動。`;
+    // #433: the other leg's account by name when the API knows it.
+    const other = transferLeg(item, item.transfer.adjust_transfer.entry_id)?.counter_account_name || '另一個帳戶';
+    const sentence = `會同時改${other}的那一筆。兩邊金額都改成 ${bank}；日期各自跟自己的帳單，另一邊沒有帳單就不動。`;
     return note ? `${sentence}\n${note}` : sentence;
   }
   return note;
@@ -145,6 +149,37 @@ export function isCaseAction(answer: FlowAnswer): answer is CaseAction {
 }
 
 /** The ledger legs an ambiguous question could mean for 照帳單改轉帳…; none when the entry is already known. */
+/** #433: the API's leg data for `entryId` (undefined on an older payload or an id it does not list). */
+export function transferLeg(item: InboxItem, entryId: number): InboxTransferLeg | undefined {
+  return item.transfer?.adjust_transfer?.legs?.find((leg) => leg.entry_id === entryId);
+}
+
+/**
+ * #433: a 照帳單改轉帳… row: 「2026/09/30 測試銀行 → 測試銀行卡 $19,970 改成 $20,000」. The accounts take the title's
+ * place and the arrow says the direction, so neither amount carries a sign; without a counter account (no single
+ * other leg, or no leg data) the title stands in.
+ */
+export function legRowLabel(
+  candidate: InboxCandidate,
+  leg: InboxTransferLeg | undefined,
+  bank: string | number | null | undefined,
+  currency: string,
+): string {
+  const counter = leg?.counter_account_name;
+  const who = !leg || !counter
+    ? candidate.title
+    : leg.direction === 'out'
+      ? `${leg.account_name} → ${counter}`
+      : `${counter} → ${leg.account_name}`;
+  const amount = (value: string | number | null | undefined) => formatMoney(Math.abs(Number(value ?? 0)), currency);
+  return `${slashDate(candidate.date)} ${who} ${amount(candidate.amount)} 改成 ${amount(bank)}`;
+}
+
+/** #433: the 照帳單改轉帳 toast; the peer sentence only when this action resolved the other account's question. */
+export function adjustTransferToast(out: ReconciliationAction): string {
+  return out.peer_case_id != null ? '已照帳單改轉帳。另一個帳戶的那一題也處理了' : '已照帳單改轉帳';
+}
+
 export function transferLegs(item: InboxItem): InboxCandidate[] {
   const adjust = item.transfer?.adjust_transfer;
   if (!adjust || adjust.entry_id !== null) {
