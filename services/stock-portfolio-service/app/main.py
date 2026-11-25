@@ -6,7 +6,7 @@ from shared_lib.token_auth import install_token_auth
 from .database import SessionLocal, engine, get_db
 from .logging_config import configure_logging
 from .models import broker_account, cash_transaction, corporate_action, fx_rate, portfolio, portfolio_snapshot, price_history, symbol_map, cathay_statement, sinopac_futures_statement  # noqa: F401  (register tables with Base.metadata)
-from .routers import accounts, cash_flows, dividends_backfill, exdividend, fx_rates, history, imports, ledger_feed, portfolio as portfolio_router, realized_pnl, symbol_map as symbol_map_router, upcoming_events
+from .routers import accounts, cash_flows, dividends_backfill, exdividend, fx_rates, futures, history, imports, ledger_feed, portfolio as portfolio_router, realized_pnl, symbol_map as symbol_map_router, upcoming_events
 from .services import scheduler as scheduler_module
 from .services.twse_client import bootstrap_truststore
 
@@ -35,6 +35,7 @@ app = create_app(
         dividends_backfill.router,
         upcoming_events.router,
         ledger_feed.router,
+        futures.router,
     ],
     get_db=get_db,
     engine=engine,
