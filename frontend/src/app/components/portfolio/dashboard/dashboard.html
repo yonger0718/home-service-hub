@@ -58,6 +58,9 @@
               <div class="composition-bar" role="img" [attr.aria-label]="heroData.barLabel">
                 <span class="seg-stocks" [style.flex-grow]="heroData.stocksPct"></span>
                 <span class="seg-cash" [style.flex-grow]="heroData.cashPct"></span>
+                @if (heroData.futuresPct > 0) {
+                  <span class="seg-futures" [style.flex-grow]="heroData.futuresPct"></span>
+                }
               </div>
               <div class="legend">
                 <div class="legend-item">
@@ -68,6 +71,12 @@
                   <span class="legend-label"><span class="swatch cash" aria-hidden="true"></span>交割戶現金</span>
                   <b class="legend-value">{{ twdPlain(heroData.cash) }}</b>
                 </div>
+                @if (heroData.futures !== 0) {
+                  <div class="legend-item">
+                    <span class="legend-label"><span class="swatch futures" aria-hidden="true"></span>期貨權益</span>
+                    <b class="legend-value">{{ twdPlain(heroData.futures) }}</b>
+                  </div>
+                }
                 <div class="legend-item">
                   <span class="legend-label"><span class="swatch dashed" aria-hidden="true"></span>待收股利</span>
                   <b class="legend-value">{{ twdPlain(heroData.pending) }}</b>

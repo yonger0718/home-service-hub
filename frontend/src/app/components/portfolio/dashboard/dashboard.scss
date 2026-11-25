@@ -89,6 +89,10 @@ app-bento {
   .seg-cash {
     background: var(--app-success);
   }
+
+  .seg-futures {
+    background: var(--app-warning);
+  }
 }
 
 .legend {
@@ -145,6 +149,10 @@ app-bento {
 
   &.cash {
     background: var(--app-success);
+  }
+
+  &.futures {
+    background: var(--app-warning);
   }
 
   &.dashed {

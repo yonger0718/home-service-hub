@@ -50,6 +50,7 @@ import {
   pendingRows,
   quoteTimeLabel,
   todayChange,
+  assetsTotal,
 } from './dashboard-math';
 import { hoverGuidePlugin } from './chart-guide.plugin';
 import { Amount, displayedSign, formatMoney, formatPct } from '../../ui/format';
@@ -193,7 +194,9 @@ export class PortfolioDashboardComponent implements OnInit {
       todaySign: displayedSign(today.amount, this.money(today.amount, 'TWD', 'change')),
       todayPercent: today.percent,
       ...parts,
-      barLabel: `資產組成：股票 ${this.pct(parts.stocksPct)}，現金 ${this.pct(parts.cashPct)}`,
+      barLabel:
+        `資產組成：股票 ${this.pct(parts.stocksPct)}，現金 ${this.pct(parts.cashPct)}` +
+        (parts.futures !== 0 ? `，期貨權益 ${this.pct(parts.futuresPct)}` : ''),
     };
   });
 
@@ -740,7 +743,7 @@ export class PortfolioDashboardComponent implements OnInit {
   private seriesValues(point: NetworthPoint): ChartSeriesValues {
     const total = this.totalAssetsValue(point);
     const holdings = this.numberFrom(point.total_market_value);
-    return { total, holdings, cash: Math.max(0, total - holdings) };
+    return { total, holdings, cash: Math.max(0, total - holdings - this.numberFrom(point.futures_equity_twd)) };
   }
 
   private chartValues(): number[] {
@@ -748,9 +751,7 @@ export class PortfolioDashboardComponent implements OnInit {
   }
 
   private totalAssetsValue(point: NetworthPoint): number {
-    const explicitTotal = this.numberFrom(point.total_assets_twd);
-    if (explicitTotal !== 0) return explicitTotal;
-    return this.numberFrom(point.total_market_value) + this.numberFrom(point.total_cash_twd);
+    return assetsTotal(point);
   }
 
   private numberFrom(value: number | string | null | undefined): number {

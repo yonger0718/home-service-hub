@@ -299,6 +299,8 @@ export interface PortfolioSummary {
   market_totals?: Partial<Record<MarketCode, EstimatedMarketTotals>>;
   total_market_value: number;
   total_cash_twd: string;
+  /** 永豐期貨 equity (4-decimal string); absent on responses cached before it existed. */
+  futures_equity_twd?: string;
   total_assets_twd: string;
   total_cost: number;
   total_unrealized_pnl: number;
@@ -318,6 +320,7 @@ export interface NetworthPoint {
   date: string;
   total_market_value: string;
   total_cash_twd: string;
+  futures_equity_twd?: string;
   total_assets_twd: string;
   total_cost: string;
   total_unrealized_pnl: string;

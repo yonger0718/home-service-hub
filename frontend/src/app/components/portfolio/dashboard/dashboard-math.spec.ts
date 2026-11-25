@@ -53,26 +53,53 @@ describe('dashboard math', () => {
     });
   });
 
+  describe('todayChange with futures', () => {
+    it('counts futures when the total is absent', () => {
+      const change = todayChange({ total_day_pnl: 10, total_market_value: 1000, total_cash_twd: '200', futures_equity_twd: '50' } as never);
+      expect(change.percent).toBeCloseTo((10 / (1250 - 10)) * 100, 6);
+    });
+
+    it('uses a present total, which already includes futures', () => {
+      expect(todayChange({ total_day_pnl: 10, total_assets_twd: '1250', futures_equity_twd: '50' }).percent).toBeCloseTo((10 / 1240) * 100, 6);
+    });
+  });
+
   describe('composition', () => {
     it('splits stocks and cash and keeps pending dividends out of the bar', () => {
       expect(
         composition({ total_market_value: 1000, total_cash_twd: '250', total_pending_dividends_net: 14600 }),
-      ).toEqual({ stocks: 1000, cash: 250, pending: 14600, stocksPct: 80, cashPct: 20 });
+      ).toEqual({ stocks: 1000, cash: 250, pending: 14600, stocksPct: 80, cashPct: 20, futures: 0, futuresPct: 0 });
     });
 
     it('clamps a negative part to zero for the percents but keeps the raw amounts', () => {
       expect(
         composition({ total_market_value: 1000, total_cash_twd: '-200', total_pending_dividends_net: 0 }),
-      ).toEqual({ stocks: 1000, cash: -200, pending: 0, stocksPct: 100, cashPct: 0 });
+      ).toEqual({ stocks: 1000, cash: -200, pending: 0, stocksPct: 100, cashPct: 0, futures: 0, futuresPct: 0 });
       expect(
         composition({ total_market_value: -50, total_cash_twd: '-10', total_pending_dividends_net: 0 }),
-      ).toEqual({ stocks: -50, cash: -10, pending: 0, stocksPct: 0, cashPct: 0 });
+      ).toEqual({ stocks: -50, cash: -10, pending: 0, stocksPct: 0, cashPct: 0, futures: 0, futuresPct: 0 });
+    });
+
+    it('includes futures segment', () => {
+      expect(
+        composition({ total_market_value: 600, total_cash_twd: '200', futures_equity_twd: '200', total_pending_dividends_net: 0 }),
+      ).toEqual({ stocks: 600, cash: 200, pending: 0, stocksPct: 60, cashPct: 20, futures: 200, futuresPct: 20 });
+    });
+
+    it('keeps a negative futures equity out of the bar but in the amount', () => {
+      expect(
+        composition({ total_market_value: 600, total_cash_twd: '200', futures_equity_twd: '-100', total_pending_dividends_net: 0 }),
+      ).toMatchObject({ futures: -100, futuresPct: 0, stocksPct: 75, cashPct: 25 });
+    });
+
+    it('treats an absent futures equity as zero', () => {
+      expect(composition({ total_market_value: 1000, total_cash_twd: '250' })).toMatchObject({ futures: 0, futuresPct: 0, stocksPct: 80 });
     });
 
     it('returns zero percents when everything is zero', () => {
       expect(
         composition({ total_market_value: 0, total_cash_twd: '0', total_pending_dividends_net: undefined }),
-      ).toEqual({ stocks: 0, cash: 0, pending: 0, stocksPct: 0, cashPct: 0 });
+      ).toEqual({ stocks: 0, cash: 0, pending: 0, stocksPct: 0, cashPct: 0, futures: 0, futuresPct: 0 });
     });
   });
 
@@ -421,6 +448,26 @@ describe('carryHoldings', () => {
   it('carries a cash-only row with total_cash_twd 0 after holdings, total assets = the carried market value', () => {
     const out = carryHoldings([FRIDAY(), row('2026-01-10', { cash: '0' })]);
     expect(out[1]).toMatchObject({ total_market_value: '2900000', total_cash_twd: '0', total_assets_twd: '2900000' });
+  });
+});
+
+describe('carryHoldings futures', () => {
+  const withFutures = (r: NetworthPoint, f: string, total: string): NetworthPoint => ({ ...r, futures_equity_twd: f, total_assets_twd: total });
+
+  it('carries futures: the carried total adds the point\'s own futures equity', () => {
+    const out = carryHoldings([FRIDAY(), withFutures(row('2026-01-10', { cash: '114600' }), '50000', '164600')]);
+    expect(out[1]).toMatchObject({ total_market_value: '2900000', futures_equity_twd: '50000', total_assets_twd: '3064600' });
+  });
+
+  it('keeps a negative futures equity in the carried total', () => {
+    const out = carryHoldings([FRIDAY(), withFutures(row('2026-01-10', { cash: '10' }), '-4', '6')]);
+    expect(out[1].total_assets_twd).toBe('2900006');
+  });
+
+  it('is unchanged for zero futures (explicit or absent)', () => {
+    const explicit = withFutures(row('2026-01-10', { cash: '114600' }), '0.0000', '114600');
+    expect(carryHoldings([FRIDAY(), explicit])[1].total_assets_twd).toBe('3014600');
+    expect(carryHoldings([FRIDAY(), row('2026-01-10', { cash: '114600' })])[1].total_assets_twd).toBe('3014600');
   });
 });
 
