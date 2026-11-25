@@ -301,50 +301,81 @@ def _columns(row):
 GAP = date(2026, 3, 10)  # Tuesday: price_history covers it (another symbol) but not the held 9999
 
 
+def _cash_by_date(values: dict):
+    """Cash per as-of date (default 0)."""
+    def balance(_db, _currency, *, asof):
+        return Decimal(values.get(asof, "0")), []
+
+    return patch.object(cash_account_service, "get_total_balance_in", side_effect=balance)
+
+
 @pytest.mark.parametrize("source_on_gap", [False, True])
-def test_replay_gap_day_existing_futures_row_kept(db_session, source_on_gap):
+def test_replay_gap_day_existing_futures_row_carries_last_good_day(db_session, source_on_gap):
+    """R16: an existing gap row (mv 0 / cost > 0, futures != 0) is kept and rewritten like the skip-day forward
+    fill: market and cost of the previous good day, that day's cash, the series futures, XIRR NULL — no dip."""
+    good = date(2026, 3, 9)
     _buy(db_session, date(2026, 3, 2))
+    _price(db_session, good)  # 9999 priced on 03-09 only: 100 market, 100 cost
     _price(db_session, GAP, symbol="8888")
     _day(db_session, GAP if source_on_gap else date(2026, 3, 6), "300")
     _snap(db_session, GAP, mv="0", cost="100", cash="7", futures="50", dividends="3", realized="4", xirr="0.1234")
-    before = _columns(db_session.get(PortfolioSnapshot, GAP))
-    with _cash("999"):
-        nb.replay_snapshots_range(db_session, GAP, GAP)
-    row = _rows(db_session).get(GAP)
-    assert row is not None
+    with _cash_by_date({good: "50", GAP: "70"}):
+        nb.replay_snapshots_range(db_session, good, GAP)
+    rows = _rows(db_session)
+    assert GAP in rows
+    row, prev = rows[GAP], rows[good]
+    assert (row.total_market_value, row.total_cost) == (prev.total_market_value, prev.total_cost) == (
+        Decimal("100"), Decimal("100"))
+    assert row.total_unrealized_pnl == ZERO
+    assert row.total_cash_twd == Decimal("70")
     assert row.futures_equity_twd == Decimal("300")
-    assert _columns(row) == before
+    assert (row.total_dividends, row.total_realized_pnl) == (ZERO, ZERO)  # the replay's running totals
+    assert row.portfolio_xirr is None
 
 
-@pytest.mark.parametrize("prior", ["existing", "replayed", "none"])
-def test_replay_gap_source_date_forward_filled(db_session, prior):
-    """A gap day that is a source date with no row gets the backfill_futures_snapshots forward fill: every other
-    column from the latest row before it, never a manufactured stock price."""
+@pytest.mark.parametrize("prior", ["seeded", "replayed", "surviving", "none"])
+def test_replay_gap_source_date_without_row_carries_market(db_session, prior):
+    """R16: a gap source date with no row gets one carrying the last good market value and cost (the replay's
+    last trading day, else the latest surviving row before it), that day's cash and the series futures; never a
+    fetched or invented price."""
     _buy(db_session, date(2026, 3, 2))
     _price(db_session, GAP, symbol="8888")
     _day(db_session, GAP, "800")
-    start = GAP
-    if prior == "existing":
-        _snap(db_session, date(2026, 3, 9), mv="120", cost="100", cash="50", dividends="3", realized="4",
-              xirr="0.1")
-    elif prior == "replayed":
-        _price(db_session, date(2026, 3, 9))  # 9999 priced on 03-09: the replay writes that row first
-        start = date(2026, 3, 9)
+    start, expected = GAP, (ZERO, ZERO)
+    if prior == "seeded":  # a row before the range seeds last_trading_mv / last_trading_cost
+        _snap(db_session, date(2026, 3, 9), mv="120", cost="100", cash="50", xirr="0.1")
+        expected = (Decimal("120"), Decimal("100"))
+    elif prior == "replayed":  # 9999 priced on 03-09: the replay writes that trading day first
+        _price(db_session, date(2026, 3, 9))
+        start, expected = date(2026, 3, 9), (Decimal("100"), Decimal("100"))
+    elif prior == "surviving":  # no trading day in range; a kept weekend row in range is the fallback
+        _snap(db_session, date(2026, 3, 8), mv="150", cost="100", cash="5")
+        start, expected = date(2026, 3, 8), (Decimal("150"), Decimal("100"))
     with _cash("50"):
         nb.replay_snapshots_range(db_session, start, GAP)
     rows = _rows(db_session)
     assert GAP in rows
     row = rows[GAP]
+    assert (row.total_market_value, row.total_cost) == expected
+    assert row.total_unrealized_pnl == expected[0] - expected[1]
+    assert row.total_cash_twd == Decimal("50")
     assert row.futures_equity_twd == Decimal("800")
-    if prior == "none":
-        assert {k: v for k, v in _columns(row).items() if k != "portfolio_xirr"} == {
-            k: ZERO for k in _columns(row) if k != "portfolio_xirr"
-        }
-        assert row.portfolio_xirr is None
-    else:
-        template = _columns(rows[date(2026, 3, 9)])
-        assert _columns(row) == template
-        assert template["total_market_value"] > 0
+    assert row.portfolio_xirr is None
+
+
+def test_history_total_on_gap_source_date(client, db_session):
+    """/history on a gap source date: previous good day's market + that day's cash + the series futures."""
+    good = date(2026, 3, 9)
+    _buy(db_session, date(2026, 3, 2))
+    _price(db_session, good)
+    _price(db_session, GAP, symbol="8888")
+    _day(db_session, GAP, "800")
+    with _cash_by_date({good: "50", GAP: "70"}):
+        nb.replay_snapshots_range(db_session, good, GAP)
+    points = {p["date"]: p for p in client.get("/api/portfolio/history").json()}
+    prev, gap = points[good.isoformat()], points[GAP.isoformat()]
+    assert Decimal(gap["total_assets_twd"]) == Decimal(prev["total_market_value"]) + Decimal("70") + Decimal("800")
+    assert Decimal(gap["total_assets_twd"]) == Decimal("970")
 
 
 WEEKEND = date(2026, 3, 7)  # Saturday at the range start: stock held, no prior mv>0 row, so no held forward fill

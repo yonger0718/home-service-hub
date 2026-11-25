@@ -975,11 +975,10 @@ def replay_snapshots_range(
         # interpolation against the prior good snapshot.
         #
         # Futures history survives the gap (spec §6.5): on a futures
-        # source date, or a date whose series value is non-zero, no stock
-        # price is manufactured. An existing row is kept (never a stale
-        # candidate) and only its futures column is set; a source date
-        # with no row gets the forward fill of backfill_futures_snapshots
-        # (every other column from the latest surviving row before it).
+        # source date, or a date whose series value is non-zero, an
+        # existing row is kept (never a stale candidate) and a source date
+        # with no row gets one. Either is written as a forward-filled row
+        # (see below) with the series futures value.
         if mv == 0 and total_cost > 0:
             gap_futures = futures_equity(cur)
             is_source = cur in futures_source_dates
@@ -989,17 +988,36 @@ def replay_snapshots_range(
                 else None
             )
             if existing is not None or is_source:
-                template = (
-                    existing
-                    if existing is not None
-                    else latest_surviving_row_before(cur)
-                )
+                # Written like the skip-day forward fill (R16): no price is
+                # fetched or invented, and market 0 / cost > 0 (a full stock
+                # dip on /history) is never written. Market and cost carry
+                # the last trading day's, else the latest surviving row's.
+                if last_trading_mv is not None and last_trading_cost is not None:
+                    carry_mv, carry_cost = last_trading_mv, last_trading_cost
+                else:
+                    template = latest_surviving_row_before(cur)
+                    carry_mv = (
+                        Decimal(template.total_market_value)
+                        if template is not None
+                        else Decimal("0")
+                    )
+                    carry_cost = (
+                        Decimal(template.total_cost)
+                        if template is not None
+                        else Decimal("0")
+                    )
                 write_snapshot(
                     cur,
                     PortfolioSnapshot(
                         date=cur,
+                        total_market_value=carry_mv,
+                        total_cost=carry_cost,
+                        total_unrealized_pnl=carry_mv - carry_cost,
+                        total_dividends=cumulative_dividends,
+                        total_realized_pnl=cumulative_realized,
+                        total_cash_twd=total_cash_twd(cur),
                         futures_equity_twd=gap_futures,
-                        **_forward_fill_columns(template),
+                        portfolio_xirr=None,
                     ),
                 )
             else:
