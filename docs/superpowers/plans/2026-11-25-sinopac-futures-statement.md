@@ -522,17 +522,28 @@ date; when `frozen`: 「持倉中，數字停在 <MM/DD>」; `value` null → th
 
 ---
 
+PR A final review notes for later PRs (contracts as built): the validate call refreshes snapshots once per payload
+and can take far longer than one import, so Task 9 gives `--validate-history` its own client timeout
+(`sinopac_futures_validate_timeout_s`, default 600 s) and Task 10 reports its duration; a replay running from the
+國泰 job holds the shared lock and can delay the 06:45 import (Task 10 README line); Task 9 never records an outcome
+taken from a 5xx body; pending `reason` is null on `conflict` items (Task 11 validator accepts null); the ack route
+returns 204 with no body (Task 14 client parses none); the summary's `month` is null only when `value` is null,
+`pnl` is a string or null, `pnl_reason` ∈ {`no_baseline`, `findings`, null}.
+
 ## Rollout (after each PR's merge; owner go per step)
 
 1. PR A: deploy the portfolio release (migration `f1futures`); `/history` unchanged except `futures_equity_twd` 0.
-2. The owner adds `投資/永豐期貨/日對帳單=$ID` and `投資/永豐期貨/月對帳單=$ID` to the worker password file.
-3. PR B: update the worker checkout; `--validate-history` report to the owner (Task 10 Step 3); then one plain commit
-   run imports the archive; then, from `services/stock-portfolio-service` in the release checkout with the
-   production env as the portfolio service runs it, `python -m app.services.sinopac_futures_backfill --from
-   2024-08-27 --dry-run` (counts to the owner), then the same without `--dry-run`; check on a before/after export of
-   `/history` that every point changed by exactly its `futures_equity_twd`; enable the timer.
-4. PR C: notifier release; the 9 archive findings appear; the owner acks them.
-5. PR D: SPA publish (preview first, owner go).
+2. PR D: SPA publish (preview first, owner go). It renders exactly as today while futures is 0, and it must be live
+   before step 4: the current SPA rewrites cash-only points to carried market + cash and draws a two-segment bar, so
+   it would drop futures from the 淨值走勢 chart once the history fill runs (PR A final review).
+3. The owner adds `投資/永豐期貨/日對帳單=$ID` and `投資/永豐期貨/月對帳單=$ID` to the worker password file.
+4. PR B: update the worker checkout; `--validate-history` report to the owner (Task 10 Step 3, with the validate
+   call's duration); then one plain commit run imports the archive; then, from `services/stock-portfolio-service` in
+   the release checkout with the production env as the portfolio service runs it, `python -m
+   app.services.sinopac_futures_backfill --from 2024-08-27 --dry-run` (counts to the owner), then the same without
+   `--dry-run`; check on a before/after export of `/history` that every point changed by exactly its
+   `futures_equity_twd`; enable the timer.
+5. PR C: notifier release; the 9 archive findings appear; the owner acks them.
 6. Account 147: `valuation_source = portfolio:sinopac_futures` by admin PATCH with the owner's go; the accounts page
    shows 市值 for 147.
 7. Clean up `~homehub-worker/tmp/sinopac-spike*` and the census scratch.
