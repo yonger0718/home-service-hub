@@ -3,12 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { formatMoney } from '../../accounting/format';
 import { questionText } from '../../accounting/inbox/inbox-view';
-import {
-  InboxCandidate,
-  InboxEntry,
-  InboxPeerCandidate,
-  InboxTransfer,
-} from '../../accounting/inbox/inbox.model';
+import { InboxCandidate, InboxEntry, InboxPeerCandidate, InboxTransfer } from '../../accounting/inbox/inbox.model';
 import { makeInboxAccount, makeItem as baseItem } from '../../accounting/inbox/testing';
 import { InboxItem } from '../../accounting/inbox/inbox.model';
 import {
@@ -48,13 +43,7 @@ const line = (date: string, amount: string, merchant = '測試咖啡') => ({
 /** `makeItem` with a fictional merchant (its default is a real store name). */
 const makeItem = (over: Partial<InboxItem> = {}): InboxItem =>
   baseItem({
-    line: {
-      id: 5,
-      date: '2026-09-03',
-      merchant: '測試便利店',
-      amount: '-120.0000',
-      line_kind: 'purchase',
-    },
+    line: { id: 5, date: '2026-09-03', merchant: '測試便利店', amount: '-120.0000', line_kind: 'purchase' },
     rule_hint: {
       merchant_pattern: '測試便利店',
       line_kind: 'purchase',
@@ -79,32 +68,20 @@ describe('recon-flow-view', () => {
   it('bank_only chip and headline', () => {
     const item = makeItem();
     expect(flowChip('bank_only')).toBe('銀行有，你沒記');
-    expect(flowHeadline(item, 'TWD')).toBe(
-      `測試便利店 ${formatMoney('-120', 'TWD', { sign: true })}`,
-    );
+    expect(flowHeadline(item, 'TWD')).toBe(`測試便利店 ${formatMoney('-120', 'TWD', { sign: true })}`);
   });
 
   it('ledger_only chip and headline', () => {
     const item = makeItem({ question: 'ledger_only', line: null, entry: entry() });
     expect(flowChip('ledger_only')).toBe('你記了，銀行沒有');
-    expect(flowHeadline(item, 'TWD')).toBe(
-      `測試咖啡 ${formatMoney('-2066', 'TWD', { sign: true })}`,
-    );
+    expect(flowHeadline(item, 'TWD')).toBe(`測試咖啡 ${formatMoney('-2066', 'TWD', { sign: true })}`);
   });
 
   it('amount_differs chip and headline, expense', () => {
-    const item = makeItem({
-      question: 'amount_differs',
-      line: line('2026-09-20', '-2096'),
-      entry: entry(),
-    });
+    const item = makeItem({ question: 'amount_differs', line: line('2026-09-20', '-2096'), entry: entry() });
     expect(flowChip('amount_differs')).toBe('金額不同');
     expect(flowHeadline(item, 'TWD')).toBe(`銀行多扣了 ${formatMoney(30, 'TWD')}`);
-    const less = makeItem({
-      question: 'amount_differs',
-      line: line('2026-09-20', '-2000'),
-      entry: entry(),
-    });
+    const less = makeItem({ question: 'amount_differs', line: line('2026-09-20', '-2000'), entry: entry() });
     expect(flowHeadline(less, 'TWD')).toBe(`銀行少扣了 ${formatMoney(66, 'TWD')}`);
   });
 
@@ -125,17 +102,9 @@ describe('recon-flow-view', () => {
 
   it('date_differs chip and headline', () => {
     expect(flowChip('date_differs')).toBe('日期不同');
-    const late = makeItem({
-      question: 'date_differs',
-      line: line('2026-09-28', '-2066'),
-      entry: entry(),
-    });
+    const late = makeItem({ question: 'date_differs', line: line('2026-09-28', '-2066'), entry: entry() });
     expect(flowHeadline(late, 'TWD')).toBe('同一筆，晚了 8 天入帳');
-    const early = makeItem({
-      question: 'date_differs',
-      line: line('2026-09-18', '-2066'),
-      entry: entry(),
-    });
+    const early = makeItem({ question: 'date_differs', line: line('2026-09-18', '-2066'), entry: entry() });
     expect(flowHeadline(early, 'TWD')).toBe('同一筆，早了 2 天入帳');
     const missing = makeItem({ question: 'date_differs', line: null, entry: entry() });
     expect(flowHeadline(missing, 'TWD')).toBe('同一筆，日期不同');
@@ -144,11 +113,7 @@ describe('recon-flow-view', () => {
   it('amount_differs without a line, without an entry, or with equal amounts: 金額不同', () => {
     const noLine = makeItem({ question: 'amount_differs', line: null, entry: entry() });
     expect(flowHeadline(noLine, 'TWD')).toBe('金額不同');
-    const noEntry = makeItem({
-      question: 'amount_differs',
-      line: line('2026-09-20', '-2096'),
-      entry: null,
-    });
+    const noEntry = makeItem({ question: 'amount_differs', line: line('2026-09-20', '-2096'), entry: null });
     expect(flowHeadline(noEntry, 'TWD')).toBe('金額不同');
     const equal = makeItem({
       question: 'amount_differs',
@@ -159,11 +124,7 @@ describe('recon-flow-view', () => {
   });
 
   it('date_differs: equal dates, entry only in candidates[0], no entry at all', () => {
-    const same = makeItem({
-      question: 'date_differs',
-      line: line('2026-09-20', '-2066'),
-      entry: entry(),
-    });
+    const same = makeItem({ question: 'date_differs', line: line('2026-09-20', '-2066'), entry: entry() });
     expect(flowHeadline(same, 'TWD')).toBe('同一筆，日期不同');
     const viaCandidate = makeItem({
       question: 'date_differs',
@@ -172,11 +133,7 @@ describe('recon-flow-view', () => {
       candidates: [candidate()],
     });
     expect(flowHeadline(viaCandidate, 'TWD')).toBe('同一筆，晚了 8 天入帳');
-    const none = makeItem({
-      question: 'date_differs',
-      line: line('2026-09-28', '-2066'),
-      entry: null,
-    });
+    const none = makeItem({ question: 'date_differs', line: line('2026-09-28', '-2066'), entry: null });
     expect(flowHeadline(none, 'TWD')).toBe('同一筆，日期不同');
   });
 
@@ -194,21 +151,13 @@ describe('recon-flow-view', () => {
     expect(flowChip('transfer')).toBe('轉帳／繳費');
     expect(flowHeadline(makeItem({ question: 'transfer' }), 'TWD')).toBe('轉帳或繳費，你沒記');
     expect(flowChip('ambiguous')).toBe('多筆可能');
-    const item = makeItem({
-      question: 'ambiguous',
-      candidates: [candidate(), candidate({ entry_id: 10 })],
-    });
+    const item = makeItem({ question: 'ambiguous', candidates: [candidate(), candidate({ entry_id: 10 })] });
     expect(flowHeadline(item, 'TWD')).toBe('有 2 筆可能是它');
   });
 
   it('flowEntry falls back to the first candidate for amount_differs', () => {
     const item = makeItem({ question: 'amount_differs', candidates: [candidate()] });
-    expect(flowEntry(item)).toEqual({
-      id: 9,
-      date: '2026-09-20',
-      title: '測試咖啡',
-      amount: '-2066.0000',
-    });
+    expect(flowEntry(item)).toEqual({ id: 9, date: '2026-09-20', title: '測試咖啡', amount: '-2066.0000' });
     expect(flowEntry(makeItem())).toBeNull();
     expect(flowEntry(makeItem({ question: 'amount_differs', entry: entry() }))?.id).toBe(7);
   });
@@ -224,11 +173,7 @@ describe('recon-flow-view', () => {
   });
 
   it('compareRows marks only 金額 as differing for amount_differs', () => {
-    const item = makeItem({
-      question: 'amount_differs',
-      line: line('2026-09-20', '-2096'),
-      entry: entry(),
-    });
+    const item = makeItem({ question: 'amount_differs', line: line('2026-09-20', '-2096'), entry: entry() });
     const rows = compareRows(item, 'TWD');
     expect(rows.map((r) => r.differs)).toEqual([false, false, true]);
     expect(rows[2].bank).toBe(formatMoney('-2096', 'TWD', { sign: true }));
@@ -245,11 +190,7 @@ describe('recon-flow-view', () => {
   });
 
   it('compareRows marks 日期 for date_differs and handles a missing bank side', () => {
-    const item = makeItem({
-      question: 'date_differs',
-      line: line('2026-09-28', '-2066'),
-      entry: entry(),
-    });
+    const item = makeItem({ question: 'date_differs', line: line('2026-09-28', '-2066'), entry: entry() });
     expect(compareRows(item, 'TWD').map((r) => r.differs)).toEqual([true, false, false]);
     const ledgerOnly = makeItem({ question: 'ledger_only', line: null, entry: entry() });
     const rows = compareRows(ledgerOnly, 'TWD');
@@ -477,11 +418,7 @@ describe('recon-flow-view', () => {
 
   it('flowActions: 記為… last on a part-of line, the server order otherwise', () => {
     const actions = ['record', 'match_candidate', 'dismiss'] as const;
-    const partOf = makeItem({
-      actions: [...actions],
-      part_of: [entry({ amount: '-5000' })],
-      rule_hint: null,
-    });
+    const partOf = makeItem({ actions: [...actions], part_of: [entry({ amount: '-5000' })], rule_hint: null });
     expect(flowPartOf(partOf)).toBe(true);
     expect(flowActions(partOf)).toEqual(['match_candidate', 'dismiss', 'record']);
     const plain = makeItem({ actions: [...actions] });
@@ -490,27 +427,17 @@ describe('recon-flow-view', () => {
   });
 
   it('flowLearnScope names the answers that learn, as the buttons read', () => {
-    expect(
-      flowLearnScope(makeItem({ actions: ['record', 'match_candidate', 'dismiss'] }), 'TWD'),
-    ).toBe('只有「記為支出…」「忽略」會記住');
-    expect(flowLearnScope(makeItem({ actions: ['record', 'dismiss'] }), 'TWD')).toBe(
-      '「記為支出…」「忽略」都會記住',
+    expect(flowLearnScope(makeItem({ actions: ['record', 'match_candidate', 'dismiss'] }), 'TWD')).toBe(
+      '只有「記為支出…」「忽略」會記住',
     );
+    expect(flowLearnScope(makeItem({ actions: ['record', 'dismiss'] }), 'TWD')).toBe('「記為支出…」「忽略」都會記住');
     expect(flowLearnScope(makeItem({ actions: ['defer'] }), 'TWD')).toBeNull();
     expect(flowLearnScope(makeItem({ rule_hint: null }), 'TWD')).toBeNull();
   });
 
   it('flowExcluded: the compared entry of an amount question only', () => {
     const candidates = [
-      {
-        entry_id: 9,
-        date: '2026-09-01',
-        title: '測試',
-        amount: '-10',
-        reason: null,
-        residual: null,
-        date_distance: 0,
-      },
+      { entry_id: 9, date: '2026-09-01', title: '測試', amount: '-10', reason: null, residual: null, date_distance: 0 },
     ];
     expect(flowExcluded(makeItem({ question: 'amount_differs', entry: entry() }))).toBe(entry().id);
     expect(flowExcluded(makeItem({ question: 'amount_differs', entry: null, candidates }))).toBe(9);
@@ -522,27 +449,13 @@ describe('recon-flow-view', () => {
     for (const code of ['stale_case', 'candidate_changed', 'case_moved', 'not_offered']) {
       expect(flowError(code), code).toEqual({ text: '這一題的資料剛剛變了', reload: true });
     }
-    expect(flowError('protected')).toEqual({
-      text: '沒成功：這筆是轉帳或交割款，不能改金額',
-      reload: false,
-    });
-    expect(flowError('brand_new_code')).toEqual({
-      text: '沒成功：答案沒有送出去，請再試一次',
-      reload: false,
-    });
+    expect(flowError('protected')).toEqual({ text: '沒成功：這筆是轉帳或交割款，不能改金額', reload: false });
+    expect(flowError('brand_new_code')).toEqual({ text: '沒成功：答案沒有送出去，請再試一次', reload: false });
     expect(flowError(null).text).not.toMatch(/[a-z_]{4,}/);
-    const conflict = new HttpErrorResponse({
-      status: 409,
-      error: { message: 'stale_case: case 3' },
-    });
+    const conflict = new HttpErrorResponse({ status: 409, error: { message: 'stale_case: case 3' } });
     expect(flowError(conflict).reload).toBe(true);
-    const invalid = new HttpErrorResponse({
-      status: 422,
-      error: { detail: [{ msg: 'Value error, entry_claimed' }] },
-    });
+    const invalid = new HttpErrorResponse({ status: 422, error: { detail: [{ msg: 'Value error, entry_claimed' }] } });
     expect(flowError(invalid).text).toBe('沒成功：這筆記錄已經對到別的行了');
-    expect(flowError(new HttpErrorResponse({ status: 500 })).text).toBe(
-      '沒成功：答案沒有送出去，請再試一次',
-    );
+    expect(flowError(new HttpErrorResponse({ status: 500 })).text).toBe('沒成功：答案沒有送出去，請再試一次');
   });
 });

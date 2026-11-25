@@ -115,10 +115,7 @@ function monthDay(iso: string): string {
   return `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}`;
 }
 
-type OneTap = Exclude<
-  InboxButton,
-  'record' | 'match_candidate' | 'apply_proposal' | 'reject_proposal'
->;
+type OneTap = Exclude<InboxButton, 'record' | 'match_candidate' | 'apply_proposal' | 'reject_proposal'>;
 
 /** An answer the server took (or refused) whose re-read has not landed yet. */
 interface PendingAnswer {
@@ -203,15 +200,9 @@ export class ReconFlowComponent {
 
   private readonly cursor = computed(() => this.flow().cursor);
   /** Off on every step change. */
-  readonly learnOn = linkedSignal<number | null, boolean>({
-    source: this.cursor,
-    computation: () => false,
-  });
+  readonly learnOn = linkedSignal<number | null, boolean>({ source: this.cursor, computation: () => false });
   /** The refusal under the answers; cleared on every step change. */
-  readonly inlineError = linkedSignal<number | null, FlowError | null>({
-    source: this.cursor,
-    computation: () => null,
-  });
+  readonly inlineError = linkedSignal<number | null, FlowError | null>({ source: this.cursor, computation: () => null });
 
   private gen = 0;
   private reading: Subscription | null = null;
@@ -270,9 +261,7 @@ export class ReconFlowComponent {
     if (state.order.length > MAX_SEGMENTS) {
       return null;
     }
-    return state.order.map((id) =>
-      !state.open.has(id) ? 'done' : id === state.cursor ? 'current' : 'rest',
-    );
+    return state.order.map((id) => (!state.open.has(id) ? 'done' : id === state.cursor ? 'current' : 'rest'));
   });
   readonly barColumns = computed(() => `repeat(${this.flow().order.length}, 1fr)`);
   readonly handledPercent = computed(() => {
@@ -315,10 +304,7 @@ export class ReconFlowComponent {
       learn:
         hint && flowLearnable(item)
           ? {
-              label: learnLabel(
-                hint,
-                item.actions.find((a) => learnableAnswer(item.question, a)) ?? 'dismiss',
-              ),
+              label: learnLabel(hint, item.actions.find((a) => learnableAnswer(item.question, a)) ?? 'dismiss'),
               scope: flowLearnScope(item, currency),
             }
           : null,
@@ -552,9 +538,7 @@ export class ReconFlowComponent {
         }
         this.busy.set(false);
         // The restore target stays: 重試 reads again and restores.
-        this.rereadFailed.set(
-          this.pending ? 'answer' : this.pendingRevert !== null ? 'undo' : 'reload',
-        );
+        this.rereadFailed.set(this.pending ? 'answer' : this.pendingRevert !== null ? 'undo' : 'reload');
       },
     });
   }
@@ -564,10 +548,7 @@ export class ReconFlowComponent {
       data.accounts.find((a) => a.items.some((item) => item.statement.id === statementId)) ?? null;
     const items = account ? askItems(account.items, statementId) : [];
     this.account.set(account);
-    this.periodEnd.set(
-      account?.items.find((item) => item.statement.id === statementId)?.statement.period_end ??
-        null,
-    );
+    this.periodEnd.set(account?.items.find((item) => item.statement.id === statementId)?.statement.period_end ?? null);
     this.flow.set(startFlow(items));
     this.load.set('ready');
   }
@@ -620,21 +601,13 @@ export class ReconFlowComponent {
    * 完成 with 復原 as soon as the apply says the answer went in, before the re-read: a failed re-read followed by
    * closing the flow must not lose the 復原. A `rule_error` raises its error instead (no 復原 on that one).
    */
-  private announce(
-    item: InboxItem,
-    answer: string,
-    out: InboxApplyOut,
-    accountId: number,
-    statementId: number,
-  ): void {
+  private announce(item: InboxItem, answer: string, out: InboxApplyOut, accountId: number, statementId: number): void {
     const result = out.results.find((r) => r.case_id === item.case_id);
     if (!result || result.status === 'refused') {
       return;
     }
     if (out.rule_error) {
-      this.toasts.error(
-        '答案已記下，但規則沒存：' + flowError(out.rule_error).text.replace(/^沒成功：/, ''),
-      );
+      this.toasts.error('答案已記下，但規則沒存：' + flowError(out.rule_error).text.replace(/^沒成功：/, ''));
       return;
     }
     this.undo.offer({
@@ -645,10 +618,7 @@ export class ReconFlowComponent {
         .map((r) => r.action_id as number),
       accountId,
       statementId,
-      rule:
-        out.rule_id !== null
-          ? { id: out.rule_id, pattern: item.rule_hint?.merchant_pattern ?? '' }
-          : null,
+      rule: out.rule_id !== null ? { id: out.rule_id, pattern: item.rule_hint?.merchant_pattern ?? '' } : null,
     });
   }
 
@@ -739,9 +709,7 @@ export class ReconFlowComponent {
   private snapshot(item: InboxItem): SavedAnswer {
     const state = this.flow();
     const keys = new Map<number, string>();
-    const riders = [...followers(state)]
-      .filter(([, leader]) => leader === item.case_id)
-      .map(([id]) => id);
+    const riders = [...followers(state)].filter(([, leader]) => leader === item.case_id).map(([id]) => id);
     for (const id of [item.case_id, ...riders]) {
       const it = state.open.get(id);
       const key = it ? itemKey(it) : null;

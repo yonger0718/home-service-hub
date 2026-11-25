@@ -2,12 +2,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 
 import { daysBetween, slashDate } from '../../accounting/dates';
 import { formatMoney } from '../../accounting/format';
-import {
-  InboxCard,
-  buttonLabel,
-  learnableAnswer,
-  questionText,
-} from '../../accounting/inbox/inbox-view';
+import { InboxCard, buttonLabel, learnableAnswer, questionText } from '../../accounting/inbox/inbox-view';
 import {
   CaseAction,
   InboxAccount,
@@ -65,8 +60,7 @@ export function flowHeadline(item: InboxItem, currency: string): string {
     case 'amount_differs': {
       const ledger = flowEntry(item);
       // Without both sides, or with no real difference, there is no sign to read and no amount to name.
-      if (!item.line || !ledger || Number(item.line.amount) === Number(ledger.amount))
-        return '金額不同';
+      if (!item.line || !ledger || Number(item.line.amount) === Number(ledger.amount)) return '金額不同';
       const bank = Number(item.line.amount);
       const entry = Number(ledger.amount);
       const diff = formatMoney(Math.abs(bank - entry), currency);
@@ -195,8 +189,7 @@ export function flowLearnScope(item: InboxItem, currency: string): string | null
   }
   const answers = flowActions(item);
   const learning = answers.filter(
-    (answer): answer is InboxButton =>
-      !isCaseAction(answer) && learnableAnswer(item.question, answer),
+    (answer): answer is InboxButton => !isCaseAction(answer) && learnableAnswer(item.question, answer),
   );
   if (learning.length === 0) {
     return null;
@@ -321,12 +314,7 @@ export function compareRows(item: InboxItem, currency: string): readonly Compare
   const both = line !== null && entry !== null;
   const side = (present: boolean, text: string, label: CompareRow['label']): string =>
     present ? text : label === '商家' ? '沒有對應記錄' : '—';
-  const row = (
-    label: CompareRow['label'],
-    bank: string,
-    ledger: string,
-    differs: boolean,
-  ): CompareRow => ({
+  const row = (label: CompareRow['label'], bank: string, ledger: string, differs: boolean): CompareRow => ({
     label,
     bank: side(line !== null, bank, label),
     ledger: side(entry !== null, ledger, label),
