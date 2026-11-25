@@ -364,7 +364,7 @@ describe('recon-flow-view', () => {
       line: line('2026-09-05', '-20000.0000', '測試轉出'),
       transfer: transfer({ adjust_transfer: { entry_id: 7, line_id: 5, candidate_entry_ids: [7] } }),
     });
-    const sentence = '會把這筆轉帳的兩邊都改成 −$20,000，日期改成帳單上的日期。';
+    const sentence = '會同時改另一個帳戶的那一筆。兩邊金額都改成 $20,000；日期各自跟自己的帳單，另一邊沒有帳單就不動。';
     expect(flowNote(leg, 'TWD')).toBe(sentence);
     // The item's own note follows on a new line of the same box.
     expect(flowNote({ ...leg, note: '測試備註' }, 'TWD')).toBe(`${sentence}\n測試備註`);

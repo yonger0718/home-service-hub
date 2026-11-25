@@ -819,7 +819,7 @@ export class ReconFlowComponent {
           return;
         }
         const options = entryRows(transferLegs(item));
-        this.pick.set({ kind, item, heading: '哪一筆是這筆轉帳？', sub: '兩邊一起改，日期跟帳單', options });
+        this.pick.set({ kind, item, heading: '哪一筆是這筆轉帳？', sub: '兩邊一起改金額，日期跟各自的帳單', options });
         return;
       }
       case 'pair_transfer': {

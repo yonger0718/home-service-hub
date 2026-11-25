@@ -112,8 +112,10 @@ export function flowNote(item: InboxItem, currency: string): string | null {
   }
   const note = item.note || null;
   if (item.transfer?.adjust_transfer?.entry_id != null) {
-    const bank = formatMoney(item.line?.amount, currency, { sign: true });
-    const sentence = `會把這筆轉帳的兩邊都改成 ${bank}，日期改成帳單上的日期。`;
+    // Both legs take the line's magnitude (out negative, in positive), so the amount carries no sign; each leg takes
+    // its own statement's dates (the peer keeps its dates when its statement prints no line).
+    const bank = formatMoney(Math.abs(Number(item.line?.amount ?? 0)), currency);
+    const sentence = `會同時改另一個帳戶的那一筆。兩邊金額都改成 ${bank}；日期各自跟自己的帳單，另一邊沒有帳單就不動。`;
     return note ? `${sentence}\n${note}` : sentence;
   }
   return note;

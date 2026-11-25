@@ -1462,7 +1462,7 @@ describe('ReconFlowComponent', () => {
       const marked = vi.spyOn(TestBed.inject(AccountingService), 'markEntriesChanged');
       open([leg(1), line(2)]);
       expect(labels()).toEqual(['照帳單改這筆轉帳', '已記在別處，對到…', '不是同一筆']);
-      expect(text(el.querySelector('.flow-note'))).toBe('會把這筆轉帳的兩邊都改成 −$2,096，日期改成帳單上的日期。');
+      expect(text(el.querySelector('.flow-note'))).toBe('會同時改另一個帳戶的那一筆。兩邊金額都改成 $2,096；日期各自跟自己的帳單，另一邊沒有帳單就不動。');
       expect(answers()[0].classList).toContain('solid');
       key('1');
       expect(pickSheet()).toBeNull();
@@ -1490,7 +1490,7 @@ describe('ReconFlowComponent', () => {
       open([{ ...leg(1), note: '測試備註' }]);
       const notes = el.querySelectorAll('.flow-note');
       expect(notes.length).toBe(1);
-      expect(notes[0].textContent).toContain('會把這筆轉帳的兩邊都改成 −$2,096，日期改成帳單上的日期。\n測試備註');
+      expect(notes[0].textContent).toContain('會同時改另一個帳戶的那一筆。兩邊金額都改成 $2,096；日期各自跟自己的帳單，另一邊沒有帳單就不動。\n測試備註');
       // The box keeps line breaks (pre-line): the template's own whitespace must not add any.
       expect(notes[0].textContent!.match(/\n/g)?.length).toBe(1);
     });
@@ -1499,7 +1499,7 @@ describe('ReconFlowComponent', () => {
       open([ambiguous(1)]);
       key('2');
       expect(text(pickSheet()!.querySelector('h3'))).toBe('哪一筆是這筆轉帳？');
-      expect(text(pickSheet()!.querySelector('.pick-sub'))).toBe('兩邊一起改，日期跟帳單');
+      expect(text(pickSheet()!.querySelector('.pick-sub'))).toBe('兩邊一起改金額，日期跟各自的帳單');
       expect(pickRows()).toEqual([
         '2026/09/05 測試轉帳 甲 −$19,970 → −$20,000',
         '2026/09/05 測試轉帳 乙 −$19,950 → −$20,000',

@@ -131,7 +131,7 @@ When an item carries `transfer.adjust_transfer`, the flow SHALL offer 照帳單�
 #### Scenario: Transfer leg known
 - **GIVEN** an `amount_differs` case whose `adjust_transfer.entry_id` is set
 - **WHEN** the owner picks 照帳單改這筆轉帳
-- **THEN** the SPA SHALL post `{entry_id, line_id}` at once (no picker; the note said both legs take the bank amount and date) and toast 「已照帳單改轉帳」 with 復原
+- **THEN** the SPA SHALL post `{entry_id, line_id}` at once (no picker; the note said the other account's leg changes too: both take the bank amount's size, each its own statement's date) and toast 「已照帳單改轉帳」 with 復原
 
 #### Scenario: Ambiguous transfer leg
 - **GIVEN** an `ambiguous` case where `adjust_transfer.entry_id` is null with two `candidate_entry_ids` and one other candidate
