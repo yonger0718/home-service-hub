@@ -15,7 +15,7 @@ source read the pending and run endpoints.
 **Tech Stack:** Python 3.13, FastAPI, SQLAlchemy 2, Alembic, Postgres (SQLite in unit and most integration tests),
 pydantic 2, httpx, pdfplumber 0.11.10 (already pinned in `requirements-worker.txt`), Angular 21 + Vitest.
 
-**Spec:** `docs/superpowers/specs/2026-11-25-sinopac-futures-statement-design.md` rev 1.4 (plan review AGENT-592
+**Spec:** `docs/superpowers/specs/2026-11-25-sinopac-futures-statement-design.md` rev 1.5 (plan review AGENT-592 and owner-requested re-check AGENT-594;
 folded: consistent fixture, archive validation in one rolled-back transaction). Section
 numbers (§x) refer to it. Read it before any task. Precedent: the 國泰 plan
 `docs/superpowers/plans/2026-10-29-cathay-daily-statement.md` and its code; where a task says "as 國泰", copy that
@@ -251,10 +251,12 @@ statement date or month_end, end = the next source date − 1 day or today)`. `s
   `POST /sinopac-futures-statement/days/{key}/ack?status=conflict|findings` (`key` `\d{4}-\d{2}(-\d{2})?`; 204 / 404).
   `GET /api/portfolio/futures/summary?as_of=` → `FuturesSummary{as_of, value: {total_equity, balance, source_date,
   source_kind, positions_open, frozen} | null, latest_daily: {statement_date, withdrawable, initial_margin,
-  maintenance_margin, excess_margin, margin_call} | null, month: {month, pnl, futures_realized} | null}` — amounts as
-  strings; `month.pnl` = value at `as_of` − value at the previous month end (0 before any source) − the month's
-  deposits (monthly `b` when that month's row exists, else Σ daily `deposits_net`); `futures_realized` = monthly `k`
-  or Σ daily.
+  maintenance_margin, excess_margin, margin_call} | null, month: {month, pnl, pnl_complete, pnl_reason,
+  futures_realized} | null}` — amounts as strings; `month.pnl` = value at `as_of` − value at the previous month end −
+  the month's deposits (monthly `b` when that month's row exists, else Σ daily `deposits_net`); no source on or before
+  the previous month end → `pnl` null, `pnl_complete` false, `pnl_reason` `no_baseline`; deposits from daily rows and
+  any of the month's daily rows or the month row has findings → `pnl` computed, `pnl_complete` false, `pnl_reason`
+  `findings`; otherwise `pnl_complete` true, `pnl_reason` null. `futures_realized` = monthly `k` or Σ daily.
   Ledger feed: `valuation(db, broker, as_of)` dispatches `cathay` (unchanged) / `sinopac_futures` (§6.5 fields, `currency`
   `TWD`) and echoes `broker`; `settlements` / `dividends` keep `_check_broker` = cathay only.
 
@@ -263,7 +265,9 @@ statement date or month_end, end = the next source date − 1 day or today)`. `s
   `test_runs_latest`, `test_runs_invalid_422`; ledger feed — `test_valuation_sinopac_futures`,
   `test_valuation_sinopac_futures_before_first` (`"0"`, `priced_through` null, `complete` false),
   `test_settlements_and_dividends_reject_sinopac_futures` (404 `unknown_broker`), `test_valuation_cathay_unchanged`;
-  summary — `test_summary_empty`, `test_summary_month_pnl_daily_only`, `test_summary_month_pnl_with_monthly`,
+  summary — `test_summary_empty`, `test_summary_no_baseline_pnl_null` (first source in the month → `pnl` null,
+  `no_baseline`), `test_summary_findings_marks_incomplete` (a `prev` finding in the month → `pnl_complete` false,
+  `findings`), `test_summary_monthly_row_complete` (monthly `b` used → complete), `test_summary_month_pnl_daily_only`, `test_summary_month_pnl_with_monthly`,
   `test_summary_frozen`.
 - [ ] **Step 2: Run** — FAIL.
 - [ ] **Step 3: Implement.**
@@ -278,10 +282,11 @@ statement date or month_end, end = the next source date − 1 day or today)`. `s
   `PortfolioSnapshot(...)` sites near :765 / :781 / :894, `write_snapshot` near :649, the gates near :776 / :879, the
   phantom-delete filter near :922), `app/routers/history.py:73`, `app/services/portfolio_service.py:1412-1413`,
   `app/schemas/portfolio.py:280` (`futures_equity_twd` field on `PortfolioSummary`)
-  `app/services/networth_backfill_service.py:1016-1075` (`_main`: add `--from YYYY-MM-DD`, `--to YYYY-MM-DD`
-  (default today, Asia/Taipei) and `--phase prices|snapshots|both`; with `--from` it calls
-  `run_backfill(db, from_d, to_d, phase=phase)` instead of deriving the start; without it, today's behaviour)
-- Test: `tests/integration/test_futures_networth.py`, `tests/unit/test_networth_backfill_cli.py`
+- Create: `app/services/sinopac_futures_backfill.py` (`backfill_futures_snapshots(db, start: date, end: date, *,
+  dry_run: bool) -> dict` with keys `updated`, `inserted`, `changed`, `delta_sum`; `_main(argv)` for
+  `python -m app.services.sinopac_futures_backfill --from YYYY-MM-DD [--to YYYY-MM-DD] [--dry-run]`, printing the
+  counts as JSON; `--to` defaults to today Asia/Taipei). The networth replay CLI is not changed.
+- Test: `tests/integration/test_futures_networth.py`, `tests/integration/test_futures_backfill.py`
 
 **Interfaces:**
 - Consumes: Task 3 (`futures_lock(shared=True)`, `equity_by_date`, `equity_at`, `source_dates`).
@@ -296,9 +301,13 @@ deletes a row only when `futures_equity_twd == 0`; inserted rows take the series
   `test_summary_total_includes_futures`, `test_zero_cash_row_with_futures_kept`, `test_cash_insert_carries_futures`,
   `test_replay_writes_futures_only_date` (no stock / cash activity on a statement date → row with futures),
   `test_replay_matches_live_writer` (same day, replay vs `write_today_snapshot` → equal `futures_equity_twd` and total),
-  `test_negative_futures_equity_in_total` (Review Focus 5), `test_phantom_filter_keeps_futures_row`; CLI —
-  `test_cli_from_calls_run_backfill_snapshots_only` (`--from 2024-08-27 --phase snapshots` → `run_backfill(…,
-  date(2024, 8, 27), today, phase="snapshots")`), `test_cli_without_from_unchanged`, `test_cli_bad_phase_exits_2`.
+  `test_negative_futures_equity_in_total` (Review Focus 5), `test_phantom_filter_keeps_futures_row`; history fill —
+  `test_backfill_updates_only_futures_column` (rows with non-null `portfolio_xirr`, stock and cash values: after the
+  fill every column except `futures_equity_twd` is unchanged), `test_backfill_inserts_forward_filled_row` (a source
+  date without a row → new row copying the previous row's columns, XIRR included, plus futures),
+  `test_backfill_no_previous_row_inserts_zero_row`, `test_backfill_never_deletes`, `test_backfill_dry_run_writes_nothing`
+  (counts equal the real run's; table unchanged), `test_backfill_cli_dry_run_writes_nothing` (through `_main` with
+  `--dry-run`), `test_backfill_takes_exclusive_lock`.
 - [ ] **Step 2: Run** — FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** — PASS; full suite — no new failures.
@@ -332,7 +341,7 @@ recipe's variables.
 **Files:**
 - Create: `worker/sinopac_futures_statement.py`, `tests/worker/futures_fixtures.py` (builders of `pdf.Line` /
   `pdf.Word` with explicit x positions)
-- Modify: spec §2 / §5.3 (rev 1.4: the monthly grammar and the confirmed sequences)
+- Modify: spec §2 / §5.3 (rev 1.6: the monthly grammar and the confirmed sequences)
 - Test: `tests/worker/test_sinopac_futures_statement.py`
 
 **Interfaces:**
@@ -345,7 +354,7 @@ recipe's variables.
 - [ ] **Step 1: Census (archive, counts only).** As `homehub-worker`, with the two password lines in place, run a
   private census script over both folders (not committed; scratch under `~homehub-worker/tmp`, removed after): per
   section the masked line classes and counts, the text-word sequences of fill and position lines, the monthly section
-  lines, the label sets. Record the result in spec §2 / §5.3 as rev 1.4. Any line kind the spec does not list stops the
+  lines, the label sets. Record the result in spec §2 / §5.3 as rev 1.6. Any line kind the spec does not list stops the
   task until the spec covers it.
 - [ ] **Step 2: Write the failing tests** (fictional fixtures only): `test_daily_fills_and_close_link`,
   `test_daily_no_trade_day` (`無交易`, `fills_total` null), `test_daily_deposit_and_withdrawal`,
@@ -364,7 +373,7 @@ recipe's variables.
 - [ ] **Step 3: Run** — FAIL.
 - [ ] **Step 4: Implement.**
 - [ ] **Step 5: Run** — PASS.
-- [ ] **Step 6: Commit** `feat(worker): futures statement parser` (with the spec rev 1.4 change).
+- [ ] **Step 6: Commit** `feat(worker): futures statement parser` (with the spec rev 1.6 change).
 
 ### Task 9: `python -m worker sinopac-futures`
 
@@ -519,9 +528,9 @@ date; when `frozen`: 「持倉中，數字停在 <MM/DD>」; `value` null → th
 2. The owner adds `投資/永豐期貨/日對帳單=$ID` and `投資/永豐期貨/月對帳單=$ID` to the worker password file.
 3. PR B: update the worker checkout; `--validate-history` report to the owner (Task 10 Step 3); then one plain commit
    run imports the archive; then, from `services/stock-portfolio-service` in the release checkout with the
-   production env as the portfolio service runs it, `python -m app.services.networth_backfill_service --from
-   2024-08-27 --phase snapshots --dry-run`, review, then the same without `--dry-run`; check that `/history` totals
-   changed only by `futures_equity_twd`; enable the timer.
+   production env as the portfolio service runs it, `python -m app.services.sinopac_futures_backfill --from
+   2024-08-27 --dry-run` (counts to the owner), then the same without `--dry-run`; check on a before/after export of
+   `/history` that every point changed by exactly its `futures_equity_twd`; enable the timer.
 4. PR C: notifier release; the 9 archive findings appear; the owner acks them.
 5. PR D: SPA publish (preview first, owner go).
 6. Account 147: `valuation_source = portfolio:sinopac_futures` by admin PATCH with the owner's go; the accounts page

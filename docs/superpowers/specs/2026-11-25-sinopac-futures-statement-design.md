@@ -8,7 +8,9 @@ lock for every futures write and every snapshot writer, futures source dates in 
 guards, a valid zero total in the chart, the findings / ack wire contract, the successor recheck). No further Multica
 round on the spec (owner rule: one review plus one re-check); the plan review covers what follows. Rev 1.4 (plan
 review AGENT-592): the §5.1 example is made internally consistent (it is the shared test fixture), and
-`--validate-history` replays the whole archive in one rolled-back portfolio transaction (§7). Owner rulings 2026-11-25: on a day without a statement the account's equity is the
+`--validate-history` replays the whole archive in one rolled-back portfolio transaction (§7). Rev 1.5 (owner-requested
+re-check AGENT-594): the history fill is a futures-only backfill, not the networth replay (§6.5, §10), and the month
+P&L carries completeness (§9). Owner rulings 2026-11-25: on a day without a statement the account's equity is the
 latest statement's value, and the monthly statement's month-end value corrects it (no re-pricing from exchange
 settlement prices); storage is one row per statement day with the fills and positions kept as JSON, not normalised
 tables; net worth uses 權益總值 (it includes the market value of open options). All amounts, product names and order
@@ -295,9 +297,17 @@ is set when `findings_sha` changes. A day or month with findings is pending (§8
   (`refresh_snapshot_cash_range` commits by itself and must not be called from the import.)
 - Replay: futures source dates (every accepted daily `statement_date` and monthly `month_end`) join the eligibility
   gates of `replay_snapshots_range` alongside `cash_activity_dates`, so a rebuild writes a row on them even with no
-  stock or cash activity; the phantom-delete filter keeps any row whose `futures_equity_twd` is non-zero. The rollout
-  runs one networth backfill from 2024-08-27 after the first commit run (§10), which creates the rows the archive
-  needs; later imports update existing rows only, and the daily snapshot job writes a row every day.
+  stock or cash activity; the phantom-delete filter keeps any row whose `futures_equity_twd` is non-zero. That keeps a
+  future full rebuild correct; the rollout does not use the replay (it rewrites whole rows: market, cost, cash,
+  dividends, realised P&L, and it clears `portfolio_xirr`).
+- History fill: `backfill_futures_snapshots(db, start, end, *, dry_run)` under the exclusive futures lock. On every
+  existing row in range it sets only `futures_equity_twd` from §6.3; on a futures source date with no row it inserts
+  one that copies every other column from the latest existing row before it (the replay's forward-fill rule; none
+  before it → market, cost, cash, dividend and realised columns 0, `portfolio_xirr` NULL) and sets the futures
+  equity. Nothing else is written or deleted. It returns counts (rows updated, rows inserted, rows whose futures value
+  changes, the sum of the change); with `dry_run` it computes the same answer and rolls back. Command:
+  `python -m app.services.sinopac_futures_backfill --from 2024-08-27 [--to D] [--dry-run]`. Later imports update
+  existing rows only, and the daily snapshot job writes a row every day.
 - Ledger feed: `ledger_feed_service` today accepts only `BROKER = "cathay"` and echoes it. Valuation dispatches by
   broker (`cathay` → today's code, `sinopac_futures` → the series) and echoes the requested broker; `settlements` and
   `dividends` keep answering 404 `unknown_broker` for anything but `cathay`.
@@ -346,7 +356,9 @@ is set when `findings_sha` changes. A day or month with findings is pending (§8
 
 - `/portfolio/import`: a status card `#sinopac-futures` next to the 國泰 card — latest run, pending items, ack.
 - `/portfolio` dashboard: the 期貨權益 composition segment (§6.5) and one card 「永豐期貨」: 權益總值, 可動用(出金)保證金,
-  原始 / 維持保證金, 超額 / 追繳保證金, 本月損益 (權益總值 change since the last month end minus the month's 存提淨額) and
+  原始 / 維持保證金, 超額 / 追繳保證金, 本月損益 (權益總值 change since the last month end minus the month's 存提淨額;
+  shown as 「—（沒有上月底基準）」 when no source exists on or before the last month end, and marked 「可能不完整」 when the
+  month's deposits come from daily statements and any of them, or the month, has a finding) and
   本月期貨平倉損益, the source date, and the frozen note of §6.3. Read from a new
   `GET /api/portfolio/futures/summary`.
 - No 風險指標: the statement does not print one and the broker's formula is not on it; the card shows the printed
@@ -356,9 +368,9 @@ is set when `findings_sha` changes. A day or month with findings is pending (§8
 
 1. The owner adds `投資/永豐期貨/日對帳單=$ID` and `投資/永豐期貨/月對帳單=$ID` to the worker's password file.
 2. Portfolio (migration, endpoints, series, snapshot columns), then `--validate-history` (report to the owner), then
-   the first commit run imports the archive, then one networth backfill from 2024-08-27 (`run_backfill`) writes the
-   futures equity into the history, including rows on futures-only dates; the 淨值走勢 history changes from that date
-   by the futures equity.
+   the first commit run imports the archive, then the futures-only history fill of §6.5 from 2024-08-27 (dry run
+   first, its counts to the owner, then for real) writes the futures equity into the history, including rows on
+   futures-only dates; the 淨值走勢 history changes from that date by the futures equity and by nothing else.
 3. Timer, notifier release, SPA.
 4. Set `valuation_source = portfolio:sinopac_futures` on account 147 (admin PATCH, with the owner's go).
 
