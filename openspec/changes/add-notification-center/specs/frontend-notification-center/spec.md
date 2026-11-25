@@ -131,13 +131,13 @@ When an item carries `transfer.adjust_transfer`, the flow SHALL offer 照帳單�
 #### Scenario: Transfer leg known
 - **GIVEN** an `amount_differs` case whose `adjust_transfer.entry_id` is set
 - **WHEN** the owner picks 照帳單改這筆轉帳
-- **THEN** the SPA SHALL post `{entry_id, line_id}` at once (no picker; the note said the other account's leg changes too: both take the bank amount's size, each its own statement's date) and toast 「已照帳單改轉帳」 with 復原
+- **THEN** the SPA SHALL post `{entry_id, line_id}` at once (no picker; the note said the other account's leg changes too, naming that account when `legs` gives it: both take the bank amount's size, each its own statement's date) and toast 「已照帳單改轉帳」 with 復原, or 「已照帳單改轉帳。另一個帳戶的那一題也處理了」 when the response's `peer_case_id` is set
 
 #### Scenario: Ambiguous transfer leg
 - **GIVEN** an `ambiguous` case where `adjust_transfer.entry_id` is null with two `candidate_entry_ids` and one other candidate
 - **THEN** the answers SHALL read 已記在別處，對到…, 照帳單改轉帳…, 改金額…, 不是同一筆
 - **WHEN** the owner picks 照帳單改轉帳…
-- **THEN** the SPA SHALL ask which entry first (rows 「date title amount → bank amount」) and send its id
+- **THEN** the SPA SHALL ask which entry first (rows 「date 來源 → 目的 |amount| 改成 |bank amount|」 from `legs`, the title when no counter account) and send its id
 
 #### Scenario: Transfer without a peer
 - **GIVEN** a `needs_peer` case whose `peer_candidates` is empty
