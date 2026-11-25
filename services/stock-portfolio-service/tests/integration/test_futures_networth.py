@@ -413,6 +413,40 @@ def test_replay_skip_day_futures_row_kept(db_session, prior):
     assert row.portfolio_xirr is None
 
 
+@pytest.mark.parametrize("existing_row", [True, False])
+def test_replay_skip_day_source_date_carries_market(client, db_session, existing_row):
+    """R18: a weekend futures source date with stock held but no held forward fill (``last_trading_mv`` None) is
+    written through the carry, not as market 0 / cost 0: market and cost of the surviving Saturday row."""
+    sunday = date(2026, 3, 8)
+    _buy(db_session, date(2026, 3, 2))
+    _day(db_session, sunday, "300")
+    _snap(db_session, WEEKEND, mv="150", cost="100", cash="5")  # no positive-market row before the range
+    if existing_row:
+        _snap(db_session, sunday, mv="0", cost="100", cash="7", futures="50", xirr="0.1234")
+    with _cash("999"):
+        nb.replay_snapshots_range(db_session, WEEKEND, sunday)
+    row = _rows(db_session).get(sunday)
+    assert row is not None
+    assert (row.total_market_value, row.total_cost) == (Decimal("150"), Decimal("100"))
+    assert row.total_cash_twd == Decimal("999")
+    assert row.futures_equity_twd == Decimal("300")
+    assert row.portfolio_xirr is None
+    points = {p["date"]: p for p in client.get("/api/portfolio/history").json()}
+    assert Decimal(points[sunday.isoformat()]["total_assets_twd"]) == Decimal("1449")
+
+
+def test_replay_skip_day_source_date_without_stock_stays_zero(db_session):
+    """R18 control: with no stock held, the source-date row keeps market 0 / cost 0 even after a positive row."""
+    sunday = date(2026, 3, 8)
+    _day(db_session, sunday, "300")
+    _snap(db_session, WEEKEND, mv="150", cost="100", cash="5")
+    with _cash("999"):
+        nb.replay_snapshots_range(db_session, WEEKEND, sunday)
+    row = _rows(db_session)[sunday]
+    assert (row.total_market_value, row.total_cost) == (ZERO, ZERO)
+    assert (row.total_cash_twd, row.futures_equity_twd) == (Decimal("999"), Decimal("300"))
+
+
 def test_replay_gap_non_source_zero_series_still_deleted(db_session):
     """Pre-futures history: a gap day with no futures source and a zero series keeps the legacy stale delete."""
     _buy(db_session, date(2026, 3, 2))

@@ -866,11 +866,17 @@ def replay_snapshots_range(
                 # A futures source date is admitted even when its value
                 # and the cash are 0: that row records a positive → zero
                 # transition (spec §6.5 source-date eligibility).
-                if (
-                    cash_total != 0
-                    or futures_equity(cur) != 0
-                    or cur in futures_source_dates
-                ):
+                futures_eligible = (
+                    cur in futures_source_dates or futures_equity(cur) != 0
+                )
+                if futures_eligible and sum(qty.values()) > 0:
+                    # Stock is held but the held forward fill could not run
+                    # (no last trading day yet): carry the last good market
+                    # value, never market 0 / cost 0 (R18).
+                    wrote_forward_fill = write_snapshot(
+                        cur, carried_row(cur, futures_equity(cur))
+                    )
+                elif cash_total != 0 or futures_eligible:
                     wrote_forward_fill = write_snapshot(
                         cur,
                         PortfolioSnapshot(
