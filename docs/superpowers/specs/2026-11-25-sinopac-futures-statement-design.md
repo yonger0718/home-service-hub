@@ -3,7 +3,10 @@
 Status: rev 1.2 (2026-11-25). Rev 1.1 folds the builder check (a day-to-day `prev` finding, the scope of the frozen
 note, no 永豐 money already in the portfolio); rev 1.2 folds the AGENT-589 review (text columns read in order, the
 per-broker valuation dispatch, the cash-refresh interplay and no commit inside the futures refresh, the monthly
-`carry` finding, the lock tag, the missing-snapshot-row limit). Owner rulings 2026-11-25: on a day without a statement the account's equity is the
+`carry` finding, the lock tag, the missing-snapshot-row limit); rev 1.3 folds the AGENT-591 re-check (one futures
+lock for every futures write and every snapshot writer, futures source dates in the replay, the remaining grammar
+guards, a valid zero total in the chart, the findings / ack wire contract, the successor recheck). No further Multica
+round on the spec (owner rule: one review plus one re-check); the plan review covers what follows. Owner rulings 2026-11-25: on a day without a statement the account's equity is the
 latest statement's value, and the monthly statement's month-end value corrects it (no re-pricing from exchange
 settlement prices); storage is one row per statement day with the fills and positions kept as JSON, not normalised
 tables; net worth uses 權益總值 (it includes the market value of open options). All amounts, product names and order
@@ -173,11 +176,16 @@ the combination-margin lines) as label → amount, for the record.
   side (買 / 賣). An option line has both a strike (numeric) and a right; a futures line has neither. Any other
   sequence fails. The plan's first task confirms these sequences against the 88 archived files before the parser is
   written.
-- Daily: title `國內期貨日對帳單`; the four section markers in the order of §2, each exactly once, each with
+- Every numeric word matches exactly one label (labels in one header row are more than 6 pt apart, so two matches
+  cannot happen silently: two are a failure). Every header row and every label of the 權益帳 rows must be present
+  exactly once with its label set exactly as in §2; the 權益帳 has exactly one value row under each label row (an
+  empty column is a missing word in that row, never a missing row).
+- Daily: exactly two pages; title `國內期貨日對帳單`; the four section markers in the order of §2, each exactly once, each with
   `新台幣(NTT)`; any other currency or a `國外` / `海外` marker fails. Every line of page 1 between the markers is one of
   the line kinds of §2 (header row, dated data line, `無存提` / `無交易` / `無留倉`, `平倉->` link, `商品小計`, `<商品> 小計`,
   `總計`, the labelled 留倉 lines, the 權益帳 label and value rows, `匯率：`, numbered notes). Exchange `Taiwan F` only.
-  Page 2 is not parsed.
+  Page 2 is notices only: a section marker, a header row, a dated line or a `總計` / `小計` line on page 2 fails the
+  statement; its other text is not read.
 - Daily date: every dated line of 存提 and 交易紀錄 carries one date, the `statement_date`. A file-name date that
   differs adds `filename_date_differs` to `warnings` only.
 - Daily self-checks: every identity of §2 (balance, equity, total equity, realised, premium, unrealised, deposits;
@@ -186,7 +194,8 @@ the combination-margin lines) as label → amount, for the record.
 - Monthly: title `國內期貨月對帳單`; the five sections of §2; the 月底帳戶餘額明細 lines by left / right column; self-checks
   M = A + B + G − H + K, Q = M + N, 權益總值 = Q + 未沖銷買方權利金市值 − 未沖銷賣方權利金市值. The other monthly sections are
   read only for dates and the open-position count; the plan's first task pins their line grammar from a census of the
-  27 archived files, the way §2 pins the daily one.
+  27 archived files, the way §2 pins the daily one, under the same rules: an unknown line in any monthly section, a
+missing or repeated section, or a numeric word without exactly one label fails the statement.
 
 ## 6. Portfolio rules
 
@@ -199,7 +208,7 @@ the combination-margin lines) as label → amount, for the record.
   - latest attempt: `last_sha256`, `last_status` ∈ {`imported`, `duplicate`, `conflict`}, `last_detail`, `last_at`,
     `since`;
   - acknowledgement: `ack_sha256`, `ack_status`, `ack_at`.
-  - `findings` (JSONB, §6.4) and `ack_findings` (the findings at the moment of the ack).
+  - `findings` (JSONB, §6.4), `findings_sha`, `findings_since`, `ack_findings_sha`.
 - `futures_statement_month`, primary key `month` (first day of the month): the same acceptance / attempt / ack columns,
   `month_end`, one Numeric column per `lines` key, `activity_dates`, `open_positions`, and `findings` (JSONB, §6.4).
 - `futures_statement_run`: the 國泰 run table's shape (`kind` latest / ok, `run_at`, `result`, `code`, `files_seen`,
@@ -207,10 +216,14 @@ the combination-margin lines) as label → amount, for the record.
 
 ### 6.2 A statement
 
-Under `pg_advisory_xact_lock` on `_LOCK_TAG << 32 | date.toordinal()` with its own tag `0x46555455` ("FUTU", not
-the 國泰 tag `0x43415448`), where date is the statement date or, for a monthly statement, its month end. Daily and
-monthly share the namespace on purpose: a daily statement on the last calendar day and that month's statement then
-serialise, and either one's findings see the other.
+Serialisation: one futures lock, `pg_advisory_xact_lock(0x46555455 << 32)` ("FUTU", not the 國泰 tag `0x43415448`;
+one key, not one per date). Every futures write takes it exclusively — a statement import, the findings it recomputes,
+an ack — and every snapshot writer takes it in shared mode (`pg_advisory_xact_lock_shared`) before it reads the series:
+`write_today_snapshot`, `refresh_snapshot_cash_range`, the backfill replay. Under the lock each path re-reads what it
+uses (the statement rows, findings, the snapshot rows); nothing read before the lock is reused. The statements arrive
+a few a day, so one key costs nothing and covers cross-date effects (snapshot ranges, successor findings).
+
+Under the lock:
 
 1. Not accepted → write the row, `imported`; recompute the snapshot rows of §6.5 in the same transaction.
 2. Accepted, same sha → `duplicate`, nothing written.
@@ -224,11 +237,17 @@ Dry runs take no lock and write nothing.
 
 `futures_equity(D)` = the `total_equity` of the latest accepted source dated on or before D, where a daily row is dated
 by its `statement_date` and a monthly row by its `month_end`; on the same date the monthly row wins. Before the first
-statement there is no value (0 in totals). With it come `source_date` and `positions_open` (the source's
+statement there is no value: 0 in totals, and the ledger-feed valuation answers `total`, `cash` and
+`market_value` `"0"`, `priced_through` null, `complete` false. A source's value applies from its own date up to,
+not including, the next source's date. With it come `source_date` and `positions_open` (the source's
 `open_positions` > 0): a value with open positions and `source_date` < D is frozen, and every view that shows it says
 「持倉中，數字停在 <source_date>」.
 
 ### 6.4 Findings
+
+Findings are recomputed, under the lock of §6.2, for: an accepted daily row D — D itself, the next accepted daily
+row after D (its `prev`), and D's month; an accepted monthly row M — M itself and the next month (its `carry`). So an
+out-of-order import (February before January) still gets February's `carry` when January arrives.
 
 A daily row is checked when it is accepted: `prev:<date>` when its `prev_balance` differs from the `balance` of the
 latest accepted daily row before it (`<date>` = that row's date) — activity on a day without a statement, reported
@@ -243,15 +262,21 @@ A monthly row is checked after it is accepted, and again whenever a daily row of
   (`deposits_net`, `premium_net`, `fees_and_tax`, `futures_realized`), or M differs from the last daily row's
   `balance`; each differing letter is listed.
 
-Findings (`findings` JSONB on both tables) never change a row. A day or month with findings is pending (§8) until
-acknowledged; the acknowledgement is keyed to the findings, so a new finding shows again.
+Findings (`findings` JSONB on both tables) never change a row. Shape: a list sorted by code, each
+`{"code": "prev" | "gap" | "carry" | "diff", "dates": [...], "letters": [...]}` (`prev`: the predecessor's date;
+`gap`: every activity date without a daily row; `diff`: the differing letters). Its identity is the sha256 of its
+canonical JSON (`findings_sha`), so a gap with the same count but different dates is a new incident. `findings_since`
+is set when `findings_sha` changes. A day or month with findings is pending (§8) until the owner acknowledges that
+`findings_sha`.
 
 ### 6.5 Net worth
 
 - `portfolio_snapshot` gets `futures_equity_twd` Numeric(20,4) NOT NULL default 0, and `total_assets_twd` becomes
   market value + cash + futures equity everywhere it is computed: `history._serialize_snapshot`,
-  `PortfolioSummary.total_assets_twd`, the SPA dashboard composition (a fourth segment 期貨權益) and its
-  `carryHoldings` / `todayChange` helpers.
+  `PortfolioSummary.total_assets_twd`, the SPA dashboard composition (a fourth segment 期貨權益), its
+  `carryHoldings` / `todayChange` helpers and `dashboard.ts` `totalAssetsValue`. There an absent or non-numeric
+  `total_assets_twd` falls back to market value + cash + futures equity, and a present `0` is a valid total (today
+  any 0 falls back, so market 100, cash 0, futures −100 would chart 100).
 - Writers: `write_today_snapshot` and the backfill replay (`replay_snapshots_range`, every `PortfolioSnapshot(...)`
   site) set it from §6.3. In `refresh_snapshot_cash_range` and the replay's cash-only gating, a row with zero cash is
   deleted only when its `futures_equity_twd` is also 0, and a row it inserts takes `futures_equity_twd` from §6.3 (not
@@ -261,9 +286,11 @@ acknowledged; the acknowledgement is keyed to the findings, so a new finding sho
   next source date (or today). It never commits and never deletes or inserts rows: the import's transaction commits
   once, after the statement row and the refresh, so the advisory lock of §6.2 is held until then.
   (`refresh_snapshot_cash_range` commits by itself and must not be called from the import.)
-- Known limit: a date with no snapshot row (no holdings and no cash activity) gets none from a futures import, so the
-  futures equity of such a day is absent from the 淨值走勢 history until a snapshot row exists. The daily snapshot
-  job writes a row every day, so this affects backfilled history only.
+- Replay: futures source dates (every accepted daily `statement_date` and monthly `month_end`) join the eligibility
+  gates of `replay_snapshots_range` alongside `cash_activity_dates`, so a rebuild writes a row on them even with no
+  stock or cash activity; the phantom-delete filter keeps any row whose `futures_equity_twd` is non-zero. The rollout
+  runs one networth backfill from 2024-08-27 after the first commit run (§10), which creates the rows the archive
+  needs; later imports update existing rows only, and the daily snapshot job writes a row every day.
 - Ledger feed: `ledger_feed_service` today accepts only `BROKER = "cathay"` and echoes it. Valuation dispatches by
   broker (`cathay` → today's code, `sinopac_futures` → the series) and echoes the requested broker; `settlements` and
   `dividends` keep answering 404 `unknown_broker` for anything but `cathay`.
@@ -287,17 +314,23 @@ acknowledged; the acknowledgement is keyed to the findings, so a new finding sho
 
 ## 8. Notifications
 
-- `GET …/sinopac-futures-statement/pending` → the 國泰 envelope (`items` of `{"key", "status", "reason", "since",
-  "last_at"}`, `total`, `truncated`, cap 50), where `key` is a date or a month: every unacknowledged `conflict`, every
-  day with an unacknowledged `prev` finding (`reason` `prev:<date>`), and every month with unacknowledged findings
-  (`reason` `gap:<n>` / `diff:<letters>`). `POST …/runs`,
-  `GET …/runs/latest`, `POST …/days/<key>/ack` as for 國泰.
-- Notifier: a section 「永豐期貨對帳單」 built like `notify/cathay.py` (own client, strict validation, one 「讀不到」 item on
+- `GET …/sinopac-futures-statement/pending` → `{"items": [{"key", "kind", "status", "reason", "since", "last_at"}],
+  "total", "truncated"}` (cap 50, sorted by key then status): `key` a date (`kind` `day`) or a month `YYYY-MM`
+  (`kind` `month`); `status` ∈ {`conflict`, `findings`}. One item per incident: a row whose latest attempt is an
+  unacknowledged `conflict` gives a `conflict` item (`since` = the first conflicting attempt); a row whose
+  `findings_sha` is set and not acknowledged gives a `findings` item (`since` = `findings_since`), so a row can give
+  both. `reason` for findings: the codes joined by `,` — `prev:<MM/DD>`, `gap:<n>`, `carry`, `diff:<letters>` — cut to
+  40 characters. An accepted-sha re-post stays `duplicate` and writes nothing.
+- `POST …/days/<key>/ack?status=conflict|findings` acknowledges that one incident: `conflict` stores
+  (`last_sha256`, `conflict`) as the 國泰 ack does; `findings` stores the current `findings_sha`. 404 when that
+  incident is not pending. `POST …/runs` and `GET …/runs/latest` as for 國泰.
+- Notifier: a new module (not `notify/cathay.py`, whose validator accepts only held / mismatch / conflict) with a
+  section 「永豐期貨對帳單」 built the same way (own client, the statuses and kinds above, strict validation, one 「讀不到」 item on
   any failure, run deadline `sinopac_futures_run_time` 06:45 + grace 15): `11/03 收到不同版本的日對帳單`,
-  `11/05 前日餘額接不上 10/28（中間有一天沒有日對帳單）`,
+  `11/05 前日餘額接不上 10/28（中間有一天沒有日對帳單）`, `2026-04 月初餘額接不上 3 月月底`,
   `2026-03 月對帳單有 1 天沒有日對帳單`, `2026-03 月對帳單對不上：B K`; weekly block 「永豐期貨對帳單待處理」.
-- SPA notification center: source `sinopac_futures` (「永豐期貨對帳單」) registered the way `cathay` is, primary
-  command 「知道了」 (ack), 查看 → `/portfolio/import#sinopac-futures`.
+- SPA notification center: source `sinopac_futures` (「永豐期貨對帳單」) registered the way `cathay` is, one task per
+  item (id `sinopac_futures:<key>:<status>`), primary command 「知道了」 (ack with that status), 查看 → `/portfolio/import#sinopac-futures`.
 
 ## 9. Frontend
 
@@ -313,8 +346,9 @@ acknowledged; the acknowledgement is keyed to the findings, so a new finding sho
 
 1. The owner adds `投資/永豐期貨/日對帳單=$ID` and `投資/永豐期貨/月對帳單=$ID` to the worker's password file.
 2. Portfolio (migration, endpoints, series, snapshot columns), then `--validate-history` (report to the owner), then
-   the first commit run imports the archive and refreshes the snapshot rows from 2024-08-27; the 淨值走勢 history
-   changes from that date by the futures equity.
+   the first commit run imports the archive, then one networth backfill from 2024-08-27 (`run_backfill`) writes the
+   futures equity into the history, including rows on futures-only dates; the 淨值走勢 history changes from that date
+   by the futures equity.
 3. Timer, notifier release, SPA.
 4. Set `valuation_source = portfolio:sinopac_futures` on account 147 (admin PATCH, with the owner's go).
 
@@ -332,7 +366,10 @@ the series (carry, monthly wins on a tie, frozen flag, before the first statemen
 daily statement clearing a gap, `prev` on a gap and its re-check when the missing day arrives, ack keyed to
 findings); snapshot refresh on import and in the replay (a zero-cash day with futures equity keeps its row; a row the cash
 refresh inserts carries the futures equity; the futures refresh commits nothing — a failure after it rolls back the
-statement row too); `carry`; ledger feed: valuation for `sinopac_futures`, settlements / dividends still 404 for it; ledger-feed
+statement row too); `carry` (February imported before January gets its `carry` when January arrives); findings identity (same gap count,
+different dates → shown again); a row with both a conflict and findings → two items, each acked alone; concurrency
+(two imports of different dates, a daily and a monthly, an import against `write_today_snapshot` and against the
+replay: the series each writer reads is the committed one); the chart's valid zero total; ledger feed: valuation for `sinopac_futures`, settlements / dividends still 404 for it; ledger-feed
 valuation for `sinopac_futures`; pending envelope and cap. Notifier and SPA: the 國泰 test set for the new source.
 
 ## 12. Review focus
