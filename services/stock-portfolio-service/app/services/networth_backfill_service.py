@@ -31,7 +31,7 @@ from datetime import date as dt_date, timedelta
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
-from sqlalchemy import and_, case, delete, func, literal, select, union_all
+from sqlalchemy import and_, case, delete, func, literal, not_, select, union_all
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as portfolio_models
@@ -490,6 +490,40 @@ def _load_price_map(
     }
 
 
+_FORWARD_FILL_COLUMNS = (
+    "total_market_value",
+    "total_cost",
+    "total_unrealized_pnl",
+    "total_dividends",
+    "total_realized_pnl",
+    "total_cash_twd",
+    "portfolio_xirr",
+)
+
+
+def _forward_fill_columns(template: Optional[PortfolioSnapshot]) -> dict:
+    """Every non-futures column of ``template``; zeros and a NULL XIRR when
+    there is none (the rule of ``sinopac_futures_backfill``)."""
+    if template is None:
+        columns = {c: Decimal("0") for c in _FORWARD_FILL_COLUMNS}
+        columns["portfolio_xirr"] = None
+        return columns
+    return {c: getattr(template, c) for c in _FORWARD_FILL_COLUMNS}
+
+
+def _phantom_row_filter() -> tuple:
+    """An all-zero row: the shape the replay's phantom delete removes."""
+    return (
+        PortfolioSnapshot.total_market_value == 0,
+        PortfolioSnapshot.total_cost == 0,
+        PortfolioSnapshot.total_cash_twd == 0,
+        PortfolioSnapshot.futures_equity_twd == 0,
+        PortfolioSnapshot.total_dividends == 0,
+        PortfolioSnapshot.total_realized_pnl == 0,
+        PortfolioSnapshot.portfolio_xirr.is_(None),
+    )
+
+
 def replay_snapshots_range(
     db: Session,
     from_d: dt_date,
@@ -699,6 +733,33 @@ def replay_snapshots_range(
             result.errors.append(BackfillError(date=snapshot_date, reason=str(exc)))
             return False
 
+    def latest_surviving_row_before(snapshot_date: dt_date) -> Optional[PortfolioSnapshot]:
+        """Latest row before ``snapshot_date`` that the end-of-run deletes keep.
+
+        Rows the replay already wrote are visible (each SAVEPOINT flushes).
+        Rows on dates already queued for the stale / phantom deletes and
+        matching their filters are skipped: they are about to disappear.
+        """
+        doomed_stale = and_(
+            PortfolioSnapshot.date.in_(stale_candidates),
+            PortfolioSnapshot.total_market_value == 0,
+            PortfolioSnapshot.total_cost > 0,
+        )
+        doomed_phantom = and_(
+            PortfolioSnapshot.date.in_(gated_phantom_candidates),
+            *_phantom_row_filter(),
+        )
+        return (
+            db.query(PortfolioSnapshot)
+            .filter(
+                PortfolioSnapshot.date < snapshot_date,
+                not_(doomed_stale),
+                not_(doomed_phantom),
+            )
+            .order_by(PortfolioSnapshot.date.desc())
+            .first()
+        )
+
     def total_cash_twd(snapshot_date: dt_date) -> Decimal:
         cash_total, skipped = cash_account_service.get_total_balance_in(
             db, "TWD", asof=snapshot_date
@@ -792,7 +853,14 @@ def replay_snapshots_range(
                 cur in cash_activity_dates or cur in futures_source_dates
             ):
                 cash_total = total_cash_twd(cur)
-                if cash_total != 0 or futures_equity(cur) != 0:
+                # A futures source date is admitted even when its value
+                # and the cash are 0: that row records a positive → zero
+                # transition (spec §6.5 source-date eligibility).
+                if (
+                    cash_total != 0
+                    or futures_equity(cur) != 0
+                    or cur in futures_source_dates
+                ):
                     wrote_forward_fill = write_snapshot(
                         cur,
                         PortfolioSnapshot(
@@ -882,8 +950,37 @@ def replay_snapshots_range(
         # Treat as a stale candidate so the bulk DELETE removes any
         # pre-existing bad row and the chart bridges the gap via
         # interpolation against the prior good snapshot.
+        #
+        # Futures history survives the gap (spec §6.5): on a futures
+        # source date, or a date whose series value is non-zero, no stock
+        # price is manufactured. An existing row is kept (never a stale
+        # candidate) and only its futures column is set; a source date
+        # with no row gets the forward fill of backfill_futures_snapshots
+        # (every other column from the latest surviving row before it).
         if mv == 0 and total_cost > 0:
-            stale_candidates.append(cur)
+            gap_futures = futures_equity(cur)
+            is_source = cur in futures_source_dates
+            existing = (
+                db.get(PortfolioSnapshot, cur)
+                if is_source or gap_futures != 0
+                else None
+            )
+            if existing is not None or is_source:
+                template = (
+                    existing
+                    if existing is not None
+                    else latest_surviving_row_before(cur)
+                )
+                write_snapshot(
+                    cur,
+                    PortfolioSnapshot(
+                        date=cur,
+                        futures_equity_twd=gap_futures,
+                        **_forward_fill_columns(template),
+                    ),
+                )
+            else:
+                stale_candidates.append(cur)
             cur += timedelta(days=1)
             continue
 
@@ -939,17 +1036,17 @@ def replay_snapshots_range(
         )
         result.stale_rows_deleted += max(delete_result.rowcount or 0, 0)
 
-    if gated_phantom_candidates and not dry_run:
+    # A futures source date keeps its row even when every column is 0 (a
+    # positive → zero transition, spec §6.5). The trading-day gate already
+    # never queues one; the filter here keeps that true by construction.
+    phantom_dates = [
+        d for d in gated_phantom_candidates if d not in futures_source_dates
+    ]
+    if phantom_dates and not dry_run:
         phantom_result = db.execute(
             delete(PortfolioSnapshot).where(
-                PortfolioSnapshot.date.in_(gated_phantom_candidates),
-                PortfolioSnapshot.total_market_value == 0,
-                PortfolioSnapshot.total_cost == 0,
-                PortfolioSnapshot.total_cash_twd == 0,
-                PortfolioSnapshot.futures_equity_twd == 0,
-                PortfolioSnapshot.total_dividends == 0,
-                PortfolioSnapshot.total_realized_pnl == 0,
-                PortfolioSnapshot.portfolio_xirr.is_(None),
+                PortfolioSnapshot.date.in_(phantom_dates),
+                *_phantom_row_filter(),
             )
         )
         result.stale_rows_deleted += max(phantom_result.rowcount or 0, 0)

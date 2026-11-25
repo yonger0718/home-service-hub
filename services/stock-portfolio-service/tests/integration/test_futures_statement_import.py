@@ -324,6 +324,37 @@ def test_validate_archive_empty_db_multi_file(db_session):
     assert snapshots(db_session) == before
 
 
+def test_validate_archive_middle_payload_raises_rolls_back(db_session, monkeypatch):
+    """The second payload raising inside the batch leaves no statement row and the snapshots unchanged."""
+    for d in (2, 9):
+        snap(db_session, date(2026, 3, d))
+    before = snapshots(db_session)
+    real_apply = svc._apply
+    calls = {"n": 0}
+
+    def flaky(db, payload):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("boom")
+        return real_apply(db, payload)
+
+    monkeypatch.setattr(svc, "_apply", flaky)
+    payloads = [
+        daily("2026-03-02", balance="100"),
+        daily("2026-03-09", prev="100", balance="100"),
+        daily("2026-03-16", prev="100", balance="100"),
+    ]
+
+    with pytest.raises(RuntimeError, match="boom"):
+        validate_archive(db_session, payloads)
+
+    assert calls["n"] == 2
+    db_session.expire_all()
+    assert db_session.query(FuturesStatementDay).count() == 0
+    assert db_session.query(FuturesStatementMonth).count() == 0
+    assert snapshots(db_session) == before
+
+
 def test_validate_archive_orders_dailies_then_monthlies(db_session):
     """Posted month first and dailies out of order: the batch still imports 03-02, 03-09, then the month, so the
     month sees every daily row and the 03-09 row sees its predecessor."""

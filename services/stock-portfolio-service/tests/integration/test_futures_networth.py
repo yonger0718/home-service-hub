@@ -235,6 +235,128 @@ def test_phantom_filter_keeps_futures_row(db_session):
     assert db_session.get(PortfolioSnapshot, dropped) is None
 
 
+# ---------- replay: zero-valued source dates (R14 finding 1) ----------
+
+
+def _rows(db):
+    db.expire_all()
+    return {r.date: r for r in db.query(PortfolioSnapshot).order_by(PortfolioSnapshot.date)}
+
+
+@pytest.mark.parametrize("trading_day", [False, True])
+def test_replay_positive_to_zero_transition_kept(db_session, trading_day):
+    """No stock, cash or (for False) price history: a source of 100 then a source of 0 gives two rows, the second all
+    zero (futures 0, total 0), and the phantom filter leaves it."""
+    first, second = date(2026, 3, 9), date(2026, 3, 10)
+    _day(db_session, first, "100")
+    _day(db_session, second, "0")
+    if trading_day:
+        for x in (first, second):
+            _price(db_session, x)
+    with _cash("0"):
+        nb.replay_snapshots_range(db_session, first, second)
+    rows = _rows(db_session)
+    assert set(rows) == {first, second}
+    assert rows[first].futures_equity_twd == Decimal("100")
+    zero = rows[second]
+    assert zero.futures_equity_twd == ZERO
+    assert zero.total_market_value + zero.total_cash_twd + zero.futures_equity_twd == ZERO
+
+
+def test_replay_weekend_monthly_zero_source_written(db_session):
+    """A month end on a Saturday with no activity and a zero value still gets its row."""
+    _day(db_session, date(2026, 2, 27), "100")  # Friday
+    _month(db_session, date(2026, 2, 28), "0")  # Saturday
+    with _cash("0"):
+        nb.replay_snapshots_range(db_session, date(2026, 2, 27), date(2026, 3, 1))
+    rows = _rows(db_session)
+    assert [(d, r.futures_equity_twd) for d, r in rows.items()] == [
+        (date(2026, 2, 27), Decimal("100")),
+        (date(2026, 2, 28), ZERO),
+    ]
+
+
+# ---------- replay: held-stock price gap (R14 finding 2) ----------
+
+
+def _buy(db, d, symbol="9999", qty=10, price="10"):
+    from app.models import portfolio as portfolio_models
+
+    db.add(portfolio_models.Transaction(
+        symbol=symbol, type=portfolio_models.TransactionType.BUY, quantity=qty, price=Decimal(price),
+        fee=Decimal("0"), tax=Decimal("0"), trade_date=datetime(d.year, d.month, d.day, tzinfo=timezone.utc),
+    ))
+    db.commit()
+
+
+def _columns(row):
+    return {
+        c: getattr(row, c) for c in (
+            "total_market_value", "total_cost", "total_unrealized_pnl", "total_dividends", "total_realized_pnl",
+            "total_cash_twd", "portfolio_xirr",
+        )
+    }
+
+
+GAP = date(2026, 3, 10)  # Tuesday: price_history covers it (another symbol) but not the held 9999
+
+
+@pytest.mark.parametrize("source_on_gap", [False, True])
+def test_replay_gap_day_existing_futures_row_kept(db_session, source_on_gap):
+    _buy(db_session, date(2026, 3, 2))
+    _price(db_session, GAP, symbol="8888")
+    _day(db_session, GAP if source_on_gap else date(2026, 3, 6), "300")
+    _snap(db_session, GAP, mv="0", cost="100", cash="7", futures="50", dividends="3", realized="4", xirr="0.1234")
+    before = _columns(db_session.get(PortfolioSnapshot, GAP))
+    with _cash("999"):
+        nb.replay_snapshots_range(db_session, GAP, GAP)
+    row = _rows(db_session).get(GAP)
+    assert row is not None
+    assert row.futures_equity_twd == Decimal("300")
+    assert _columns(row) == before
+
+
+@pytest.mark.parametrize("prior", ["existing", "replayed", "none"])
+def test_replay_gap_source_date_forward_filled(db_session, prior):
+    """A gap day that is a source date with no row gets the backfill_futures_snapshots forward fill: every other
+    column from the latest row before it, never a manufactured stock price."""
+    _buy(db_session, date(2026, 3, 2))
+    _price(db_session, GAP, symbol="8888")
+    _day(db_session, GAP, "800")
+    start = GAP
+    if prior == "existing":
+        _snap(db_session, date(2026, 3, 9), mv="120", cost="100", cash="50", dividends="3", realized="4",
+              xirr="0.1")
+    elif prior == "replayed":
+        _price(db_session, date(2026, 3, 9))  # 9999 priced on 03-09: the replay writes that row first
+        start = date(2026, 3, 9)
+    with _cash("50"):
+        nb.replay_snapshots_range(db_session, start, GAP)
+    rows = _rows(db_session)
+    assert GAP in rows
+    row = rows[GAP]
+    assert row.futures_equity_twd == Decimal("800")
+    if prior == "none":
+        assert {k: v for k, v in _columns(row).items() if k != "portfolio_xirr"} == {
+            k: ZERO for k in _columns(row) if k != "portfolio_xirr"
+        }
+        assert row.portfolio_xirr is None
+    else:
+        template = _columns(rows[date(2026, 3, 9)])
+        assert _columns(row) == template
+        assert template["total_market_value"] > 0
+
+
+def test_replay_gap_non_source_zero_series_still_deleted(db_session):
+    """Pre-futures history: a gap day with no futures source and a zero series keeps the legacy stale delete."""
+    _buy(db_session, date(2026, 3, 2))
+    _price(db_session, GAP, symbol="8888")
+    _snap(db_session, GAP, mv="0", cost="100", cash="7")
+    with _cash("7"):
+        nb.replay_snapshots_range(db_session, GAP, GAP)
+    assert GAP not in _rows(db_session)
+
+
 # ---------- the shared lock ----------
 
 
