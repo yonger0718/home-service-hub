@@ -99,6 +99,8 @@ export const ACTION_LABELS: Record<string, string> = {
   create_entry: '記為新記錄',
   match: '對到記錄',
   adjust_amount: '改成銀行的數',
+  adjust_transfer: '改成帳單的轉帳',
+  pair_transfer: '配成轉帳',
   defer_next_period: '等下期',
   dismiss: '忽略',
   anchor_opening: '對齊銀行期初',

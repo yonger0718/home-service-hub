@@ -69,6 +69,24 @@ export interface InboxRuleHint {
   default_category_id: number | null;
 }
 
+/** A bank line on another statement that may be the other leg of a transfer. */
+export interface InboxPeerCandidate {
+  line_id: number;
+  statement_id: number;
+  account_name: string;
+  posted_date: string;
+  amount: string;
+}
+
+/** What a transfer-shaped case can be answered with (absent on an older API). */
+export interface InboxTransfer {
+  adjust_transfer: { entry_id: number | null; line_id: number; candidate_entry_ids: number[] } | null;
+  pair_transfer: { peer_candidates: InboxPeerCandidate[] } | null;
+}
+
+/** Actions posted to `/cases/{id}/actions`. */
+export type CaseAction = 'adjust_transfer' | 'pair_transfer' | 'adjust_amount';
+
 export interface InboxItem {
   case_id: number;
   case_version: number;
@@ -88,6 +106,8 @@ export interface InboxItem {
    *  Non-empty only on a `bank_only` item (which then has no `group_key` and no `rule_hint`) or a `proposed` one
    *  whose proposal records the line. An older API omits it. */
   part_of?: InboxEntry[];
+  /** Transfer answers for this case (adjust the entry to the statement's transfer, or pair with the other leg). */
+  transfer?: InboxTransfer | null;
   /** The case's note (a bank-early reward line: how to fix the rule or accept the credit). */
   note?: string | null;
 }
