@@ -2,8 +2,20 @@ import { HttpErrorResponse } from '@angular/common/http';
 
 import { daysBetween, slashDate } from '../../accounting/dates';
 import { formatMoney } from '../../accounting/format';
-import { InboxCard, buttonLabel, learnableAnswer, questionText } from '../../accounting/inbox/inbox-view';
-import { InboxAccount, InboxButton, InboxItem, InboxQuestion } from '../../accounting/inbox/inbox.model';
+import {
+  InboxCard,
+  buttonLabel,
+  learnableAnswer,
+  questionText,
+} from '../../accounting/inbox/inbox-view';
+import {
+  CaseAction,
+  InboxAccount,
+  InboxButton,
+  InboxCandidate,
+  InboxItem,
+  InboxQuestion,
+} from '../../accounting/inbox/inbox.model';
 import { apiErrorText, splitApiCode } from '../../accounting/statements/statement-view';
 
 const CHIPS: Partial<Record<InboxQuestion, string>> = {
@@ -53,7 +65,8 @@ export function flowHeadline(item: InboxItem, currency: string): string {
     case 'amount_differs': {
       const ledger = flowEntry(item);
       // Without both sides, or with no real difference, there is no sign to read and no amount to name.
-      if (!item.line || !ledger || Number(item.line.amount) === Number(ledger.amount)) return '金額不同';
+      if (!item.line || !ledger || Number(item.line.amount) === Number(ledger.amount))
+        return '金額不同';
       const bank = Number(item.line.amount);
       const entry = Number(ledger.amount);
       const diff = formatMoney(Math.abs(bank - entry), currency);
@@ -85,22 +98,94 @@ export function flowPartOf(item: InboxItem): boolean {
 
 /**
  * Extra line under the grid: the part-of warning, the transfer hint, or the item's note; null when none. The transfer
- * hint names only what this flow can do (對到…, 略過): the transfer answers themselves come with PR E.
+ * hint says which answer fits: pair the two accounts when a peer line exists, else wait for the other statement.
  */
 export function flowNote(item: InboxItem, currency: string): string | null {
   if (flowPartOf(item)) {
     return questionText(item, currency);
   }
-  if (item.question === 'transfer') return '已經記過的話，選「已記在別處，對到…」；還沒記就先略過。';
+  if (item.question === 'transfer') {
+    return (item.transfer?.pair_transfer?.peer_candidates.length ?? 0) > 0
+      ? '選「配成轉帳…」把兩個帳戶的這筆對起來。'
+      : '另一個帳戶還沒有對得上的那一筆（帳單可能還沒匯入）。已經記過的話選「已記在別處，對到…」；不然先略過，另一邊進來後再配。';
+  }
   return item.note || null;
 }
 
-/** The answers in the order the flow lists them: the server's, except 記為… goes last on a part-of line. */
-export function flowActions(item: InboxItem): InboxButton[] {
-  if (!flowPartOf(item) || !item.actions.includes('record')) {
-    return item.actions;
+/** An answer the flow lists: an inbox button or one of the case actions (`/cases/{id}/actions`). */
+export type FlowAnswer = InboxButton | CaseAction;
+
+const CASE_ACTIONS: ReadonlySet<string> = new Set<CaseAction>([
+  'adjust_transfer',
+  'pair_transfer',
+  'adjust_amount',
+]);
+
+export function isCaseAction(answer: FlowAnswer): answer is CaseAction {
+  return CASE_ACTIONS.has(answer);
+}
+
+/** The ledger legs an ambiguous question could mean for 改成帳單的轉帳; none when the entry is already known. */
+export function transferLegs(item: InboxItem): InboxCandidate[] {
+  const adjust = item.transfer?.adjust_transfer;
+  if (!adjust || adjust.entry_id !== null) {
+    return [];
   }
-  return [...item.actions.filter((action) => action !== 'record'), 'record'];
+  const legs = new Set(adjust.candidate_entry_ids);
+  return item.candidates.filter((candidate) => legs.has(candidate.entry_id));
+}
+
+/** The candidates 改金額… may change on an ambiguous question: not the transfer legs (refused as protected). */
+export function adjustEntries(item: InboxItem): InboxCandidate[] {
+  if (item.question !== 'ambiguous') {
+    return [];
+  }
+  const legs = new Set(item.transfer?.adjust_transfer?.candidate_entry_ids ?? []);
+  return item.candidates.filter((candidate) => !legs.has(candidate.entry_id));
+}
+
+/**
+ * The answers in the order the flow lists them: the server's, except 記為… goes last on a part-of line, with the
+ * transfer answers ahead of them and 改金額… after 對到….
+ */
+export function flowActions(item: InboxItem): FlowAnswer[] {
+  const base: FlowAnswer[] =
+    flowPartOf(item) && item.actions.includes('record')
+      ? [...item.actions.filter((action) => action !== 'record'), 'record']
+      : [...item.actions];
+  const adjust = item.transfer?.adjust_transfer;
+  const peers = item.transfer?.pair_transfer?.peer_candidates ?? [];
+  const lead: FlowAnswer[] = [];
+  if (adjust && (adjust.entry_id !== null || transferLegs(item).length > 0)) {
+    lead.push('adjust_transfer');
+  }
+  if (item.question === 'transfer' && peers.length > 0) {
+    lead.push('pair_transfer');
+  }
+  if (item.question === 'ambiguous' && adjustEntries(item).length > 0) {
+    const at = base.indexOf('match_candidate');
+    base.splice(at < 0 ? base.length : at + 1, 0, 'adjust_amount');
+  }
+  return lead.length === 0 &&
+    base.length === item.actions.length &&
+    base.every((a, i) => a === item.actions[i])
+    ? item.actions
+    : [...lead, ...base];
+}
+
+export function flowAnswerLabel(answer: FlowAnswer, item: InboxItem, currency: string): string {
+  switch (answer) {
+    case 'adjust_transfer':
+      return item.transfer?.adjust_transfer?.entry_id === null
+        ? '改成帳單的轉帳…'
+        : '改成帳單的轉帳';
+    case 'pair_transfer':
+      return '配成轉帳…';
+    case 'adjust_amount':
+      return '改金額…';
+    default:
+      return buttonLabel(answer, item, currency);
+  }
 }
 
 /** The answers 以後都這樣 applies to, as the buttons name them: 只有「記為支出…」「忽略」會記住. Null when none. */
@@ -108,12 +193,16 @@ export function flowLearnScope(item: InboxItem, currency: string): string | null
   if (item.rule_hint === null) {
     return null;
   }
-  const learning = flowActions(item).filter((action) => learnableAnswer(item.question, action));
+  const answers = flowActions(item);
+  const learning = answers.filter(
+    (answer): answer is InboxButton =>
+      !isCaseAction(answer) && learnableAnswer(item.question, answer),
+  );
   if (learning.length === 0) {
     return null;
   }
   const names = learning.map((action) => `「${buttonLabel(action, item, currency)}」`).join('');
-  return learning.length === item.actions.length ? `${names}都會記住` : `只有${names}會記住`;
+  return learning.length === answers.length ? `${names}都會記住` : `只有${names}會記住`;
 }
 
 export interface FlowError {
@@ -138,6 +227,11 @@ const CHANGED_CODES: ReadonlySet<string> = new Set([
   'needs_recheck',
   'accrual_not_estimated',
   'proposal_superseded',
+  'entry_out_of_scope',
+  'peer_out_of_scope',
+  'line_claimed',
+  'line_not_in_case',
+  'line_not_printed',
 ]);
 
 /** Every other refusal in the owner's words (no code, no English). */
@@ -157,6 +251,23 @@ const PLAIN: Readonly<Record<string, string>> = {
   action_busy: '系統正在處理這張帳單，等一下再試',
   reconcile_busy: '系統正在處理這張帳單，等一下再試',
   sweep_barrier_busy: '系統正在處理這張帳單，等一下再試',
+  peer_leg_claimed: '另一個帳戶的那一筆已經配給別的轉帳了',
+  peer_ambiguous: '另一個帳戶有好幾筆可能，沒辦法自動配',
+  not_standalone: '這筆是分筆或群組的一部分，不能直接改',
+  cross_currency: '兩邊幣別不同，不能直接配',
+  peer_is_card: '另一邊是信用卡，不能這樣配',
+  kind_sign: '金額正負方向不對，不能這樣改',
+  fx_pair_required: '缺少外幣金額資料，不能直接改',
+  has_settlements: '這筆已經有沖銷記錄，不能改',
+  peer_not_live: '另一個帳戶的帳單還沒開始對帳',
+  peer_statement_busy: '另一個帳戶的帳單正在處理，等一下再試',
+  owner_deleted: '那一筆已經被刪掉了',
+  duplicate_effect: '這個答案剛剛已經做過了',
+  wrong_account: '那一筆記在別的帳戶',
+  wrong_currency: '那一筆的幣別不同',
+  not_member: '那一筆不在這個群組裡',
+  foreign_zero: '外幣金額是 0，不能改',
+  not_found: '找不到那一筆記錄',
 };
 
 const KNOWN_CODES = [...CHANGED_CODES, ...Object.keys(PLAIN)];
@@ -210,7 +321,12 @@ export function compareRows(item: InboxItem, currency: string): readonly Compare
   const both = line !== null && entry !== null;
   const side = (present: boolean, text: string, label: CompareRow['label']): string =>
     present ? text : label === '商家' ? '沒有對應記錄' : '—';
-  const row = (label: CompareRow['label'], bank: string, ledger: string, differs: boolean): CompareRow => ({
+  const row = (
+    label: CompareRow['label'],
+    bank: string,
+    ledger: string,
+    differs: boolean,
+  ): CompareRow => ({
     label,
     bank: side(line !== null, bank, label),
     ledger: side(entry !== null, ledger, label),
