@@ -89,12 +89,20 @@ app-bento {
   .seg-cash {
     background: var(--app-success);
   }
+
+  .seg-futures {
+    background: var(--app-warning);
+  }
 }
 
 .legend {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+
+  &.legend-four {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 .legend-item {
@@ -145,6 +153,10 @@ app-bento {
 
   &.cash {
     background: var(--app-success);
+  }
+
+  &.futures {
+    background: var(--app-warning);
   }
 
   &.dashed {
@@ -699,7 +711,18 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
   }
 }
 
+/* The futures card under the empty-portfolio block: compact and centred. */
+.empty-futures {
+  display: block;
+  margin: 0 auto;
+  max-width: 28rem;
+}
+
 @media (max-width: 759.98px) {
+  .legend.legend-four {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .holdings-head {
     display: none;
   }

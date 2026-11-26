@@ -66,8 +66,8 @@ const CHIPS: readonly ChipOption[] = [
   { key: 'portfolio', label: SOURCE_TAGS.portfolio },
 ];
 
-/** The 已處理 of a 國泰 statement date (records it as known; imports nothing). */
-type AckCommand = Extract<NotifCommand, { kind: 'ackCathay' }>;
+/** The 已處理 of a 國泰 statement date, or the 知道了 of a 永豐期貨 incident (records it as known; imports nothing). */
+type AckCommand = Extract<NotifCommand, { kind: 'ackCathay' | 'ackFutures' }>;
 
 /** What the tracking summary counts, per row. */
 const TRACKING_UNIT: Record<NotifTrackingRow['id'], { name: string; unit: string }> = {
@@ -171,7 +171,9 @@ export class NotificationsComponent {
   );
 
   /** Some source left work out of its answer: the inbox's ask items, or 國泰 dates beyond those listed (C5). */
-  private readonly unlisted = computed(() => this.center.truncated() || this.center.cathayMore() > 0);
+  private readonly unlisted = computed(
+    () => this.center.truncated() || this.center.cathayMore() > 0 || this.center.futuresMore() > 0,
+  );
 
   /**
    * A source failed and nothing is counted: there is no number to stand behind (a zero would read as "nothing to do"
@@ -275,6 +277,11 @@ export class NotificationsComponent {
    */
   protected readonly cathayMore = computed(() =>
     !this.pending() && this.chip() !== 'ledger' ? Math.max(0, this.center.cathayMore()) : 0,
+  );
+
+  /** 永豐期貨 items the API did not list: a third plain note, as the 國泰 one. */
+  protected readonly futuresMore = computed(() =>
+    !this.pending() && this.chip() !== 'ledger' ? Math.max(0, this.center.futuresMore()) : 0,
   );
 
   protected readonly failure = computed(() => failureLine(this.center.failedSources()));
@@ -494,6 +501,15 @@ export class NotificationsComponent {
         next: () => {
           this.toasts.done(`已處理：${command.name}`);
           // An ack bumps no change signal: the page re-reads itself, or the date would stay listed (spec 3.4).
+          this.reread(taskId);
+        },
+        error: (err: unknown) => this.ackFailed(taskId, command, err),
+      });
+    } else if (command.kind === 'ackFutures') {
+      // 204 with no body; as 國泰, an ack bumps no change signal: the page re-reads itself.
+      this.portfolio.ackFuturesItem(command.key, command.status).subscribe({
+        next: () => {
+          this.toasts.done(`已處理：${command.name}`);
           this.reread(taskId);
         },
         error: (err: unknown) => this.ackFailed(taskId, command, err),

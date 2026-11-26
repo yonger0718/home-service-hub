@@ -1,0 +1,166 @@
+:host {
+  display: block;
+}
+
+/* The card's own width decides the columns (spec §9), not the viewport: the empty-portfolio host (28rem) and phones
+   get one column, the full-width dashboard card two. One shared grid so the rows line up across the columns; the
+   group wrappers are display: contents and each cell names its two-column slot in data-cell (l1–l4, r1–r4; row 4 is
+   the date row). In one column the cells follow DOM order: equity rows, 資料日, margin rows, 保證金資料日. */
+.futures-body {
+  container: futures-card / inline-size;
+}
+
+.futures-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.futures-group {
+  display: contents;
+}
+
+/* One column: a hairline between the equity group and the margin group, 12px clear on both sides. The row class
+   is part of the selector so .futures-row's own `padding: 4px 0` (declared later) cannot undo the top padding. */
+.futures-row[data-cell='r1'] {
+  border-top: 1px solid var(--app-border);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+}
+
+@container futures-card (min-width: 600px) {
+  .futures-grid {
+    align-items: baseline;
+    column-gap: var(--space-8);
+    grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+    grid-template-rows: repeat(4, auto);
+
+    /* The divider is its own 1px track between the columns, the full height of the grid. */
+    &::before {
+      align-self: stretch;
+      background: var(--app-border);
+      content: '';
+      grid-column: 2;
+      grid-row: 1 / -1;
+    }
+  }
+
+  [data-cell^='l'] { grid-column: 1; }
+  [data-cell^='r'] { grid-column: 3; }
+  [data-cell$='1'] { grid-row: 1; }
+  [data-cell$='2'] { grid-row: 2; }
+  [data-cell$='3'] { grid-row: 3; }
+  [data-cell$='4'] { grid-row: 4; }
+
+  .futures-row[data-cell='r1'] {
+    border-top: 0;
+    margin-top: 0;
+    padding-top: 4px;
+  }
+}
+
+.futures-row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+.futures-label,
+.futures-muted,
+.futures-meta,
+.futures-note {
+  color: var(--app-text-muted);
+}
+
+.futures-equity-row .futures-value {
+  font-size: 22px;
+}
+
+.futures-value {
+  color: var(--app-text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  margin-left: auto;
+  text-align: right;
+
+  &.up,
+  .up {
+    color: var(--app-trend-positive);
+  }
+
+  &.down,
+  .down {
+    color: var(--app-trend-negative);
+  }
+}
+
+.futures-muted {
+  font-size: 12px;
+  font-weight: 400;
+  margin-left: 6px;
+}
+
+/* Margin warning (spec §9): amber, never red (red means up here), with the ⚠ 追繳 tag so colour is not the only
+   signal. --app-banner-warn on --app-surface: 6.15:1 light, 7.26:1 dark; on its 10 % / 14 % tint 5.36 / 5.71. */
+.futures-row--warn .futures-value {
+  color: var(--app-banner-warn);
+}
+
+.margin-warn-tag {
+  align-items: center;
+  background: var(--app-banner-warn-soft);
+  border-radius: var(--radius-sm);
+  color: var(--app-banner-warn);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 4px;
+  margin-right: 6px;
+  padding: 1px 6px;
+  vertical-align: 1px;
+
+  .pi {
+    font-size: 11px;
+  }
+}
+
+.futures-meta {
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+
+.futures-frozen {
+  color: var(--app-warning);
+  margin-left: 8px;
+}
+
+.futures-note {
+  margin: 0;
+}
+
+/* Loading / error / no statement yet: title and text on one row in a short card. */
+.futures-card--compact {
+  --bento-pad: var(--space-3) var(--space-6);
+}
+
+.futures-compact {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.futures-compact-title {
+  color: var(--app-text);
+  font-size: var(--fs-card-title);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.05em;
+  margin: 0;
+}
+
+.futures-sep {
+  color: var(--app-text-muted);
+  white-space: pre;
+}

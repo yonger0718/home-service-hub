@@ -11,31 +11,52 @@ function num(value: number | string | null | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** A total that is present (including "0") counts as is; only an absent or non-numeric one falls back to the parts. */
+export function assetsTotal(p: {
+  total_assets_twd?: number | string | null;
+  total_market_value?: number | string | null;
+  total_cash_twd?: number | string | null;
+  futures_equity_twd?: number | string | null;
+}): number {
+  const total = p.total_assets_twd;
+  if (total != null && total !== '' && Number.isFinite(Number(total))) return Number(total);
+  return num(p.total_market_value) + num(p.total_cash_twd) + num(p.futures_equity_twd);
+}
+
 /** 今日 pill: the day P&L against the assets before today; no percent when that base is not positive. */
 export function todayChange(
-  summary: Pick<PortfolioSummary, 'total_day_pnl' | 'total_assets_twd'>,
+  summary: Pick<PortfolioSummary, 'total_day_pnl'> &
+    Partial<Pick<PortfolioSummary, 'total_assets_twd' | 'total_market_value' | 'total_cash_twd' | 'futures_equity_twd'>>,
 ): { amount: number; percent: number | null } {
   const amount = num(summary.total_day_pnl);
-  const base = num(summary.total_assets_twd) - amount;
+  const base = assetsTotal(summary) - amount;
   return { amount, percent: base > 0 ? (amount / base) * 100 : null };
 }
 
-/** Hero bar: stocks vs cash, each clamped at zero (a negative cash balance takes no share). Pending dividends are legend-only. */
+/**
+ * Hero bar: stocks, cash and futures equity, each clamped at zero (a negative balance takes no share, it stays in the
+ * amounts and the legend). Pending dividends are legend-only.
+ */
 export function composition(
-  summary: Pick<PortfolioSummary, 'total_market_value' | 'total_cash_twd' | 'total_pending_dividends_net'>,
-): { stocks: number; cash: number; pending: number; stocksPct: number; cashPct: number } {
+  summary: Pick<PortfolioSummary, 'total_market_value' | 'total_cash_twd'> &
+    Partial<Pick<PortfolioSummary, 'total_pending_dividends_net' | 'futures_equity_twd'>>,
+): { stocks: number; cash: number; pending: number; stocksPct: number; cashPct: number; futures: number; futuresPct: number } {
   const stocks = num(summary.total_market_value);
   const cash = num(summary.total_cash_twd);
+  const futures = num(summary.futures_equity_twd);
   const pending = num(summary.total_pending_dividends_net);
   const barStocks = Math.max(0, stocks);
   const barCash = Math.max(0, cash);
-  const total = barStocks + barCash;
+  const barFutures = Math.max(0, futures);
+  const total = barStocks + barCash + barFutures;
   return {
     stocks,
     cash,
     pending,
     stocksPct: total > 0 ? (barStocks / total) * 100 : 0,
     cashPct: total > 0 ? (barCash / total) * 100 : 0,
+    futures,
+    futuresPct: total > 0 ? (barFutures / total) * 100 : 0,
   };
 }
 
@@ -203,7 +224,7 @@ export function isCashOnlyPoint(point: NetworthPoint): boolean {
   );
 }
 
-/** D8: cash-only runs after a holdings point take that point's five stock columns; 帳戶總值 = carried market + own cash. */
+/** D8: cash-only runs after a holdings point take that point's five stock columns; 帳戶總值 = carried market + own cash + own futures equity. */
 export function carryHoldings(points: readonly NetworthPoint[]): NetworthPoint[] {
   let last: NetworthPoint | null = null;
   return points.map(point => {
@@ -220,7 +241,7 @@ export function carryHoldings(points: readonly NetworthPoint[]): NetworthPoint[]
       total_unrealized_pnl: carried.total_unrealized_pnl,
       total_dividends: carried.total_dividends,
       total_realized_pnl: carried.total_realized_pnl,
-      total_assets_twd: String(num(carried.total_market_value) + num(point.total_cash_twd)),
+      total_assets_twd: String(num(carried.total_market_value) + num(point.total_cash_twd) + num(point.futures_equity_twd)),
     };
   });
 }

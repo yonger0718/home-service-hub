@@ -13,6 +13,7 @@ import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
 import { ToastService } from '../../../services/toast.service';
 import { DASHBOARD_CLOCK, PortfolioDashboardComponent } from './dashboard';
+import { FuturesCardComponent } from './futures-card/futures-card';
 import { hoverGuidePlugin } from './chart-guide.plugin';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { BtnComponent } from '../../ui/btn/btn';
@@ -101,6 +102,7 @@ describe('PortfolioDashboardComponent', () => {
     refreshQuotes: ReturnType<typeof vi.fn>;
     getRecalcStatus: ReturnType<typeof vi.fn>;
     getSummary: ReturnType<typeof vi.fn>;
+    getFuturesSummary: ReturnType<typeof vi.fn>;
     getUpcomingExDividends: ReturnType<typeof vi.fn>;
     getNetworthHistory: ReturnType<typeof vi.fn>;
     getDividends: ReturnType<typeof vi.fn>;
@@ -128,6 +130,7 @@ describe('PortfolioDashboardComponent', () => {
       refreshQuotes: vi.fn().mockReturnValue(of(null)),
       getRecalcStatus: vi.fn().mockReturnValue(of(null)),
       getSummary: vi.fn().mockReturnValue(of(buildSummary())),
+      getFuturesSummary: vi.fn().mockReturnValue(of({ as_of: '2026-11-23', value: null, latest_daily: null, month: null })),
       getUpcomingExDividends: vi.fn().mockReturnValue(of([])),
       getNetworthHistory: vi.fn().mockReturnValue(of([
         { date: '2026-01-01', total_market_value: '100', total_cash_twd: '40', total_assets_twd: '140', total_cost: '80', total_unrealized_pnl: '20', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
@@ -159,6 +162,7 @@ describe('PortfolioDashboardComponent', () => {
             BentoComponent,
             PctBadgeComponent,
             TooltipModule,
+            FuturesCardComponent,
             SkeletonModule,
             NativeAmountPipe,
           ],
@@ -195,6 +199,102 @@ describe('PortfolioDashboardComponent', () => {
     portfolioService.getNetworthHistory.mockClear();
     return fixture;
   }
+
+  it('renders the rest of the dashboard when the futures summary fails', () => {
+    portfolioService.getFuturesSummary.mockReturnValue(throwError(() => new Error('boom')));
+    const fixture = createFixture();
+    const root = fixture.nativeElement as HTMLElement;
+
+    expect(root.querySelector('app-futures-card')?.textContent).toContain('期貨資料載入失敗');
+    expect(root.querySelectorAll('.kpi-card').length).toBeGreaterThan(0);
+  });
+
+  it('reloads the futures card with loadSummary, not twice on first load', () => {
+    const fixture = createFixture();
+    expect(portfolioService.getFuturesSummary).toHaveBeenCalledTimes(1);
+    fixture.componentInstance.loadSummary();
+    fixture.detectChanges();
+    expect(portfolioService.getFuturesSummary).toHaveBeenCalledTimes(2);
+  });
+
+  describe('the futures card outside the portfolio gate', () => {
+    const emptySummary = (overrides: Partial<PortfolioSummary> = {}) => buildSummary({
+      holdings: [],
+      total_market_value: 0,
+      total_cash_twd: '0',
+      futures_equity_twd: '0',
+      total_assets_twd: '0',
+      total_dividends: 0,
+      total_pending_dividends_net: 0,
+      ...overrides,
+    });
+    const futuresWith = (equity: string) => ({
+      as_of: '2026-11-23',
+      value: { total_equity: equity, balance: equity, source_date: '2026-11-23', source_kind: 'daily', positions_open: false, frozen: false },
+      latest_daily: null,
+      month: { month: '2026-11', pnl: null, pnl_complete: false, pnl_reason: 'no_baseline', futures_realized: '0' },
+    });
+
+    it('shows the populated view and the card for offsetting parts (no holdings, cash 100, futures −100, total "0")', () => {
+      portfolioService.getSummary.mockReturnValue(of(emptySummary({ total_cash_twd: '100', futures_equity_twd: '-100' })));
+      portfolioService.getFuturesSummary.mockReturnValue(of(futuresWith('-100')));
+      const root = createFixture().nativeElement as HTMLElement;
+
+      expect(root.querySelector('.empty')).toBeNull();
+      expect(root.querySelector('.hero .hero-total')?.textContent?.trim()).toBe('0');
+      const card = root.querySelectorAll('app-futures-card');
+      expect(card.length).toBe(1);
+      expect(card[0].querySelector('[data-testid="futures-equity"]')?.textContent?.trim()).toBe('−$100');
+      expect(card[0].querySelector('.futures-grid')).not.toBeNull();
+    });
+
+    it('keeps the empty view for an entirely empty portfolio and adds the card in its empty state below it', () => {
+      portfolioService.getSummary.mockReturnValue(of(emptySummary()));
+      const root = createFixture().nativeElement as HTMLElement;
+
+      const empty = root.querySelector('.empty');
+      expect(empty?.querySelector('h4')?.textContent?.trim()).toBe('尚未建立投資組合');
+      expect(root.querySelector('.kpi-card')).toBeNull();
+      const card = root.querySelectorAll('app-futures-card');
+      expect(card.length).toBe(1);
+      expect(card[0].textContent).toContain('尚無期貨對帳單');
+      expect(empty!.compareDocumentPosition(card[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('shows futures data under the empty view when only the futures summary has some', () => {
+      portfolioService.getSummary.mockReturnValue(of(emptySummary()));
+      portfolioService.getFuturesSummary.mockReturnValue(of(futuresWith('300')));
+      const root = createFixture().nativeElement as HTMLElement;
+
+      expect(root.querySelector('.empty h4')?.textContent?.trim()).toBe('尚未建立投資組合');
+      expect(root.querySelector('app-futures-card [data-testid="futures-equity"]')?.textContent?.trim()).toBe('$300');
+      // The narrow empty-portfolio host needs no input: the card's container query keeps it one column.
+      const host = root.querySelector('app-futures-card.empty-futures')!;
+      expect(host.querySelector('.futures-grid')).not.toBeNull();
+      expect(host.hasAttribute('ng-reflect-stacked')).toBe(false);
+    });
+
+    it('shows the card error state under the empty view', () => {
+      portfolioService.getSummary.mockReturnValue(of(emptySummary()));
+      portfolioService.getFuturesSummary.mockReturnValue(throwError(() => new Error('boom')));
+      const root = createFixture().nativeElement as HTMLElement;
+
+      expect(root.querySelector('.empty')).not.toBeNull();
+      expect(root.querySelector('app-futures-card')?.textContent).toContain('期貨資料載入失敗');
+    });
+
+    it.each([
+      ['cash only', { total_cash_twd: '100', total_assets_twd: '100' }],
+      ['futures only with a total of "0"', { futures_equity_twd: '50', total_assets_twd: '0' }],
+      ['pending dividends only', { total_pending_dividends_net: '5' }],
+    ])('treats any non-zero asset part as populated (%s)', (_name, overrides) => {
+      portfolioService.getSummary.mockReturnValue(of(emptySummary(overrides as Partial<PortfolioSummary>)));
+      const root = createFixture().nativeElement as HTMLElement;
+      expect(root.querySelector('.empty')).toBeNull();
+      expect(root.querySelectorAll('.kpi-card').length).toBe(4);
+      expect(root.querySelectorAll('app-futures-card').length).toBe(1);
+    });
+  });
 
   it('refreshes quotes, polls until completed, then reloads summary', () => {
     portfolioService.refreshQuotes.mockReturnValue(of({
@@ -532,6 +632,43 @@ describe('PortfolioDashboardComponent', () => {
       expect(bar.getAttribute('aria-label')).toBe('資產組成：股票 100%，現金 0.0%');
       expect(Array.from(bar.querySelectorAll<HTMLElement>('span')).map(s => s.style.flexGrow)).toEqual(['100', '0']);
       expect(el.querySelectorAll('.legend-value')[1].textContent?.trim()).toBe('−200');
+    });
+
+    it('shows the zero-futures hero exactly as before: two segments, no futures legend entry', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ futures_equity_twd: '0.0000' })));
+      const el = hero(createFixture())!;
+      expect(el.querySelectorAll('.composition-bar span').length).toBe(2);
+      expect(el.querySelector('.composition-bar')!.getAttribute('aria-label')).toBe('資產組成：股票 80.0%，現金 20.0%');
+      expect(Array.from(el.querySelectorAll('.legend-label')).map(l => l.textContent?.trim())).toEqual(['股票市值', '交割戶現金', '待收股利']);
+    });
+
+    it('uses a present total for the hero total, even "0"', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ total_assets_twd: '0', futures_equity_twd: '-1250' })));
+      expect(hero(createFixture())!.querySelector('.hero-total')?.textContent?.trim()).toBe('0');
+    });
+
+    it('adds a 期貨權益 segment and legend entry when futures equity is not zero', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({
+        total_market_value: 600, total_cash_twd: '200', futures_equity_twd: '200', total_assets_twd: '1000',
+      })));
+      const el = hero(createFixture())!;
+      const bar = el.querySelector('.composition-bar')!;
+      expect(Array.from(bar.querySelectorAll<HTMLElement>('span')).map(s => s.style.flexGrow)).toEqual(['60', '20', '20']);
+      expect(bar.getAttribute('aria-label')).toBe('資產組成：股票 60.0%，現金 20.0%，期貨權益 20.0%');
+      expect(Array.from(el.querySelectorAll('.legend-label')).map(l => l.textContent?.trim()))
+        .toEqual(['股票市值', '交割戶現金', '期貨權益', '待收股利']);
+      expect(el.querySelectorAll('.legend-value')[2].textContent?.trim()).toBe('200');
+    });
+
+    it('keeps a negative futures equity out of the bar but shows it with its sign in the legend', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({
+        total_market_value: 1000, total_cash_twd: '250', futures_equity_twd: '-100', total_assets_twd: '1150',
+      })));
+      const el = hero(createFixture())!;
+      const bar = el.querySelector('.composition-bar')!;
+      expect(Array.from(bar.querySelectorAll<HTMLElement>('span')).map(s => s.style.flexGrow)).toEqual(['80', '20']);
+      expect(el.querySelector('.hero-total')?.textContent?.trim()).toBe('1,150');
+      expect(el.querySelectorAll('.legend-value')[2].textContent?.trim()).toBe('−100');
     });
 
     it('is hidden while a market filter is active', () => {
@@ -957,6 +1094,74 @@ describe('PortfolioDashboardComponent', () => {
       expect(callbacks.afterBody([{ dataIndex: 1, datasetIndex: 0, dataset: datasets[0], parsed: { y: 154 } }])).toBe('現金 $54');
     });
 
+    it('keeps a present zero total (market 100, cash 0, futures -100)', () => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        { ...point('2026-10-21', '100', '0', '0'), futures_equity_twd: '-100.0000' },
+        point('2026-10-22', '1000', '250', '1250'),
+      ]));
+      const datasets = (createFixture().componentInstance.chartData as any).datasets;
+      expect(datasets[0].data).toEqual([0, 1250]);
+    });
+
+    it('falls back to market + cash + futures when the total is absent', () => {
+      const noTotal = { ...point('2026-10-21', '100', '20', ''), futures_equity_twd: '30' } as any;
+      delete noTotal.total_assets_twd;
+      portfolioService.getNetworthHistory.mockReturnValue(of([noTotal, point('2026-10-22', '1000', '250', '1250')]));
+      const datasets = (createFixture().componentInstance.chartData as any).datasets;
+      expect(datasets[0].data).toEqual([150, 1250]);
+    });
+
+    it('keeps futures in the carried total of a cash-only day and out of the cash figure', () => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        point('2026-10-23', '100', '40', '140'),
+        { ...point('2026-10-24', '0', '54', '104'), futures_equity_twd: '50' },
+        point('2026-10-26', '120', '60', '180'),
+      ]));
+      const fixture = createFixture();
+      const datasets = (fixture.componentInstance.chartData as any).datasets;
+      const callbacks = (fixture.componentInstance.chartOptions as any).plugins.tooltip.callbacks;
+      expect(datasets[0].data).toEqual([140, 204, 180]);
+      expect(callbacks.afterBody([{ dataIndex: 1, datasetIndex: 0, dataset: datasets[0], parsed: { y: 204 } }])).toEqual(['現金 $54', '期貨權益 $50']);
+    });
+
+    it('names futures in the keyboard summary text only when not zero', () => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        point('2026-10-23', '100', '40', '140'),
+        { ...point('2026-10-24', '100', '40', '190'), futures_equity_twd: '50' },
+      ]));
+      const c = createFixture().componentInstance as any;
+      const points = c.chartPoints();
+      expect(c.pointSummary(points[1])).toContain('現金 $40 · 期貨權益 $50');
+      expect(c.pointSummary(points[0])).not.toContain('期貨權益');
+    });
+
+    it('draws a zero-futures history exactly as before', () => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        { ...point('2026-10-23', '100', '40', '140'), futures_equity_twd: '0.0000' },
+        point('2026-10-24', '0', '54', '54'),
+        point('2026-10-26', '120', '60', '180'),
+      ]));
+      const datasets = (createFixture().componentInstance.chartData as any).datasets;
+      expect(datasets[0].data).toEqual([140, 154, 180]);
+      expect(datasets[1].data).toEqual([100, 100, 120]);
+    });
+
+    it('names futures in the legend gap when futures equity is not zero', () => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        point('2026-09-01', '800', '200', '1000'),
+        { ...point('2026-10-22', '1000', '250', '1500'), futures_equity_twd: '250' },
+      ]));
+      const fixture = createFixture();
+      expect(legend(fixture.nativeElement)[2]).toEqual(['兩線差距 = 現金 + 期貨權益', '$500']);
+    });
+
+    it('keeps the cash-only gap label for zero futures', () => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        { ...point('2026-10-22', '1000', '250', '1250'), futures_equity_twd: '0.0000' },
+      ]));
+      expect(legend(createFixture().nativeElement)[2]).toEqual(['兩線差距 = 交割戶現金', '$250']);
+    });
+
     it('shows the three legend entries with the latest values and swatches', () => {
       const fixture = createFixture();
       const card = chartCard(fixture.nativeElement);
@@ -1013,10 +1218,10 @@ describe('PortfolioDashboardComponent', () => {
       expect(total.data[1]).toBe(holdings.data[1]);
     });
 
-    it('falls back to market + cash when the latest total is zero', () => {
-      portfolioService.getNetworthHistory.mockReturnValue(of([
-        point('2026-10-22', '1000', '250', '0'),
-      ]));
+    it('falls back to market + cash when the latest total is absent', () => {
+      const noTotal = point('2026-10-22', '1000', '250', '0') as any;
+      delete noTotal.total_assets_twd;
+      portfolioService.getNetworthHistory.mockReturnValue(of([noTotal]));
       const fixture = createFixture();
 
       expect(legend(fixture.nativeElement)).toEqual([
