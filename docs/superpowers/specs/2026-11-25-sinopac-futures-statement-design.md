@@ -366,10 +366,13 @@ is set when `findings_sha` changes. A day or month with findings is pending (§8
   month's deposits come from daily statements and any of them, or the month, has a finding) and
   本月期貨平倉損益, the source date, and the frozen note of §6.3. Read from a new
   `GET /api/portfolio/futures/summary`.
-- Card layout: on wide screens two columns. Left: 權益總值 (large), 本月損益, 本月期貨平倉損益, and at its foot 資料日 with
-  the frozen note 「持倉中，數字停在 MM/DD」. Right: 可動用(出金)保證金, 原始 / 維持保證金, 超額 / 追繳保證金, and at its foot
-  「保證金資料日 MM/DD」 (shown only when the margins come from an older daily statement than 資料日). Phones keep one
-  column in the same order, with 保證金資料日 directly under the margin rows, never above 本月損益.
+- Card layout: the card's own width decides the columns (a container query, not the viewport): from about 600px of
+  content width two columns that fill the card, one shared three-row grid so the rows line up — left 權益總值 (large;
+  the first row takes its height), 本月損益, 本月期貨平倉損益; right 可動用(出金)保證金, 原始 / 維持保證金, 超額 / 追繳保證金.
+  Below the grid one date row aligned to the same columns: left 資料日 with the frozen note 「持倉中，數字停在 MM/DD」,
+  right 「保證金資料日 MM/DD」 (shown only when the margins come from an older daily statement than 資料日). Narrower cards
+  use one column with no max width, in the same order, with 保證金資料日 directly under the margin rows, never above
+  本月損益. On phones the warning tag and amount may wrap to a second line (accepted).
 - Margin warning: when 超額保證金 < 0 or 追繳保證金 > 0 the margin row uses a warning style in amber / orange, never red
   (on this card red means up and green means down, so red would read as a gain), plus a ⚠ icon and the word 追繳 so
   colour is not the only signal; contrast is checked in light and dark. With 追繳 $0 and 超額 ≥ 0 both stay in the
