@@ -121,10 +121,11 @@
   display: flex;
   /* One width for every row, content at the right: the body (and so the amount) then ends at the same x on every
      row. 200 px = the widest pair, 全部入帳 (4 x 13.6 px + 2 x 17.6 px padding = 90 px, +22 px for the busy spinner)
-     + 8 px gap + 逐期處理 (4 x 13 px + 2 x 12 px = 76 px) = 174 px idle / 196 px busy, + 8 px gap + the 36 px 稍後提醒
-     clock (PR E2) = 218 / 240 px: every row's actions stay on one line, so rows keep one height. */
-  flex: 0 0 240px;
-  flex-wrap: wrap;
+     + 8 px gap + 逐期處理 (4 x 13 px + 2 x 12 px = 76 px) = 174 px idle / 196 px busy, + 2 px for the button's
+     transparent border, + 8 px gap + the 36 px 稍後提醒 clock (PR E2) = 220 / 242 px, so 248 px. The line never wraps
+     (AGENT-605): every row keeps one height. */
+  flex: 0 0 248px;
+  flex-wrap: nowrap;
   gap: 8px;
   justify-content: flex-end;
   margin-left: auto;
@@ -273,6 +274,7 @@
 
   .notif-actions {
     flex: 0 0 100%;
+    flex-wrap: wrap;
     justify-content: flex-start;
     margin-left: 0;
     padding-left: 52px;
@@ -315,10 +317,10 @@
 }
 
 /* 760–1023 px is a tablet's touch range (owner design review 2026-11-26): the clock keeps its size, its target grows
-   to 44 x 44 px, and the actions column takes the extra 8 px (196 busy + 8 gap + 44 = 248 px) to stay on one line. */
+   to 44 x 44 px, and the actions column grows by the same 8 px (242 px busy becomes 250 px, so 256 px). */
 @media (min-width: 760px) and (max-width: 1023.98px) {
   .notif-actions {
-    flex-basis: 248px;
+    flex-basis: 256px;
   }
 
   .notif-snooze ::ng-deep .pk-trigger {

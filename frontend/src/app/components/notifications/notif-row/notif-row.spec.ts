@@ -411,18 +411,21 @@ describe('NotifRowComponent', () => {
 
     it('at 760 px and up the actions have one fixed width, content right-aligned, so every amount ends at the same x', () => {
       const top = css.slice(0, css.indexOf('@media'));
-      expect(rule(top, '.notif-actions')).toMatch(/flex:\s*0 0 240px/);
+      expect(rule(top, '.notif-actions')).toMatch(/flex:\s*0 0 248px/);
+      // Never wraps from 760 px (AGENT-605: a busy 全部入帳 + 逐期處理 + the clock is 242 px); a phone wraps.
+      expect(rule(top, '.notif-actions')).toMatch(/flex-wrap:\s*nowrap/);
+      expect(rule(phone, '.notif-actions')).toMatch(/flex-wrap:\s*wrap/);
       expect(rule(top, '.notif-actions')).toMatch(/justify-content:\s*flex-end/);
       expect(rule(phone, '.notif-actions')).toMatch(/flex:\s*0 0 100%/);
       expect(rule(phone, '.notif-actions')).toMatch(/justify-content:\s*flex-start/);
     });
 
-    it('760–1023 px (tablet, touch): the clock is a 44 x 44 px target and the actions column widens to 248 px to keep one line', () => {
+    it('760–1023 px (tablet, touch): the clock is a 44 x 44 px target and the actions column widens to 256 px to keep one line', () => {
       const start = css.indexOf('@media (min-width: 760px) and (max-width: 1023.98px)');
       expect(start).toBeGreaterThan(-1);
       const tablet = css.slice(start, css.indexOf('@media', start + 1) === -1 ? undefined : css.indexOf('@media', start + 1));
       expect(tablet).toMatch(/\.notif-snooze ::ng-deep \.pk-trigger\s*\{[^}]*min-height:\s*44px[^}]*min-width:\s*44px/);
-      expect(rule(tablet, '.notif-actions')).toMatch(/flex-basis:\s*248px/);
+      expect(rule(tablet, '.notif-actions')).toMatch(/flex-basis:\s*256px/);
     });
 
     it('at 760 px and up the title is a single-line ellipsis', () => {
