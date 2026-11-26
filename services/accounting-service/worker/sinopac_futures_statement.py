@@ -16,6 +16,7 @@ from decimal import Decimal
 from worker.pdf import Line, Word
 
 ALIGN_PT = 3.0
+A_SUFFIX_PT = 12.2  # width of the `[A]` glued to the 調整前原始保證金 amount (census: every glued word, rev 1.7)
 
 DAILY_TITLE = "國內期貨日對帳單"
 MONTHLY_TITLE = "國內期貨月對帳單"
@@ -60,6 +61,7 @@ M_CLOSE = _M_HEAD + ("倉別", "成交價格", "價差損益-支出金額", "價
 M_OPEN = _M_HEAD + ("買賣別", "成交價格", "價差損益(支出)", "價差損益(存入)")
 _QTY = ("買入", "賣出")  # monthly quantity columns: centred under their labels
 _ALL_HEADERS = (D_DEP, D_TRADE, D_POS, D_EQ_B, D_EQ_A, M_DEP, M_TRADE, M_CLOSE, M_OPEN)
+_LABEL_WORDS = frozenset(label for header in _ALL_HEADERS for label in header)
 
 EQUITY_FIELDS = {
     "本日餘額": "balance", "本日權益數": "equity", "權益總值": "total_equity", "原始保證金": "initial_margin",
@@ -265,10 +267,12 @@ def _header(lines: list, expected: tuple[str, ...], centre: tuple[str, ...] = ()
 
 
 def _guard_notices(lines: list[Line], code: str) -> None:
-    """Notices are not read, but nothing that belongs to a section may hide in them."""
+    """Notices are not read, but nothing that belongs to a section may hide in them: a marker, a header or label
+    row (also a partial one: two or more words, all labels), a dated line, an all-numeric line, a total."""
     for ln in lines:
         texts = _texts(ln)
-        if (_MARKER_LIKE.search(ln.text) or tuple(texts) in _ALL_HEADERS or any(_DATE_RE.match(x) for x in texts)
+        partial_header = len(texts) >= 2 and all(x in _LABEL_WORDS for x in texts)
+        if (_MARKER_LIKE.search(ln.text) or partial_header or any(_DATE_RE.match(x) for x in texts)
                 or all(_is_num(x) for x in texts) or any("總計" in x or "小計" in x for x in texts)):
             raise StatementError(code)
 
@@ -317,7 +321,7 @@ def _daily_deposits(lines: list[Line]) -> tuple[set[date], list[dict]]:
             direction, free = "out", texts[2:]
         else:
             raise StatementError("sequence")
-        if not 1 <= len(free) <= 2:
+        if len(free) != (1 if direction == "in" else 2):  # bank; bank and note (census rev 1.7)
             raise StatementError("sequence")
         cols = _columns(nums, labels, ("匯出入金額",))
         deposits.append({"seq": words[1].text, "direction": direction, "amount": _required(cols, "匯出入金額")})
@@ -334,7 +338,7 @@ def _daily_trades(lines: list[Line]) -> tuple[set[date], list[dict], dict | None
     for ln in rest:
         texts, nums = _split(ln.words)
         head = texts[0] if texts else ""
-        if _DATE_RE.match(head) and texts[1:] == ["無交易"]:
+        if _DATE_RE.match(head) and texts[1:] == ["無交易"] and not nums:
             dates.add(_roc(head))
             codes += "N"
         elif _DATE_RE.match(head) and len(texts) > 1 and _ORDER_RE.match(texts[1]):
@@ -420,6 +424,11 @@ def _daily_positions(lines: list[Line]) -> tuple[list[dict], dict, dict]:
         elif head == "調整前原始保證金" and len(texts) == 2 and _GLUED_A_RE.match(texts[1]):
             cols = _columns(nums, labels, ("部位",))
             glued = _GLUED_A_RE.match(texts[1]).group(1)
+            if glued:
+                word = next(w for w in ln.words if w.text == texts[1])
+                margin_x1 = next(lb.x1 for lb in labels if lb.text == "原始保證金")
+                if abs(word.x1 - A_SUFFIX_PT - margin_x1) > ALIGN_PT:
+                    raise StatementError("column")
             checks["A.qty"], checks["A"] = Decimal(_qty(cols.get("部位"))), _dec(glued) if glued else Decimal(0)
             codes += "a"
         elif joined == "組合合計[B]" and not nums:
@@ -429,6 +438,7 @@ def _daily_positions(lines: list[Line]) -> tuple[list[dict], dict, dict]:
         elif joined == "原始保證金(A - C - D)":
             cols = _columns(nums, labels, ("部位", "原始保證金"))
             checks["ACD.qty"] = Decimal(_qty(cols.get("部位")))
+            checks["ACD"] = _amount(cols, "原始保證金")
             codes += "n"
         elif len(texts) == 5 and _LEG_CODE_RE.match(head):
             if not (_LEG_RATIO_RE.match(texts[1]) and texts[2] in SIDES and _LEG_KIND_RE.match(texts[3])
@@ -509,6 +519,10 @@ def _daily_identities(e: dict, deposits: list[dict], fills: list[dict], fills_to
         qty = Decimal(sum(p["qty"] for p in positions))
         check("position_margin", checks["A"] == sum((p["initial_margin"] for p in positions), zero)
               and checks["A.qty"] == qty == checks["ACD.qty"])
+        saving = checks.get("省組合保證金", zero)
+        if "調整後原始保證金(A - C)" in checks:
+            check("margin_after_combo", checks["調整後原始保證金(A - C)"] == checks["A"] - saving)
+        check("margin_net", checks["ACD"] == checks["A"] - saving)  # D: the [D] line never prints an amount
     if fills_total is not None:
         check("total_tax", fills_total["tax"] == sum((f["tax"] for f in fills), zero))
         check("total_fee", fills_total["fee"] == sum((f["fee"] for f in fills), zero))
@@ -531,7 +545,7 @@ def parse_monthly(lines: list[Line]) -> MonthlyStatement:
         page = pages[number]
         if number > 1:
             if not page or page[0].text != MONTHLY_TITLE:
-                raise StatementError("header")
+                raise StatementError("title")
             skip = 1
             if len(page) > 1 and page[1].words[-1].text == "啟":
                 if len(page) < 3:
@@ -577,7 +591,7 @@ def _monthly_deposits(lines: list) -> set[date]:
                 column = "出金金額"
             else:
                 raise StatementError("sequence")
-            if not 1 <= len(texts) - 3 <= 2:
+            if len(texts) != 4:  # one unread account word (census rev 1.7)
                 raise StatementError("sequence")
             _required(_columns(nums, labels, (column,)), column)
             dates.add(_roc(texts[0]))

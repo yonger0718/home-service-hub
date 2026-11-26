@@ -318,6 +318,27 @@ def _replace_fill(**kw):
     return f
 
 
+def _no_trade_with_number(rows):
+    start, end = fx.find(rows, "成交日期 委託書號") + 1, fx.find(rows, "總計")
+    rows[start:end + 1] = [row(1, *fx.trade_none()[1], n("1", fx.edge(fx.D_TRADE, "口數")))]
+
+
+def _glued_a_shifted(rows):
+    i = fx.find(rows, "調整前原始保證金")
+    rows[i] = (1, tuple(Word(w.text, w.x0 + 5, w.x1 + 5) if w.text.endswith("[A]") else w for w in rows[i][1]))
+
+
+def _deposit_words(direction, extra):
+    def f(rows):
+        i = fx.find(rows, "115/03/09")
+        base = fx.dep_in("1", "50,000.00") if direction == "in" else fx.dep_out("1", "50,000.00")
+        words = [w for w in base[1] if w.text not in ("範例說明",)] if extra < 0 else list(base[1])
+        if extra > 0:
+            words.append(t("範例說明", 380.0))
+        rows[i] = row(1, *words)
+    return f
+
+
 def _position_side(rows):
     i = fx.find(rows, "115/03/05 範例期貨")
     rows[i] = (1, tuple(Word("多", w.x0, w.x1) if w.text == "買" else w for w in rows[i][1]))
@@ -350,6 +371,13 @@ DAILY_LAYOUT = [
     ("option_right_without_strike", _replace_fill(right="Call", no_strike=True), "sequence"),
     ("futures_fill_with_right", _replace_fill(closing={"right": "Put"}), "sequence"),
     ("position_side_not_buy_sell", _position_side, "sequence"),
+    ("no_trade_line_with_number", _no_trade_with_number, "line"),
+    ("glued_margin_amount_off_column", _glued_a_shifted, "column"),
+    ("deposit_in_two_free_words", _deposit_words("in", 1), "sequence"),
+    ("deposit_out_one_free_word", _deposit_words("out", -1), "sequence"),
+    ("notice_partial_label_row", lambda rows: rows.insert(fx.find(rows, "第1頁/共2頁"),
+                                                          row(1, t("本日餘額", 36.6), t("權益總值", 154.8))), "line"),
+    ("page2_partial_header_row", _page2(row(2, t("成交日期", 15.6), t("委託書號", 67.4), t("口數", 338.9))), "page2"),
     ("notice_dated_line", lambda rows: rows.insert(fx.find(rows, "第1頁/共2頁"), row(1, t(fx.DATE, 15.6))), "line"),
     ("footer_missing", _drop("第1頁/共2頁"), "line"),
 ]
@@ -385,6 +413,16 @@ def _m_misaligned_left_value(rows):
     rows[i] = (rows[i][0], tuple(Word(w.text, w.x0 - 6, w.x1 - 6) if w.text == "101,080.00" else w for w in rows[i][1]))
 
 
+def _m_deposit_two_words(rows):
+    i = fx.find(rows, "115/03/02 當日入金")
+    rows[i] = (1, rows[i][1] + (t("範例", 330.0),))
+
+
+def _m_continuation_title(rows):
+    i = next(k for k, r in enumerate(rows) if r[0] == 2)
+    rows[i] = row(2, t("國內期貨日對帳單", 250.0))
+
+
 MONTHLY_LAYOUT = [
     ("unknown_line_存提", _m_insert("存提淨額(B)"), "line"),
     ("unknown_line_交易明細", _m_insert("手續費總計(H)"), "line"),
@@ -396,6 +434,10 @@ MONTHLY_LAYOUT = [
     ("numeric_word_without_label", _m_shift_price, "column"),
     ("month_end_label_missing", _m_drop_right_label, "line"),
     ("month_end_value_misaligned", _m_misaligned_left_value, "column"),
+    ("deposit_two_free_words", _m_deposit_two_words, "sequence"),
+    ("continuation_page_title", _m_continuation_title, "title"),
+    ("month_end_notice_partial_label_row", lambda rows: rows.insert(
+        len(rows) - 1, row(2, t("交易日", 17.0), t("買入", 61.6))), "line"),
     ("title", lambda rows: rows.__setitem__(0, row(1, t("國內期貨日對帳單", 250.0))), "title"),
     ("currency", lambda rows: rows.__setitem__(fx.find(rows, "新台幣(NTT) ＊國內市場交易明細＊"),
                                                fx.marker("國內市場交易明細", prefix="", currency="美元(USD)")), "currency"),
@@ -435,7 +477,31 @@ DAILY_IDENTITIES = [
 ]
 
 
-@pytest.mark.parametrize("name,kw", DAILY_IDENTITIES, ids=[c[0] for c in DAILY_IDENTITIES])
+def _margin_tail(a_qty="2", net_qty="2", net="20,000.00", combo=None):
+    positions = fx.default_positions()
+    tail = fx.find(positions, "未沖銷選擇權浮動損益")
+    positions[tail:] = [fx.labelled("未沖銷選擇權浮動損益"), fx.labelled("未沖銷選擇權市場價值淨額", "300.00"),
+                        fx.margin_a(a_qty, "20,000.00"), *(combo or []), fx.margin_d(), fx.margin_net(net_qty, net)]
+    return {"positions": positions}
+
+
+def _combo(after):
+    return [fx.combo_leg("ABC21000/21100D6", "1B:1S", "買", "1", "買權價差"), row(1, t("組合合計[B]", 15.6)),
+            fx.labelled("省組合保證金", "5,000.00"), fx.labelled("調整後原始保證金(A - C)", after)]
+
+
+DAILY_IDENTITIES += [
+    ("position_margin", _margin_tail(a_qty="3")),
+    ("position_margin", _margin_tail(net_qty="3")),
+    ("margin_net", _margin_tail(net="19,000.00")),
+    ("margin_after_combo", _margin_tail(net="15,000.00", combo=_combo("14,000.00"))),
+    ("margin_net", _margin_tail(net="14,000.00", combo=_combo("15,000.00"))),
+]
+IDENTITY_IDS = [c[0] for c in DAILY_IDENTITIES[:-5]] + [
+    "position_margin_A_qty", "position_margin_ACD_qty", "margin_net", "margin_after_combo", "margin_net_combo"]
+
+
+@pytest.mark.parametrize("name,kw", DAILY_IDENTITIES, ids=IDENTITY_IDS)
 def test_identity_broken_alone(name, kw):
     assert daily_code(fx.daily_rows(**kw)) == f"identity:{name}"
 
