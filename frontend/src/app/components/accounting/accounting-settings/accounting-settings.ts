@@ -234,6 +234,9 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
     if (!stored || this.autoPaySaving()) return;
     this.autoPayMessage.set(null);
     const value = input.value || null;
+    if (value === stored.enabled_from && !this.autoPayDraftOn()) {
+      return; // the stored date again: nothing to save
+    }
     if (value === null && stored.enabled) {
       input.value = stored.enabled_from ?? '';
       this.autoPayMessage.set('自動扣繳開啟時需要起始日');

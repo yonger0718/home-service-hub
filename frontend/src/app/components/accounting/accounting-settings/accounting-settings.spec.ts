@@ -714,6 +714,8 @@ describe('AccountingSettingsComponent', () => {
         expect(req.request.body).toEqual({ enabled_from: '2026-11-01' });
         req.flush({ enabled: true, enabled_from: '2026-11-01', version: 7 });
         fixture.detectChanges();
+        change('.autopay-from', '2026-11-01');
+        http.expectNone(r => r.method === 'PATCH'); // the stored date again: nothing to save
         change('.autopay-from', '');
         http.expectNone(r => r.method === 'PATCH');
         expect(el.querySelector('.autopay-message')?.textContent?.trim()).toBe('自動扣繳開啟時需要起始日');
