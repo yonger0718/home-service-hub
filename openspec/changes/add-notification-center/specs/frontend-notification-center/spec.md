@@ -65,6 +65,11 @@ Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and �
 - **WHEN** the oldest instance is posted and 2 remain
 - **THEN** the task SHALL stay hidden
 
+#### Scenario: Fewer missing futures statements keep the snooze
+- **GIVEN** the 永豐期貨對帳單 10/27 task 缺 3 份日對帳單 is snoozed
+- **WHEN** the reason becomes 缺 2 份日對帳單
+- **THEN** the task stays hidden; 缺 4 份日對帳單, or any other change of the reason, SHALL bring it back
+
 #### Scenario: Overdue wakes a snoozed task
 - **GIVEN** the 房租 task due today is snoozed until 下週一 09:00
 - **WHEN** the next day it is 已逾期

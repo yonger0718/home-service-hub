@@ -58,9 +58,9 @@
               <app-btn
                 variant="soft"
                 [loading]="isBusy(item.id)"
-                [ariaLabel]="'知道了：' + item.name + ' ' + item.text"
+                [ariaLabel]="'已處理：' + item.name + ' ' + item.text"
                 (click)="ack(item)"
-              >知道了</app-btn>
+              >已處理</app-btn>
             </li>
           }
         </ul>
