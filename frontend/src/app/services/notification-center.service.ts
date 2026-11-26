@@ -1,4 +1,4 @@
-import { DestroyRef, Injectable, InjectionToken, Injector, Signal, computed, effect, inject, signal, untracked } from '@angular/core';
+import { DestroyRef, Injectable, Injector, Signal, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DOCUMENT } from '@angular/common';
 import { Observable, Subject, catchError, forkJoin, from, map, of, takeUntil, timeout } from 'rxjs';
 
@@ -40,6 +40,7 @@ import {
   recalcFailed,
   splitPendingDividends,
 } from '../components/notifications/sources/portfolio';
+import { SnoozeOption, snoozeEntry, snoozeUntil, wakes } from '../components/notifications/snooze';
 import { scheduleTasks } from '../components/notifications/sources/schedules';
 import { allPages } from '../components/portfolio/paging';
 import { NavBadge } from '../components/shell/navigation';
@@ -48,10 +49,15 @@ import { CathayPending, CathayPendingDay, CathayRun, CathayRuns, Dividend, Paged
 import { AccountingService } from './accounting.service';
 import { BusinessCalendarService } from './business-calendar.service';
 import { ImportHistoryService } from './import-history.service';
+import { NOTIF_CLOCK } from './notif-clock';
+import { NotifSnoozeStore } from './notif-snooze.store';
 import { PortfolioService } from './portfolio.service';
 
-/** The round's clock; tests provide a fixed one. */
-export const NOTIF_CLOCK = new InjectionToken<() => Date>('NOTIF_CLOCK', { providedIn: 'root', factory: () => () => new Date() });
+/** The round's clock (also the snooze clock); tests provide a fixed one. */
+export { NOTIF_CLOCK };
+
+/** The snooze timer never waits longer than this before re-reading the clock (a sleeping device, a changed clock). */
+const SNOOZE_TIMER_MAX_MS = 24 * 3_600_000;
 
 /** The dividend scan's page cap (`allPages`' default, named so the tests can cite it): beyond it the source fails (C12). */
 export const DIVIDEND_MAX_PAGES = 50;
@@ -167,6 +173,10 @@ export class NotificationCenterService {
   private readonly document = inject(DOCUMENT);
   private readonly destroyRef = inject(DestroyRef);
   private readonly clock = inject(NOTIF_CLOCK);
+
+  private readonly snoozes = inject(NotifSnoozeStore);
+  /** The snooze clock: the round clock at a round start, at a snooze, and when the earliest snooze ends. */
+  private readonly snoozeNow = signal<Date>(this.clock());
 
   private readonly roundId = signal(0);
   private readonly settledId = signal(0);
@@ -299,10 +309,30 @@ export class NotificationCenterService {
    */
   readonly loaded: Signal<boolean> = computed(() => this.settledRound() > 0);
 
-  /** Counted tasks (追蹤中 excluded), in `sortTasks` order. */
-  readonly tasks: Signal<readonly NotifTask[]> = computed(() =>
+  /** Counted tasks (追蹤中 excluded), snoozed ones included, in `sortTasks` order. */
+  readonly countedTasks: Signal<readonly NotifTask[]> = computed(() =>
     this.allTasks().filter(task => COUNTED_TIERS.includes(task.tier)),
   );
+  /** Ids of the counted tasks this device has snoozed and that have not woken (D4). */
+  private readonly hiddenIds: Signal<ReadonlySet<string>> = computed(() => {
+    const entries = this.snoozes.entries();
+    const now = this.snoozeNow();
+    return new Set(
+      this.countedTasks()
+        .filter(task => entries[task.id] !== undefined && !wakes(entries[task.id], task, now))
+        .map(task => task.id),
+    );
+  });
+  /**
+   * Counted tasks (追蹤中 excluded) minus the snoozed ones, in `sortTasks` order: the list, the count, the chips and
+   * the badge all follow it.
+   */
+  readonly tasks: Signal<readonly NotifTask[]> = computed(() => {
+    const hidden = this.hiddenIds();
+    return this.countedTasks().filter(task => !hidden.has(task.id));
+  });
+  /** Counted tasks hidden by a snooze on this device. */
+  readonly snoozedCount: Signal<number> = computed(() => this.hiddenIds().size);
   /** The debts row, the upcoming row, then the dividends waiting for their payment date; each absent when it has nothing. */
   readonly trackingRows: Signal<readonly NotifTrackingRow[]> = computed(() => {
     const counterparties = this.counterparties();
@@ -382,6 +412,8 @@ export class NotificationCenterService {
   });
 
   constructor() {
+    this.watchSnoozes();
+
     // The card statements outside a round: a new change round (a write; `BillingService` dedupes) and the dues
     // changing when the business-day calendar lands. A round's own call is made when its accounts answer lands.
     effect(() => {
@@ -467,6 +499,7 @@ export class NotificationCenterService {
     this.lastStartedAt = Date.now();
     const now = this.clock();
     this.now.set(now);
+    this.snoozeNow.set(now);
     const today = untracked(this.today);
     if (untracked(this.calendar) === null) {
       this.calendar.set(this.injector.get(BusinessCalendarService));
@@ -592,6 +625,73 @@ export class NotificationCenterService {
       if (round === untracked(this.roundId)) {
         apply(value);
       }
+    });
+  }
+
+  /**
+   * Snoozes `task` on this device until the option's time (D4); returns that time. The task leaves `tasks()` and the
+   * count until then, or until it wakes early (`wakes`).
+   */
+  snooze(task: NotifTask, option: SnoozeOption): Date {
+    const now = this.clock();
+    const until = snoozeUntil(option, now);
+    this.snoozes.set(task.id, snoozeEntry(task, until));
+    this.snoozeNow.set(now);
+    return until;
+  }
+
+  /** Brings one snoozed task back (the snooze toast's 復原). */
+  unsnooze(id: string): void {
+    this.snoozes.remove(id);
+  }
+
+  /** Brings every snoozed task back (現在顯示). */
+  showSnoozed(): void {
+    this.snoozes.clear();
+  }
+
+  /**
+   * The snooze upkeep: a woken or expired entry is removed (so it never re-hides once the wake condition passes); after
+   * a settled round, an entry whose task is gone while its source read ok is removed (new work later starts fresh; a
+   * failed source keeps it); one timer to the earliest end (at most a day ahead, re-armed) moves the snooze clock.
+   */
+  private watchSnoozes(): void {
+    effect(() => {
+      const entries = this.snoozes.entries();
+      const now = this.snoozeNow();
+      const ids = Object.keys(entries);
+      if (ids.length === 0) return;
+      const counted = new Map(this.countedTasks().map(task => [task.id, task]));
+      const done = ids.filter(id => {
+        const task = counted.get(id);
+        return Date.parse(entries[id].until) <= now.getTime() || (task !== undefined && wakes(entries[id], task, now));
+      });
+      if (done.length) untracked(() => this.snoozes.remove(...done));
+    });
+
+    effect(() => {
+      const round = this.settledRound();
+      if (round === 0) return;
+      untracked(() => {
+        const status = this.status();
+        const present = new Set(this.allTasks().map(task => task.id));
+        const entries = this.snoozes.entries();
+        const gone = Object.keys(entries).filter(id => {
+          const source = status[entries[id].from];
+          return source.round === round && source.state === 'ok' && !present.has(id);
+        });
+        if (gone.length) this.snoozes.remove(...gone);
+      });
+    });
+
+    effect(onCleanup => {
+      const entries = this.snoozes.entries();
+      const now = this.snoozeNow().getTime();
+      const ends = Object.values(entries).map(entry => Date.parse(entry.until)).filter(end => end > now);
+      if (ends.length === 0) return;
+      const delay = Math.min(Math.min(...ends) - now, SNOOZE_TIMER_MAX_MS);
+      const handle = setTimeout(() => this.snoozeNow.set(this.clock()), delay);
+      onCleanup(() => clearTimeout(handle));
     });
   }
 
