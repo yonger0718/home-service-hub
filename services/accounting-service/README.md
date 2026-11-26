@@ -299,6 +299,11 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
   unreadable line);
   `cathay_run_time` (default `"06:40"`, Asia/Taipei) is the worker's daily run and `cathay_run_grace_minutes` (default 15, 0 to 1439)
   how long after it a missing run counts as stale. With `--as-of D` the section is evaluated at D 07:00 Asia/Taipei.
+  The 永豐期貨 statement section 「永豐期貨對帳單」 (weekly 「永豐期貨對帳單待處理」, `notify/sinopac_futures.py`) follows the
+  same rules on `GET …/sinopac-futures-statement/pending` and `…/runs/latest`, with its own keys
+  `sinopac_futures_run_time` (default `"06:45"`) and `sinopac_futures_run_grace_minutes` (default 15); either section
+  failing collapses only that section to its 「狀態讀不到」 line. A findings reason is rendered from its parsed codes only;
+  a reason at the 40-character cap drops its possibly cut last code and ends with 「另有差異請到匯入頁查看」.
 - CLI (run from `services/accounting-service` with the notifier venv):
 
       python -m notify daily  [--as-of YYYY-MM-DD] [--dry-run | --send] [--config PATH]

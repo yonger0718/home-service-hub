@@ -161,9 +161,16 @@ def list_audit(statement_id: int | None = None, limit: int = Query(200, ge=1, le
 
 
 @router.get("/reconciliation/auto-pay", response_model=list[AutoPayRowOut], dependencies=READ)
-def list_auto_pay_rows(since: date, db: Session = Depends(get_db)):
-    """Card-statement auto-pay rows (one per statement) paying on or after `since`, newest pay date first."""
-    return auto_pay_service.list_rows(db, since=since)
+def list_auto_pay_rows(since: str = Query(pattern=r"^\d{4}-\d{2}-\d{2}$"), db: Session = Depends(get_db)):
+    """Card-statement auto-pay rows (one per statement) paying on or after `since`, newest pay date first.
+
+    `since` is a calendar day, YYYY-MM-DD only: a plain `date` parameter would also take a Unix-time string (`0`)."""
+    try:
+        day = date.fromisoformat(since)
+    except ValueError:
+        raise RequestValidationError([{"loc": ["query", "since"], "type": "value_error",
+                                       "msg": "since must be a calendar day (YYYY-MM-DD)"}]) from None
+    return auto_pay_service.list_rows(db, since=day)
 
 
 # --- agent proposals (Task 9) ---------------------------------------------------------------------------------------
