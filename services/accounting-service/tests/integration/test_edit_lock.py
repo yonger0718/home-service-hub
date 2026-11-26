@@ -231,6 +231,9 @@ EXPECTED_WRITES = {
     ("/einvoices/{invoice_id}/dismiss", "POST"), ("/einvoices/{invoice_id}/undismiss", "POST"),
     ("/einvoices/mutes/{tax_id}", "DELETE"), ("/einvoices/preferences", "PATCH"),
     ("/einvoices/runbook-dismiss", "POST"),
+    # Auto-pay switch (write scope, notification center E3a): merges auto_pay.enabled / enabled_from into the settings
+    # row only; no ledger row.
+    ("/settings/reconciliation/auto-pay", "PATCH"),
 }
 
 

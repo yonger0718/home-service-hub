@@ -176,7 +176,7 @@ When an item carries `transfer.adjust_transfer`, the flow SHALL offer 照帳單�
 
 ### Requirement: Portfolio and system task sources
 
-The page SHALL also read portfolio and system sources: pending dividends past their `payment_date`, the import failure behind the 匯入 dot, the 國泰 daily statement's pending dates and latest run (`/api/portfolio/imports/cathay-statement/pending`, `/runs/latest`), and skipped card-statement auto-pay (`GET /reconciliation/audit?event=auto_pay_skipped`, last 30 days).
+The page SHALL also read portfolio and system sources: pending dividends past their `payment_date`, the import failure behind the 匯入 dot, the 國泰 daily statement's pending dates and latest run (`/api/portfolio/imports/cathay-statement/pending`, `/runs/latest`), and skipped card-statement auto-pay (`GET /reconciliation/auto-pay`, rows paying in the last 30 days).
 
 #### Scenario: Dividends past payment date
 - **GIVEN** 玉山金 and 台積電 dividends are pending with payment dates before today

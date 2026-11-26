@@ -36,6 +36,8 @@ from ..schemas.statements import (
     Lease,
     ManualStatementIn,
     ReconcileOut,
+    AutoPaySwitchIn,
+    AutoPaySwitchOut,
     ReconciliationSettingsIn,
     ReconciliationSettingsOut,
     RetireIn,
@@ -411,5 +413,14 @@ def get_reconciliation_settings(db: Session = Depends(get_db)):
 def update_reconciliation_settings(body: ReconciliationSettingsIn, db: Session = Depends(get_db)):
     with service_errors():
         settings = settings_service.update_reconciliation_settings(db, body.model_dump())
+    db.commit()
+    return settings
+
+
+@router.patch("/settings/reconciliation/auto-pay", response_model=AutoPaySwitchOut, dependencies=WRITE)
+def patch_auto_pay_switch(body: AutoPaySwitchIn, db: Session = Depends(get_db)):
+    """The auto-pay switch and start date for the write scope (notification center D9; owner ruling 2026-11-25)."""
+    with service_errors():
+        settings = settings_service.merge_auto_pay_switch(db, body.model_dump(include=body.model_fields_set))
     db.commit()
     return settings

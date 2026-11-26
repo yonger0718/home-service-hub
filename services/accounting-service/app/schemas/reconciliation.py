@@ -50,6 +50,20 @@ class ActionOut(BaseModel):
     peer_case_id: int | None = None
 
 
+class AutoPayRowOut(BaseModel):
+    """One `statement_auto_pay` row (one per statement). `pay_account_id` is null for a `no_link` skip (the table
+    stores the card itself there)."""
+    statement_id: int
+    card_account_id: int
+    pay_account_id: int | None
+    amount: Decimal
+    due_date: date
+    pay_date: date
+    status: str
+    reason: str | None
+    updated_at: datetime
+
+
 class AuditOut(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
     id: int

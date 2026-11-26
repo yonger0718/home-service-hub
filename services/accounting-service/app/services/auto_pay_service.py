@@ -260,6 +260,21 @@ def _row_for(db: Session, cand: Candidate) -> StatementAutoPay:
     return row
 
 
+ROWS_LIMIT = 200
+
+
+def list_rows(db: Session, *, since: date) -> list[dict]:
+    """The `statement_auto_pay` rows paying on or after `since`, newest pay date first (at most ROWS_LIMIT): the
+    notification center's skipped-auto-pay tasks and the bill pill. A `no_link` skip's `pay_account_id` is None."""
+    rows = db.scalars(select(StatementAutoPay).where(StatementAutoPay.pay_date >= since)
+                      .order_by(StatementAutoPay.pay_date.desc(), StatementAutoPay.statement_id.desc())
+                      .limit(ROWS_LIMIT))
+    return [{"statement_id": r.statement_id, "card_account_id": r.card_account_id,
+             "pay_account_id": None if r.status == "skipped" and r.reason == "no_link" else r.pay_account_id,
+             "amount": r.amount, "due_date": r.due_date, "pay_date": r.pay_date, "status": r.status,
+             "reason": r.reason, "updated_at": r.updated_at} for r in rows]
+
+
 def _figures(cand: "Candidate | StatementAutoPay") -> dict:
     return {"card_account_id": cand.card_account_id, "pay_account_id": cand.pay_account_id,
             "amount": str(cand.amount), "pay_date": cand.pay_date.isoformat()}

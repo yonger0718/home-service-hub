@@ -10,7 +10,7 @@
 
 ### Requirement: Auto-pay in the bill pill and settings
 
-For a card with `auto_pay_account_id` while card-statement auto-pay is enabled and the statement is on or after its start date, the bill pill SHALL read 自動扣繳 MM/DD (the business-day-shifted due date) until paid and 已自動扣繳 after the booking. 記帳設定 SHALL offer a switch 自動扣繳 and a required 起始日 when on, saved through `PUT /settings/reconciliation` (`auto_pay.enabled`, `auto_pay.enabled_from`).
+For a card with `auto_pay_account_id` while card-statement auto-pay is enabled and the statement is on or after its start date, the bill pill SHALL read 自動扣繳 MM/DD (the business-day-shifted due date) until paid and 已自動扣繳 after the booking. 記帳設定 SHALL offer a switch 自動扣繳 and a required 起始日 when on, saved through `PATCH /settings/reconciliation/auto-pay` (write scope; `enabled`, `enabled_from`), not the admin-only whole-document `PUT /settings/reconciliation`.
 
 #### Scenario: Linked card before the due date
 - **GIVEN** auto-pay is on from 2026-10-01 and 國泰 CUBE 卡 links to 玉山銀行 with a due date of Saturday 10/24

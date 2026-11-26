@@ -12,7 +12,7 @@ Since this change was written, the e-invoice link shipped (`docs/superpowers/spe
 - **Write-scope actions:** `POST /einvoices/{id}/link|unlink|dismiss|undismiss`, `GET/DELETE /einvoices/mutes[/{tax_id}]` (a mute is created by `dismiss` with `{mute_seller: true}`), `GET /einvoices/dismissed` and `PATCH /einvoices/preferences {remind_unmatched}`.
 - **Today's SPA:** a minimal 發票待對帳 section in the inbox panel, the bell as `ask + einvoice_ask` at four call sites, and a plain 發票 section in entry detail. The design doc leaves a "dedicated UI design pass" to later; D10–D12 are that pass.
 
-Data the SPA does not read yet: the inbox item's `transfer` field (R6c §7, #150); `GET /api/portfolio/imports/cathay-statement/pending` (`{items:[{trade_date,status,reason,since,last_at}], total, truncated}`) and `/runs/latest` (`{latest, latest_ok}`); `GET /reconciliation/audit?event=auto_pay_skipped&since=` (detail carries `reason` and the amounts).
+Data the SPA does not read yet: the inbox item's `transfer` field (R6c §7, #150); `GET /api/portfolio/imports/cathay-statement/pending` (`{items:[{trade_date,status,reason,since,last_at}], total, truncated}`) and `/runs/latest` (`{latest, latest_ok}`); `GET /reconciliation/auto-pay?since=` (one `statement_auto_pay` row per statement: status, reason, amounts; added in E3a — the audit log records a skip only when its reason changes, so it cannot give each statement's latest row).
 
 ## Decisions
 
@@ -32,7 +32,7 @@ Route `/notifications` (and `/notifications/recon/:statementId`). The sidebar ge
 | Dividends | `GET /api/portfolio/dividends` (`receipt_status=pending`) | one batch for rows whose `payment_date` ≤ today | 要你確認; rows without a date or later → 追蹤中 |
 | Import | recalc status + `ImportHistoryService.lastFailed()` | the failure | 系統 |
 | 國泰 daily statement | `…/cathay-statement/pending`, `/runs/latest` | each pending date; a stale or failed latest run | 系統 |
-| Auto-pay | `GET /reconciliation/audit?event=auto_pay_skipped&since=<30 days>` | each statement whose latest auto-pay row is skipped and not since booked | 系統 |
+| Auto-pay | `GET /reconciliation/auto-pay?since=<30 days>` | each statement whose auto-pay row is `skipped` with a task reason (D9) | 系統 |
 | Debts | `GET /accounts/debts` | one summary | 追蹤中 |
 | MOZE import review | existing `importReviewCount` | the import run | 要你確認 |
 | E-invoices to decide | inbox `einvoices` with state `ambiguous` or `near` | one task for all of them (D10) | 要你確認 |
@@ -78,7 +78,7 @@ Group items show a dot when their page has a task: 股利 (dividend batch), 匯�
 ### D9. Auto-pay surfaces
 
 - Bill pill: for a card with `auto_pay_account_id` while `auto_pay.enabled` and the statement is on or after `enabled_from`, the pill reads 自動扣繳 MM/DD (the shifted business day) until paid; after the booking it reads 已自動扣繳.
-- 記帳設定 › 對帳: switch 自動扣繳 (`auto_pay.enabled`) and date 起始日 (`enabled_from`, required when on), saved through `PUT /settings/reconciliation`.
+- 記帳設定 › 對帳: switch 自動扣繳 (`auto_pay.enabled`) and date 起始日 (`enabled_from`, required when on), saved through `PATCH /settings/reconciliation/auto-pay` (write scope; merges only those two keys — owner ruling 2026-11-25, since `PUT /settings/reconciliation` is admin and replaces the whole document).
 - Skip reasons map to copy: `over_cap` 超過單筆上限, `monthly_budget` 超過當月上限, `no_link` 沒有設定扣款帳戶, `link_ineligible` 扣款帳戶不符規定, `header_disputed` 帳單金額待確認, `twin` 已有相同的繳款記錄, `duplicate_statement` 重複的帳單, `cutoff` 早於起始日, `expired` 已超過重試期限. Transient reasons are 系統 tasks; `twin`, `cutoff`, `duplicate_statement` are informational and do not create a task.
 
 ### D10. E-invoice task and flow
