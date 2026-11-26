@@ -1,4 +1,6 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { WritableSignal, signal } from '@angular/core';
+import { AutoPayRow, AutoPaySwitch } from '../components/accounting/billing/auto-pay';
 import { TestBed } from '@angular/core/testing';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -165,6 +167,8 @@ describe('NotificationCenterService', () => {
   let cathayRuns: ReturnType<typeof calls<CathayRuns>>;
   let futuresPending: ReturnType<typeof calls<FuturesPending>>;
   let futuresRuns: ReturnType<typeof calls<FuturesRuns>>;
+  let autoPaySwitch: ReturnType<typeof calls<AutoPaySwitch>>;
+  let autoPayRows: ReturnType<typeof calls<AutoPayRow[]>>;
   let accountingStub: Record<string, unknown>;
   let getRecalcStatus: ReturnType<typeof vi.fn>;
   let getDividends: ReturnType<typeof vi.fn>;
@@ -200,6 +204,8 @@ describe('NotificationCenterService', () => {
     getCathayPending = vi.fn(cathayPending.fn);
     getCathayRuns = vi.fn(cathayRuns.fn);
     futuresPending = calls();
+    autoPaySwitch = calls();
+    autoPayRows = calls();
     futuresRuns = calls();
     getFuturesPending = vi.fn(futuresPending.fn);
     getFuturesRuns = vi.fn(futuresRuns.fn);
@@ -216,6 +222,8 @@ describe('NotificationCenterService', () => {
       getCounterparties: vi.fn(counterparties.fn),
       getScheduleInstances: vi.fn(queue.fn),
       getLatestImport: vi.fn(latest.fn),
+      getAutoPaySwitch: vi.fn(autoPaySwitch.fn),
+      getAutoPayRows: vi.fn(autoPayRows.fn),
       // Every card's statement: 1,000 spent, nothing paid yet.
       getAccountSummary: vi.fn((accountId: number) =>
         of({
@@ -275,6 +283,8 @@ describe('NotificationCenterService', () => {
       cathayRuns?: Answer<CathayRuns>;
       futuresPending?: Answer<FuturesPending>;
       futuresRuns?: Answer<FuturesRuns>;
+      autoPaySwitch?: Answer<AutoPaySwitch>;
+      autoPayRows?: Answer<AutoPayRow[]>;
     } = {},
   ): Promise<void> {
     const settle = <T>(subject: Subject<T> | undefined, value: Answer<T> | undefined, fallback: T) => {
@@ -300,6 +310,8 @@ describe('NotificationCenterService', () => {
     settle(cathayRuns.subjects[index], values.cathayRuns, { latest: healthy, latest_ok: healthy });
     settle(futuresPending.subjects[index], values.futuresPending, { items: [], total: 0, truncated: false });
     settle(futuresRuns.subjects[index], values.futuresRuns, { latest: healthy, latest_ok: healthy });
+    settle(autoPaySwitch.subjects[index], values.autoPaySwitch, { enabled: false, enabled_from: null });
+    settle(autoPayRows.subjects[index], values.autoPayRows, []);
     TestBed.tick();
     await microtasks();
     TestBed.tick();
@@ -690,7 +702,7 @@ describe('NotificationCenterService', () => {
     vi.advanceTimersByTime(READ_TIMEOUT_MS);
     TestBed.tick();
     expect(svc.settledRound()).toBe(1);
-    expect(svc.failedSources()).toEqual(['bills', 'schedules', 'recon', 'importReview', 'debts', 'dividends', 'imports', 'cathay', 'sinopac_futures']);
+    expect(svc.failedSources()).toEqual(['bills', 'schedules', 'recon', 'importReview', 'debts', 'dividends', 'imports', 'cathay', 'sinopac_futures', 'autopay']);
     // Timed out reads are unsubscribed: round 1 can no longer answer.
     expect(latest.subjects[0].observed).toBe(false);
 
@@ -1963,6 +1975,94 @@ describe('NotificationCenterService', () => {
       expect(svc.failedSources()).toEqual(['sinopac_futures']);
       expect(ids(svc)).toEqual(['cathay:2026-10-22']);
       expect(svc.futures()).toBeNull();
+    });
+  });
+
+  describe('自動扣繳 (E3b)', () => {
+    /** 測試銀行卡1 due Sat 10/24 (today): debited Mon 10/26, from account 3 when auto-pay is on. */
+    const linked = () => ({ ...card(1, 24), auto_pay_account_id: 3 });
+    const ON: AutoPaySwitch = { enabled: true, enabled_from: '2026-10-01' };
+    const skipped = (over: Partial<AutoPayRow> = {}): AutoPayRow => ({
+      statement_id: 31, card_account_id: 1, pay_account_id: 3, amount: '1000.0000', due_date: '2026-10-20',
+      pay_date: '2026-10-20', status: 'skipped', reason: 'over_cap', updated_at: '2026-10-20T01:00:00Z', ...over,
+    });
+
+    it('reads the rows of the last 45 days', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0);
+      expect(accountingStub['getAutoPayRows']).toHaveBeenCalledWith('2026-09-09');
+    });
+
+    it('a bill auto-pay will pay reads MM/DD 自動扣繳 and is not counted', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { accounts: [linked()], autoPaySwitch: ON });
+      expect(svc.nextUpcoming()).toMatchObject({ id: 'bill:1:2026-10-24', tier: 'tracking', when: '10/26 自動扣繳' });
+      expect(svc.summary().total).toBe(0);
+
+      svc.invalidate();
+      await answer(1, { accounts: [linked()], autoPaySwitch: { enabled: false, enabled_from: '2026-10-01' } });
+      expect(svc.nextUpcoming()?.when).toBe('10/26 截止');
+    });
+
+    it('a bill over 單筆上限 stays a plain to-do: auto-pay would skip it on the debit day', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { accounts: [linked()], autoPaySwitch: { ...ON, max_amount: '1' } });
+      expect(svc.nextUpcoming()?.when).toBe('10/26 截止');
+
+      svc.invalidate();
+      await answer(1, { accounts: [linked()], autoPaySwitch: { ...ON, max_amount: '100000000' } });
+      expect(svc.nextUpcoming()?.when).toBe('10/26 自動扣繳');
+    });
+
+    it('a skipped statement is a 系統 task; an informational skip is not', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { accounts: [card(1, 20)], autoPayRows: [skipped()] });
+      const task = svc.tasks().find(t => t.id === 'autopay:31');
+      expect(task).toMatchObject({ tier: 'system', title: '自動扣繳未執行：超過單筆上限', meta: '測試銀行卡1' });
+
+      svc.invalidate();
+      await answer(1, { accounts: [card(1, 20)], autoPayRows: [skipped({ reason: 'twin' })] });
+      expect(svc.tasks().some(t => t.from === 'autopay')).toBe(false);
+    });
+
+    it('a skip of an earlier statement ends with its cycle, like the bill: once the card closed again, no task', async () => {
+      // 測試銀行卡1 closes on the 5th, due on the 28th: the current bill is the 09-06..10-05 statement, due 10/28.
+      const older = skipped({ statement_id: 30, due_date: '2026-09-28', pay_date: '2026-09-28' });
+      const current = skipped({ statement_id: 31, due_date: '2026-10-28', pay_date: '2026-10-28' });
+      const svc = service();
+      svc.start();
+      await answer(0, { accounts: [card(1, 28)], autoPayRows: [older, current] });
+      expect(svc.tasks().filter(t => t.from === 'autopay').map(t => t.id)).toEqual(['autopay:31']);
+    });
+
+    it('an earlier statement due on the current closing day is an earlier cycle too', async () => {
+      // 測試銀行卡1 closes and falls due on the 5th: the 08-06..09-05 statement is due 10/05, the current closing day.
+      const svc = service();
+      svc.start();
+      await answer(0, { accounts: [card(1, 5)], autoPayRows: [skipped({ due_date: '2026-10-05', pay_date: '2026-10-05' })] });
+      expect(svc.tasks().some(t => t.from === 'autopay')).toBe(false);
+    });
+
+    it('a failed read names 自動扣繳 and the bill keeps its plain due text', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { accounts: [linked()], autoPaySwitch: 'error' });
+      expect(svc.failedSources()).toEqual(['autopay']);
+      expect(svc.nextUpcoming()?.when).toBe('10/26 截止');
+    });
+
+    it('a 404 (reconciliation off) is no auto-pay, not a failed read', async () => {
+      const svc = service();
+      svc.start();
+      const notFound = new HttpErrorResponse({ status: 404, statusText: 'Not Found' });
+      autoPaySwitch.subjects[0].error(notFound);
+      await answer(0, { accounts: [linked()], autoPaySwitch: 'skip' });
+      expect(svc.failedSources()).toEqual([]);
+      expect(svc.nextUpcoming()?.when).toBe('10/26 截止');
     });
   });
 });

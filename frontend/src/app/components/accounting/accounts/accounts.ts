@@ -12,6 +12,7 @@ import { DebtsSummary, ImportRun, LedgerAccount } from '../../../models/accounti
 import { AccountIconComponent } from '../account-icon/account-icon';
 import { AccountingService } from '../../../services/accounting.service';
 import { BusinessCalendarService } from '../../../services/business-calendar.service';
+import { AutoPayRow, AutoPaySwitch, autoPaidSince, autoPayPending, autoPayRowsSince } from '../billing/auto-pay';
 import { currentDues, duePillText } from '../billing/billing-math';
 import { BillState, BillingService } from '../billing/billing.service';
 import { dueDate, statementPeriod } from '../cycle';
@@ -29,6 +30,8 @@ export interface CardDue {
   owedText: string;
   pill: string;
   overdue: boolean;
+  /** Auto-pay will pay it (自動扣繳 MM/DD): a plain pill, not a warning. */
+  auto: boolean;
 }
 
 const STATUS_LABELS: Record<ImportRun['status'], string> = {
@@ -183,6 +186,8 @@ export class AccountingAccountsComponent {
   /** Open payables (loans) in the main currency; null until read, or when the read fails (the page never waits for it). */
   readonly debts = signal<DebtsSummary | null>(null);
   readonly loanCount = computed(() => this.debts()?.payables.count ?? 0);
+  /** Card-statement auto-pay (switch + rows); null until read or when the read fails (the plain pills then). */
+  private readonly autoPay = signal<{ readonly autoPay: AutoPaySwitch; readonly rows: readonly AutoPayRow[] } | null>(null);
   readonly liabilities = computed(
     () =>
       this.included().reduce((sum, account) => sum + Math.max(0, -value(account.balance_main)), 0) +
@@ -235,6 +240,16 @@ export class AccountingAccountsComponent {
     const id = ++this.accountsRequestId;
     const importId = ++this.importRequestId;
     this.today.set(todayIso());
+    forkJoin({
+      autoPay: this.accountingService.getAutoPaySwitch(),
+      rows: this.accountingService.getAutoPayRows(autoPayRowsSince(this.today())),
+    })
+      .pipe(catchError(() => of(null)))
+      .subscribe(autoPay => {
+        if (id === this.accountsRequestId) {
+          this.autoPay.set(autoPay);
+        }
+      });
     this.accountingService.getDebts().pipe(catchError(() => of(null))).subscribe(debts => {
       if (id === this.accountsRequestId) {
         this.debts.set(debts);
@@ -400,10 +415,13 @@ export class AccountingAccountsComponent {
     if (!bill) {
       return null;
     }
+    const autoPay = this.autoPay();
+    const auto = autoPayPending(autoPay?.autoPay ?? null, account, bill.payDate, this.today(), autoPay?.rows ?? null, bill.statement);
     return {
       owedText: `待繳帳款 ${formatMoney(bill.remaining, bill.currency)}`,
-      pill: duePillText(bill.payDate, this.today()),
-      overdue: daysBetween(this.today(), bill.payDate) < 0,
+      pill: auto ? `自動扣繳 ${shortDate(bill.payDate)}` : duePillText(bill.payDate, this.today()),
+      overdue: !auto && daysBetween(this.today(), bill.payDate) < 0,
+      auto,
     };
   }
 
@@ -414,6 +432,10 @@ export class AccountingAccountsComponent {
     }
     // A null closing day: the statement is the calendar month, closing on its last day.
     const period = statementPeriod(account.closing_day ?? null, this.today());
+    // Paid by auto-pay in the open cycle (the last closed bill's debit day falls in it): 已自動扣繳 until the next closing.
+    if (autoPaidSince(this.autoPay()?.rows ?? null, account.id, period.start)) {
+      return '已自動扣繳';
+    }
     const due = dueDate(period.end, account.due_rule ?? null, account.due_value ?? null);
     return due ? `結帳 ${shortDate(period.end)} · 繳款 ${shortDate(due)}` : `結帳 ${shortDate(period.end)}`;
   }

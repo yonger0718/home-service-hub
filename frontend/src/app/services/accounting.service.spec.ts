@@ -356,6 +356,28 @@ describe('AccountingService', () => {
     req.flush({ id: null, kind: 'moze_backup', status: 'dry_run' });
   });
 
+  it('auto-pay: reads the switch from the reconciliation settings, PATCHes only what changed, reads rows since a day', () => {
+    const seen: unknown[] = [];
+    service.getAutoPaySwitch().subscribe(v => seen.push(v));
+    const get = httpMock.expectOne('/api/accounting/settings/reconciliation');
+    expect(get.request.method).toBe('GET');
+    get.flush({ version: 4, auto_pay: { enabled: true, enabled_from: '2026-10-01', max_amount: '200000' }, account_map: {} });
+    expect(seen).toEqual([{ enabled: true, enabled_from: '2026-10-01', max_amount: '200000' }]);
+
+    service.setAutoPay({ enabled: false }).subscribe(v => seen.push(v));
+    const patch = httpMock.expectOne('/api/accounting/settings/reconciliation/auto-pay');
+    expect(patch.request.method).toBe('PATCH');
+    expect(patch.request.body).toEqual({ enabled: false });
+    patch.flush({ enabled: false, enabled_from: '2026-10-01', version: 5 });
+    expect(seen[1]).toEqual({ enabled: false, enabled_from: '2026-10-01' });
+
+    service.getAutoPayRows('2026-10-12').subscribe(v => seen.push(v));
+    const rows = httpMock.expectOne(r => r.url === '/api/accounting/reconciliation/auto-pay');
+    expect(rows.request.params.get('since')).toBe('2026-10-12');
+    rows.flush([]);
+    expect(seen[2]).toEqual([]);
+  });
+
   it('reads the preference once per session', () => {
     const seen: Preference[] = [];
     service.getPreference().subscribe(p => seen.push(p));

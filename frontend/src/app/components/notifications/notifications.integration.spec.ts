@@ -51,6 +51,9 @@ interface RoundRequests {
   futuresPending: TestRequest;
   futuresRuns: TestRequest;
   recalc: TestRequest;
+  /** 自動扣繳: the reconciliation settings (the switch) and the auto-pay rows. */
+  autoPaySettings: TestRequest;
+  autoPayRows: TestRequest;
 }
 
 async function microtasks(): Promise<void> {
@@ -97,10 +100,23 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       futuresPending: http.expectOne(get('/api/portfolio/imports/sinopac-futures-statement/pending')),
       futuresRuns: http.expectOne(get('/api/portfolio/imports/sinopac-futures-statement/runs/latest')),
       recalc: http.expectOne(get('/api/portfolio/imports/recalc/status')),
+      autoPaySettings: http.expectOne(get(`${API}/settings/reconciliation`)),
+      autoPayRows: http.expectOne(get(`${API}/reconciliation/auto-pay`)),
     };
   }
 
   const flushedPortfolio = new WeakSet<RoundRequests>();
+  const flushedAutoPay = new WeakSet<RoundRequests>();
+
+  /** The round's 自動扣繳 reads with the quiet answers (switch off, no row), once per round. */
+  function flushAutoPay(round: RoundRequests): void {
+    if (flushedAutoPay.has(round)) {
+      return;
+    }
+    flushedAutoPay.add(round);
+    round.autoPaySettings.flush({ auto_pay: { enabled: false, enabled_from: null } });
+    round.autoPayRows.flush([]);
+  }
 
   /**
    * The round's portfolio and system reads with the quiet answers (no dividend, no pending 國泰 date, a healthy run 5
@@ -118,6 +134,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     round.futuresPending.flush({ items: [], total: 0, truncated: false });
     round.futuresRuns.flush({ latest, latest_ok: latest });
     round.recalc.flush({ state: 'idle' });
+    flushAutoPay(round);
   }
 
   /** Answers any open card-statement reads (1,000 spent, no payment). */
@@ -142,6 +159,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     if (open('counterparties')) round.counterparties.flush([]);
     if (open('queue')) round.queue.flush(queue);
     if (open('inbox')) round.inbox.flush(makeInbox([]));
+    if (open('autoPaySettings') && open('autoPayRows')) flushAutoPay(round);
     if (open('latest')) {
       round.latest.flush('', { status: 404, statusText: 'Not Found' });
       // With the interceptor the 404 is sent once more.
@@ -178,6 +196,7 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     round.futuresPending.flush({ items: [], total: 0, truncated: false });
     round.futuresRuns.flush({ latest, latest_ok: latest });
     round.recalc.flush({ state: 'idle' });
+    flushAutoPay(round);
   }
 
   /** Page open at Thu 2026-10-29 07:00 Taipei (the 06:40 run ok today) with round 1 settled and 10/28 held. */

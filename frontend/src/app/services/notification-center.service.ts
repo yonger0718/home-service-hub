@@ -1,6 +1,8 @@
 import { DestroyRef, Injectable, Injector, Signal, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DOCUMENT } from '@angular/common';
-import { Observable, Subject, catchError, forkJoin, from, map, of, takeUntil, timeout } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
+import { Observable, Subject, catchError, forkJoin, from, map, of, takeUntil, throwError, timeout } from 'rxjs';
+import { AutoPayRow, AutoPaySwitch, autoPayPending, autoPayRowsSince } from '../components/accounting/billing/auto-pay';
 
 import { BillingEvent, reminderDues } from '../components/accounting/billing/billing-math';
 import { WEEKENDS_ONLY } from '../components/accounting/billing/business-days';
@@ -21,6 +23,7 @@ import {
   sortTasks,
   summarize,
 } from '../components/notifications/notif-task';
+import { autoPayTasks } from '../components/notifications/sources/auto-pay';
 import { billTasks } from '../components/notifications/sources/bills';
 import { CathayView, RUN_RESULTS, cathayMore, cathayTasks, cathayView } from '../components/notifications/sources/cathay';
 import { debtsRow, handledText, importReviewTask, upcomingRow } from '../components/notifications/sources/ledger-misc';
@@ -151,6 +154,24 @@ function checkedFuturesRuns(runs: unknown): FuturesRuns {
   return runs as unknown as FuturesRuns;
 }
 
+const NO_AUTO_PAY = { autoPay: { enabled: false, enabled_from: null }, rows: [] as AutoPayRow[] };
+
+/** The rows answer is a list of rows with a statement, card, debit day and status; else an error (the source fails). */
+function checkedAutoPayRows(rows: unknown): AutoPayRow[] {
+  const ok =
+    Array.isArray(rows) &&
+    rows.every(
+      r =>
+        typeof r === 'object' && r !== null &&
+        typeof r.statement_id === 'number' && typeof r.card_account_id === 'number' &&
+        typeof r.pay_date === 'string' && typeof r.status === 'string',
+    );
+  if (!ok) {
+    throw new Error('auto-pay rows');
+  }
+  return rows as AutoPayRow[];
+}
+
 const FUTURES_STATUSES: readonly unknown[] = ['conflict', 'findings'] satisfies FuturesPendingItem['status'][];
 /** A pending key per kind, as the ack route accepts it (`^\d{4}-\d{2}(-\d{2})?$`): a date for a day, `YYYY-MM` for a month. */
 const FUTURES_KEY: Readonly<Record<FuturesPendingItem['kind'], RegExp>> = { day: /^\d{4}-\d{2}-\d{2}$/, month: /^\d{4}-\d{2}$/ };
@@ -243,7 +264,7 @@ export class NotificationCenterService {
   private readonly settledId = signal(0);
   private readonly status = signal<Readonly<Record<NotifSourceKey, SourceStatus>>>({
     bills: IDLE, schedules: IDLE, recon: IDLE, importReview: IDLE, debts: IDLE, dividends: IDLE, imports: IDLE, cathay: IDLE,
-    sinopac_futures: IDLE,
+    sinopac_futures: IDLE, autopay: IDLE,
   });
   /** The clock as of the newest started round (P3: read once per round). */
   private readonly now = signal<Date>(this.clock());
@@ -273,6 +294,8 @@ export class NotificationCenterService {
   private readonly cathayData = signal<{ readonly pending: CathayPending; readonly runs: CathayRuns; readonly now: Date } | null>(null);
   /** The applied 永豐期貨對帳單 answers, both reads or none, with their round's clock (as `cathayData`). */
   private readonly futuresData = signal<{ readonly pending: FuturesPending; readonly runs: FuturesRuns; readonly now: Date } | null>(null);
+  /** The applied auto-pay answers (the switch and the rows of the last 45 days), both reads or none. */
+  private readonly autoPayData = signal<{ readonly autoPay: AutoPaySwitch; readonly rows: readonly AutoPayRow[] } | null>(null);
   /** Emits when a round starts: the previous round's dividend scan stops requesting pages. */
   private readonly roundStarted = new Subject<void>();
 
@@ -318,8 +341,28 @@ export class NotificationCenterService {
   private readonly allTasks: Signal<NotifTask[]> = computed(() => {
     const today = this.today();
     const tasks: NotifTask[] = [];
-    if (this.accountList()) {
-      tasks.push(...billTasks({ dues: this.dues(), bill: event => this.bills.bill(event), today }));
+    const accounts = this.accountList();
+    const autoPay = this.autoPayData();
+    if (accounts) {
+      tasks.push(
+        ...billTasks({
+          dues: this.dues(),
+          bill: event => this.bills.bill(event),
+          today,
+          autoPay: (event, state) => {
+            const account = accounts.find(a => a.id === event.accountId);
+            return (
+              !!account &&
+              autoPayPending(autoPay?.autoPay ?? null, account, state.payDate, today, autoPay?.rows ?? null, state.statement)
+            );
+          },
+        }),
+      );
+    }
+    if (autoPay) {
+      tasks.push(
+        ...autoPayTasks({ rows: autoPay.rows, accounts: accounts ?? [], settled: row => this.autoPaySettled(row), today }),
+      );
     }
     const queue = this.queue();
     if (queue) {
@@ -356,6 +399,25 @@ export class NotificationCenterService {
     }
     return sortTasks(tasks);
   });
+
+  /** Whether the card's current bill with this debit day is paid (remaining ≤ 0); false when not among the dues. */
+  /**
+   * A skipped auto-pay is settled when its statement is the card's current bill and that bill is paid, or when the
+   * card's current bill is a later statement (its due date falls on or before the current cycle's closing: a bill is
+   * always due after its own closing). Statements are
+   * matched by cycle, not by debit day, so a holiday the two calendars shift differently does not matter.
+   */
+  private autoPaySettled(row: AutoPayRow): boolean {
+    const event = this.dues().find(e => e.accountId === row.card_account_id);
+    if (!event) {
+      return false;
+    }
+    if (row.due_date <= event.period.end) {
+      return true;
+    }
+    const state = this.bills.bill(event);
+    return !!state && !(state.remaining > 0);
+  }
 
   private readonly trackingBills: Signal<NotifTask[]> = computed(() =>
     this.allTasks().filter(task => task.tier === 'tracking' && task.from === 'bills'),
@@ -662,6 +724,19 @@ export class NotificationCenterService {
     this.read(round, futures, answer => {
       this.futuresData.set(answer ? { ...answer, now } : null);
       this.mark('sinopac_futures', round, answer ? 'ok' : 'failed');
+    });
+    // 自動扣繳: the switch and the rows, one source; a 404 (reconciliation off) is no auto-pay, not a failed read.
+    const autoPay = forkJoin({
+      autoPay: this.accounting.getAutoPaySwitch(),
+      rows: this.accounting.getAutoPayRows(autoPayRowsSince(today)).pipe(map(checkedAutoPayRows)),
+    }).pipe(
+      catchError((error: unknown) =>
+        error instanceof HttpErrorResponse && error.status === 404 ? of(NO_AUTO_PAY) : throwError(() => error),
+      ),
+    );
+    this.read(round, autoPay, answer => {
+      this.autoPayData.set(answer);
+      this.mark('autopay', round, answer ? 'ok' : 'failed');
     });
     return round;
   }

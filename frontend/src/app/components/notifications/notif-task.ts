@@ -9,7 +9,8 @@ export type NotifSourceKey =
   | 'dividends'
   | 'imports'
   | 'cathay'
-  | 'sinopac_futures';
+  | 'sinopac_futures'
+  | 'autopay';
 
 export interface NotifLink {
   readonly label: string;
@@ -104,6 +105,7 @@ export const SOURCE_NAMES: Record<NotifSourceKey, string> = {
   imports: '匯入',
   cathay: '國泰對帳單',
   sinopac_futures: '永豐期貨對帳單',
+  autopay: '自動扣繳',
 };
 export const NO_TASKS: NotifSummary = { total: 0, overdue: 0, tone: 'primary', label: '通知' };
 

@@ -36,6 +36,9 @@ interface RoundRequests {
   futuresPending: TestRequest;
   futuresRuns: TestRequest;
   recalc: TestRequest;
+  /** 自動扣繳: the reconciliation settings (the switch) and the auto-pay rows. */
+  autoPaySettings: TestRequest;
+  autoPayRows: TestRequest;
 }
 
 /** A healthy 國泰 run 5 minutes before the (fake) clock: no `cathay:run` task. */
@@ -95,6 +98,8 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
       futuresPending: http.expectOne(get('/api/portfolio/imports/sinopac-futures-statement/pending')),
       futuresRuns: http.expectOne(get('/api/portfolio/imports/sinopac-futures-statement/runs/latest')),
       recalc: http.expectOne(get('/api/portfolio/imports/recalc/status')),
+      autoPaySettings: http.expectOne(get(`${API}/settings/reconciliation`)),
+      autoPayRows: http.expectOne(get(`${API}/reconciliation/auto-pay`)),
     };
   }
 
@@ -122,6 +127,8 @@ describe('NotificationCenterService rounds (real services over HTTP)', () => {
     if (open('futuresPending')) round.futuresPending.flush({ items: [], total: 0, truncated: false });
     if (open('futuresRuns')) round.futuresRuns.flush(healthyRuns());
     if (open('recalc')) round.recalc.flush({ state: 'idle' });
+    if (open('autoPaySettings')) round.autoPaySettings.flush({ auto_pay: { enabled: false, enabled_from: null } });
+    if (open('autoPayRows')) round.autoPayRows.flush([]);
     await settle();
   }
 

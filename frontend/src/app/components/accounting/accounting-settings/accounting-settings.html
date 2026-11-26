@@ -159,6 +159,33 @@
     <div class="srow"><span><i class="pi pi-money-bill" aria-hidden="true"></i></span><span class="t">主幣種</span><span class="r">{{ pref.main_currency }}</span></div>
   }
 
+  @if (autoPay() || autoPayError()) {
+    <div class="lbl">對帳</div>
+    @if (autoPayError()) {
+      <p class="autopay-error muted" role="alert">自動扣繳設定讀取失敗</p>
+    } @else if (autoPay(); as stored) {
+      <div class="autopay-section">
+        <div class="srow">
+          <span><i class="pi pi-credit-card" aria-hidden="true"></i></span><span class="t">自動扣繳</span>
+          <button type="button" class="tog autopay-toggle" role="switch" aria-label="自動扣繳" [attr.aria-checked]="autoPayOn()" [class.on]="autoPayOn()" [disabled]="autoPaySaving()" (click)="toggleAutoPay()"></button>
+        </div>
+        <div class="srow">
+          <span><i class="pi pi-calendar" aria-hidden="true"></i></span><label class="t" for="autopay-from">起始日</label>
+          <input id="autopay-from" class="autopay-from" type="date" [value]="stored.enabled_from ?? ''" [disabled]="autoPaySaving()"
+            [attr.aria-invalid]="autoPayNeedsDate() ? 'true' : null" [attr.aria-describedby]="autoPayNeedsDate() ? 'autopay-hint' : null"
+            (change)="setAutoPayFrom($any($event.target))" />
+        </div>
+        @if (autoPayNeedsDate()) {
+          <p id="autopay-hint" class="autopay-hint muted" role="alert">選好起始日才會開啟自動扣繳</p>
+        }
+        @if (autoPayMessage(); as message) {
+          <p class="autopay-message muted" role="alert">{{ message }}</p>
+        }
+        <p class="autopay-note muted">繳款日當天，會從每張卡在帳戶設定選的扣款帳戶記一筆繳款；起始日以前的帳單不會自動扣繳。</p>
+      </div>
+    }
+  }
+
   @if (einvoicePrefs()?.enabled || einvoiceError()) {
     <div class="lbl">發票</div>
     @if (einvoiceError()) {

@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, OnDestroy, OnInit, afterNextRender, computed, effect, inject, signal, untracked, Injector } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Router, RouterLink } from '@angular/router';
@@ -16,6 +16,7 @@ import {
   Project,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { AutoPaySwitch, AutoPaySwitchChange } from '../billing/auto-pay';
 import { InboxService } from '../inbox/inbox.service';
 import { invoiceAmount } from '../inbox/einvoice-format';
 import { EinvoiceDismissed, EinvoiceMute, EinvoicePreferences } from '../inbox/einvoice.model';
@@ -106,6 +107,18 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   readonly slashDate = slashDate;
   readonly invoiceAmount = invoiceAmount;
 
+  /** 對帳 › 自動扣繳: the stored switch and start date; null until read (and when reconciliation is off: 404). */
+  readonly autoPay = signal<AutoPaySwitch | null>(null);
+  readonly autoPayError = signal(false);
+  readonly autoPaySaving = signal(false);
+  readonly autoPayMessage = signal<string | null>(null);
+  /** Switched on while no start date is stored: nothing is saved until a date is chosen. */
+  readonly autoPayDraftOn = signal(false);
+  readonly autoPayOn = computed(() => !!this.autoPay()?.enabled || this.autoPayDraftOn());
+  readonly autoPayNeedsDate = computed(() => this.autoPayDraftOn() && !this.autoPay()?.enabled_from);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
+
   /** 發票 block: null until read; the block shows only when `enabled`. */
   readonly einvoicePrefs = signal<EinvoicePreferences | null>(null);
   readonly einvoiceError = signal(false);
@@ -187,7 +200,67 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
     this.loadProjects();
     this.loadCounterparties();
     this.loadImportState();
+    this.loadAutoPay();
     this.loadEinvoice();
+  }
+
+  private loadAutoPay(): void {
+    this.service.getAutoPaySwitch().subscribe({
+      next: autoPay => this.autoPay.set(autoPay),
+      // 404: the reconciliation feature flag is off, so there is no 對帳 block (not a failed read).
+      error: (err: unknown) => this.autoPayError.set(!(err instanceof HttpErrorResponse && err.status === 404)),
+    });
+  }
+
+  /** On with a stored start date saves at once; on without one waits for the date (focus moves there); off saves. */
+  toggleAutoPay(): void {
+    const stored = this.autoPay();
+    if (!stored || this.autoPaySaving()) return;
+    this.autoPayMessage.set(null);
+    if (this.autoPayDraftOn()) {
+      this.autoPayDraftOn.set(false);
+    } else if (stored.enabled) {
+      this.saveAutoPay({ enabled: false });
+    } else if (stored.enabled_from) {
+      this.saveAutoPay({ enabled: true });
+    } else {
+      this.autoPayDraftOn.set(true);
+      afterNextRender(() => this.host.nativeElement.querySelector<HTMLInputElement>('.autopay-from')?.focus(), { injector: this.injector });
+    }
+  }
+
+  setAutoPayFrom(input: HTMLInputElement): void {
+    const stored = this.autoPay();
+    if (!stored || this.autoPaySaving()) return;
+    this.autoPayMessage.set(null);
+    const value = input.value || null;
+    if (value === stored.enabled_from && !this.autoPayDraftOn()) {
+      return; // the stored date again: nothing to save
+    }
+    if (value === null && stored.enabled) {
+      input.value = stored.enabled_from ?? '';
+      this.autoPayMessage.set('自動扣繳開啟時需要起始日');
+      return;
+    }
+    this.saveAutoPay(this.autoPayDraftOn() && value ? { enabled: true, enabled_from: value } : { enabled_from: value }, input);
+  }
+
+  /** `input`: the date field to put back to the stored date when the save fails. */
+  private saveAutoPay(change: AutoPaySwitchChange, input?: HTMLInputElement): void {
+    this.autoPaySaving.set(true);
+    this.service.setAutoPay(change).subscribe({
+      next: saved => {
+        this.autoPay.set({ ...this.autoPay(), ...saved });
+        this.autoPayDraftOn.set(false);
+        this.autoPaySaving.set(false);
+      },
+      error: () => {
+        // The stored state stays (the [value] binding did not change, so the field is put back by hand).
+        if (input) input.value = this.autoPay()?.enabled_from ?? '';
+        this.autoPaySaving.set(false);
+        this.autoPayMessage.set('自動扣繳設定儲存失敗，請稍後再試');
+      },
+    });
   }
 
   private loadEinvoice(): void {
