@@ -92,9 +92,14 @@ describe('FuturesCardComponent', () => {
     expect(text()).toContain('持倉中，數字停在 10/31');
   });
 
-  it('empty state', () => {
-    const { text } = render(summary({ value: null, latest_daily: null, month: null }));
-    expect(text()).toContain('尚無期貨對帳單');
+  it('empty state is one compact line: title and text on one row, no full card title block', () => {
+    const { el, text } = render(summary({ value: null, latest_daily: null, month: null }));
+    const line = el.querySelector('[data-testid="futures-compact"]');
+    expect(line).not.toBeNull();
+    expect(line!.textContent!.replace(/\s+/g, ' ').trim()).toBe('永豐期貨 · 尚無期貨對帳單');
+    expect(el.querySelectorAll('h2').length).toBe(1);
+    expect(el.querySelector('.card-title')).toBeNull();
+    expect(el.querySelector('.futures-cols')).toBeNull();
     expect(text()).not.toContain('權益總值');
   });
 
@@ -124,14 +129,89 @@ describe('FuturesCardComponent', () => {
     expect(text()).toContain('原始 / 維持保證金—');
   });
 
-  it('margin call above zero uses the danger style', () => {
+  function marginRow(el: HTMLElement): HTMLElement {
+    return el.querySelector('[data-testid="futures-margin-row"]') as HTMLElement;
+  }
+
+  function daily(over: Partial<NonNullable<FuturesSummary['latest_daily']>>): FuturesSummary {
     const base = summary();
-    const { el } = render(summary({ latest_daily: { ...base.latest_daily!, margin_call: '5000' } }));
-    expect(el.querySelector('[data-testid="futures-margin-call"]')!.classList.contains('margin-call')).toBe(true);
+    return summary({ latest_daily: { ...base.latest_daily!, ...over } });
+  }
+
+  it('a margin call above zero warns: amber row class, ⚠ icon (aria-hidden) and the word 追繳', () => {
+    const { el } = render(daily({ excess_margin: '-110000', margin_call: '110000' }));
+    const row = marginRow(el);
+    expect(row.classList.contains('futures-row--warn')).toBe(true);
+    const tag = row.querySelector('[data-testid="futures-margin-warn"]')!;
+    expect(tag.textContent!.trim()).toBe('追繳');
+    const icon = tag.querySelector('i.pi.pi-exclamation-triangle')!;
+    expect(icon.getAttribute('aria-hidden')).toBe('true');
+    expect(row.textContent!.replace(/\s+/g, ' ')).toContain('−$110,000 / $110,000');
   });
 
-  it('shows an error state when the summary fails to load', () => {
-    const { text } = render(new Error('boom'));
-    expect(text()).toContain('期貨資料載入失敗');
+  it('a negative excess margin with no call yet warns with 注意追繳', () => {
+    const { el } = render(daily({ excess_margin: '-5000', margin_call: '0' }));
+    const row = marginRow(el);
+    expect(row.classList.contains('futures-row--warn')).toBe(true);
+    expect(row.querySelector('[data-testid="futures-margin-warn"]')!.textContent!.trim()).toBe('注意追繳');
+  });
+
+  it('a margin call alone (excess ≥ 0) still warns with 追繳', () => {
+    const { el } = render(daily({ excess_margin: '0', margin_call: '1' }));
+    expect(marginRow(el).classList.contains('futures-row--warn')).toBe(true);
+    expect(marginRow(el).querySelector('[data-testid="futures-margin-warn"]')!.textContent!.trim()).toBe('追繳');
+  });
+
+  it('boundary: 超額 $0 and 追繳 $0 is the plain state (no warning, no icon, no accent class)', () => {
+    const { el } = render(daily({ excess_margin: '0', margin_call: '0' }));
+    const row = marginRow(el);
+    expect(row.classList.contains('futures-row--warn')).toBe(false);
+    expect(row.querySelector('[data-testid="futures-margin-warn"]')).toBeNull();
+    expect(el.querySelector('.pi-exclamation-triangle')).toBeNull();
+    expect(el.querySelector('.margin-call')).toBeNull();
+    expect(row.textContent!.replace(/\s+/g, ' ')).toContain('$0 / $0');
+  });
+
+  it('the normal state carries no accent / danger class on the margin values', () => {
+    const { el } = render(summary());
+    expect(marginRow(el).classList.contains('futures-row--warn')).toBe(false);
+    expect(el.querySelector('.margin-call')).toBeNull();
+    expect(el.querySelector('[data-testid="futures-margin-warn"]')).toBeNull();
+  });
+
+  it('two groups in order: equity, month P&L and 資料日 first; margins and 保證金資料日 second', () => {
+    const base = summary();
+    const { el } = render(
+      summary({
+        value: { ...base.value!, frozen: true, source_kind: 'monthly', source_date: '2026-11-30' },
+        latest_daily: { ...base.latest_daily!, statement_date: '2026-11-23' },
+      }),
+    );
+    const main = el.querySelector('[data-testid="futures-col-main"]')!;
+    const margin = el.querySelector('[data-testid="futures-col-margin"]')!;
+    expect(main.compareDocumentPosition(margin) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const mainText = main.textContent!.replace(/\s+/g, ' ');
+    expect(mainText).toContain('權益總值');
+    expect(mainText).toContain('本月損益');
+    expect(mainText).toContain('本月期貨平倉損益');
+    expect(mainText).toContain('資料日 11/30');
+    expect(mainText).toContain('持倉中，數字停在 11/30');
+    expect(mainText).not.toContain('保證金');
+    const marginText = margin.textContent!.replace(/\s+/g, ' ');
+    expect(marginText).toContain('可動用(出金)保證金');
+    expect(marginText).toContain('原始 / 維持保證金');
+    expect(marginText).toContain('超額 / 追繳保證金');
+    // 保證金資料日 sits in the margin column, after the margin rows.
+    const date = margin.querySelector('[data-testid="futures-margin-date"]')!;
+    expect(date.textContent!.replace(/\s+/g, ' ').trim()).toBe('保證金資料日 11/23');
+    expect(marginRow(el).compareDocumentPosition(date) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(margin.lastElementChild).toBe(date);
+  });
+
+  it('shows a compact error line when the summary fails to load', () => {
+    const { el } = render(new Error('boom'));
+    const line = el.querySelector('[data-testid="futures-compact"]')!;
+    expect(line.textContent!.replace(/\s+/g, ' ').trim()).toBe('永豐期貨 · 期貨資料載入失敗');
+    expect(line.querySelector('[role="alert"]')!.textContent).toContain('期貨資料載入失敗');
   });
 });

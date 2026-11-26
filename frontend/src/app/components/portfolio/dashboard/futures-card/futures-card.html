@@ -1,72 +1,89 @@
-<app-bento class="futures-card" title="永豐期貨">
-  @if (state() === 'error') {
-    <p class="futures-note" role="alert">期貨資料載入失敗</p>
-  } @else if (state() === 'ready') {
-    @let d = data()!;
-    @if (!d.value) {
-      <p class="futures-note">尚無期貨對帳單</p>
-    } @else {
-      @let v = d.value;
-      <div class="futures-row futures-equity-row">
-        <span class="futures-label">權益總值</span>
-        <b
-          class="futures-value"
-          data-testid="futures-equity"
-          [class.down]="sign(v.total_equity) < 0"
-        >{{ money(v.total_equity) }}</b>
-      </div>
-      @let daily = d.latest_daily;
-      <div class="futures-row">
-        <span class="futures-label">可動用(出金)保證金</span>
-        <span class="futures-value">{{ daily ? money(daily.withdrawable) : '—' }}</span>
-      </div>
-      <div class="futures-row">
-        <span class="futures-label">原始 / 維持保證金</span>
-        <span class="futures-value">{{ daily ? money(daily.initial_margin) + ' / ' + money(daily.maintenance_margin) : '—' }}</span>
-      </div>
-      <div class="futures-row">
-        <span class="futures-label">超額 / 追繳保證金</span>
-        @if (daily) {
-          <span class="futures-value">
-            {{ money(daily.excess_margin) }} /
-            <span data-testid="futures-margin-call" [class.margin-call]="marginCall(daily.margin_call)">{{ money(daily.margin_call) }}</span>
-          </span>
-        } @else {
-          <span class="futures-value">—</span>
+@if (state() === 'ready' && data()!.value) {
+  @let d = data()!;
+  @let v = d.value!;
+  @let daily = d.latest_daily;
+  <app-bento class="futures-card" title="永豐期貨">
+    <div class="futures-cols">
+      <div class="futures-col" data-testid="futures-col-main">
+        <div class="futures-row futures-equity-row">
+          <span class="futures-label">權益總值</span>
+          <b
+            class="futures-value"
+            data-testid="futures-equity"
+            [class.down]="sign(v.total_equity) < 0"
+          >{{ money(v.total_equity) }}</b>
+        </div>
+        @if (d.month; as m) {
+          <div class="futures-row">
+            <span class="futures-label">本月損益</span>
+            @if (m.pnl === null) {
+              <span class="futures-value">—（沒有上月底基準）</span>
+            } @else {
+              <span class="futures-value">
+                <span [class.up]="sign(m.pnl) > 0" [class.down]="sign(m.pnl) < 0">{{ money(m.pnl, true) }}</span>
+                @if (!m.pnl_complete && m.pnl_reason === 'findings') {
+                  <span class="futures-muted">可能不完整</span>
+                }
+              </span>
+            }
+          </div>
+          <div class="futures-row">
+            <span class="futures-label">本月期貨平倉損益</span>
+            <span
+              class="futures-value"
+              [class.up]="sign(m.futures_realized) > 0"
+              [class.down]="sign(m.futures_realized) < 0"
+            >{{ money(m.futures_realized, true) }}</span>
+          </div>
         }
+        <p class="futures-meta futures-foot">
+          資料日 {{ md(v.source_date) }}
+          @if (v.frozen) {
+            <span class="futures-frozen">持倉中，數字停在 {{ md(v.source_date) }}</span>
+          }
+        </p>
       </div>
-      @if (showMarginDate(d)) {
-        <p class="futures-meta">保證金資料日 {{ md(d.latest_daily!.statement_date) }}</p>
-      }
-      @if (d.month; as m) {
+      <div class="futures-col futures-col-margin" data-testid="futures-col-margin">
         <div class="futures-row">
-          <span class="futures-label">本月損益</span>
-          @if (m.pnl === null) {
-            <span class="futures-value">—（沒有上月底基準）</span>
-          } @else {
+          <span class="futures-label">可動用(出金)保證金</span>
+          <span class="futures-value">{{ daily ? money(daily.withdrawable) : '—' }}</span>
+        </div>
+        <div class="futures-row">
+          <span class="futures-label">原始 / 維持保證金</span>
+          <span class="futures-value">{{ daily ? money(daily.initial_margin) + ' / ' + money(daily.maintenance_margin) : '—' }}</span>
+        </div>
+        @let warn = daily ? marginWarning(daily) : null;
+        <div class="futures-row" data-testid="futures-margin-row" [class.futures-row--warn]="warn !== null">
+          <span class="futures-label">超額 / 追繳保證金</span>
+          @if (daily) {
             <span class="futures-value">
-              <span [class.up]="sign(m.pnl) > 0" [class.down]="sign(m.pnl) < 0">{{ money(m.pnl, true) }}</span>
-              @if (!m.pnl_complete && m.pnl_reason === 'findings') {
-                <span class="futures-muted">可能不完整</span>
+              @if (warn) {
+                <span class="margin-warn-tag" data-testid="futures-margin-warn"><i class="pi pi-exclamation-triangle" aria-hidden="true"></i>{{ warn }}</span>
               }
+              {{ money(daily.excess_margin) }} / {{ money(daily.margin_call) }}
             </span>
+          } @else {
+            <span class="futures-value">—</span>
           }
         </div>
-        <div class="futures-row">
-          <span class="futures-label">本月期貨平倉損益</span>
-          <span
-            class="futures-value"
-            [class.up]="sign(m.futures_realized) > 0"
-            [class.down]="sign(m.futures_realized) < 0"
-          >{{ money(m.futures_realized, true) }}</span>
-        </div>
-      }
-      <p class="futures-meta">
-        資料日 {{ md(v.source_date) }}
-        @if (v.frozen) {
-          <span class="futures-frozen">持倉中，數字停在 {{ md(v.source_date) }}</span>
+        @if (showMarginDate(d)) {
+          <p class="futures-meta futures-foot" data-testid="futures-margin-date">保證金資料日 {{ md(daily!.statement_date) }}</p>
         }
-      </p>
-    }
-  }
-</app-bento>
+      </div>
+    </div>
+  </app-bento>
+} @else {
+  <!-- Loading, error and no statement yet: one compact line (spec §9), never a tall block above the chart. -->
+  <app-bento class="futures-card futures-card--compact">
+    <div class="futures-compact" data-testid="futures-compact">
+      <h2 class="futures-compact-title">永豐期貨</h2>
+      @if (state() === 'error') {
+        <span class="futures-sep" aria-hidden="true"> · </span>
+        <p class="futures-note" role="alert">期貨資料載入失敗</p>
+      } @else if (state() === 'ready') {
+        <span class="futures-sep" aria-hidden="true"> · </span>
+        <p class="futures-note">尚無期貨對帳單</p>
+      }
+    </div>
+  </app-bento>
+}

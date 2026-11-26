@@ -2,10 +2,51 @@
   display: block;
 }
 
+/* Two groups: equity / month P&L / 資料日, then the printed margins / 保證金資料日. Stacked below 1024 px (phones keep
+   the same order, so 保證金資料日 stays right under the margin rows); side by side from 1024 px like the chart row.
+   Each column is capped so a label stays within scanning distance of its value on wide screens. */
+.futures-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.futures-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.futures-col-margin {
+  border-top: 1px solid var(--app-border);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+}
+
+@media (min-width: 1024px) {
+  .futures-cols {
+    column-gap: var(--space-8);
+    grid-template-columns: repeat(2, minmax(0, 30rem));
+  }
+
+  .futures-col-margin {
+    border-left: 1px solid var(--app-border);
+    border-top: 0;
+    margin-top: 0;
+    padding-left: var(--space-8);
+    padding-top: 0;
+  }
+
+  /* Both feet (資料日, 保證金資料日) sit on the card's bottom line. */
+  .futures-foot {
+    margin-top: auto;
+  }
+}
+
 .futures-row {
   align-items: baseline;
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 4px 12px;
   justify-content: space-between;
   padding: 4px 0;
 }
@@ -25,6 +66,7 @@
   color: var(--app-text);
   font-variant-numeric: tabular-nums;
   font-weight: 700;
+  margin-left: auto;
   text-align: right;
 
   &.up,
@@ -44,8 +86,28 @@
   margin-left: 6px;
 }
 
-.margin-call {
-  color: var(--app-danger);
+/* Margin warning (spec §9): amber, never red (red means up here), with the ⚠ 追繳 tag so colour is not the only
+   signal. --app-banner-warn on --app-surface: 6.15:1 light, 7.26:1 dark; on its 10 % / 14 % tint 5.36 / 5.71. */
+.futures-row--warn .futures-value {
+  color: var(--app-banner-warn);
+}
+
+.margin-warn-tag {
+  align-items: center;
+  background: var(--app-banner-warn-soft);
+  border-radius: var(--radius-sm);
+  color: var(--app-banner-warn);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 4px;
+  margin-right: 6px;
+  padding: 1px 6px;
+  vertical-align: 1px;
+
+  .pi {
+    font-size: 11px;
+  }
 }
 
 .futures-meta {
@@ -60,4 +122,29 @@
 
 .futures-note {
   margin: 0;
+}
+
+/* Loading / error / no statement yet: title and text on one row in a short card. */
+.futures-card--compact {
+  --bento-pad: var(--space-3) var(--space-6);
+}
+
+.futures-compact {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.futures-compact-title {
+  color: var(--app-text);
+  font-size: var(--fs-card-title);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.05em;
+  margin: 0;
+}
+
+.futures-sep {
+  color: var(--app-text-muted);
+  white-space: pre;
 }

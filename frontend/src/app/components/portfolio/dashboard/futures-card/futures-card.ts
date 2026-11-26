@@ -7,7 +7,10 @@ import { Amount, displayedSign, formatMoney } from '../../../ui/format';
 
 type LoadState = 'loading' | 'ready' | 'error';
 
-/** The 永豐期貨 dashboard card (spec §9): equity, printed margins, month P&L, frozen note. */
+/**
+ * The 永豐期貨 dashboard card (spec §9): equity, month P&L and the frozen note in one group, the printed margins in
+ * another (two columns from 1024 px); loading, error and no statement yet are one compact line.
+ */
 @Component({
   selector: 'app-futures-card',
   imports: [BentoComponent],
@@ -58,7 +61,13 @@ export class FuturesCardComponent implements OnInit, OnChanges {
     return `${date.slice(5, 7)}/${date.slice(8, 10)}`;
   }
 
-  protected marginCall(value: string): boolean {
-    return Number(value) > 0;
+  /**
+   * The margin warning (spec §9): 追繳 when a call is printed, 注意追繳 when the excess is already below zero but no
+   * call yet; null in the plain state (追繳 $0 and 超額 ≥ 0). Judged on the displayed figure, like the trend colours.
+   */
+  protected marginWarning(daily: NonNullable<FuturesSummary['latest_daily']>): '追繳' | '注意追繳' | null {
+    if (this.sign(daily.margin_call) > 0) return '追繳';
+    if (this.sign(daily.excess_margin) < 0) return '注意追繳';
+    return null;
   }
 }

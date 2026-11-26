@@ -437,3 +437,36 @@ describe('notification count pill', () => {
     expect(block(styles, '.notif-count--red')).toContain('var(--c-red-ink)');
   });
 });
+
+describe('futures card margin warning (spec §9: amber, never red / accent)', () => {
+  const cardScss = src('src/app/components/portfolio/dashboard/futures-card/futures-card.scss');
+
+  it('the warning value and the ⚠ 追繳 tag use the banner-warn pair, not the danger / accent tokens', () => {
+    const value = block(cardScss, '.futures-row--warn .futures-value');
+    expect(value).toMatch(/color:\s*var\(--app-banner-warn\)/);
+    const tag = block(cardScss, '.margin-warn-tag');
+    expect(tag).toMatch(/background:\s*var\(--app-banner-warn-soft\)/);
+    expect(tag).toMatch(/color:\s*var\(--app-banner-warn\)/);
+    for (const banned of ['--app-danger', '--app-primary', '--c-red', '--app-trend-']) {
+      expect(value + tag).not.toContain(banned);
+    }
+    expect(stripComments(cardScss)).not.toContain('--app-danger');
+  });
+
+  // The card is a bento on --app-surface. Pinned (2 decimals): the value on the surface, the tag on its tint.
+  const pinned: Record<string, [number, number]> = { light: [6.15, 5.36], dark: [7.26, 5.71] };
+
+  it.each([
+    ['light', light],
+    ['dark', dark],
+  ])('%s theme: warning text ≥ 4.5:1 on the card surface and on the tag tint', (name, theme) => {
+    const surface = hex(theme, '--app-surface');
+    const ink = hex(theme, '--app-banner-warn');
+    const got = [
+      Number(ratio(ink, surface).toFixed(2)),
+      Number(ratio(ink, composite(rgba(theme, '--app-banner-warn-soft'), surface)).toFixed(2)),
+    ];
+    expect(got).toEqual(pinned[name]);
+    for (const value of got) expect(value).toBeGreaterThanOrEqual(4.5);
+  });
+});
