@@ -180,6 +180,12 @@
   li:first-child app-notif-row {
     border-top: 0;
   }
+
+  /* A row's 稍後提醒 popover (PR E2) reaches past the card: unclipped while it is open, so it shows whole and focusing
+     an option cannot scroll the card's own content. */
+  &:has(.pk-popover) {
+    overflow: visible;
+  }
 }
 
 .notif-none {
