@@ -13,7 +13,18 @@ import { makeAccount, makeEntry, makeInstance } from '../components/accounting/t
 import { NO_TASKS } from '../components/notifications/notif-task';
 import { INBOX_READ_LIMIT } from '../components/notifications/sources/recon';
 import { BusinessDays, Counterparty, ImportRun, LedgerAccount, ScheduleInstance } from '../models/accounting.model';
-import { CathayPending, CathayPendingDay, CathayRun, CathayRuns, Dividend, Paged, RecalcStatus } from '../models/portfolio.model';
+import {
+  CathayPending,
+  CathayPendingDay,
+  CathayRun,
+  CathayRuns,
+  Dividend,
+  FuturesPending,
+  FuturesPendingItem,
+  FuturesRuns,
+  Paged,
+  RecalcStatus,
+} from '../models/portfolio.model';
 import { AccountingService } from './accounting.service';
 import { ImportHistoryService } from './import-history.service';
 import { NavigationPreferencesService } from './navigation-preferences.service';
@@ -131,6 +142,10 @@ function pendingDay(tradeDate: string, overrides: Partial<CathayPendingDay> = {}
   return { trade_date: tradeDate, status: 'held', reason: null, since: null, last_at: null, ...overrides };
 }
 
+function futuresItem(key: string, overrides: Partial<FuturesPendingItem> = {}): FuturesPendingItem {
+  return { key, kind: 'day', status: 'findings', reason: 'gap:1', since: null, last_at: null, ...overrides };
+}
+
 /** 50 pending dates from 2026-07-01 on (the API's listing limit). */
 function fiftyDays(): CathayPendingDay[] {
   return Array.from({ length: 50 }, (_, i) => pendingDay(new Date(Date.UTC(2026, 6, 1 + i)).toISOString().slice(0, 10)));
@@ -148,11 +163,15 @@ describe('NotificationCenterService', () => {
   let dividends: ReturnType<typeof calls<Paged<Dividend>>>;
   let cathayPending: ReturnType<typeof calls<CathayPending>>;
   let cathayRuns: ReturnType<typeof calls<CathayRuns>>;
+  let futuresPending: ReturnType<typeof calls<FuturesPending>>;
+  let futuresRuns: ReturnType<typeof calls<FuturesRuns>>;
   let accountingStub: Record<string, unknown>;
   let getRecalcStatus: ReturnType<typeof vi.fn>;
   let getDividends: ReturnType<typeof vi.fn>;
   let getCathayPending: ReturnType<typeof vi.fn>;
   let getCathayRuns: ReturnType<typeof vi.fn>;
+  let getFuturesPending: ReturnType<typeof vi.fn>;
+  let getFuturesRuns: ReturnType<typeof vi.fn>;
   /** The round clock (NOTIF_CLOCK); a test moves it by assigning `clockNow`. */
   let clockNow: Date;
   let clock: ReturnType<typeof vi.fn<() => Date>>;
@@ -180,6 +199,10 @@ describe('NotificationCenterService', () => {
     getDividends = vi.fn(dividends.fn);
     getCathayPending = vi.fn(cathayPending.fn);
     getCathayRuns = vi.fn(cathayRuns.fn);
+    futuresPending = calls();
+    futuresRuns = calls();
+    getFuturesPending = vi.fn(futuresPending.fn);
+    getFuturesRuns = vi.fn(futuresRuns.fn);
     clockNow = new Date(2026, 9, 24, 10, 0, 0);
     clock = vi.fn(() => clockNow);
     getInbox = vi.fn(inbox.fn);
@@ -210,7 +233,7 @@ describe('NotificationCenterService', () => {
     TestBed.configureTestingModule({
       providers: [
         { provide: AccountingService, useValue: accountingStub },
-        { provide: PortfolioService, useValue: { getRecalcStatus, getDividends, getCathayPending, getCathayRuns } },
+        { provide: PortfolioService, useValue: { getRecalcStatus, getDividends, getCathayPending, getCathayRuns, getFuturesPending, getFuturesRuns } },
         { provide: InboxService, useValue: { get: getInbox, actions: getActions, changed: inboxChanged } },
         { provide: StatementsService, useValue: { list: listStatements, changed: signal(0) } },
         { provide: NOTIF_CLOCK, useValue: clock },
@@ -250,6 +273,8 @@ describe('NotificationCenterService', () => {
       dividends?: Answer<Paged<Dividend>>;
       cathayPending?: Answer<CathayPending>;
       cathayRuns?: Answer<CathayRuns>;
+      futuresPending?: Answer<FuturesPending>;
+      futuresRuns?: Answer<FuturesRuns>;
     } = {},
   ): Promise<void> {
     const settle = <T>(subject: Subject<T> | undefined, value: Answer<T> | undefined, fallback: T) => {
@@ -273,6 +298,8 @@ describe('NotificationCenterService', () => {
     settle(cathayPending.subjects[index], values.cathayPending, { items: [], total: 0, truncated: false });
     const healthy = run(clockNow);
     settle(cathayRuns.subjects[index], values.cathayRuns, { latest: healthy, latest_ok: healthy });
+    settle(futuresPending.subjects[index], values.futuresPending, { items: [], total: 0, truncated: false });
+    settle(futuresRuns.subjects[index], values.futuresRuns, { latest: healthy, latest_ok: healthy });
     TestBed.tick();
     await microtasks();
     TestBed.tick();
@@ -663,7 +690,7 @@ describe('NotificationCenterService', () => {
     vi.advanceTimersByTime(READ_TIMEOUT_MS);
     TestBed.tick();
     expect(svc.settledRound()).toBe(1);
-    expect(svc.failedSources()).toEqual(['bills', 'schedules', 'recon', 'importReview', 'debts', 'dividends', 'imports', 'cathay']);
+    expect(svc.failedSources()).toEqual(['bills', 'schedules', 'recon', 'importReview', 'debts', 'dividends', 'imports', 'cathay', 'sinopac_futures']);
     // Timed out reads are unsubscribed: round 1 can no longer answer.
     expect(latest.subjects[0].observed).toBe(false);
 
@@ -1371,8 +1398,8 @@ describe('NotificationCenterService', () => {
   });
   // ---- PR C: dividends, imports, 國泰對帳單 -----------------------------------------------------------------------
 
-  describe('a round waits for every one of the eight task sources', () => {
-    it.each(['dividends', 'cathayPending', 'cathayRuns', 'recalc'] as const)('%s open → not settled; answered → settled', async key => {
+  describe('a round waits for every one of the nine task sources', () => {
+    it.each(['dividends', 'cathayPending', 'cathayRuns', 'futuresPending', 'futuresRuns', 'recalc'] as const)('%s open → not settled; answered → settled', async key => {
       const svc = service();
       svc.start();
       await answer(0, { [key]: 'skip' });
@@ -1818,5 +1845,124 @@ describe('NotificationCenterService', () => {
     expect(svc.settledRound()).toBe(1);
     expect(svc.failedSources()).toEqual(['cathay']);
     expect(svc.cathay()).toBeNull();
+  });
+
+  // ---- 永豐期貨對帳單 (sinopac_futures) -----------------------------------------------------------------------------
+
+  describe('永豐期貨對帳單 source', () => {
+    it('a pending item is a counted 系統 task sinopac_futures:<key>:<status> and lights the 匯入 dot primary', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { futuresPending: { items: [futuresItem('2026-10-23'), futuresItem('2026-10-23', { status: 'conflict', reason: null })], total: 2, truncated: false } });
+      expect(svc.tasks().map(task => [task.id, task.tier, task.from])).toEqual([
+        ['sinopac_futures:2026-10-23:conflict', 'system', 'sinopac_futures'],
+        ['sinopac_futures:2026-10-23:findings', 'system', 'sinopac_futures'],
+      ]);
+      expect(svc.badges()['import']).toEqual({ dot: true, tone: 'primary', label: '2 件永豐期貨對帳單待處理' });
+      expect(svc.futures()?.items.map(item => item.id)).toEqual(['2026-10-23:conflict', '2026-10-23:findings']);
+    });
+
+    it('pending 國泰 dates and futures items share the primary dot: both labels', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, {
+        cathayPending: { items: [pendingDay('2026-10-23')], total: 1, truncated: false },
+        futuresPending: { items: [futuresItem('2026-10-23')], total: 1, truncated: false },
+      });
+      expect(svc.badges()['import']).toEqual({ dot: true, tone: 'primary', label: '1 天的國泰對帳單待處理、1 件永豐期貨對帳單待處理' });
+    });
+
+    it('a failed futures run: sinopac_futures:run and the red 匯入 dot, red winning over pending items', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, {
+        cathayPending: { items: [pendingDay('2026-10-23')], total: 1, truncated: false },
+        futuresRuns: { latest: run(clockNow, 'failed'), latest_ok: null },
+      });
+      expect(ids(svc)).toContain('sinopac_futures:run');
+      expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label: '永豐期貨對帳單匯入失敗' });
+      expect(svc.futures()?.state).toBe('failed');
+    });
+
+    it('never run (latest and latest_ok null): automatic import not enabled yet — no run task, no 匯入 dot, nothing counted', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { futuresRuns: { latest: null, latest_ok: null } });
+      expect(svc.failedSources()).toEqual([]);
+      expect(ids(svc)).toEqual([]);
+      expect(svc.summary()).toEqual(NO_TASKS);
+      expect('import' in svc.badges()).toBe(false);
+      expect(svc.futures()).toMatchObject({ state: 'never', runLine: '尚未啟用自動匯入', banner: null, dotLabel: null });
+    });
+
+    it('a month key and a day key both pass; the first run (stale since yesterday) raises the run task and the red dot', async () => {
+      const svc = service();
+      svc.start();
+      const yesterday = run(clockNow, 'ok', 24 * 60);
+      await answer(0, {
+        futuresPending: { items: [futuresItem('2026-09', { kind: 'month' }), futuresItem('2026-10-23')], total: 2, truncated: false },
+        futuresRuns: { latest: yesterday, latest_ok: yesterday },
+      });
+      expect(svc.failedSources()).toEqual([]);
+      expect(ids(svc)).toEqual(['sinopac_futures:2026-09:findings', 'sinopac_futures:2026-10-23:findings', 'sinopac_futures:run']);
+      expect(svc.badges()['import']).toEqual({ dot: true, tone: 'red', label: '永豐期貨對帳單今天沒有執行' });
+    });
+
+    it('futuresMore is total − listed and 0 while unread', async () => {
+      const svc = service();
+      expect(svc.futuresMore()).toBe(0);
+      svc.start();
+      const items = Array.from({ length: 50 }, (_, i) => futuresItem(new Date(Date.UTC(2026, 6, 1 + i)).toISOString().slice(0, 10)));
+      await answer(0, { futuresPending: { items, total: 60, truncated: true } });
+      expect(svc.futuresMore()).toBe(10);
+    });
+
+    it.each([
+      ['a pending item without a key', { futuresPending: { items: [{ kind: 'day', status: 'findings', reason: null, since: null, last_at: null }], total: 1, truncated: false } }],
+      ['an unknown status', { futuresPending: { items: [futuresItem('2026-10-23', { status: 'held' as never })], total: 1, truncated: false } }],
+      ['an unknown kind', { futuresPending: { items: [futuresItem('2026-10-23', { kind: 'week' as never })], total: 1, truncated: false } }],
+      ['a numeric reason', { futuresPending: { items: [futuresItem('2026-10-23', { reason: 5 as never })], total: 1, truncated: false } }],
+      ['no total', { futuresPending: { items: [] } }],
+      ['a garbage key', { futuresPending: { items: [futuresItem('2026-1-23')], total: 1, truncated: false } }],
+      ['a month key on a day item', { futuresPending: { items: [futuresItem('2026-10')], total: 1, truncated: false } }],
+      ['a date key on a month item', { futuresPending: { items: [futuresItem('2026-10-23', { kind: 'month' })], total: 1, truncated: false } }],
+      ['an unreadable run_at', { futuresRuns: { latest: { run_at: 'nope', result: 'ok', code: null, files_seen: 1, posted: 1 }, latest_ok: null } }],
+      ['runs without latest_ok', { futuresRuns: { latest: null } }],
+      ['an unexpected result', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'unexpected', code: null, files_seen: 1, posted: 1 }, latest_ok: null } }],
+      ['a run without posted', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'ok', code: null, files_seen: 1 }, latest_ok: null } }],
+      ['an object code on a failed run', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'failed', code: { toString: null }, files_seen: 0, posted: 0 }, latest_ok: null } }],
+      ['a numeric code', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'failed', code: 5, files_seen: 0, posted: 0 }, latest_ok: null } }],
+      ['a negative files_seen', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'ok', code: null, files_seen: -1, posted: 0 }, latest_ok: null } }],
+      ['a fractional posted', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'ok', code: null, files_seen: 2, posted: 1.5 }, latest_ok: null } }],
+      ['a string posted', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'ok', code: null, files_seen: 1, posted: '1' }, latest_ok: null } }],
+      ['an invalid latest_ok', { futuresRuns: { latest: null, latest_ok: { run_at: '2026-10-24T01:00:00Z', result: 'ok', code: null, files_seen: Infinity, posted: 0 } } }],
+      ['a run without code', { futuresRuns: { latest: { run_at: '2026-10-24T01:00:00Z', result: 'ok', files_seen: 1, posted: 1 }, latest_ok: null } }],
+    ])('invalid payload marks the source unreadable without touching 國泰 (%s)', async (_name, values) => {
+      const svc = service();
+      svc.start();
+      await answer(0, {
+        cathayPending: { items: [pendingDay('2026-10-23')], total: 1, truncated: false },
+        ...(values as object),
+      });
+      expect(svc.settledRound()).toBe(1);
+      expect(svc.failedSources()).toEqual(['sinopac_futures']);
+      expect(svc.futures()).toBeNull();
+      expect(svc.futuresMore()).toBe(0);
+      expect(ids(svc)).toEqual(['cathay:2026-10-23']);
+      expect(svc.cathay()?.days.map(day => day.tradeDate)).toEqual(['2026-10-23']);
+      expect(svc.badges()['import']).toEqual({ dot: true, tone: 'primary', label: '1 天的國泰對帳單待處理' });
+    });
+
+    it('a futures source that fails after it succeeded drops its tasks and its dot; 國泰 keeps its own', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { futuresPending: { items: [futuresItem('2026-10-23')], total: 1, truncated: false } });
+      expect(ids(svc)).toEqual(['sinopac_futures:2026-10-23:findings']);
+      svc.invalidate();
+      await answer(1, { futuresRuns: 'error', cathayPending: { items: [pendingDay('2026-10-22')], total: 1, truncated: false } });
+      expect(svc.failedSources()).toEqual(['sinopac_futures']);
+      expect(ids(svc)).toEqual(['cathay:2026-10-22']);
+      expect(svc.futures()).toBeNull();
+    });
   });
 });

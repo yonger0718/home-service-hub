@@ -118,6 +118,12 @@ describe('cathay run rule', () => {
     expect(runCodeText('')).toBeNull();
   });
 
+  it('runCodeText: a non-string code (an invalid body) → null, never a throw', () => {
+    expect(runCodeText({ toString: null } as never)).toBeNull();
+    expect(runCodeText(5 as never)).toBeNull();
+    expect(runCodeText(undefined as never)).toBeNull();
+  });
+
   it('runStamp: 今天 / 昨天 / MM/DD HH:mm by the Taipei calendar', () => {
     expect(runStamp('2026-10-28T06:41:00+08:00', now)).toBe('今天 06:41');
     expect(runStamp('2026-10-27T06:41:00+08:00', now)).toBe('昨天 06:41');

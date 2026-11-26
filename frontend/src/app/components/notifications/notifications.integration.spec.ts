@@ -48,6 +48,8 @@ interface RoundRequests {
   dividends: TestRequest;
   cathayPending: TestRequest;
   cathayRuns: TestRequest;
+  futuresPending: TestRequest;
+  futuresRuns: TestRequest;
   recalc: TestRequest;
 }
 
@@ -92,6 +94,8 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       dividends,
       cathayPending: http.expectOne(get('/api/portfolio/imports/cathay-statement/pending')),
       cathayRuns: http.expectOne(get('/api/portfolio/imports/cathay-statement/runs/latest')),
+      futuresPending: http.expectOne(get('/api/portfolio/imports/sinopac-futures-statement/pending')),
+      futuresRuns: http.expectOne(get('/api/portfolio/imports/sinopac-futures-statement/runs/latest')),
       recalc: http.expectOne(get('/api/portfolio/imports/recalc/status')),
     };
   }
@@ -111,6 +115,8 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     round.dividends.flush({ items: [], total: 0 });
     round.cathayPending.flush({ items: [], total: 0, truncated: false });
     round.cathayRuns.flush({ latest, latest_ok: latest });
+    round.futuresPending.flush({ items: [], total: 0, truncated: false });
+    round.futuresRuns.flush({ latest, latest_ok: latest });
     round.recalc.flush({ state: 'idle' });
   }
 
@@ -169,6 +175,8 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     round.dividends.flush({ items: [], total: 0 });
     round.cathayPending.flush(pending);
     round.cathayRuns.flush({ latest, latest_ok: latest });
+    round.futuresPending.flush({ items: [], total: 0, truncated: false });
+    round.futuresRuns.flush({ latest, latest_ok: latest });
     round.recalc.flush({ state: 'idle' });
   }
 
@@ -572,6 +580,10 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     if (!round2.cathayRuns.cancelled) {
       round2.cathayRuns.flush('boom', boom);
     }
+    // 永豐期貨 answers: only the sources named above fail.
+    const quiet = { run_at: new Date(Date.now() - 5 * 60_000).toISOString(), result: 'ok', code: null, files_seen: 1, posted: 1 };
+    round2.futuresPending.flush({ items: [], total: 0, truncated: false });
+    round2.futuresRuns.flush({ latest: quiet, latest_ok: quiet });
     round2.recalc.flush('boom', boom);
     await flushRound(round2, [RENT]);
     expect(center.settledRound()).toBe(2);

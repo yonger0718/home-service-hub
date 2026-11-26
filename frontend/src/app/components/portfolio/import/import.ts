@@ -47,6 +47,8 @@ import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BannerComponent } from '../../ui/banner/banner';
 import { CATHAY_CARD_FRAGMENT } from '../../notifications/sources/cathay';
 import { CathayStatusCardComponent } from './cathay-status-card/cathay-status-card';
+import { FUTURES_CARD_FRAGMENT } from '../../notifications/sources/sinopac-futures';
+import { FuturesStatusCardComponent } from './futures-status-card/futures-status-card';
 import {
   ImportRowError,
   ImportType,
@@ -112,6 +114,7 @@ interface UploadRequest {
     SideTagComponent,
     TagComponent,
     CathayStatusCardComponent,
+    FuturesStatusCardComponent,
   ],
   providers: [ConfirmationService],
   templateUrl: './import.html',
@@ -144,9 +147,25 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private readonly host: HTMLElement = inject(ElementRef).nativeElement;
   private readonly injector = inject(Injector);
   private readonly fragment = toSignal(this.route.fragment, { initialValue: this.route.snapshot.fragment });
-  /** The `#cathay` already acted on: a fragment acts once (a new 國泰 answer, or the same fragment again, does not). */
+  /**
+   * The status cards a 通知 查看 opens (`#cathay`, `#sinopac-futures`): the card's element and whether its source has
+   * answered (its view, or its failure).
+   */
+  private readonly fragmentCards: readonly { readonly fragment: string; readonly tag: string; readonly answered: () => boolean }[] = [
+    {
+      fragment: CATHAY_CARD_FRAGMENT,
+      tag: 'app-cathay-status-card',
+      answered: () => this.center.cathay() !== null || this.center.failedSources().includes('cathay'),
+    },
+    {
+      fragment: FUTURES_CARD_FRAGMENT,
+      tag: 'app-futures-status-card',
+      answered: () => this.center.futures() !== null || this.center.failedSources().includes('sinopac_futures'),
+    },
+  ];
+  /** The card fragment already acted on: a fragment acts once (a new answer, or the same fragment again, does not). */
   private shownFragment: string | null = null;
-  /** Listeners armed while `#cathay` waits for the 國泰 answer; `userMoved` is set by the first key, press or scroll. */
+  /** Listeners armed while a card fragment waits for its answer; `userMoved` is set by the first key, press or scroll. */
   private userMoveWatch: AbortController | null = null;
   private userMoved = false;
 
@@ -247,9 +266,11 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   constructor() {
     // 查看 on a 國泰 row of 通知 (`#cathay`): once the card shows the 國泰 answer (or its failure), it scrolls into view
     // and takes focus — once per fragment, as reward-rules' `#card-<id>`. On a phone the card is the page's last thing.
+    // `#sinopac-futures` does the same for the 永豐期貨對帳單 card, on the futures answer.
     effect(() => {
       const fragment = this.fragment();
-      if (fragment !== CATHAY_CARD_FRAGMENT) {
+      const target = this.fragmentCards.find(c => c.fragment === fragment);
+      if (!target) {
         this.shownFragment = null;
         this.stopWatchingUserMove();
         return;
@@ -257,8 +278,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
       if (fragment === this.shownFragment) {
         return;
       }
-      const answered = this.center.cathay() !== null || this.center.failedSources().includes('cathay');
-      if (!answered) {
+      if (!target.answered()) {
         // The answer can take seconds: a user who starts using the page meanwhile keeps their place.
         this.watchForUserMove();
         return;
@@ -267,7 +287,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
       const moved = this.userMoved;
       this.stopWatchingUserMove();
       if (!moved) {
-        afterNextRender(() => this.showCathayCard(), { injector: this.injector });
+        afterNextRender(() => this.showCard(`${target.tag}#${target.fragment}`), { injector: this.injector });
       }
     });
     // The instance is reused when the sidebar links to /portfolio/import without a query: follow ?type= for its whole life.
@@ -277,9 +297,9 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     });
   }
 
-  /** Scrolls the 國泰每日對帳單 card into view and focuses it (the host has tabindex -1). */
-  private showCathayCard(): void {
-    const card = this.host.querySelector<HTMLElement>(`app-cathay-status-card#${CATHAY_CARD_FRAGMENT}`);
+  /** Scrolls a status card (國泰每日對帳單, 永豐期貨對帳單) into view and focuses it (the host has tabindex -1). */
+  private showCard(selector: string): void {
+    const card = this.host.querySelector<HTMLElement>(selector);
     if (!card) {
       return;
     }
@@ -292,7 +312,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     card.focus({ preventScroll: true });
   }
 
-  /** While `#cathay` waits for the 國泰 answer: a key, a press or a scroll gesture anywhere cancels the jump. */
+  /** While a card fragment waits for its answer: a key, a press or a scroll gesture anywhere cancels the jump. */
   private watchForUserMove(): void {
     if (this.userMoveWatch) {
       return;

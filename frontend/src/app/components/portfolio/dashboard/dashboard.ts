@@ -50,7 +50,9 @@ import {
   pendingRows,
   quoteTimeLabel,
   todayChange,
+  assetsTotal,
 } from './dashboard-math';
+import { FuturesCardComponent } from './futures-card/futures-card';
 import { hoverGuidePlugin } from './chart-guide.plugin';
 import { Amount, displayedSign, formatMoney, formatPct } from '../../ui/format';
 import { isTwdCurrency } from '../money';
@@ -69,11 +71,13 @@ interface ChartSeriesValues {
   total: number;
   holdings: number;
   cash: number;
+  futures: number;
 }
 
 @Component({
   selector: 'app-portfolio-dashboard',
   imports: [
+    FuturesCardComponent,
     PageHeaderComponent,
     CommonModule,
     RouterLink,
@@ -99,9 +103,10 @@ export class PortfolioDashboardComponent implements OnInit {
   private readonly clock = inject(DASHBOARD_CLOCK);
   private readonly layoutMode = inject(LayoutModeService);
 
+  /** Bumped by every 刷新行情 so the futures card reads again; the first load is the card's own. */
+  protected readonly futuresRefresh = signal(0);
   @ViewChild('netWorthChart') netWorthChart?: UIChart;
 
-  protected readonly Number = Number;
   readonly summary = signal<PortfolioSummary | null>(null);
   readonly upcomingExDividends = signal<ExDividendRecord[]>([]);
   readonly loading = signal(false);
@@ -181,19 +186,43 @@ export class PortfolioDashboardComponent implements OnInit {
     ...this.availableMarkets().map(m => ({ label: MARKET_LABELS[m], value: m })),
   ]);
 
+  /**
+   * The populated view: any holding, or any non-zero asset part (total, cash, futures, dividends, pending), so
+   * offsetting parts with a total of "0" (cash 100, futures −100) still show it (spec §6.5 valid zero).
+   */
+  readonly hasPortfolio = computed(() => {
+    const s = this.summary();
+    if (!s) return false;
+    const part = (value: Amount | undefined) => {
+      const n = Number(value ?? 0);
+      return Number.isFinite(n) && n !== 0;
+    };
+    return (
+      s.holdings.length > 0 ||
+      Number(s.total_assets_twd) !== 0 ||
+      Number(s.total_pending_dividends_net ?? 0) !== 0 ||
+      Number(s.total_dividends) !== 0 ||
+      part(s.total_cash_twd) ||
+      part(s.futures_equity_twd) ||
+      part(s.total_market_value)
+    );
+  });
+
   readonly hero = computed(() => {
     const summary = this.summary();
     if (!summary) return null;
     const today = todayChange(summary);
     const parts = composition(summary);
     return {
-      total: this.twdPlain(summary.total_assets_twd),
+      total: this.twdPlain(assetsTotal(summary)),
       todayAmount: today.amount,
       todayText: this.money(today.amount, 'TWD', 'change'),
       todaySign: displayedSign(today.amount, this.money(today.amount, 'TWD', 'change')),
       todayPercent: today.percent,
       ...parts,
-      barLabel: `資產組成：股票 ${this.pct(parts.stocksPct)}，現金 ${this.pct(parts.cashPct)}`,
+      barLabel:
+        `資產組成：股票 ${this.pct(parts.stocksPct)}，現金 ${this.pct(parts.cashPct)}` +
+        (parts.futures !== 0 ? `，期貨權益 ${this.pct(parts.futuresPct)}` : ''),
     };
   });
 
@@ -320,9 +349,14 @@ export class PortfolioDashboardComponent implements OnInit {
     chart.update('none');
     const point = this.chartPoints()[index];
     if (!point) return;
-    const { total, holdings, cash } = this.seriesValues(point);
-    this.focusedPointText.set(
-      `${this.pointDate(point)} · 帳戶總值 ${this.money(total)} · 持股淨值 ${this.money(holdings)} · 現金 ${this.money(cash)}`,
+    this.focusedPointText.set(this.pointSummary(point));
+  }
+
+  private pointSummary(point: NetworthPoint): string {
+    const { total, holdings, cash, futures } = this.seriesValues(point);
+    return (
+      `${this.pointDate(point)} · 帳戶總值 ${this.money(total)} · 持股淨值 ${this.money(holdings)} · 現金 ${this.money(cash)}` +
+      (futures !== 0 ? ` · 期貨權益 ${this.money(futures)}` : '')
     );
   }
 
@@ -459,6 +493,7 @@ export class PortfolioDashboardComponent implements OnInit {
 
   loadSummary(): void {
     this.loading.set(true);
+    this.futuresRefresh.update(n => n + 1);
     this.portfolioService.refreshQuotes().subscribe({
       next: (response) => {
         if (response?.refresh_scheduled) {
@@ -740,7 +775,8 @@ export class PortfolioDashboardComponent implements OnInit {
   private seriesValues(point: NetworthPoint): ChartSeriesValues {
     const total = this.totalAssetsValue(point);
     const holdings = this.numberFrom(point.total_market_value);
-    return { total, holdings, cash: Math.max(0, total - holdings) };
+    const futures = this.numberFrom(point.futures_equity_twd);
+    return { total, holdings, cash: Math.max(0, total - holdings - futures), futures };
   }
 
   private chartValues(): number[] {
@@ -748,9 +784,7 @@ export class PortfolioDashboardComponent implements OnInit {
   }
 
   private totalAssetsValue(point: NetworthPoint): number {
-    const explicitTotal = this.numberFrom(point.total_assets_twd);
-    if (explicitTotal !== 0) return explicitTotal;
-    return this.numberFrom(point.total_market_value) + this.numberFrom(point.total_cash_twd);
+    return assetsTotal(point);
   }
 
   private numberFrom(value: number | string | null | undefined): number {
@@ -783,7 +817,10 @@ export class PortfolioDashboardComponent implements OnInit {
             label: (ctx: any) => `${ctx.dataset?.label ?? ''} ${this.money(ctx.parsed?.y ?? 0)}`,
             afterBody: (items: any[]) => {
               const point = this.chartPoints()[items[0]?.dataIndex];
-              return point ? `現金 ${this.money(this.seriesValues(point).cash)}` : '';
+              if (!point) return '';
+              const { cash, futures } = this.seriesValues(point);
+              const cashLine = `現金 ${this.money(cash)}`;
+              return futures !== 0 ? [cashLine, `期貨權益 ${this.money(futures)}`] : cashLine;
             },
           },
         },

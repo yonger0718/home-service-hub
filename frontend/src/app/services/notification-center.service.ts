@@ -22,7 +22,7 @@ import {
   summarize,
 } from '../components/notifications/notif-task';
 import { billTasks } from '../components/notifications/sources/bills';
-import { CathayView, cathayMore, cathayTasks, cathayView } from '../components/notifications/sources/cathay';
+import { CathayView, RUN_RESULTS, cathayMore, cathayTasks, cathayView } from '../components/notifications/sources/cathay';
 import { debtsRow, handledText, importReviewTask, upcomingRow } from '../components/notifications/sources/ledger-misc';
 import {
   INBOX_READ_LIMIT,
@@ -42,10 +42,22 @@ import {
 } from '../components/notifications/sources/portfolio';
 import { SnoozeMap, SnoozeOption, snoozeEntry, snoozeUntil, wakes } from '../components/notifications/snooze';
 import { scheduleTasks } from '../components/notifications/sources/schedules';
+import { FuturesView, futuresMore, futuresTasks, futuresView } from '../components/notifications/sources/sinopac-futures';
 import { allPages } from '../components/portfolio/paging';
 import { NavBadge } from '../components/shell/navigation';
 import { Counterparty, ImportRun, LedgerAccount, ScheduleInstance } from '../models/accounting.model';
-import { CathayPending, CathayPendingDay, CathayRun, CathayRuns, Dividend, Paged, RecalcStatus } from '../models/portfolio.model';
+import {
+  CathayPending,
+  CathayPendingDay,
+  CathayRun,
+  CathayRuns,
+  Dividend,
+  FuturesPending,
+  FuturesPendingItem,
+  FuturesRuns,
+  Paged,
+  RecalcStatus,
+} from '../models/portfolio.model';
 import { AccountingService } from './accounting.service';
 import { BusinessCalendarService } from './business-calendar.service';
 import { ImportHistoryService } from './import-history.service';
@@ -114,6 +126,55 @@ function checkedRuns(runs: unknown): CathayRuns {
   return runs as unknown as CathayRuns;
 }
 
+/** A non-negative integer count (`files_seen`, `posted`): anything else would print 「已匯入 undefined 份」. */
+const isCount = (value: unknown): boolean => typeof value === 'number' && Number.isInteger(value) && value >= 0;
+
+/**
+ * 永豐期貨 runs, stricter than 國泰's: `latest` / `latest_ok` each null or a run with a parseable `run_at`, a `result`
+ * the card can name (RUN_RESULTS), `code` null or a string, and integer `files_seen` / `posted` ≥ 0; else an error,
+ * so the futures source alone fails.
+ */
+function checkedFuturesRuns(runs: unknown): FuturesRuns {
+  const run = (r: unknown): boolean =>
+    r === null ||
+    (isObject(r) &&
+      typeof r['run_at'] === 'string' &&
+      Number.isFinite(new Date(r['run_at']).getTime()) &&
+      typeof r['result'] === 'string' &&
+      RUN_RESULTS.includes(r['result']) &&
+      (r['code'] === null || typeof r['code'] === 'string') &&
+      isCount(r['files_seen']) &&
+      isCount(r['posted']));
+  if (!isObject(runs) || !('latest' in runs) || !('latest_ok' in runs) || !run(runs['latest']) || !run(runs['latest_ok'])) {
+    throw new Error('sinopac futures runs');
+  }
+  return runs as unknown as FuturesRuns;
+}
+
+const FUTURES_STATUSES: readonly unknown[] = ['conflict', 'findings'] satisfies FuturesPendingItem['status'][];
+/** A pending key per kind, as the ack route accepts it (`^\d{4}-\d{2}(-\d{2})?$`): a date for a day, `YYYY-MM` for a month. */
+const FUTURES_KEY: Readonly<Record<FuturesPendingItem['kind'], RegExp>> = { day: /^\d{4}-\d{2}-\d{2}$/, month: /^\d{4}-\d{2}$/ };
+
+/**
+ * 永豐期貨 pending: items with a known `kind`, a `key` of that kind's shape, a known `status`, and `reason` / `since` / `last_at` each null
+ * or a string, plus a numeric total; else an error, so the futures source alone fails.
+ */
+function checkedFuturesPending(pending: unknown): FuturesPending {
+  const item = (i: unknown) =>
+    isObject(i) &&
+    (i['kind'] === 'day' || i['kind'] === 'month') &&
+    typeof i['key'] === 'string' &&
+    FUTURES_KEY[i['kind']].test(i['key']) &&
+    FUTURES_STATUSES.includes(i['status']) &&
+    optionalText(i['reason']) &&
+    optionalText(i['since']) &&
+    optionalText(i['last_at']);
+  if (!isObject(pending) || !Array.isArray(pending['items']) || typeof pending['total'] !== 'number' || !pending['items'].every(item)) {
+    throw new Error('sinopac futures pending');
+  }
+  return pending as unknown as FuturesPending;
+}
+
 /** A focus / visible / timer refresh starting sooner than this after the last started round is skipped. */
 export const BADGE_REFRESH_MIN_MS = 30_000;
 
@@ -155,7 +216,7 @@ const IDLE: SourceStatus = { round: 0, state: 'idle' };
  * → card statements, schedule queue, reconciliation inbox, latest import, counterparties, every dividend page, the
  * recalc status, the 國泰 pending dates + latest run) plus the silent reads (statement progress, handled actions), with
  * `now` taken once from `NOTIF_CLOCK` at its start. An answer is applied only while its round is the newest started
- * one, so a superseded round changes nothing and never settles. `settledRound()` is the newest round whose eight task
+ * one, so a superseded round changes nothing and never settles. `settledRound()` is the newest round whose nine task
  * sources — the card statements included — have all answered, ok or failed.
  *
  * Each source fails on its own: its tasks and its dot leave, `failedSources()` names it, the others stay. No read
@@ -182,6 +243,7 @@ export class NotificationCenterService {
   private readonly settledId = signal(0);
   private readonly status = signal<Readonly<Record<NotifSourceKey, SourceStatus>>>({
     bills: IDLE, schedules: IDLE, recon: IDLE, importReview: IDLE, debts: IDLE, dividends: IDLE, imports: IDLE, cathay: IDLE,
+    sinopac_futures: IDLE,
   });
   /** The clock as of the newest started round (P3: read once per round). */
   private readonly now = signal<Date>(this.clock());
@@ -209,6 +271,8 @@ export class NotificationCenterService {
    * always the answer judged at its own round's `now`, never an older answer re-judged by a newer round still in flight.
    */
   private readonly cathayData = signal<{ readonly pending: CathayPending; readonly runs: CathayRuns; readonly now: Date } | null>(null);
+  /** The applied 永豐期貨對帳單 answers, both reads or none, with their round's clock (as `cathayData`). */
+  private readonly futuresData = signal<{ readonly pending: FuturesPending; readonly runs: FuturesRuns; readonly now: Date } | null>(null);
   /** Emits when a round starts: the previous round's dividend scan stops requesting pages. */
   private readonly roundStarted = new Subject<void>();
 
@@ -285,6 +349,10 @@ export class NotificationCenterService {
     const cathay = this.cathayData();
     if (cathay) {
       tasks.push(...cathayTasks(cathay.pending, cathay.runs, cathay.now));
+    }
+    const futures = this.futuresData();
+    if (futures) {
+      tasks.push(...futuresTasks(futures.pending, futures.runs, futures.now));
     }
     return sortTasks(tasks);
   });
@@ -393,6 +461,17 @@ export class NotificationCenterService {
     return data ? cathayMore(data.pending) : 0;
   });
 
+  /** The 永豐期貨對帳單 view of the last applied answers; null before the first one and while the source failed. */
+  readonly futures: Signal<FuturesView | null> = computed(() => {
+    const data = this.futuresData();
+    return data ? futuresView(data.pending, data.runs, data.now) : null;
+  });
+  /** Pending futures items the API did not list (0 when none or unread). */
+  readonly futuresMore: Signal<number> = computed(() => {
+    const data = this.futuresData();
+    return data ? futuresMore(data.pending) : 0;
+  });
+
   /** Nav dots (R9); no badge carries a count. */
   readonly badges: Signal<Readonly<Record<string, NavBadge>>> = computed(() => {
     const badges: Record<string, NavBadge> = {};
@@ -409,14 +488,16 @@ export class NotificationCenterService {
     }
     // O2 / P6: an import failure (the recalc chain, or this device's last commit until its next successful one) and a
     // bad 國泰 run share the red 匯入 dot. Pending 國泰 dates alone light it primary (as 股利); red wins over them.
+    // A bad 永豐期貨 run joins them; its pending items join the 國泰 dates on the primary dot.
     const cathay = this.cathay();
-    const importLabels = [this.importFailure() ? '最近一次匯入失敗' : null, cathay?.dotLabel ?? null].filter(
-      (label): label is string => label !== null,
-    );
+    const futures = this.futures();
+    const present = (label: string | null): label is string => label !== null;
+    const importLabels = [this.importFailure() ? '最近一次匯入失敗' : null, cathay?.dotLabel ?? null, futures?.dotLabel ?? null].filter(present);
+    const pendingLabels = [cathay?.pendingLabel ?? null, futures?.pendingLabel ?? null].filter(present);
     if (importLabels.length > 0) {
       badges['import'] = { dot: true, tone: 'red', label: importLabels.join('、') };
-    } else if (cathay?.pendingLabel) {
-      badges['import'] = { dot: true, tone: 'primary', label: cathay.pendingLabel };
+    } else if (pendingLabels.length > 0) {
+      badges['import'] = { dot: true, tone: 'primary', label: pendingLabels.join('、') };
     }
     return badges;
   });
@@ -573,6 +654,15 @@ export class NotificationCenterService {
       this.cathayData.set(answer ? { ...answer, now } : null);
       this.mark('cathay', round, answer ? 'ok' : 'failed');
     });
+    // 永豐期貨對帳單: the same two-read source; an invalid answer fails it alone.
+    const futures = forkJoin({
+      pending: this.portfolio.getFuturesPending().pipe(map(checkedFuturesPending)),
+      runs: this.portfolio.getFuturesRuns().pipe(map(checkedFuturesRuns)),
+    });
+    this.read(round, futures, answer => {
+      this.futuresData.set(answer ? { ...answer, now } : null);
+      this.mark('sinopac_futures', round, answer ? 'ok' : 'failed');
+    });
     return round;
   }
 
@@ -713,7 +803,7 @@ export class NotificationCenterService {
   }
 
   /**
-   * Records a task source's answer for `round`; the round settles once all eight have answered for it. The first
+   * Records a task source's answer for `round`; the round settles once all nine have answered for it. The first
    * answer of a source in a round is final (a late one, e.g. a statement landing after the bills timeout, is ignored).
    */
   private mark(source: NotifSourceKey, round: number, state: 'ok' | 'failed'): void {

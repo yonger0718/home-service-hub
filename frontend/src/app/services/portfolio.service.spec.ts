@@ -29,6 +29,41 @@ describe('PortfolioService', () => {
     runs.flush({ latest: null, latest_ok: null });
   });
 
+  it('reads the 永豐期貨 pending items and latest runs', () => {
+    service.getFuturesPending().subscribe();
+    const pending = httpMock.expectOne('/api/portfolio/imports/sinopac-futures-statement/pending');
+    expect(pending.request.method).toBe('GET');
+    pending.flush({ items: [], total: 0, truncated: false });
+    service.getFuturesRuns().subscribe();
+    const runs = httpMock.expectOne('/api/portfolio/imports/sinopac-futures-statement/runs/latest');
+    expect(runs.request.method).toBe('GET');
+    runs.flush({ latest: null, latest_ok: null });
+  });
+
+  it('acks one futures incident with ?status= and reads no body from the 204', () => {
+    let done = 0;
+    let value: unknown = 'unset';
+    service.ackFuturesItem('2026-03', 'findings').subscribe({ next: v => (value = v), complete: () => done++ });
+    const req = httpMock.expectOne(r => r.url === '/api/portfolio/imports/sinopac-futures-statement/days/2026-03/ack');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.params.get('status')).toBe('findings');
+    expect(req.request.responseType).toBe('text');
+    req.flush('', { status: 204, statusText: 'No Content' });
+    expect(value).toBeUndefined();
+    expect(done).toBe(1);
+  });
+
+  it('reads the futures summary, sending as_of only when given', () => {
+    service.getFuturesSummary().subscribe();
+    const plain = httpMock.expectOne(r => r.url === '/api/portfolio/futures/summary');
+    expect(plain.request.params.has('as_of')).toBe(false);
+    plain.flush({ as_of: '2026-11-23', value: null, latest_daily: null, month: null });
+    service.getFuturesSummary('2026-10-31').subscribe();
+    const dated = httpMock.expectOne(r => r.url === '/api/portfolio/futures/summary');
+    expect(dated.request.params.get('as_of')).toBe('2026-10-31');
+    dated.flush({ as_of: '2026-10-31', value: null, latest_daily: null, month: null });
+  });
+
   it('acks a 國泰 day with a body-less POST', () => {
     service.ackCathayDay('2026-10-28').subscribe();
     const req = httpMock.expectOne('/api/portfolio/imports/cathay-statement/days/2026-10-28/ack');

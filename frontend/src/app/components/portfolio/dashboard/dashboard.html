@@ -39,7 +39,7 @@
         </app-bento>
       }
     </div>
-  } @else if (summary() && (summary()!.holdings.length > 0 || Number(summary()!.total_assets_twd) !== 0 || Number(summary()!.total_pending_dividends_net ?? 0) !== 0 || Number(summary()!.total_dividends) !== 0)) {
+  } @else if (hasPortfolio()) {
     <div class="bento-grid">
       @let heroData = hero();
       @if (!isMarketFiltered() && heroData) {
@@ -58,8 +58,11 @@
               <div class="composition-bar" role="img" [attr.aria-label]="heroData.barLabel">
                 <span class="seg-stocks" [style.flex-grow]="heroData.stocksPct"></span>
                 <span class="seg-cash" [style.flex-grow]="heroData.cashPct"></span>
+                @if (heroData.futuresPct > 0) {
+                  <span class="seg-futures" [style.flex-grow]="heroData.futuresPct"></span>
+                }
               </div>
-              <div class="legend">
+              <div class="legend" [class.legend-four]="heroData.futures !== 0">
                 <div class="legend-item">
                   <span class="legend-label"><span class="swatch stocks" aria-hidden="true"></span>股票市值</span>
                   <b class="legend-value">{{ twdPlain(heroData.stocks) }}</b>
@@ -68,6 +71,12 @@
                   <span class="legend-label"><span class="swatch cash" aria-hidden="true"></span>交割戶現金</span>
                   <b class="legend-value">{{ twdPlain(heroData.cash) }}</b>
                 </div>
+                @if (heroData.futures !== 0) {
+                  <div class="legend-item">
+                    <span class="legend-label"><span class="swatch futures" aria-hidden="true"></span>期貨權益</span>
+                    <b class="legend-value">{{ twdPlain(heroData.futures) }}</b>
+                  </div>
+                }
                 <div class="legend-item">
                   <span class="legend-label"><span class="swatch dashed" aria-hidden="true"></span>待收股利</span>
                   <b class="legend-value">{{ twdPlain(heroData.pending) }}</b>
@@ -138,6 +147,8 @@
         </app-bento>
       </div>
 
+      <app-futures-card [refresh]="futuresRefresh()"></app-futures-card>
+
       <div class="chart-row">
         <app-bento class="chart-card">
           <div class="chart-card-body">
@@ -170,8 +181,8 @@
                 </span>
                 @if (!isPhone()) {
                   <span class="chart-legend-item">
-                    <span class="chart-legend-label"><span class="chart-swatch band" aria-hidden="true"></span>兩線差距 = 交割戶現金</span>
-                    <b class="chart-legend-value">{{ money(legendData.cash) }}</b>
+                    <span class="chart-legend-label"><span class="chart-swatch band" aria-hidden="true"></span>{{ legendData.futures !== 0 ? '兩線差距 = 現金 + 期貨權益' : '兩線差距 = 交割戶現金' }}</span>
+                    <b class="chart-legend-value">{{ money(legendData.futures !== 0 ? legendData.total - legendData.holdings : legendData.cash) }}</b>
                   </span>
                 }
               </div>
@@ -368,5 +379,7 @@
       <h4>尚未建立投資組合</h4>
       <p>記錄你的第一筆股票交易，開始追蹤投資績效。</p>
     </div>
+    <!-- Outside the stock gate (D6): the card shows its own empty / data / error states. -->
+    <app-futures-card class="empty-futures" [refresh]="futuresRefresh()"></app-futures-card>
   }
 </div>

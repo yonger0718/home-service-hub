@@ -185,6 +185,21 @@ export interface CathayPending { items: CathayPendingDay[]; total: number; trunc
 export interface CathayRun { run_at: string; result: 'ok' | 'latched' | 'failed'; code: string | null; files_seen: number; posted: number; }
 export interface CathayRuns { latest: CathayRun | null; latest_ok: CathayRun | null; }
 
+/** 永豐期貨對帳單 pending (`GET …/sinopac-futures-statement/pending`): `key` a date (`day`) or `YYYY-MM` (`month`). */
+export type FuturesPendingStatus = 'conflict' | 'findings';
+export interface FuturesPendingItem {
+  key: string;
+  kind: 'day' | 'month';
+  status: FuturesPendingStatus;
+  /** Findings codes joined by `,` (`prev:MM/DD`, `gap:n`, `carry`, `diff:BK`), cut at 40 characters; null on a conflict. */
+  reason: string | null;
+  since: string | null;
+  last_at: string | null;
+}
+export interface FuturesPending { items: FuturesPendingItem[]; total: number; truncated: boolean; }
+/** `GET …/sinopac-futures-statement/runs/latest`: the 國泰 run vocabulary. */
+export type FuturesRuns = CathayRuns;
+
 export interface RecalcStatus {
   kind?: 'import' | 'quotes';
   quote_refresh?: RecalcStatus;
@@ -299,6 +314,8 @@ export interface PortfolioSummary {
   market_totals?: Partial<Record<MarketCode, EstimatedMarketTotals>>;
   total_market_value: number;
   total_cash_twd: string;
+  /** 永豐期貨 equity (4-decimal string); absent on responses cached before it existed. */
+  futures_equity_twd?: string;
   total_assets_twd: string;
   total_cost: number;
   total_unrealized_pnl: number;
@@ -318,6 +335,7 @@ export interface NetworthPoint {
   date: string;
   total_market_value: string;
   total_cash_twd: string;
+  futures_equity_twd?: string;
   total_assets_twd: string;
   total_cost: string;
   total_unrealized_pnl: string;
@@ -543,4 +561,38 @@ export interface FxFetchResult {
   per_base: Record<string, FxFetchPerBase>;
   upserted_count: number;
   error: string | null;
+}
+
+export interface FuturesSummaryValue {
+  total_equity: string;
+  balance: string;
+  source_date: string;
+  source_kind: 'daily' | 'monthly';
+  positions_open: boolean;
+  frozen: boolean;
+}
+
+export interface FuturesLatestDaily {
+  statement_date: string;
+  withdrawable: string;
+  initial_margin: string;
+  maintenance_margin: string;
+  excess_margin: string;
+  margin_call: string;
+}
+
+export interface FuturesMonth {
+  month: string;
+  pnl: string | null;
+  pnl_complete: boolean;
+  pnl_reason: 'no_baseline' | 'findings' | null;
+  futures_realized: string;
+}
+
+/** `GET /api/portfolio/futures/summary`; `month` is null only when `value` is null. */
+export interface FuturesSummary {
+  as_of: string;
+  value: FuturesSummaryValue | null;
+  latest_daily: FuturesLatestDaily | null;
+  month: FuturesMonth | null;
 }

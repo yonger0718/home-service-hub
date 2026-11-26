@@ -1,0 +1,131 @@
+// The 國泰 card's type and row rhythm (cathay-status-card.scss): this card's content lives in its own view.
+:host {
+  display: block;
+  /* Opened with #sinopac-futures: leave a gap above the card, as the 國泰 card. */
+  scroll-margin-top: 12px;
+}
+
+b {
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+small,
+.futures-run-details,
+.futures-unlatch,
+.futures-last-ok {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+small {
+  display: block;
+}
+
+p {
+  margin: 0;
+}
+
+.futures-equity {
+  align-items: baseline;
+  display: flex;
+  gap: 0.6rem;
+  justify-content: space-between;
+}
+
+.futures-equity-label {
+  color: var(--app-text-muted);
+  font-size: 0.8125rem;
+}
+
+.futures-equity-value {
+  color: var(--app-text);
+  font-size: 1.125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.futures-frozen {
+  display: block;
+}
+
+.futures-status {
+  border-top: 1px solid var(--app-border);
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+}
+
+.futures-run-line {
+  font-size: 0.875rem;
+}
+
+app-banner + .futures-run-details,
+app-banner + .futures-unlatch,
+app-banner + .futures-last-ok {
+  margin-top: var(--space-2);
+}
+
+/* The recovery command: wraps inside the card at 390 px (no horizontal scroll) and copies as one selection. */
+.futures-unlatch code {
+  color: var(--app-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: inherit;
+  overflow-wrap: anywhere;
+  user-select: text;
+  white-space: normal;
+}
+
+.futures-items-title {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  margin: 0.75rem 0 0;
+}
+
+.futures-none,
+.futures-more {
+  margin-top: 0.75rem;
+}
+
+.futures-items {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.futures-item {
+  align-items: center;
+  display: flex;
+  gap: 0.6rem;
+}
+
+.futures-item + .futures-item {
+  margin-top: 0.75rem;
+}
+
+.futures-item-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+
+  small {
+    overflow-wrap: anywhere;
+  }
+}
+
+.futures-item app-btn {
+  flex: none;
+}
+
+/* Dark: --app-primary on its own soft tint is 4.2:1; the ink is --app-text there, as on the 國泰 card. */
+:host-context(.app-dark-mode) .futures-item app-btn ::ng-deep .btn-soft {
+  color: var(--app-text);
+}
+
+@media (max-width: 760px) {
+  /* Tap target: 44 px high on a phone (the kit's button is 38). */
+  .futures-item app-btn ::ng-deep .btn {
+    min-height: 44px;
+  }
+}

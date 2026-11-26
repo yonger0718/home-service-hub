@@ -59,6 +59,10 @@
         <p class="notif-overflow notif-overflow--portfolio">還有 {{ cathayMore() }} 天未列出，處理完上面的會接著顯示</p>
       }
 
+      @if (futuresMore() > 0) {
+        <p class="notif-overflow notif-overflow--futures">還有 {{ futuresMore() }} 件永豐期貨對帳單未列出，處理完上面的會接著顯示</p>
+      }
+
       @if (center.snoozedCount() > 0 && state() !== 'empty') {
         <p class="notif-snoozed">另有 {{ center.snoozedCount() }} 件稍後提醒 · <button type="button" class="notif-foot-link notif-snoozed-show" (click)="showSnoozed()">現在顯示</button></p>
       }

@@ -13,6 +13,7 @@ import { BrokerCsvImportResult, ImportResult, ImportRow } from '../../../models/
 import { NotificationCenterService } from '../../../services/notification-center.service';
 import { NO_TASKS, NotifSourceKey } from '../../notifications/notif-task';
 import { CathayView, cathayView } from '../../notifications/sources/cathay';
+import { FuturesView, futuresView } from '../../notifications/sources/sinopac-futures';
 import { PortfolioImportComponent } from './import';
 
 const preview: ImportResult = { parsed: 1, created: 1, skipped_duplicates: 0, dry_run: true, errors: [], created_ids: [], rows: [] };
@@ -49,7 +50,10 @@ const brokerNested: BrokerCsvImportResult = {
 };
 
 describe('Portfolio import controls', () => {
-  const service = { uploadCsv: vi.fn(), uploadBrokerCsv: vi.fn(), getRecalcStatus: vi.fn(), triggerRecalc: vi.fn(), verifyOverrideSymbol: vi.fn() };
+  const service = {
+    uploadCsv: vi.fn(), uploadBrokerCsv: vi.fn(), getRecalcStatus: vi.fn(), triggerRecalc: vi.fn(), verifyOverrideSymbol: vi.fn(),
+    getFuturesSummary: vi.fn(),
+  };
   let query$: BehaviorSubject<ParamMap>;
   let fragment$: BehaviorSubject<string | null>;
   let navigate: ReturnType<typeof vi.spyOn>;
@@ -61,6 +65,7 @@ describe('Portfolio import controls', () => {
     summary: signal(NO_TASKS),
     badges: signal({}),
     cathay: signal<CathayView | null>(null),
+    futures: signal<FuturesView | null>(null),
     loaded: signal(false),
     loading: signal(false),
     round: signal(0),
@@ -118,7 +123,9 @@ describe('Portfolio import controls', () => {
     localStorage.clear();
     vi.clearAllMocks();
     center.cathay.set(null);
+    center.futures.set(null);
     center.failedSources.set([]);
+    service.getFuturesSummary.mockReturnValue(of({ as_of: '2026-10-29', value: null, latest_daily: null, month: null }));
     service.uploadCsv.mockReturnValue(of(preview));
     service.uploadBrokerCsv.mockReturnValue(of(brokerPreview));
     service.getRecalcStatus.mockReturnValue(of({ state: 'idle' }));
@@ -1718,7 +1725,7 @@ describe('Portfolio import controls', () => {
       });
 
       for (const mode of ['sheet', 'phone'] as const) {
-        it(`${mode}: the three side cards (two bentos and the 國泰 card) render under the footer in the main column`, () => {
+        it(`${mode}: the four side cards (two bentos, the 國泰 and 永豐期貨 cards) render under the footer in the main column`, () => {
           const fixture = inModeWithFile(mode);
           const side = aside(fixture)!;
           const footer = el(fixture).querySelector('.imp-footer')!;
@@ -1727,6 +1734,7 @@ describe('Portfolio import controls', () => {
           expect(el(fixture).querySelector('.imp-layout > aside')).toBeNull();
           expect(side.querySelectorAll(':scope > app-bento').length).toBe(2);
           expect(side.querySelectorAll(':scope > app-cathay-status-card').length).toBe(1);
+          expect(side.querySelectorAll(':scope > app-futures-status-card').length).toBe(1);
         });
 
         it(`${mode}: with the recalc card visible the order is footer → 匯入並重算 → side cards`, () => {
@@ -1743,13 +1751,14 @@ describe('Portfolio import controls', () => {
       }
 
       for (const mode of ['panes', 'sheet', 'phone'] as const) {
-        it(`${mode}: the 國泰每日對帳單 card is the side column's third card, after 最近匯入`, () => {
+        it(`${mode}: the 國泰每日對帳單 card is the side column's third card, after 最近匯入, then the 永豐期貨對帳單 card`, () => {
           const fixture = inModeWithFile(mode);
           const side = aside(fixture)!;
           const cards = Array.from(side.children).map(c =>
-            c.tagName === 'APP-CATHAY-STATUS-CARD' ? 'cathay' : c.classList.contains('recent-card') ? 'recent' : c.classList.contains('after-card') ? 'after' : c.tagName);
-          expect(cards).toEqual(['after', 'recent', 'cathay']);
+            c.tagName === 'APP-CATHAY-STATUS-CARD' ? 'cathay' : c.tagName === 'APP-FUTURES-STATUS-CARD' ? 'futures' : c.classList.contains('recent-card') ? 'recent' : c.classList.contains('after-card') ? 'after' : c.tagName);
+          expect(cards).toEqual(['after', 'recent', 'cathay', 'futures']);
           expect(norm(side.querySelector('app-cathay-status-card app-bento h2')?.textContent)).toBe('國泰每日對帳單');
+          expect(norm(side.querySelector('app-futures-status-card app-bento h2')?.textContent)).toBe('永豐期貨對帳單');
           expect(side.parentElement?.classList.contains('imp-layout')).toBe(mode === 'panes');
         });
       }
@@ -1928,6 +1937,82 @@ describe('Portfolio import controls', () => {
       await rendered(fixture);
       expect(scroll).not.toHaveBeenCalled();
       expect(document.activeElement).toBe(before);
+    });
+  });
+
+  describe('#sinopac-futures (查看 on a 永豐期貨 row of 通知)', () => {
+    const ANSWER = futuresView(
+      { items: [], total: 0, truncated: false },
+      { latest: { run_at: '2026-10-28T22:46:00Z', result: 'ok', code: null, files_seen: 1, posted: 1 }, latest_ok: null },
+      new Date('2026-10-29T02:00:00Z'),
+    );
+    const card = (fixture: { nativeElement: HTMLElement }) => el(fixture).querySelector<HTMLElement>('app-futures-status-card');
+    const rendered = async (fixture: { detectChanges(): void; whenStable(): Promise<unknown> }) => {
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+    };
+    function spyScroll() {
+      const proto = Element.prototype as { scrollIntoView?: unknown };
+      const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+      proto.scrollIntoView = () => undefined;
+      const spy = vi.spyOn(Element.prototype, 'scrollIntoView');
+      onTestFinished(() => {
+        spy.mockRestore();
+        if (original) {
+          Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+        } else {
+          delete proto.scrollIntoView;
+        }
+      });
+      return spy;
+    }
+
+    it('the card is the fragment target: id sinopac-futures, tabindex -1, a region named 永豐期貨對帳單', () => {
+      const host = card(setup())!;
+      expect(host.id).toBe('sinopac-futures');
+      expect(host.getAttribute('tabindex')).toBe('-1');
+      expect(host.getAttribute('role')).toBe('region');
+      expect(host.getAttribute('aria-label')).toBe('永豐期貨對帳單');
+    });
+
+    it('opened with #sinopac-futures: nothing before the futures answer (the 國泰 one does not count), then scroll and focus once', async () => {
+      const scroll = spyScroll();
+      center.cathay.set(cathayView({ items: [], total: 0, truncated: false }, { latest: null, latest_ok: null }, new Date('2026-10-29T02:00:00Z')));
+      const fixture = setup({}, 'sinopac-futures');
+      await rendered(fixture);
+      await new Promise<void>(r => setTimeout(r));
+      await rendered(fixture);
+      expect(scroll).not.toHaveBeenCalled();
+
+      center.futures.set(ANSWER);
+      await vi.waitFor(async () => {
+        await rendered(fixture);
+        expect(scroll).toHaveBeenCalledTimes(1);
+      });
+      const host = card(fixture)!;
+      expect(scroll.mock.contexts[0]).toBe(host);
+      expect(document.activeElement).toBe(host);
+      host.blur();
+
+      center.futures.set({ ...ANSWER });
+      await rendered(fixture);
+      await new Promise<void>(r => setTimeout(r));
+      expect(scroll).toHaveBeenCalledTimes(1);
+      fixture.nativeElement.remove();
+    });
+
+    it('#sinopac-futures with the source failed: the card still takes focus', async () => {
+      const scroll = spyScroll();
+      const fixture = setup({}, 'sinopac-futures');
+      await rendered(fixture);
+      center.failedSources.set(['sinopac_futures']);
+      await vi.waitFor(async () => {
+        await rendered(fixture);
+        expect(scroll).toHaveBeenCalledTimes(1);
+      });
+      expect(document.activeElement).toBe(card(fixture));
+      fixture.nativeElement.remove();
     });
   });
 });

@@ -1,0 +1,77 @@
+<app-bento class="futures-status-card" title="永豐期貨對帳單">
+  <!-- 權益總值 from GET /futures/summary (spec §9), with its source date and the frozen note of §6.3. -->
+  @let e = equity();
+  @if (e.state === 'ready') {
+    @if (e.summary.value; as v) {
+      <div class="futures-equity">
+        <span class="futures-equity-label">權益總值</span>
+        <b class="futures-equity-value" data-testid="futures-status-equity">{{ money(v.total_equity) }}</b>
+      </div>
+      <small class="futures-source">
+        資料日 {{ md(v.source_date) }}
+        @if (v.frozen) {
+          <span class="futures-frozen">持倉中，數字停在 {{ md(v.source_date) }}</span>
+        }
+      </small>
+    } @else {
+      <small class="futures-equity-none">尚無期貨對帳單</small>
+    }
+  } @else if (e.state === 'error') {
+    <small class="futures-equity-none" role="alert">讀不到期貨權益</small>
+  }
+
+  <!-- Gated on the 永豐期貨 source alone (not the whole round): its answer or failure shows as soon as it lands. -->
+  <div class="futures-status">
+    @if (failed()) {
+      <app-banner
+        tone="error"
+        heading="無法讀取永豐期貨對帳單狀態"
+        actionLabel="重試"
+        [actionDisabled]="center.loading()"
+        (action)="retry()"
+      />
+    } @else if (view(); as v) {
+      @if (v.banner; as banner) {
+        <app-banner [tone]="banner.tone" [heading]="banner.heading" [detail]="banner.detail" />
+        @if (v.runDetails) {
+          <p class="futures-run-details">{{ v.runDetails }}</p>
+        }
+        @if (v.state === 'latched') {
+          <p class="futures-unlatch">排除原因後，在主機執行：<code>python -m worker sinopac-futures --unlatch</code></p>
+        }
+        @if (v.lastOk) {
+          <p class="futures-last-ok">{{ v.lastOk }}</p>
+        }
+      } @else if (v.runLine) {
+        <p class="futures-run-line">{{ v.runLine }}</p>
+      }
+
+      @if (v.items.length > 0) {
+        <h3 class="futures-items-title">需要你處理的對帳單</h3>
+        <ul class="futures-items">
+          @for (item of v.items; track item.id) {
+            <li class="futures-item" [attr.data-item]="item.id">
+              <span class="futures-item-text">
+                <b>{{ item.label }}</b>
+                <small>{{ item.text }}</small>
+              </span>
+              <app-btn
+                variant="soft"
+                [loading]="isBusy(item.id)"
+                [ariaLabel]="'知道了：' + item.name + ' ' + item.text"
+                (click)="ack(item)"
+              >知道了</app-btn>
+            </li>
+          }
+        </ul>
+      } @else {
+        <small class="futures-none" tabindex="-1">沒有需要處理的對帳單</small>
+      }
+      @if (v.more > 0) {
+        <small class="futures-more">還有 {{ v.more }} 件未列出，處理完上面的會接著顯示</small>
+      }
+    } @else {
+      <small class="futures-loading" role="status">讀取中…</small>
+    }
+  </div>
+</app-bento>
