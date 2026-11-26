@@ -1717,7 +1717,10 @@ describe('EntryDetailComponent', () => {
       drawerOn();
       const fixture = renderDrawer(MEAL());
       const scrolled: Element[] = [];
-      const original = HTMLElement.prototype.scrollIntoView;
+      // jsdom has no scrollIntoView, and specs share one jsdom per worker (the builder runs vitest with isolate: false):
+      // put back exactly what was there. Assigning the inherited value back left an own `undefined` on HTMLElement that
+      // hid every later Element.prototype stub in that worker (#440).
+      const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
       HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
         scrolled.push(this);
       };
@@ -1731,7 +1734,11 @@ describe('EntryDetailComponent', () => {
         expect(document.activeElement!.textContent!.trim()).toBe('取消');
         expect(scrolled).toContain(confirm);
       } finally {
-        HTMLElement.prototype.scrollIntoView = original;
+        if (original) {
+          Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', original);
+        } else {
+          delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+        }
       }
     });
 
