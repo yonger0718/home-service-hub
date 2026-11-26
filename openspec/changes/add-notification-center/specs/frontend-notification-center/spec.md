@@ -49,7 +49,7 @@ The count SHALL be the number of tasks in 已逾期, 今天, 要你確認 and �
 
 ### Requirement: Snooze on this device
 
-Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and 下週一 09:00. A snoozed task SHALL leave the list and the count until the time passes or its amount, count or due date changes. Snoozes SHALL be stored in `localStorage` key `hh-notif-snooze` and never sent to the server.
+Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and 下週一 09:00. A snoozed task SHALL leave the list and the count until the time passes, its count grows, its amount or due date changes, or it becomes 已逾期; a lower count SHALL NOT bring it back. While any task is snoozed the list SHALL end with 「另有 N 件稍後提醒 · 現在顯示」. Snoozes SHALL be stored in `localStorage` key `hh-notif-snooze` and never sent to the server.
 
 #### Scenario: Snooze until tomorrow
 - **WHEN** the owner snoozes the 房租 task until 明天 09:00
@@ -59,6 +59,22 @@ Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and �
 - **GIVEN** the Netflix task is snoozed with 3 instances
 - **WHEN** a fourth instance becomes due
 - **THEN** the task SHALL reappear with 4 instances
+
+#### Scenario: Lower count keeps the snooze
+- **GIVEN** the Netflix task is snoozed with 3 instances
+- **WHEN** the oldest instance is posted and 2 remain
+- **THEN** the task SHALL stay hidden
+
+#### Scenario: Overdue wakes a snoozed task
+- **GIVEN** the 房租 task due today is snoozed until 下週一 09:00
+- **WHEN** the next day it is 已逾期
+- **THEN** the task SHALL reappear in 已逾期
+
+#### Scenario: Show snoozed tasks
+- **GIVEN** two tasks are snoozed
+- **THEN** the list SHALL end with 「另有 2 件稍後提醒 · 現在顯示」
+- **WHEN** the owner presses 現在顯示
+- **THEN** both tasks SHALL reappear and the line SHALL leave
 
 ### Requirement: One case at a time reconciliation
 

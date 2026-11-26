@@ -48,7 +48,7 @@ Run rule for 國泰 (Cathay design §7.2, `cathay_run_time` 06:40, grace 15 min)
 
 ### D4. Snooze is device-local
 
-`hh-notif-snooze` in localStorage: `{taskId: untilIso}`; options 稍後（3 小時）, 明天 09:00, 下週一 09:00. A snoozed task leaves the list and the count, and returns when the time passes or the task's content changes (amount, count or due date — the id stays, so the stored fingerprint is compared). Nothing is written to the server.
+`hh-notif-snooze` in localStorage: `{taskId: {until, tier, from, wake}}`; 稍後提醒 on every counted row offers 3 小時後, 明天 09:00, 下週一 09:00 (each hinted with its end time `MM/DD HH:mm`). A snoozed task leaves the list, the chip / section counts and the badge, and returns when the time passes (one timer to the earliest end, no reload needed) or it wakes early. Each task carries a `wake` value (bills `{amount, due}`, schedules `{count}`, statements / e-invoices / import review `{count}`, the dividend batch `{members}`, import failures and 國泰 `{key}`); it wakes when its count grows (a lower count does not: owner ruling 2026-11-25, so schedules leave the oldest due out), its amount or due date changes, a member is new, its key changes, or it becomes 已逾期 (owner ruling 2026-11-25). An entry whose task is gone from a source that read ok is dropped; a failed source keeps it. The pick toasts 「已延後到 <MM/DD HH:mm>：<title>」 with 復原; while anything is snoozed the list ends with 「另有 N 件稍後提醒 · 現在顯示」 (clears every snooze; owner ruling 2026-11-25). Blocked or corrupt storage reads as no snoozes. Nothing is written to the server.
 
 ### D5. Review flow reuses the inbox contract
 
