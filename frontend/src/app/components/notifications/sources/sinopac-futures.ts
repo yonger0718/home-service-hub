@@ -113,7 +113,7 @@ export function futuresTasks(pending: FuturesPending, runs: FuturesRuns, now: Da
       primary: { label: '知道了', command: { kind: 'ackFutures', key: item.key, status: item.status, name } },
       secondary: [LOOK],
       sortKey: item.key,
-      fingerprint: `${item.status}|${item.reason ?? ''}`,
+      wake: { key: `${item.status}|${item.reason ?? ''}` },
     };
   });
   const state = futuresRunState(runs, now);

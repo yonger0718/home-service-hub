@@ -38,7 +38,7 @@ describe('sinopac futures pending items', () => {
       primary: { label: '知道了', command: { kind: 'ackFutures', key: '2026-10-27', status: 'findings', name: '永豐期貨對帳單 10/27' } },
       secondary: [LOOK],
       sortKey: '2026-10-27',
-      fingerprint: 'findings|prev:10/23',
+      wake: { key: 'findings|prev:10/23' },
     });
   });
 
@@ -76,8 +76,8 @@ describe('sinopac futures pending items', () => {
     expect(tasks[1]).toMatchObject({ id: 'sinopac_futures:run', primary: LOOK, secondary: [] });
   });
 
-  it('a changed reason gives a new fingerprint; a newer last_at alone does not', () => {
-    const f = (i: FuturesPendingItem) => futuresTasks(pending([i]), okRuns, now)[0].fingerprint;
+  it('a changed reason gives a new wake key; a newer last_at alone does not', () => {
+    const f = (i: FuturesPendingItem) => futuresTasks(pending([i]), okRuns, now)[0].wake.key;
     expect(f(item({ reason: 'gap:2' }))).not.toBe(f(item({ reason: 'gap:1' })));
     expect(f(item({ last_at: '2026-10-30T06:46:00+08:00' }))).toBe(f(item({ last_at: '2026-10-29T06:46:00+08:00' })));
   });
@@ -140,7 +140,7 @@ describe('sinopac futures run rule (06:45 Asia/Taipei + 15 minutes, the 國泰 r
     const failed = run({ result: 'failed', code: 'password_file' });
     expect(futuresTasks(NONE, { latest: failed, latest_ok: null }, now)).toEqual([expect.objectContaining({
       id: 'sinopac_futures:run', from: 'sinopac_futures', tier: 'system', icon: 'pi-exclamation-triangle', title: '永豐期貨對帳單匯入失敗',
-      when: '今天 06:46', meta: '讀不到對帳單密碼檔', sortKey: '9999-12-31', fingerprint: `failed|${failed.run_at}` })]);
+      when: '今天 06:46', meta: '讀不到對帳單密碼檔', sortKey: '9999-12-31', wake: { key: `failed|${failed.run_at}` } })]);
 
     // Latched yesterday and nothing since stays latched (not stale).
     const latched = run({ result: 'latched', run_at: '2026-10-27T06:46:00+08:00' });
@@ -150,7 +150,7 @@ describe('sinopac futures run rule (06:45 Asia/Taipei + 15 minutes, the 國泰 r
     const yesterday = run({ run_at: '2026-10-27T06:46:00+08:00' });
     expect(futuresTasks(NONE, { latest: yesterday, latest_ok: yesterday }, now)).toEqual([expect.objectContaining({
       id: 'sinopac_futures:run', title: '永豐期貨對帳單今天沒有執行', when: '06:45 的排程沒有回報', meta: '上次執行 昨天 06:46',
-      fingerprint: 'stale|2026-10-27T22:45:00.000Z' })]);
+      wake: { key: 'stale|2026-10-27T22:45:00.000Z' } })]);
   });
 
   it('never run (latest and latest_ok both null): automatic import not enabled yet — no run task', () => {

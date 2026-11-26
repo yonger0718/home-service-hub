@@ -7,7 +7,9 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { describe, expect, it } from 'vitest';
 
+import { NOTIF_CLOCK } from '../../../services/notif-clock';
 import { NotifCommand, NotifTask } from '../notif-task';
+import { SnoozeOption } from '../snooze';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row';
 
 const commandTask: NotifTask = {
@@ -29,7 +31,7 @@ const commandTask: NotifTask = {
     { label: '逐期處理', route: '/accounting/reminders', queryParams: { tab: 'pending' } },
   ],
   sortKey: '2026-08-20',
-  fingerprint: 'f',
+  wake: {},
 };
 
 const linkTask: NotifTask = {
@@ -53,7 +55,9 @@ const linkTask: NotifTask = {
     [busy]="busy()"
     [solid]="solid()"
     [selected]="selected()"
+    [snoozable]="snoozable()"
     (run)="ran.push($event)"
+    (snooze)="snoozed.push($event)"
   />`,
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
@@ -62,11 +66,14 @@ class HostComponent {
   readonly busy = signal(false);
   readonly solid = signal(false);
   readonly selected = signal(false);
+  readonly snoozable = signal(true);
   readonly ran: NotifCommand[] = [];
+  readonly snoozed: SnoozeOption[] = [];
 }
 
 function setup(task: NotifTask = commandTask) {
-  TestBed.configureTestingModule({ providers: [provideRouter([])] });
+  // Saturday 2026-10-24 10:00, device time.
+  TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: NOTIF_CLOCK, useValue: () => new Date(2026, 9, 24, 10, 0) }] });
   const fixture = TestBed.createComponent(HostComponent);
   fixture.componentInstance.task.set(task);
   fixture.autoDetectChanges();
@@ -76,6 +83,47 @@ function setup(task: NotifTask = commandTask) {
 }
 
 describe('NotifRowComponent', () => {
+  describe('稍後提醒 (PR E2)', () => {
+    it('a 稍後提醒 picker after the actions, named for the task; options with the time they end', () => {
+      const { fixture, q, root } = setup();
+      const trigger = q<HTMLButtonElement>('.notif-snooze .pk-trigger')!;
+      expect(trigger.textContent!.trim()).toBe('稍後提醒');
+      expect(trigger.getAttribute('aria-label')).toBe('稍後提醒：測試月費 · 3 期未入帳');
+      // From 760 px the trigger is the clock icon alone (CSS); its hover title says 稍後提醒 (owner design review 2026-11-26).
+      expect(trigger.querySelector('.pk-icon.pi-clock')).not.toBeNull();
+      expect(trigger.getAttribute('title')).toBe('稍後提醒');
+      expect(q('.notif-actions')!.lastElementChild!.matches('app-picker.notif-snooze')).toBe(true);
+      trigger.click();
+      fixture.detectChanges();
+      const options = [...root.querySelectorAll('.pk-option')].map((o) => [
+        o.querySelector('.pk-label')!.textContent!.trim(),
+        o.querySelector('.pk-hint')!.textContent!.trim(),
+      ]);
+      expect(options).toEqual([
+        ['3 小時後', '10/24（六）13:00'],
+        ['明天 09:00', '10/25（日）'],
+        ['下週一 09:00', '10/26（一）'],
+      ]);
+    });
+
+    it('picking an option emits it', () => {
+      const { fixture, host, q, root } = setup();
+      q<HTMLButtonElement>('.notif-snooze .pk-trigger')!.click();
+      fixture.detectChanges();
+      root.querySelector<HTMLElement>('.pk-option[data-value="tomorrow"]')!.click();
+      fixture.detectChanges();
+      expect(host.snoozed).toEqual(['tomorrow']);
+      expect(host.ran).toEqual([]);
+    });
+
+    it('snoozable false: no picker', () => {
+      const { fixture, host, q } = setup();
+      host.snoozable.set(false);
+      fixture.detectChanges();
+      expect(q('.notif-snooze')).toBeNull();
+    });
+  });
+
   it('renders title, source tag, when, meta and amount', async () => {
     const { fixture, q } = setup();
     await fixture.whenStable();
@@ -181,7 +229,9 @@ describe('NotifRowComponent', () => {
     expect(s.getAttribute('aria-label')).toBe('逐期處理：測試月費 · 3 期未入帳');
     const focusables = Array.from(root.querySelectorAll('button, a'));
     expect(focusables.indexOf(q(NOTIF_PRIMARY_CONTROL)!)).toBeLessThan(focusables.indexOf(s));
-    expect(focusables.length).toBe(2);
+    // Then 稍後提醒 (PR E2), last.
+    expect(focusables.length).toBe(3);
+    expect(focusables[2]).toBe(q('.notif-snooze .pk-trigger'));
   });
 
   it('progress 17 / 28 renders a bar 60.7% wide, hidden from assistive tech; no bar without progress', () => {
@@ -361,10 +411,21 @@ describe('NotifRowComponent', () => {
 
     it('at 760 px and up the actions have one fixed width, content right-aligned, so every amount ends at the same x', () => {
       const top = css.slice(0, css.indexOf('@media'));
-      expect(rule(top, '.notif-actions')).toMatch(/flex:\s*0 0 200px/);
+      expect(rule(top, '.notif-actions')).toMatch(/flex:\s*0 0 248px/);
+      // Never wraps from 760 px (AGENT-605: a busy 全部入帳 + 逐期處理 + the clock is 242 px); a phone wraps.
+      expect(rule(top, '.notif-actions')).toMatch(/flex-wrap:\s*nowrap/);
+      expect(rule(phone, '.notif-actions')).toMatch(/flex-wrap:\s*wrap/);
       expect(rule(top, '.notif-actions')).toMatch(/justify-content:\s*flex-end/);
       expect(rule(phone, '.notif-actions')).toMatch(/flex:\s*0 0 100%/);
       expect(rule(phone, '.notif-actions')).toMatch(/justify-content:\s*flex-start/);
+    });
+
+    it('760–1023 px (tablet, touch): the clock is a 44 x 44 px target and the actions column widens to 256 px to keep one line', () => {
+      const start = css.indexOf('@media (min-width: 760px) and (max-width: 1023.98px)');
+      expect(start).toBeGreaterThan(-1);
+      const tablet = css.slice(start, css.indexOf('@media', start + 1) === -1 ? undefined : css.indexOf('@media', start + 1));
+      expect(tablet).toMatch(/\.notif-snooze ::ng-deep \.pk-trigger\s*\{[^}]*min-height:\s*44px[^}]*min-width:\s*44px/);
+      expect(rule(tablet, '.notif-actions')).toMatch(/flex-basis:\s*256px/);
     });
 
     it('at 760 px and up the title is a single-line ellipsis', () => {

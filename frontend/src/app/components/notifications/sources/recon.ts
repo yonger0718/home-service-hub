@@ -66,7 +66,7 @@ export function reconTasks(inbox: InboxOut, progress: ReadonlyMap<number, ReconP
       primary: { label: '對帳', route: reconTaskRoute(accountId, statementId) },
       secondary: [],
       sortKey: periodEnd,
-      fingerprint: `${n}`,
+      wake: { count: n },
     } satisfies NotifTask;
   });
 }
@@ -88,7 +88,7 @@ export function einvoiceTask(counts: Pick<InboxCounts, 'einvoice_ask'>): NotifTa
     primary: REMINDERS_TODO,
     secondary: [],
     sortKey: '9999-12-31',
-    fingerprint: `${n}`,
+    wake: { count: n },
   };
 }
 
@@ -123,6 +123,6 @@ export function reconOverflowTask(missing: number | 'unknown'): NotifTask | null
     primary: REMINDERS_TODO,
     secondary: [],
     sortKey: '9999-12-30',
-    fingerprint: known ? `${missing}` : 'more',
+    wake: known ? { count: missing } : { key: 'more' },
   };
 }

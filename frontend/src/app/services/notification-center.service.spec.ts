@@ -35,6 +35,7 @@ import {
   NotificationCenterService,
   READ_TIMEOUT_MS,
 } from './notification-center.service';
+import { SNOOZE_KEY } from '../components/notifications/snooze';
 import { PortfolioService } from './portfolio.service';
 
 /** Today in this spec: Saturday 2026-10-24. */
@@ -305,6 +306,174 @@ describe('NotificationCenterService', () => {
   }
 
   const ids = (svc: NotificationCenterService) => svc.tasks().map(task => task.id);
+
+  // ---- snooze (PR E2) ----------------------------------------------------------------------------------------------
+
+  describe('snooze (PR E2)', () => {
+    const at = (d: number, h: number) => new Date(2026, 9, d, h, 0, 0);
+    const task = (svc: NotificationCenterService, id: string) => svc.countedTasks().find(t => t.id === id)!;
+    const stored = () => JSON.parse(localStorage.getItem(SNOOZE_KEY) ?? '{}') as Record<string, unknown>;
+    const months = (n: number) => Array.from({ length: n }, (_, i) => instance(i + 1, 1, '測試月費', `2026-10-${20 + i}`));
+
+    it('a snoozed task leaves tasks, the count and the badge summary; countedTasks keeps it; this device stores it', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { queue: [instance(1, 1, '測試房租', TODAY), instance(2, 2, '測試月費', TODAY)] });
+      expect(svc.summary().total).toBe(2);
+      const until = svc.snooze(task(svc, 'sched:1'), 'tomorrow');
+      TestBed.tick();
+      expect(until).toEqual(at(25, 9));
+      expect(ids(svc)).toEqual(['sched:2']);
+      expect(svc.summary()).toEqual({ total: 1, overdue: 0, tone: 'primary', label: '通知，1 件要處理' });
+      expect(svc.snoozedCount()).toBe(1);
+      expect(svc.countedTasks().map(t => t.id)).toEqual(['sched:1', 'sched:2']);
+      expect(stored()).toEqual({ 'sched:1': { until: at(25, 9).toISOString(), tier: 'today', from: 'schedules', wake: { count: 1 } } });
+    });
+
+    it('snoozedEarliest is the earliest end among the hidden tasks; showSnoozed clears them and returns them; restoreSnoozes hides them again', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { queue: [instance(1, 1, '測試房租', TODAY), instance(2, 2, '測試月費', TODAY)] });
+      expect(svc.snoozedEarliest()).toBeNull();
+      svc.snooze(task(svc, 'sched:1'), 'monday');
+      svc.snooze(task(svc, 'sched:2'), '3h');
+      TestBed.tick();
+      expect(svc.snoozedEarliest()).toEqual(at(24, 13));
+      const saved = svc.showSnoozed();
+      TestBed.tick();
+      expect(Object.keys(saved).sort()).toEqual(['sched:1', 'sched:2']);
+      expect(ids(svc)).toEqual(['sched:1', 'sched:2']);
+      expect(svc.snoozedCount()).toBe(0);
+      expect(svc.snoozedEarliest()).toBeNull();
+      expect(localStorage.getItem(SNOOZE_KEY)).toBeNull();
+      svc.restoreSnoozes(saved);
+      TestBed.tick();
+      expect(ids(svc)).toEqual([]);
+      expect(svc.snoozedCount()).toBe(2);
+      expect(svc.snoozedEarliest()).toEqual(at(24, 13));
+    });
+
+    it('fewer open instances keep the snooze; a new instance wakes the task and drops the entry', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { queue: months(3) });
+      svc.snooze(task(svc, 'sched:1'), '3h');
+      TestBed.tick();
+      expect(ids(svc)).toEqual([]);
+
+      svc.invalidate();
+      await answer(1, { queue: months(3).slice(1) });
+      expect(ids(svc)).toEqual([]);
+      expect(svc.snoozedCount()).toBe(1);
+
+      svc.invalidate();
+      await answer(2, { queue: months(4) });
+      expect(ids(svc)).toEqual(['sched:1']);
+      expect(svc.tasks()[0].title).toBe('測試月費 · 4 期未入帳');
+      expect(stored()).toEqual({});
+      expect(svc.snoozedCount()).toBe(0);
+    });
+
+    it('a task due today that becomes 已逾期 while snoozed comes back (owner ruling)', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { queue: [instance(1, 1, '測試房租', TODAY)] });
+      svc.snooze(task(svc, 'sched:1'), 'monday');
+      TestBed.tick();
+      expect(ids(svc)).toEqual([]);
+
+      clockNow = at(25, 10);
+      svc.invalidate();
+      await answer(1, { queue: [instance(1, 1, '測試房租', TODAY)] });
+      expect(svc.tasks().map(t => [t.id, t.tier])).toEqual([['sched:1', 'overdue']]);
+      expect(stored()).toEqual({});
+    });
+
+    it('the time passing brings the task back without a new round', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { queue: [instance(1, 1, '測試房租', TODAY)] });
+      svc.snooze(task(svc, 'sched:1'), '3h');
+      TestBed.tick();
+      expect(ids(svc)).toEqual([]);
+
+      clockNow = at(24, 12);
+      vi.advanceTimersByTime(2 * 3_600_000);
+      TestBed.tick();
+      expect(ids(svc)).toEqual([]);
+
+      clockNow = at(24, 13);
+      vi.advanceTimersByTime(3_600_000);
+      TestBed.tick();
+      // Back by the timer alone, still 今天 (not the 已逾期 rule).
+      expect(svc.tasks().map(t => [t.id, t.tier])).toEqual([['sched:1', 'today']]);
+      expect(stored()).toEqual({});
+    });
+
+    it('a snooze longer than a day survives the daily timer tick (the timer re-arms)', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { inbox: inboxWith(2) });
+      svc.snooze(task(svc, 'recon:10'), 'monday');
+      TestBed.tick();
+      clockNow = at(25, 10);
+      vi.advanceTimersByTime(24 * 3_600_000);
+      TestBed.tick();
+      expect(ids(svc)).toEqual([]);
+      clockNow = at(26, 9);
+      vi.advanceTimersByTime(23 * 3_600_000);
+      TestBed.tick();
+      expect(ids(svc)).toEqual(['recon:10']);
+    });
+
+    it('a snoozed task gone from a source that read ok drops its entry; a failed source keeps it', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { inbox: inboxWith(2) });
+      svc.snooze(task(svc, 'recon:10'), 'tomorrow');
+      TestBed.tick();
+
+      svc.invalidate();
+      await answer(1, { inbox: 'error' });
+      expect(Object.keys(stored())).toEqual(['recon:10']);
+
+      svc.invalidate();
+      await answer(2, { inbox: inboxWith(0) });
+      expect(stored()).toEqual({});
+
+      // New questions later are not hidden by the old snooze.
+      svc.invalidate();
+      await answer(3, { inbox: inboxWith(1) });
+      expect(ids(svc)).toEqual(['recon:10']);
+    });
+
+    it('unsnooze brings one back; showSnoozed brings every one back', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { queue: [instance(1, 1, '測試房租', TODAY), instance(2, 2, '測試月費', TODAY)] });
+      svc.snooze(task(svc, 'sched:1'), '3h');
+      svc.snooze(task(svc, 'sched:2'), '3h');
+      TestBed.tick();
+      expect(svc.snoozedCount()).toBe(2);
+      svc.unsnooze('sched:2');
+      TestBed.tick();
+      expect(ids(svc)).toEqual(['sched:2']);
+      svc.showSnoozed();
+      TestBed.tick();
+      expect(ids(svc)).toEqual(['sched:1', 'sched:2']);
+      expect(localStorage.getItem(SNOOZE_KEY)).toBeNull();
+    });
+
+    it('a snooze stored by an earlier visit hides the task on the first settled round', async () => {
+      localStorage.setItem(SNOOZE_KEY, JSON.stringify({ 'sched:1': { until: at(25, 9).toISOString(), tier: 'today', from: 'schedules', wake: { count: 1 } } }));
+      const svc = service();
+      svc.start();
+      await answer(0, { queue: [instance(1, 1, '測試房租', TODAY)] });
+      expect(ids(svc)).toEqual([]);
+      expect(svc.summary().total).toBe(0);
+      expect(svc.snoozedCount()).toBe(1);
+    });
+  });
 
   // ---- carried over from nav-badge.service.spec.ts ---------------------------------------------------------------
 

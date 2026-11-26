@@ -121,9 +121,11 @@
   display: flex;
   /* One width for every row, content at the right: the body (and so the amount) then ends at the same x on every
      row. 200 px = the widest pair, 全部入帳 (4 x 13.6 px + 2 x 17.6 px padding = 90 px, +22 px for the busy spinner)
-     + 8 px gap + 逐期處理 (4 x 13 px + 2 x 12 px = 76 px) = 174 px idle / 196 px busy. */
-  flex: 0 0 200px;
-  flex-wrap: wrap;
+     + 8 px gap + 逐期處理 (4 x 13 px + 2 x 12 px = 76 px) = 174 px idle / 196 px busy, + 2 px for the button's
+     transparent border, + 8 px gap + the 36 px 稍後提醒 clock (PR E2) = 220 / 242 px, so 248 px. The line never wraps
+     (AGENT-605): every row keeps one height. */
+  flex: 0 0 248px;
+  flex-wrap: nowrap;
   gap: 8px;
   justify-content: flex-end;
   margin-left: auto;
@@ -177,6 +179,46 @@
   }
 }
 
+/* 稍後提醒 (PR E2): from 760 px a 36 px clock button, last on the actions line, its name in the hover title (owner
+   design review 2026-11-26); on a phone the text and chevron, read like the secondary links. No field chrome. */
+.notif-snooze {
+  display: inline-flex;
+
+  ::ng-deep .pk-text,
+  ::ng-deep .pk-chevron {
+    display: none;
+  }
+
+  ::ng-deep .pk-icon {
+    font-size: 15px;
+  }
+
+  ::ng-deep .pk-trigger {
+    justify-content: center;
+    min-width: 36px;
+    padding: 0;
+    background: transparent;
+    border-color: transparent;
+    border-radius: 10px;
+    color: var(--app-text-muted);
+    font-size: 13px;
+    font-weight: 700;
+    gap: 2px;
+    min-height: 36px;
+    white-space: nowrap;
+    width: auto;
+
+    &:hover {
+      color: var(--app-text);
+    }
+
+    &:focus-visible {
+      box-shadow: 0 0 0 4px var(--app-focus-ring);
+      outline: none;
+    }
+  }
+}
+
 /* Dark: --app-primary on its own soft tint is 4.18:1 (13.6 px bold text); the ink is --app-text there (>= 13:1). */
 :host-context(.app-dark-mode) {
   .notif-primary--link:not(.solid),
@@ -188,6 +230,21 @@
 @media (max-width: 759.98px) {
   :host {
     align-items: flex-start;
+  }
+
+  .notif-snooze {
+    ::ng-deep .pk-icon {
+      display: none;
+    }
+
+    ::ng-deep .pk-text,
+    ::ng-deep .pk-chevron {
+      display: inline;
+    }
+
+    ::ng-deep .pk-trigger {
+      padding: 0 8px 0 12px;
+    }
   }
 
   .notif-body {
@@ -217,6 +274,7 @@
 
   .notif-actions {
     flex: 0 0 100%;
+    flex-wrap: wrap;
     justify-content: flex-start;
     margin-left: 0;
     padding-left: 52px;
@@ -225,7 +283,8 @@
   /* Tap targets: 44 px high (the artboard draws 36). */
   .notif-primary--link,
   .notif-primary ::ng-deep .btn,
-  .notif-secondary {
+  .notif-secondary,
+  .notif-snooze ::ng-deep .pk-trigger {
     min-height: 44px;
   }
 
@@ -246,12 +305,26 @@
 
   .notif-line,
   .notif-meta,
-  .notif-secondary {
+  .notif-secondary,
+  .notif-snooze ::ng-deep .pk-trigger {
     color: var(--app-text);
   }
 
   .notif-icon,
   .notif-primary--link:not(.solid) {
     background: var(--app-surface);
+  }
+}
+
+/* 760–1023 px is a tablet's touch range (owner design review 2026-11-26): the clock keeps its size, its target grows
+   to 44 x 44 px, and the actions column grows by the same 8 px (242 px busy becomes 250 px, so 256 px). */
+@media (min-width: 760px) and (max-width: 1023.98px) {
+  .notif-actions {
+    flex-basis: 256px;
+  }
+
+  .notif-snooze ::ng-deep .pk-trigger {
+    min-height: 44px;
+    min-width: 44px;
   }
 }

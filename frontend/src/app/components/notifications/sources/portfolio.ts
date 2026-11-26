@@ -56,7 +56,7 @@ export function dividendBatch(due: readonly Dividend[]): NotifTask | null {
     primary: DIVIDENDS_LINK,
     secondary: [],
     sortKey: earliest,
-    fingerprint: due.map(d => d.id).sort((a, b) => a - b).join(','),
+    wake: { members: due.map(d => d.id).sort((a, b) => a - b).map(String) },
   };
 }
 
@@ -123,6 +123,6 @@ export function importFailureTask(recalc: RecalcStatus | null, lastAttempt: Impo
     primary: { label: '查看', route: '/portfolio/import' },
     secondary: [],
     sortKey: key,
-    fingerprint: key,
+    wake: { key },
   };
 }

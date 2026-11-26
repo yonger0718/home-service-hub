@@ -88,11 +88,10 @@ describe('billTasks', () => {
     });
   });
 
-  it('fingerprint changes with the remaining amount and the date', () => {
-    const a = run(due(), state())[0].fingerprint;
-    expect(a).toBe('16639|2026-10-20');
-    expect(run(due(), state({ remaining: 100 }))[0].fingerprint).not.toBe(a);
-    expect(run(due(), state({ payDate: '2026-10-22' }))[0].fingerprint).not.toBe(a);
+  it('wake values are the remaining amount and the debit day', () => {
+    expect(run(due(), state())[0].wake).toEqual({ amount: '16639', due: '2026-10-20' });
+    expect(run(due(), state({ remaining: 100 }))[0].wake).toEqual({ amount: '100', due: '2026-10-20' });
+    expect(run(due(), state({ payDate: '2026-10-22' }))[0].wake).toEqual({ amount: '16639', due: '2026-10-22' });
   });
 
   it('skips closing events', () => {

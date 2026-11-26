@@ -56,9 +56,8 @@ export function billTasks(input: BillTaskInput): NotifTask[] {
       primary: { label: '記繳款', route: `/accounting/accounts/${state.accountId}` },
       secondary: [],
       sortKey: payDate,
-      // Remaining amount and debit day only; the tier is NOT part of it (a bill moving from 追蹤中 to 今天 to 已逾期
-      // keeps its fingerprint), so a snooze wake-up (PR E) must compare tiers itself.
-      fingerprint: `${state.remaining}|${payDate}`,
+      // Remaining amount and debit day; the tier is not part of it (the snooze compares tiers itself).
+      wake: { amount: `${state.remaining}`, due: payDate },
     });
   }
   return tasks;

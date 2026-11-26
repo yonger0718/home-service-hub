@@ -212,7 +212,9 @@ describe('ReconFlowComponent', () => {
         provideHttpClient(),
         provideHttpClientTesting(),
         provideRouter([]),
-        { provide: NotificationCenterService, useValue: { tasks } },
+        // The flow reads countedTasks (snoozed rows included, PR E2); the visible list stays empty here, so a
+        // statement whose row is snoozed still shows 已對上 k / n.
+        { provide: NotificationCenterService, useValue: { countedTasks: tasks, tasks: signal<readonly NotifTask[]>([]) } },
       ],
     });
     http = TestBed.inject(HttpTestingController);

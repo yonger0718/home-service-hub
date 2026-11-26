@@ -166,7 +166,7 @@ export function runTask(
     primary: task.look,
     secondary: [],
     sortKey: '9999-12-31',
-    fingerprint: runFingerprint(state, latest, now, job),
+    wake: { key: runFingerprint(state, latest, now, job) },
   };
 }
 
@@ -236,7 +236,7 @@ export function cathayTasks(pending: CathayPending, runs: CathayRuns, now: Date)
     primary: { label: '已處理', command: { kind: 'ackCathay', tradeDate: d.trade_date, name: `國泰對帳單 ${shortDate(d.trade_date)}` } },
     secondary: [LOOK],
     sortKey: d.trade_date,
-    fingerprint: `${d.status}|${d.reason ?? ''}`,
+    wake: { key: `${d.status}|${d.reason ?? ''}` },
   }));
   const run = runTask(cathayRunState(runs.latest, now), runs.latest, now, CATHAY_JOB, { id: 'cathay:run', from: 'cathay', look: LOOK });
   if (run) {

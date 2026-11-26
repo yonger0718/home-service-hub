@@ -19,12 +19,12 @@ describe('dividend builders', () => {
     expect(waiting).toEqual([]);
   });
 
-  it('the batch fingerprint orders ids as numbers (2 before 10)', () => {
+  it('the batch wake members order ids as numbers (2 before 10)', () => {
     const { due } = splitPendingDividends(
       [div(10, '9901', { payment_date: '2026-10-20' }), div(2, '9902', { payment_date: '2026-10-21' })],
       TODAY,
     );
-    expect(dividendBatch(due)?.fingerprint).toBe('2,10');
+    expect(dividendBatch(due)?.wake).toEqual({ members: ['2', '10'] });
   });
 
   it('a failed quotes run does not hide a failed device import', () => {
@@ -41,7 +41,7 @@ describe('dividend builders', () => {
       id: 'div:batch', source: 'portfolio', from: 'dividends', tier: 'confirm', icon: 'pi-percentage',
       title: '股利待確認收款 · 2 筆', when: '最早 10/20 發放', meta: '9901、9902', amount: null, progress: null,
       primary: { label: '查看', route: '/portfolio/dividends', queryParams: { status: 'pending' } },
-      secondary: [], sortKey: '2026-10-20', fingerprint: '1,2',
+      secondary: [], sortKey: '2026-10-20', wake: { members: ['1', '2'] },
     });
     expect(dividendsBadge(due)).toEqual({ dot: true, tone: 'primary', label: '2 筆待確認收款' });
   });
@@ -105,7 +105,7 @@ describe('import failure', () => {
       id: 'import:fail:2026-10-24T08:00:00', source: 'portfolio', from: 'imports', tier: 'system', icon: 'pi-upload',
       title: '最近一次匯入的重算失敗', when: '10/24 08:00', meta: null, amount: null, progress: null,
       primary: { label: '查看', route: '/portfolio/import' }, secondary: [],
-      sortKey: '2026-10-24T08:00:00', fingerprint: '2026-10-24T08:00:00',
+      sortKey: '2026-10-24T08:00:00', wake: { key: '2026-10-24T08:00:00' },
     });
   });
 
@@ -126,7 +126,7 @@ describe('import failure', () => {
   it("the device's newest attempt failed: 最近一次匯入失敗, meta 測試匯入.csv, id import:fail:<at>", () => {
     expect(importFailureTask(null, attempt())).toMatchObject({
       id: 'import:fail:2026-10-24T09:05:00', title: '最近一次匯入失敗', when: '10/24 09:05', meta: '測試匯入.csv',
-      tier: 'system', from: 'imports', sortKey: '2026-10-24T09:05:00', fingerprint: '2026-10-24T09:05:00',
+      tier: 'system', from: 'imports', sortKey: '2026-10-24T09:05:00', wake: { key: '2026-10-24T09:05:00' },
     });
   });
 

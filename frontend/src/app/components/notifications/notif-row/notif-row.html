@@ -60,4 +60,17 @@
       >{{ s.label }}</a
     >
   }
+  @if (snoozable()) {
+    <!-- value "" matches no option: the trigger reads 稍後提醒 and every pick emits (PR E2). -->
+    <app-picker
+      class="notif-snooze"
+      label="稍後提醒"
+      value=""
+      [options]="snoozeOptions()"
+      [ariaLabel]="name('稍後提醒')"
+      triggerIcon="pi-clock"
+      triggerTitle="稍後提醒"
+      (change)="onSnooze($event)"
+    />
+  }
 </div>

@@ -50,8 +50,21 @@ export interface NotifTask {
   readonly secondary: readonly NotifLink[];
   /** ISO date or datetime; ascending = oldest first. */
   readonly sortKey: string;
-  /** R10. */
-  readonly fingerprint: string;
+  /** What a snooze compares to wake the task early (R10, PR E2): see `snooze.ts` `wakes`. */
+  readonly wake: NotifWake;
+}
+
+/**
+ * A task's wake values. A snoozed task wakes early when `count` grows (a lower count does not wake), `amount` or `due`
+ * changes, a `members` id is new, or `key` changes; an absent field never wakes. Tier escalation to 已逾期 is checked
+ * separately (owner rulings 2026-11-25).
+ */
+export interface NotifWake {
+  readonly count?: number;
+  readonly amount?: string;
+  readonly due?: string;
+  readonly members?: readonly string[];
+  readonly key?: string;
 }
 
 export interface NotifTrackingRow {

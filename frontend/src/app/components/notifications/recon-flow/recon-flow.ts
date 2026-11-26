@@ -270,7 +270,8 @@ export class ReconFlowComponent {
   readonly heading = computed(() => (this.load() === 'ready' ? this.titleText() : null) ?? '對帳');
   /** 「已對上 k / n 行 · 這次要你決定 N 筆」; the second half only while something is left to decide. */
   readonly subText = computed(() => {
-    const task = this.center.tasks().find((t) => t.id === `recon:${this.statementId()}`);
+    // countedTasks: the progress stays when this statement's row is snoozed (PR E2).
+    const task = this.center.countedTasks().find((t) => t.id === `recon:${this.statementId()}`);
     const { total, remaining } = this.progressInfo();
     const parts = [
       task?.progress ? `已對上 ${task.progress.k} / ${task.progress.n} 行` : null,

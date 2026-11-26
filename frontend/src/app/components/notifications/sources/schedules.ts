@@ -83,9 +83,9 @@ export function scheduleTasks(queue: readonly ScheduleInstance[], today: string)
       primary,
       secondary: n > 0 ? [STEP_LINK] : [],
       sortKey: oldest.due_date,
-      // Open count and oldest due date only; the tier is NOT part of it (a task moving from 今天 to 已逾期 keeps
-      // its fingerprint), so a snooze wake-up (PR E) must compare tiers itself.
-      fingerprint: `${n}|${oldest.due_date}`,
+      // Open count only: posting the oldest instance lowers the count and moves the oldest due later, which must not
+      // wake a snooze; a new due instance raises it. The tier is compared by the snooze itself.
+      wake: { count: n },
     });
   }
   return tasks;

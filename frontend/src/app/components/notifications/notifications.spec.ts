@@ -41,7 +41,7 @@ function task(id: string, tier: NotifTier, over: Partial<NotifTask> = {}): Notif
     primary: { label: '記繳款', route: '/accounting/accounts/1' },
     secondary: [],
     sortKey: '2026-10-24',
-    fingerprint: id,
+    wake: { key: id },
     ...over,
   };
 }
@@ -75,6 +75,18 @@ describe('NotificationsComponent', () => {
   const failedSources = signal<readonly NotifSourceKey[]>([]);
   const nextUpcoming = signal<NotifTask | null>(null);
   const cathayMore = signal(0);
+  const snoozedCount = signal(0);
+  /** As the service: the task leaves `tasks`, the count of hidden ones grows; returns the end time. */
+  const snooze = vi.fn((t: NotifTask, _option: string) => {
+    tasks.update(list => list.filter(x => x.id !== t.id));
+    snoozedCount.update(n => n + 1);
+    return new Date(2026, 9, 25, 9, 0);
+  });
+  const unsnooze = vi.fn();
+  const snoozedEarliest = signal<Date | null>(null);
+  const SAVED = { 'sched:1': { until: new Date(2026, 9, 26, 9, 0).toISOString(), tier: 'today', from: 'schedules', wake: { count: 1 } } };
+  const showSnoozed = vi.fn(() => SAVED);
+  const restoreSnoozes = vi.fn();
   const futuresMore = signal(0);
   const refresh = vi.fn();
   /** As the service: starts the next round and returns its id. */
@@ -129,6 +141,12 @@ describe('NotificationsComponent', () => {
     failedSources,
     nextUpcoming,
     cathayMore,
+    snoozedCount,
+    snooze,
+    unsnooze,
+    showSnoozed,
+    restoreSnoozes,
+    snoozedEarliest,
     futuresMore,
     summary: computed<NotifSummary>(() => summarize(tasks())),
     badges: signal({}),
@@ -178,6 +196,12 @@ describe('NotificationsComponent', () => {
     failedSources.set([]);
     nextUpcoming.set(null);
     cathayMore.set(0);
+    snoozedCount.set(0);
+    snooze.mockClear();
+    unsnooze.mockClear();
+    showSnoozed.mockClear();
+    restoreSnoozes.mockClear();
+    snoozedEarliest.set(null);
     futuresMore.set(0);
     refresh.mockClear();
     invalidate.mockClear();
@@ -2259,6 +2283,88 @@ describe('NotificationsComponent', () => {
     it('on a phone the header adds no bottom margin of its own: header to chips is the page gap (14 px), as chips to section', () => {
       const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
       expect(phone).toMatch(/app-page-header\s*\{[^}]*margin-bottom:\s*0/);
+    });
+  });
+  describe('稍後提醒 (PR E2)', () => {
+    const q = (root: HTMLElement, sel: string) => root.querySelector<HTMLElement>(sel);
+    const pick = async (root: HTMLElement, id: string, option: string) => {
+      q(root, `app-notif-row[data-task-id="${id}"] .notif-snooze .pk-trigger`)!.click();
+      await settle();
+      q(document.body as HTMLElement, `.pk-option[data-value="${option}"]`)!.click();
+      await settle();
+    };
+
+    afterEach(() => fixture?.nativeElement.remove());
+
+    it('every counted row offers 稍後提醒', () => {
+      const root = mount();
+      const rows = root.querySelectorAll('app-notif-row');
+      expect(rows.length).toBe(5);
+      expect([...rows].every(r => r.querySelector('.notif-snooze .pk-trigger'))).toBe(true);
+    });
+
+    it('picking 明天 09:00 snoozes that task: the row leaves, counts drop, toast 「已延後到 10/25 09:00：…」 with 復原', async () => {
+      const root = mount();
+      const toasts = TestBed.inject(ToastService);
+      await pick(root, 'b1', 'tomorrow');
+      expect(snooze).toHaveBeenCalledTimes(1);
+      expect(snooze.mock.calls[0][0].id).toBe('b1');
+      expect(snooze.mock.calls[0][1]).toBe('tomorrow');
+      expect(q(root, 'app-notif-row[data-task-id="b1"]')).toBeNull();
+      expect(q(root, '#notif-sec-today')).toBeNull();
+      expect(text(q(root, '.notif-chips button[aria-checked="true"] .chip-count'))).toBe('4');
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'done', text: '已延後到 10/25 09:00：測試任務 b1', action: expect.objectContaining({ label: '復原' }) }),
+      );
+      toasts.current()!.action!.run();
+      expect(unsnooze).toHaveBeenCalledWith('b1');
+    });
+
+    it('focus goes to the row now in the snoozed row\'s place', async () => {
+      const root = mount();
+      await pick(root, 'b1', '3h');
+      await settle();
+      expect(document.activeElement).toBe(rowPrimary(root, 'c1'));
+    });
+
+    it('「另有 N 件稍後提醒 · 現在顯示」 shows while some are snoozed; 現在顯示 cancels them: toast 「已取消 2 件延後」, 復原 restores them', async () => {
+      const root = mount();
+      const toasts = TestBed.inject(ToastService);
+      expect(q(root, '.notif-snoozed')).toBeNull();
+      snoozedCount.set(2);
+      await settle();
+      expect(text(q(root, '.notif-snoozed'))).toBe('另有 2 件稍後提醒 · 現在顯示');
+      q(root, '.notif-snoozed button')!.click();
+      expect(showSnoozed).toHaveBeenCalledTimes(1);
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'done', text: '已取消 2 件延後', action: expect.objectContaining({ label: '復原' }) }),
+      );
+      toasts.current()!.action!.run();
+      expect(restoreSnoozes).toHaveBeenCalledWith(SAVED);
+    });
+
+    it('everything snoozed: 目前沒有要處理的事, 「5 件稍後提醒，最早 10/25 09:00 回來」 and 現在顯示 in the card; subtitle 沒有要處理的事 · 5 件稍後提醒; no line under the card', async () => {
+      tasks.set([]);
+      snoozedCount.set(5);
+      snoozedEarliest.set(new Date(2026, 9, 25, 9, 0));
+      const root = mount();
+      await settle();
+      expect(text(q(root, '.notif-empty h2'))).toBe('目前沒有要處理的事');
+      expect(text(q(root, '.notif-empty .empty-snoozed'))).toBe('5 件稍後提醒，最早 10/25 09:00 回來');
+      expect(text(q(root, '.notif-empty .empty-show'))).toBe('現在顯示');
+      expect(text(q(root, 'app-page-header .page-subtitle'))).toBe('沒有要處理的事 · 5 件稍後提醒');
+      expect(q(root, '.notif-snoozed')).toBeNull();
+      q(root, '.notif-empty .empty-show')!.click();
+      expect(showSnoozed).toHaveBeenCalledTimes(1);
+    });
+
+    it('nothing snoozed and nothing to do: still 都處理好了, no snooze line', async () => {
+      tasks.set([]);
+      const root = mount();
+      await settle();
+      expect(text(q(root, '.notif-empty h2'))).toBe('都處理好了');
+      expect(q(root, '.empty-snoozed')).toBeNull();
+      expect(text(q(root, 'app-page-header .page-subtitle'))).toBe('沒有要處理的事');
     });
   });
 });

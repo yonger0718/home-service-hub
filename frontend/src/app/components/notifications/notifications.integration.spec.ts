@@ -420,6 +420,83 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
     expect(center.tasks().some(task => task.id === 'sched:1')).toBe(false);
   });
 
+  describe('稍後提醒 over the real center (PR E2)', () => {
+    async function openRent(): Promise<void> {
+      localStorage.clear();
+      boot(false);
+      center.start();
+      TestBed.tick();
+      http.expectOne(get(`${API}/calendar/business-days`)).flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
+      fixture = TestBed.createComponent(NotificationsComponent);
+      fixture.autoDetectChanges();
+      root = fixture.nativeElement as HTMLElement;
+      await flushRound(take(), [RENT]);
+      expect(rentRow()).not.toBeNull();
+    }
+    async function snooze(option: string): Promise<void> {
+      rentRow()!.querySelector<HTMLButtonElement>('.notif-snooze .pk-trigger')!.click();
+      await settle();
+      document.querySelector<HTMLElement>(`.pk-option[data-value="${option}"]`)!.click();
+      await settle();
+    }
+
+    afterEach(() => localStorage.clear());
+
+    it('3 小時後: the row, the count and the badge summary drop; the line shows; at 13:00 the row is back with no new read', async () => {
+      await openRent();
+      const before = center.summary().total;
+      await snooze('3h');
+      expect(rentRow()).toBeNull();
+      expect(center.summary().total).toBe(before - 1);
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'done', text: '已延後到 10/24 13:00：測試房租', action: expect.objectContaining({ label: '復原' }) }),
+      );
+      expect(root.querySelector('.notif-snoozed')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('另有 1 件稍後提醒 · 現在顯示');
+      expect(JSON.parse(localStorage.getItem('hh-notif-snooze')!)['sched:1'].until).toBe(new Date(2026, 9, 24, 13, 0).toISOString());
+
+      vi.setSystemTime(new Date(2026, 9, 24, 12, 59));
+      vi.advanceTimersByTime(1);
+      await settle();
+      expect(rentRow()).toBeNull();
+
+      vi.setSystemTime(new Date(2026, 9, 24, 13, 0));
+      vi.advanceTimersByTime(3 * 3_600_000);
+      await settle();
+      expect(rentRow()).not.toBeNull();
+      expect(center.summary().total).toBe(before);
+      expect(root.querySelector('.notif-snoozed')).toBeNull();
+      expect(localStorage.getItem('hh-notif-snooze')).toBeNull();
+    });
+
+    it('復原 on the toast brings the row back at once', async () => {
+      await openRent();
+      await snooze('tomorrow');
+      expect(rentRow()).toBeNull();
+      toasts.runAction(toasts.current()!.id);
+      await settle();
+      expect(rentRow()).not.toBeNull();
+      expect(localStorage.getItem('hh-notif-snooze')).toBeNull();
+    });
+
+    it('現在顯示 cancels every snooze (toast 已取消 1 件延後); 復原 hides the row again with the same end', async () => {
+      await openRent();
+      await snooze('monday');
+      const until = JSON.parse(localStorage.getItem('hh-notif-snooze')!)['sched:1'].until;
+      root.querySelector<HTMLButtonElement>('.notif-snoozed button')!.click();
+      await settle();
+      expect(rentRow()).not.toBeNull();
+      expect(root.querySelector('.notif-snoozed')).toBeNull();
+      expect(localStorage.getItem('hh-notif-snooze')).toBeNull();
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'done', text: '已取消 1 件延後', action: expect.objectContaining({ label: '復原' }) }),
+      );
+      toasts.runAction(toasts.current()!.id);
+      await settle();
+      expect(rentRow()).toBeNull();
+      expect(JSON.parse(localStorage.getItem('hh-notif-snooze')!)['sched:1'].until).toBe(until);
+    });
+  });
+
   it('spec 3.4: 已處理 posts the ack and the task disappears', async () => {
     await openWithCathay();
     const before = center.summary().total;
