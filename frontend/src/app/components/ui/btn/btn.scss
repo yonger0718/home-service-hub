@@ -74,6 +74,27 @@
   }
 }
 
+/* A button with a spinner state (#441, owner ruling 2026-11-26): busy, its icon and text are hidden but keep their
+   place, so the width does not change, and the spinner sits in the middle. */
+.btn-steady {
+  position: relative;
+
+  &[aria-busy='true'] > :not(.btn-spinner) {
+    visibility: hidden;
+  }
+
+  .btn-spinner {
+    height: 0.9rem;
+    left: 50%;
+    line-height: 0.9rem;
+    margin: -0.45rem 0 0 -0.45rem;
+    position: absolute;
+    text-align: center;
+    top: 50%;
+    width: 0.9rem;
+  }
+}
+
 .btn-icon {
   border-radius: var(--radius-pill);
   height: 38px;

@@ -254,7 +254,7 @@
     </label>
     <div class="dialog-actions">
       <p-button label="取消" severity="secondary" [text]="true" type="button" (onClick)="closeEditDialog()"></p-button>
-      <p-button label="儲存" icon="pi pi-check" type="submit" [loading]="savingAccount()"></p-button>
+      <p-button label="儲存" icon="pi pi-check" type="submit" [appBusy]="savingAccount()" [disabled]="savingAccount()"></p-button>
     </div>
   </form>
 </p-dialog>
@@ -292,7 +292,7 @@
     </label>
     <div class="dialog-actions">
       <p-button label="取消" severity="secondary" [text]="true" type="button" (onClick)="closeTransactionDialog()"></p-button>
-      <p-button label="建立" icon="pi pi-check" type="submit" [loading]="savingTransaction()"></p-button>
+      <p-button label="建立" icon="pi pi-check" type="submit" [appBusy]="savingTransaction()" [disabled]="savingTransaction()"></p-button>
     </div>
   </form>
 </p-dialog>

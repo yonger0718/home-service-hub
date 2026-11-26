@@ -18,6 +18,7 @@ import { BehaviorSubject, Observable, catchError, debounceTime, distinctUntilCha
 
 import { ConfirmationService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
+import { BusyButtonDirective } from '../../ui/busy/busy-button.directive';
 import { CardModule } from 'primeng/card';
 import { ChartModule } from 'primeng/chart';
 import { CheckboxModule } from 'primeng/checkbox';
@@ -131,6 +132,7 @@ function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent
   selector: 'app-portfolio-account-detail',
   standalone: true,
   imports: [
+    BusyButtonDirective,
     PageHeaderComponent,
     BannerComponent,
     FilterBarComponent,
