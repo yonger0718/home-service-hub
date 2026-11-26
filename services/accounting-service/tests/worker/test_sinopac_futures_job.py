@@ -690,6 +690,31 @@ def test_validate_history_stopped_by_a_bad_password_file_is_not_ok(w):
     assert w.report["result"] == "password_file"
 
 
+def _staging_sweep_fails(w, monkeypatch):
+    w.cfg.staging_dir.mkdir(parents=True, exist_ok=True)
+    (w.cfg.staging_dir / "sinopac-futures-1-1.pdf").mkdir()  # a stale entry the sweep cannot unlink
+
+
+def _run_raises(w, monkeypatch):
+    def boom(self):
+        raise RuntimeError("範例期貨 151,166")
+    monkeypatch.setattr(sinopac_futures._Job, "listing", boom)
+
+
+@pytest.mark.parametrize("inject, code", [(_staging_sweep_fails, "internal:IsADirectoryError"),
+                                          (_run_raises, "internal:RuntimeError")], ids=["staging_sweep", "job_run"])
+def test_validate_history_reports_internal_failures(w, monkeypatch, inject, code):
+    w.daily("id-1", 9)
+    inject(w, monkeypatch)
+    summary = w.go(validate_history=True)
+    report = w.report
+    assert summary["codes"] == ["failed", code] and report["result"] == code
+    assert (report["items"], report["findings"], report["counts"]) == ([], {}, {})
+    assert w.portfolio.validates == [] and w.portfolio.posts == [] and w.portfolio.runs == []
+    assert not (w.cfg.state_dir / "sinopac-futures-state.json").exists() and not w.latch.exists()
+    assert "範例" not in json.dumps(report, ensure_ascii=False)
+
+
 def test_validate_cap_matches_the_portfolio():
     assert sinopac_futures.VALIDATE_MAX == 200
 

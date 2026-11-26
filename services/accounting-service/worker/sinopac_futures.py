@@ -458,7 +458,10 @@ def run(cfg: WorkerConfig, *, portfolio_http: httpx.Client, drive: Drive, dry_ru
                 job.history["result"] = "drive_listing"
             job.fail(FuturesError("drive_listing"))
         except Exception as exc:  # noqa: BLE001 — the run report still goes out; the class name is the only detail
-            job.fail(FuturesError(f"internal:{type(exc).__name__}"[:64]))
+            code = f"internal:{type(exc).__name__}"[:64]
+            if validate_history:  # whatever raised, the history report must not read `ok`
+                job.history["result"] = code
+            job.fail(FuturesError(code))
         if validate_history:
             parser.write_private_json(cfg.state_dir, cfg.state_dir / HISTORY, job.history)
         summary = job.summary()
