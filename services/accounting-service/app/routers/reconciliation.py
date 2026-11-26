@@ -3,7 +3,7 @@
 Behind `require_feature()` like the statements router. Owner actions need `write`; reads need `read`. The engine
 never commits and these handlers do; policy does not run after owner actions.
 """
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -13,11 +13,12 @@ from sqlalchemy.orm import Session
 from ..auth import require, require_feature
 from ..database import get_db
 from ..schemas.reconciliation import (
+    AutoPayRowOut,
     ActionIn, ActionOut, AuditOut, DismissIn, ProposalIn, ProposalOut, ProposalRejectIn,
 )
 from ..schemas.inbox import InboxApplyIn, InboxApplyOut, InboxCandidate, InboxOut, OwnerRuleOut, OwnerRulePatchIn
 from ..schemas.statements import CaseDetailOut
-from ..services import inbox_service, owner_rule_service, proposal_service
+from ..services import auto_pay_service, inbox_service, owner_rule_service, proposal_service
 from ..services import statement_ingest_service as ingest
 from ..services.reconciliation_actions import engine
 from .errors import service_errors
@@ -157,6 +158,12 @@ def list_audit(statement_id: int | None = None, limit: int = Query(200, ge=1, le
                offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
     """Newest first; `since` (ISO datetime, naive = UTC), `event` and `offset` narrow the page (#201)."""
     return ingest.list_audit(db, statement_id=statement_id, limit=limit, since=since, event=event, offset=offset)
+
+
+@router.get("/reconciliation/auto-pay", response_model=list[AutoPayRowOut], dependencies=READ)
+def list_auto_pay_rows(since: date, db: Session = Depends(get_db)):
+    """Card-statement auto-pay rows (one per statement) paying on or after `since`, newest pay date first."""
+    return auto_pay_service.list_rows(db, since=since)
 
 
 # --- agent proposals (Task 9) ---------------------------------------------------------------------------------------

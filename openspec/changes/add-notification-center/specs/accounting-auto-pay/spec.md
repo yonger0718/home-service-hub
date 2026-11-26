@@ -30,3 +30,16 @@ The merged `auto_pay` block SHALL pass the same checks as `PUT /settings/reconci
 #### Scenario: Another setting
 - **WHEN** `PATCH … {"max_amount": "1"}` is sent
 - **THEN** the endpoint SHALL answer 422 and store nothing
+
+### Requirement: Auto-pay rows
+
+`GET /reconciliation/auto-pay?since=<date>` (read scope) SHALL list the card-statement auto-pay rows (one per statement) whose pay date is on or after `since`, newest pay date first, at most 200. Each row SHALL carry `statement_id`, `card_account_id`, `pay_account_id` (null for a `no_link` skip), `amount`, `due_date`, `pay_date`, `status`, `reason` and `updated_at`. `since` is required.
+
+#### Scenario: A booked and a skipped statement
+- **GIVEN** statement A booked with pay date 2026-10-26 and statement B skipped with `no_link`, pay date 2026-11-24
+- **WHEN** `GET /reconciliation/auto-pay?since=2026-10-01` is called
+- **THEN** it SHALL return B then A, B with `pay_account_id` null and `reason` `no_link`
+
+#### Scenario: Since narrows
+- **WHEN** `since` is 2026-11-01
+- **THEN** only B SHALL be returned

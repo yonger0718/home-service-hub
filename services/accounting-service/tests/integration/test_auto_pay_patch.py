@@ -94,3 +94,56 @@ def test_service_merge_creates_the_row(db_session):
     db_session.commit()
     assert out == {"enabled": True, "enabled_from": "2026-12-01", "version": 2}
     assert settings_service.read_auto_pay_settings(db_session)["max_amount"] == "200000"
+
+
+# --- GET /reconciliation/auto-pay: one row per statement (the notification center's 系統 tasks and the bill pill) ---
+
+from datetime import date  # noqa: E402
+from decimal import Decimal  # noqa: E402
+
+from app.models import StatementAutoPay  # noqa: E402
+from tests.integration.statement_fixtures import OCT, SEP, _card, _line, _submit, run  # noqa: E402,F401
+
+ROWS = "/reconciliation/auto-pay"
+
+
+def _row(stmt, card, pay_account_id, pay_date, status, reason=None):
+    return StatementAutoPay(statement_id=stmt.id, card_account_id=card.id, pay_account_id=pay_account_id,
+                            amount=Decimal("580"), due_date=pay_date, pay_date=pay_date, status=status, reason=reason,
+                            settings_version=1)
+
+
+def _two_statements(seed, db_session, run):
+    bank = seed.account("測試銀行")
+    card = _card(seed, db_session, name="測試卡", auto_pay_account_id=bank.id)
+    a, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "測試商店", 580)], period=SEP,
+                      due_date=date(2026, 10, 24))
+    b, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 3), "測試商店", 580)], period=OCT,
+                      due_date=date(2026, 11, 24))
+    return bank, card, a, b
+
+
+def test_rows_since_newest_pay_date_first(client, seed, db_session, run):
+    bank, card, a, b = _two_statements(seed, db_session, run)
+    db_session.add(_row(a, card, bank.id, date(2026, 10, 26), "booked"))
+    db_session.add(_row(b, card, card.id, date(2026, 11, 24), "skipped", "no_link"))
+    db_session.commit()
+    res = client.get(ROWS, headers=READ, params={"since": "2026-10-01"})
+    assert res.status_code == 200, res.text
+    rows = res.json()
+    assert [(r["statement_id"], r["status"], r["reason"]) for r in rows] == [(b.id, "skipped", "no_link"),
+                                                                            (a.id, "booked", None)]
+    first = rows[0]
+    assert first["card_account_id"] == card.id and first["pay_account_id"] is None  # no_link stores the card itself
+    assert (first["amount"], first["due_date"], first["pay_date"]) == ("580.0000", "2026-11-24", "2026-11-24")
+    assert set(first) == {"statement_id", "card_account_id", "pay_account_id", "amount", "due_date", "pay_date",
+                          "status", "reason", "updated_at"}
+    assert rows[1]["pay_account_id"] == bank.id
+    later = client.get(ROWS, headers=READ, params={"since": "2026-11-01"}).json()
+    assert [r["statement_id"] for r in later] == [b.id]
+
+
+def test_rows_need_since_and_read_scope(client):
+    assert client.get(ROWS, headers=READ).status_code == 422
+    assert client.get(ROWS, headers=READ, params={"since": "nope"}).status_code == 422
+    assert client.get(ROWS, params={"since": "2026-10-01"}).status_code == 401
