@@ -1,10 +1,12 @@
-"""python -m worker <command>: run | poll | backfill | gate | export-masked | verify | flex | cathay | einvoice."""
+"""python -m worker <command>: run | poll | backfill | gate | export-masked | verify | flex | cathay | sinopac-futures |
+einvoice."""
 from __future__ import annotations
 
 import argparse
 import json
 import logging
 import os
+import re
 import sys
 import warnings
 from datetime import date
@@ -12,7 +14,7 @@ from pathlib import Path
 
 import httpx
 
-from worker import cathay, config, einvoice, flex, pipeline
+from worker import cathay, config, einvoice, flex, pipeline, sinopac_futures
 from worker.api import ApiClient
 from worker.runner import SubprocessRunner
 
@@ -121,6 +123,57 @@ def _cathay(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
     return 1 if summary["codes"] else 0
 
 
+def _ack_key(value: str) -> str:
+    """`--ack` for sinopac-futures: a statement date `YYYY-MM-DD` or a month `YYYY-MM`, both real."""
+    try:
+        if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+            date.fromisoformat(value)
+            return value
+        if re.fullmatch(r"[0-9]{4}-[0-9]{2}", value):
+            date.fromisoformat(f"{value}-01")
+            return value
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError("expected YYYY-MM-DD or YYYY-MM")
+
+
+def _sinopac_futures(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
+    from worker.drive import Drive
+
+    others = (args.dry_run, args.file, args.since, args.until, args.retry, args.unlatch, args.validate_history)
+    if bool(args.ack) != bool(args.status):
+        print("--ack and --status go together", file=sys.stderr)
+        return 2
+    if args.ack and any(others):
+        print("--ack cannot be combined with other flags", file=sys.stderr)
+        return 2
+    headers = _portfolio_headers(cfg)
+    if headers is None:
+        print("portfolio token file is missing, unreadable or empty", file=sys.stderr)
+        return 2
+    try:
+        with httpx.Client(base_url=cfg.portfolio_api_url, timeout=cfg.sinopac_futures_timeout_s,
+                          headers=headers) as portfolio_http:
+            summary = sinopac_futures.run(cfg, portfolio_http=portfolio_http, drive=Drive(cfg, SubprocessRunner()),
+                                          dry_run=args.dry_run, file_id=args.file, since=args.since, until=args.until,
+                                          retry_date=args.retry, ack_key=args.ack, ack_status=args.status,
+                                          unlatch=args.unlatch, validate_history=args.validate_history)
+    except sinopac_futures.AlreadyRunning:
+        print("already running")
+        return 3
+    except sinopac_futures.FuturesDisabled as exc:
+        print(f"sinopac-futures disabled: {exc}", file=sys.stderr)
+        return 1
+    except sinopac_futures.NothingPending as exc:
+        print(f"nothing pending for {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # the CLI is the output boundary: a class name, never text or a traceback
+        print(f"sinopac-futures failed: {type(exc).__name__}", file=sys.stderr)
+        return 1
+    print(json.dumps({"counts": summary["counts"]} if args.validate_history else summary, ensure_ascii=False))
+    return 1 if summary["codes"] else 0
+
+
 def _einvoice(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
     from worker.drive import Drive
 
@@ -171,6 +224,16 @@ def main(argv: list[str] | None = None) -> int:
     p_ct.add_argument("--ack", type=date.fromisoformat, default=None)
     p_ct.add_argument("--unlatch", action="store_true")
     p_ct.add_argument("--validate-history", action="store_true")
+    p_sf = sub.add_parser("sinopac-futures")
+    p_sf.add_argument("--dry-run", action="store_true")
+    p_sf.add_argument("--file", default=None)
+    p_sf.add_argument("--since", type=date.fromisoformat, default=None)
+    p_sf.add_argument("--until", type=date.fromisoformat, default=None)
+    p_sf.add_argument("--retry", type=date.fromisoformat, default=None)
+    p_sf.add_argument("--ack", type=_ack_key, default=None)
+    p_sf.add_argument("--status", choices=sinopac_futures.ACK_STATUSES, default=None)
+    p_sf.add_argument("--unlatch", action="store_true")
+    p_sf.add_argument("--validate-history", action="store_true")
     sub.add_parser("einvoice")
     args = ap.parse_args(argv)
     os.umask(0o077)
@@ -188,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
         return _flex(cfg, args)
     if args.cmd == "cathay":
         return _cathay(cfg, args)
+    if args.cmd == "sinopac-futures":
+        return _sinopac_futures(cfg, args)
     if args.cmd == "einvoice":
         return _einvoice(cfg, args)
     runner = SubprocessRunner()
