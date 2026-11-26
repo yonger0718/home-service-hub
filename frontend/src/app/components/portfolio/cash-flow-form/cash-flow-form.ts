@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, EventEmitter, Input, Output, inject
 import { CommonModule } from '@angular/common';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ButtonModule } from 'primeng/button';
+import { BusyButtonDirective } from '../../ui/busy/busy-button.directive';
 import { DatePickerModule } from 'primeng/datepicker';
 import { DialogModule } from 'primeng/dialog';
 import { InputNumberModule } from 'primeng/inputnumber';
@@ -37,6 +38,7 @@ const BROKER_CURRENCY_DEFAULT: Record<Broker, string> = {
   selector: 'app-cash-flow-form',
   standalone: true,
   imports: [
+    BusyButtonDirective,
     CommonModule,
     ReactiveFormsModule,
     ButtonModule,
@@ -94,7 +96,7 @@ const BROKER_CURRENCY_DEFAULT: Record<Broker, string> = {
         </div>
         <div class="actions">
           <p-button label="取消" severity="secondary" [text]="true" (onClick)="close()" [disabled]="submitting()"></p-button>
-          <p-button type="submit" label="儲存" [loading]="submitting()" [disabled]="form.invalid"></p-button>
+          <p-button type="submit" label="儲存" [appBusy]="submitting()" [disabled]="submitting() || form.invalid"></p-button>
         </div>
       </form>
     </p-dialog>

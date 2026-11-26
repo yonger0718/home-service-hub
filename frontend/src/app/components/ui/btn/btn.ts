@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, computed, input, output, viewChild } from '@angular/core';
 
 export type BtnVariant = 'primary' | 'secondary' | 'ghost' | 'soft';
 
@@ -13,19 +13,20 @@ export type BtnVariant = 'primary' | 'secondary' | 'ghost' | 'soft';
       [class.btn-ghost]="variant() === 'ghost'"
       [class.btn-soft]="variant() === 'soft'"
       [class.btn-icon]="iconOnly()"
-      [class.btn-steady]="steady()"
+      [class.btn-steady]="spins()"
       [disabled]="disabled() || loading()"
-      [attr.aria-busy]="loading() ?? null"
-      [attr.aria-label]="ariaLabel() || null"
+      [attr.aria-busy]="spins() ? !!loading() : null"
+      [attr.aria-label]="accessibleName()"
       [attr.aria-expanded]="ariaExpanded()"
       (click)="onClick($event)"
     >
-      @if (loading()) {
-        <i class="pi pi-spinner pi-spin" aria-hidden="true"></i>
-      } @else if (icon()) {
+      @if (icon()) {
         <i class="pi {{ normalizedIcon() }}" aria-hidden="true"></i>
       }
-      <span class="btn-content"><ng-content></ng-content></span>
+      <span class="btn-content" #content><ng-content></ng-content></span>
+      @if (loading()) {
+        <i class="pi pi-spinner pi-spin btn-spinner" aria-hidden="true"></i>
+      }
     </button>
   `,
   styleUrl: './btn.scss',
@@ -35,8 +36,9 @@ export class BtnComponent {
   readonly variant = input<BtnVariant>('primary');
   readonly disabled = input(false);
   /**
-   * Busy: a spinner replaces the icon (or leads the text) and the button is disabled. Left unbound (undefined) on a
-   * button that never spins.
+   * Busy (#441, owner ruling 2026-11-26): the icon and text stay but are hidden (the width does not change), a spinner
+   * sits in the middle, the button is disabled, `aria-busy="true"` and its name is 「<name>，處理中」. Left unbound
+   * (undefined) on a button that never spins (no aria-busy then).
    */
   readonly loading = input<boolean | undefined>(undefined);
   readonly icon = input('');
@@ -48,12 +50,19 @@ export class BtnComponent {
 
   protected readonly normalizedIcon = computed(() => this.icon().replace(/^pi\s+/, ''));
 
-  /**
-   * A button with a spinner state ([loading] bound) and no icon of its own: busy, the spinner is centred over its
-   * (transparent) text, so its width never changes (#441). A button with an icon swaps the icon for the spinner and
-   * needs nothing.
-   */
-  protected readonly steady = computed(() => this.loading() !== undefined && !this.icon() && !this.iconOnly());
+  /** The button has a spinner state ([loading] bound). */
+  protected readonly spins = computed(() => this.loading() !== undefined);
+
+  private readonly content = viewChild.required<ElementRef<HTMLElement>>('content');
+
+  /** `ariaLabel`, else none (the text names it); busy: 「<ariaLabel or text>，處理中」. */
+  protected accessibleName(): string | null {
+    if (!this.loading()) {
+      return this.ariaLabel() || null;
+    }
+    const name = this.ariaLabel() || (this.content().nativeElement.textContent ?? '').trim();
+    return `${name}，處理中`;
+  }
 
   protected onClick(event: MouseEvent): void {
     // stop native bubble so ancestor (click) handlers don't fire twice: once from

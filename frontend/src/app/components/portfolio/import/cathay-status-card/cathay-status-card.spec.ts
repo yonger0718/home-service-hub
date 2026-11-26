@@ -83,7 +83,9 @@ describe('CathayStatusCardComponent', () => {
     await fixture.whenStable();
     fixture.detectChanges();
   };
-  const ackButton = (label = '10/28') => q(`button[aria-label="已處理：國泰對帳單 ${label}"]`) as HTMLButtonElement | null;
+  /** By name; busy, the name gains 「，處理中」 (#441), so match its start. */
+  const ackButton = (label = '10/28') =>
+    (q(`button[aria-label="已處理：國泰對帳單 ${label}"]`) ?? q(`button[aria-label="已處理：國泰對帳單 ${label}，處理中"]`)) as HTMLButtonElement | null;
   const button = (label: string) =>
     Array.from(root().querySelectorAll<HTMLButtonElement>('button')).find(b => text(b) === label) ?? null;
   const answer = async (index = 0) => {
@@ -310,6 +312,7 @@ describe('CathayStatusCardComponent', () => {
     expect(portfolio.ackCathayDay).toHaveBeenCalledWith('2026-10-28');
     expect(ackButton()!.disabled).toBe(true);
     expect(ackButton()!.getAttribute('aria-busy')).toBe('true');
+    expect(ackButton()!.getAttribute('aria-label')).toBe('已處理：國泰對帳單 10/28，處理中');
     expect(invalidate).not.toHaveBeenCalled();
     await answer();
     expect(toasts.current()).toEqual(expect.objectContaining({ kind: 'done', text: '已處理：國泰對帳單 10/28', action: null }));

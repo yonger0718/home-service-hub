@@ -101,7 +101,7 @@
     </label>
     <div class="dialog-actions">
       <p-button label="取消" severity="secondary" [text]="true" type="button" (onClick)="closeCreateDialog()"></p-button>
-      <p-button label="建立" icon="pi pi-check" type="submit" [loading]="creating()"></p-button>
+      <p-button label="建立" icon="pi pi-check" type="submit" [appBusy]="creating()" [disabled]="creating()"></p-button>
     </div>
   </form>
 </p-dialog>

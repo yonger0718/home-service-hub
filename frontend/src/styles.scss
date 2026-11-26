@@ -970,3 +970,24 @@ app-sidebar,
 .notif-count--red {
   background: var(--c-red-ink);
 }
+
+/* A PrimeNG p-button with [appBusy] (BusyButtonDirective, #441): busy, its icon and label are hidden but keep their
+   place, so the width does not change, and the spinner sits in the middle (as app-btn's .btn-steady). */
+p-button.hh-busy .p-button {
+  position: relative;
+
+  > :not(.hh-busy-spinner) {
+    visibility: hidden;
+  }
+
+  .hh-busy-spinner {
+    height: 1em;
+    left: 50%;
+    line-height: 1;
+    margin: -0.5em 0 0 -0.5em;
+    position: absolute;
+    text-align: center;
+    top: 50%;
+    width: 1em;
+  }
+}

@@ -52,34 +52,71 @@ describe('BtnComponent', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('a button with a spinner state and no icon keeps one width: .btn-steady, busy or not (#441)', () => {
-    const fixture = TestBed.createComponent(BtnSteadyHostComponent);
-    fixture.detectChanges();
-    const [steady, iconed, iconOnly, plain] = Array.from(fixture.nativeElement.querySelectorAll('button')) as HTMLButtonElement[];
-    // Only a button whose [loading] is bound and which has no icon of its own reserves the spinner's slot.
-    expect(steady.classList).toContain('btn-steady');
-    expect(iconed.classList).not.toContain('btn-steady');
-    expect(iconOnly.classList).not.toContain('btn-steady');
-    expect(plain.classList).not.toContain('btn-steady');
-    expect(steady.getAttribute('aria-busy')).toBe('false');
-    expect(plain.hasAttribute('aria-busy')).toBe(false);
+  describe('busy (#441, owner ruling 2026-11-26)', () => {
+    function render() {
+      const fixture = TestBed.createComponent(BtnBusyHostComponent);
+      fixture.detectChanges();
+      const buttons = Array.from(fixture.nativeElement.querySelectorAll('button')) as HTMLButtonElement[];
+      const setBusy = (busy: boolean) => {
+        fixture.componentInstance.busy = busy;
+        fixture.changeDetectorRef.markForCheck();
+        fixture.detectChanges();
+      };
+      return { fixture, buttons, setBusy };
+    }
 
-    fixture.componentInstance.busy = true;
-    fixture.changeDetectorRef.markForCheck();
-    fixture.detectChanges();
-    expect(steady.classList).toContain('btn-steady');
-    expect(steady.getAttribute('aria-busy')).toBe('true');
-    expect(steady.querySelector('.pi-spinner')).toBeTruthy();
-    expect(steady.disabled).toBe(true);
-  });
+    it('idle: a button with a spinner state says aria-busy="false", keeps its name and has no spinner; one without has no aria-busy', () => {
+      const { buttons: [text, named, iconed, iconOnly, plain] } = render();
+      for (const b of [text, named, iconed, iconOnly]) {
+        expect(b.getAttribute('aria-busy')).toBe('false');
+        expect(b.classList).toContain('btn-steady');
+        expect(b.querySelector('.pi-spinner')).toBeNull();
+        expect(b.disabled).toBe(false);
+      }
+      expect(text.hasAttribute('aria-label')).toBe(false);
+      expect(named.getAttribute('aria-label')).toBe('已處理：國泰對帳單 10/22');
+      expect(plain.hasAttribute('aria-busy')).toBe(false);
+      expect(plain.classList).not.toContain('btn-steady');
+    });
 
-  it('pins the overlay (source): busy, the spinner is centred over transparent text; no padding change', () => {
-    const css = readFileSync(join(process.cwd(), 'src/app/components/ui/btn/btn.scss'), 'utf8');
-    const block = /\.btn-steady\s*\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
-    expect(block).toMatch(/position:\s*relative;/);
-    expect(block).toMatch(/&\[aria-busy='true'\] \.btn-content\s*\{\s*color:\s*transparent;\s*\}/);
-    expect(block).toMatch(/\.pi-spinner\s*\{[^}]*left:\s*50%;[^}]*margin:\s*-0\.45rem 0 0 -0\.45rem;[^}]*position:\s*absolute;[^}]*top:\s*50%;[^}]*width:\s*0\.9rem;/);
-    expect(block).not.toMatch(/padding/);
+    it('busy: aria-busy="true", named 「<文字>，處理中」 (or 「<ariaLabel>，處理中」), disabled, a spinner; the icon and text stay in the button', () => {
+      const { fixture, buttons: [text, named, iconed, iconOnly, plain], setBusy } = render();
+      setBusy(true);
+      for (const b of [text, named, iconed, iconOnly]) {
+        expect(b.getAttribute('aria-busy')).toBe('true');
+        expect(b.disabled).toBe(true);
+        expect(b.querySelectorAll('.pi-spinner.pi-spin.btn-spinner').length).toBe(1);
+      }
+      expect(text.getAttribute('aria-label')).toBe('全部入帳，處理中');
+      expect(named.getAttribute('aria-label')).toBe('已處理：國泰對帳單 10/22，處理中');
+      expect(iconed.getAttribute('aria-label')).toBe('確認匯入，處理中');
+      expect(iconOnly.getAttribute('aria-label')).toBe('刷新，處理中');
+      // Hidden, not removed: the text and the icon keep their place (and the width).
+      expect(text.querySelector('.btn-content')!.textContent!.trim()).toBe('全部入帳');
+      expect(iconed.querySelector('.pi-check')).toBeTruthy();
+      expect(iconed.querySelector('.btn-content')!.textContent!.trim()).toBe('確認匯入');
+      expect(plain.hasAttribute('aria-busy')).toBe(false);
+
+      text.click();
+      expect(fixture.componentInstance.clicks).toBe(0);
+
+      setBusy(false);
+      expect(text.getAttribute('aria-busy')).toBe('false');
+      expect(text.hasAttribute('aria-label')).toBe(false);
+      expect(named.getAttribute('aria-label')).toBe('已處理：國泰對帳單 10/22');
+      expect(text.querySelector('.pi-spinner')).toBeNull();
+      text.click();
+      expect(fixture.componentInstance.clicks).toBe(1);
+    });
+
+    it('pins the overlay (source): busy hides every child but the spinner (visibility, so the width stays); the spinner is centred', () => {
+      const css = readFileSync(join(process.cwd(), 'src/app/components/ui/btn/btn.scss'), 'utf8');
+      const block = /\.btn-steady\s*\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
+      expect(block).toMatch(/position:\s*relative;/);
+      expect(block).toMatch(/&\[aria-busy='true'\] > :not\(\.btn-spinner\)\s*\{\s*visibility:\s*hidden;\s*\}/);
+      expect(block).toMatch(/\.btn-spinner\s*\{[^}]*left:\s*50%;[^}]*margin:\s*-0\.45rem 0 0 -0\.45rem;[^}]*position:\s*absolute;[^}]*top:\s*50%;[^}]*width:\s*0\.9rem;/);
+      expect(block).not.toMatch(/padding|display:\s*none|color:\s*transparent/);
+    });
   });
 
   it('renders the soft variant as .btn-soft', () => {
@@ -100,12 +137,14 @@ class BtnExpandedHostComponent {
 @Component({
   imports: [BtnComponent],
   template: `
-    <app-btn variant="soft" [loading]="busy">全部入帳</app-btn>
+    <app-btn variant="soft" [loading]="busy" (click)="clicks = clicks + 1">全部入帳</app-btn>
+    <app-btn variant="soft" [loading]="busy" ariaLabel="已處理：國泰對帳單 10/22">已處理</app-btn>
     <app-btn icon="pi-check" [loading]="busy">確認匯入</app-btn>
     <app-btn icon="pi-refresh" [iconOnly]="true" [loading]="busy" ariaLabel="刷新"></app-btn>
     <app-btn variant="ghost">取消</app-btn>
   `,
 })
-class BtnSteadyHostComponent {
+class BtnBusyHostComponent {
   busy = false;
+  clicks = 0;
 }

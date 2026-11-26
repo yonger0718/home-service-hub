@@ -5,6 +5,7 @@ import { Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 
 import { ButtonModule } from 'primeng/button';
+import { BusyButtonDirective } from '../../ui/busy/busy-button.directive';
 import { DatePickerModule } from 'primeng/datepicker';
 import { DialogModule } from 'primeng/dialog';
 import { InputTextModule } from 'primeng/inputtext';
@@ -76,6 +77,7 @@ const BROKER_LABELS: Record<BrokerEnum, string> = {
   selector: 'app-portfolio-accounts-list',
   standalone: true,
   imports: [
+    BusyButtonDirective,
     TagComponent,
     ReactiveFormsModule,
     ButtonModule,
