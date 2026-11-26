@@ -13,8 +13,9 @@ export type BtnVariant = 'primary' | 'secondary' | 'ghost' | 'soft';
       [class.btn-ghost]="variant() === 'ghost'"
       [class.btn-soft]="variant() === 'soft'"
       [class.btn-icon]="iconOnly()"
+      [class.btn-steady]="steady()"
       [disabled]="disabled() || loading()"
-      [attr.aria-busy]="loading()"
+      [attr.aria-busy]="loading() ?? null"
       [attr.aria-label]="ariaLabel() || null"
       [attr.aria-expanded]="ariaExpanded()"
       (click)="onClick($event)"
@@ -33,7 +34,11 @@ export type BtnVariant = 'primary' | 'secondary' | 'ghost' | 'soft';
 export class BtnComponent {
   readonly variant = input<BtnVariant>('primary');
   readonly disabled = input(false);
-  readonly loading = input(false);
+  /**
+   * Busy: a spinner replaces the icon (or leads the text) and the button is disabled. Left unbound (undefined) on a
+   * button that never spins.
+   */
+  readonly loading = input<boolean | undefined>(undefined);
   readonly icon = input('');
   readonly iconOnly = input(false);
   readonly ariaLabel = input('');
@@ -42,6 +47,13 @@ export class BtnComponent {
   readonly click = output<MouseEvent>();
 
   protected readonly normalizedIcon = computed(() => this.icon().replace(/^pi\s+/, ''));
+
+  /**
+   * A button with a spinner state ([loading] bound) and no icon of its own gains the spinner when busy; it keeps the
+   * spinner's slot as side padding while idle, so its width never changes (#441). A button with an icon swaps the icon
+   * for the spinner and needs nothing.
+   */
+  protected readonly steady = computed(() => this.loading() !== undefined && !this.icon() && !this.iconOnly());
 
   protected onClick(event: MouseEvent): void {
     // stop native bubble so ancestor (click) handlers don't fire twice: once from

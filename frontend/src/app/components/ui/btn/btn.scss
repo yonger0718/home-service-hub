@@ -74,6 +74,22 @@
   }
 }
 
+/* A button with a spinner state and no icon of its own (#441): idle, the spinner's slot (0.9rem + the 7px gap) is
+   split over both sides, so the text stays centred; busy, the spinner takes the slot. Same width either way. */
+.btn-steady {
+  padding-inline: calc(1.1rem + (0.9rem + 7px) / 2);
+
+  &[aria-busy='true'] {
+    padding-inline: 1.1rem;
+  }
+
+  .pi-spinner {
+    flex: 0 0 0.9rem;
+    text-align: center;
+    width: 0.9rem;
+  }
+}
+
 .btn-icon {
   border-radius: var(--radius-pill);
   height: 38px;
