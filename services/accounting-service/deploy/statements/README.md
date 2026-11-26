@@ -224,21 +224,58 @@ Flags (`python -m worker sinopac-futures`, written out in full as in the 國泰 
 | `--file <drive-id>` / `--since DATE` / `--until DATE` | restrict the run to one Drive file / a date range |
 | `--retry KEY` | re-post the settled file of that day or month |
 | `--ack KEY --status conflict\|findings` | acknowledge a pending day or month at the portfolio; touches neither Drive nor state, works while latched, exclusive with every other flag except `--status` (exit 2 otherwise) |
-| `--unlatch` | run the plain daily commit run and remove the latch only if it ends with no codes; while latched every other flag except `--ack` is refused (exit 1) |
+| `--unlatch` | lets the run go ahead while latched; alone it is the plain daily commit run and removes the latch only if it ends with no codes. It posts no run report, so the import card and the notifications keep showing the latch until the next 06:45 run |
 | `--validate-history` | dry run over every archived file; writes `sinopac-futures-history-report.json` and prints counts only |
 
 `--validate-history` has its own timeout (`..._VALIDATE_TIMEOUT_S`) and takes far longer than an import (one batch over the whole archive; 116 files: about 13 s at the portfolio, about 4 min with the Drive downloads). Its report
 `result` is `partial` when some files failed to parse or download (they are listed under `errors`; the rest was still validated) or `validate_too_many`
 when the archive exceeds the portfolio's batch limit (nothing is sent; exit 1). Run it only on request, never from the timer.
 
-A Drive error skips that file (the run exits 1 with code `drive:<Class>`) and the next run retries it; it does not latch. Latch rule, exit codes and recovery are as for 國泰: a non-transient
-failure latches, later runs exit 1 until fixed and cleared with:
+A Drive error skips that file (the run exits 1 with code `drive:<Class>`) and the next run retries it; it does not latch.
+
+Codes (the summary's `codes` is `[result, code]`; exit codes 0 ok, 1 codes / latched / nothing pending for `--ack`, 2 bad
+flags, 3 already running). Only a commit run (no `--dry-run`, no `--validate-history`) latches; a commit run that latches
+posts nothing from that run (every file is parsed before the first post).
+
+- Latching: the parser's `title`, `header`, `section`, `currency`, `line`, `column`, `sequence`, `date`, `page2`,
+  `identity:<name>` (spec §5.3); `parse:<Class>` (the parser crashed); `decrypt` (no password candidate of that folder
+  fits, or the folder has none); `pdf_malformed`; `pdf_too_large`; `extract` (word extraction failed);
+  `portfolio:<status>` for a 4xx other than 408 / 429 (for example `portfolio:422`, a broken identity the portfolio
+  repeats).
+- Not latching: `drive:<Class>` (`drive:DownloadError`, `drive:VerifyError` for an md5 / size mismatch, `drive:OSError`),
+  `drive_listing`; `portfolio:<status>` for 5xx / 408 / 429, `portfolio:<Class>` for a timeout or connection error
+  (`portfolio:ReadTimeout`, `portfolio:ConnectError`), `portfolio:body` (an answer that fails validation); nothing from
+  such an answer is recorded and the run stops there, the files posted before it stay recorded; `password_file`,
+  `state_file`, `file_not_found` (`--file` with an id in neither folder), `validate_too_many`, `internal:<Class>`.
+
+While latched. Without `--unlatch` every run except `--ack` is refused (exit 1, `sinopac-futures disabled`); a plain
+run still posts a `latched` run report, a flagged one posts nothing. With `--unlatch` the run goes ahead with the other
+flags it is given: `--unlatch --dry-run`, `--unlatch --validate-history`, `--unlatch --file ID` (a commit run of that one
+file, which can latch again), `--unlatch --since/--until/--retry`; none of them removes the latch. Only `--unlatch`
+alone, ending with no codes, removes it.
+
+Diagnosis. The latch file names the file and the failure, never its name or content:
+
+    jq . <state_dir>/sinopac-futures-disabled.json   # {"reason": "<code>", "at": …, "drive_file_id": …, "file_date": "YYYY-MM-DD" | "YYYY-MM" | null}
+
+To see whether other files fail too, run `--unlatch --validate-history` (report `errors` list drive_file_id, file_date
+and code per file) or check that one file with `--unlatch --dry-run --file <drive-id>`; neither writes state or
+touches the latch:
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker sinopac-futures --unlatch --dry-run --file <drive-id>'
+
+Way out. For a Drive, decrypt or password cause, fix it and run `--unlatch`. For a statement the parser rejects, either
+fix the parser (spec §5.3 first, then the code) and run `--unlatch`, or move that file out of the Drive folder, run
+`--unlatch`, then acknowledge the `prev` / `gap` findings its absence leaves (`--ack KEY --status findings`). There is no
+CSV import for futures. A `portfolio:4xx` latch needs the portfolio side checked first (its log for that key).
 
     sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker sinopac-futures --unlatch'
 
 Before enabling the timer add `_SYSTEMD_USER_UNIT=homehub-portfolio-sinopac-futures.service` to the Alloy journal matcher in
 `/home/opc/workspace/monitoring/alloy/config.alloy` (outside this repo). Then `systemctl --user enable --now homehub-portfolio-sinopac-futures.timer`
 and `journalctl --user -u homehub-portfolio-sinopac-futures.service`.
+
+In Loki `{job="homehub", unit="homehub-portfolio-sinopac-futures.service"} |~ "\"codes\": \\[\"|sinopac-futures disabled"` shows a run that fails every day, including runs refused while latched (those print `sinopac-futures disabled`).
 
 ## 電子發票 (`homehub-einvoice`)
 

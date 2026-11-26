@@ -221,6 +221,31 @@ def test_parse_failure_latches_and_posts_nothing(w):
     assert w.latch.exists() and w.portfolio.keys == ["2026-03-09", "2026-03"]
 
 
+def test_latch_names_the_file_and_nothing_else(w):
+    w.daily("id-ok", 9)
+    name, kw = DAILY_IDENTITIES[0]
+    w.add(DAILY, "id-bad", "2026-03-10_日對帳單.pdf", day_rows(10, **kw))
+    w.go()
+    text = w.latch.read_text(encoding="utf-8")
+    latch = json.loads(text)
+    assert datetime.fromisoformat(latch.pop("at")).tzinfo is not None
+    assert latch == {"reason": f"identity:{name}", "drive_file_id": "id-bad", "file_date": "2026-03-10"}
+    assert "日對帳單" not in text and ".pdf" not in text
+    w.latch.unlink()
+    w.files[DAILY][1]["name"] = "scan.pdf"  # a name without a date prefix
+    w.go()
+    assert json.loads(w.latch.read_text(encoding="utf-8"))["file_date"] is None
+
+
+def test_monthly_latch_keeps_the_month_prefix(w):
+    rows = fx.monthly_rows()
+    case(MONTHLY_LAYOUT, "numeric_word_without_label")[0](rows)
+    w.monthly("id-m", rows=rows)
+    w.go()
+    latch = json.loads(w.latch.read_text(encoding="utf-8"))
+    assert (latch["drive_file_id"], latch["file_date"], latch["reason"]) == ("id-m", "2026-03", "column")
+
+
 def test_parser_crash_latches_with_a_class_name_only(w, monkeypatch):
     w.daily("id-1")
 
@@ -352,7 +377,8 @@ def test_422_latches(w, status):
     summary = w.go()
     assert summary["codes"] == ["latched", f"portfolio:{status}"] and w.state == {}
     assert w.portfolio.keys == ["2026-03-09"]
-    assert json.loads(w.latch.read_text(encoding="utf-8"))["reason"] == f"portfolio:{status}"
+    latch = json.loads(w.latch.read_text(encoding="utf-8"))
+    assert latch.pop("at") and latch == {"reason": f"portfolio:{status}", "drive_file_id": "id-1", "file_date": "2026-03-09"}
     with pytest.raises(sinopac_futures.FuturesDisabled):
         w.go()
     assert w.portfolio.runs[-1] | {"run_at": ""} == {"run_at": "", "result": "latched", "code": f"portfolio:{status}",

@@ -240,8 +240,10 @@ class _Job:
             if self.validate:  # no batch goes out: the report says why
                 self.history["result"] = exc.code
         if exc.latch and self.commit:
-            parser.write_private_json(self.cfg.state_dir, self.cfg.state_dir / LATCH,
-                                      {"reason": exc.code, "at": datetime.now(timezone.utc).isoformat()})
+            latch = {"reason": exc.code, "at": datetime.now(timezone.utc).isoformat()}
+            if item is not None:  # which file to look at: its Drive id and name date, never the name or content
+                latch |= {"drive_file_id": item.drive_file_id, "file_date": _file_date(item.name)}
+            parser.write_private_json(self.cfg.state_dir, self.cfg.state_dir / LATCH, latch)
             self.codes = ["latched", exc.code]
         elif not self.codes:
             self.codes = ["failed", exc.code]
@@ -357,7 +359,7 @@ class _Job:
             try:
                 body = _post_statement(self.cfg, self.http, parsed, dry_run=not self.commit)
             except FuturesError as exc:  # nothing from a failed answer is recorded
-                self.fail(exc)
+                self.fail(exc, parsed.folder, parsed.item)
                 if exc.stop or (exc.latch and self.commit):
                     return
                 continue
