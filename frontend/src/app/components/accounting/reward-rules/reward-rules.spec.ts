@@ -593,10 +593,11 @@ describe('RewardRulesOverviewComponent', () => {
   function spyScroll(): MockInstance<(arg?: boolean | ScrollIntoViewOptions) => void> {
     const proto = Element.prototype as { scrollIntoView?: unknown };
     const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
-    proto.scrollIntoView = () => undefined;
-    const spy = vi.spyOn(Element.prototype, 'scrollIntoView');
+    // A plain mock, not vi.spyOn: vitest re-applies a prototype spy's saved value after this cleanup ran, leaving the
+    // stub on Element.prototype for later spec files on the worker (isolate: false; #440).
+    const spy = vi.fn<(arg?: boolean | ScrollIntoViewOptions) => void>();
+    proto.scrollIntoView = spy;
     onTestFinished(() => {
-      spy.mockRestore();
       if (original) {
         Object.defineProperty(Element.prototype, 'scrollIntoView', original);
       } else {

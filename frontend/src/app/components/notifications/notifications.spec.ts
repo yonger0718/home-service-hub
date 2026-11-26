@@ -2063,16 +2063,28 @@ describe('NotificationsComponent', () => {
       let scrollTo: ReturnType<typeof vi.fn>;
       let scrollIntoView: ReturnType<typeof vi.fn>;
       const proto = Element.prototype as unknown as Record<string, unknown>;
-      const saved = { scrollTo: proto['scrollTo'], scrollIntoView: proto['scrollIntoView'] };
+      // Specs share one jsdom per worker (isolate: false; #440): put back exactly what was there, deleting a member jsdom
+      // lacks rather than leaving an own `undefined` on Element.prototype.
+      let saved: Record<'scrollTo' | 'scrollIntoView', PropertyDescriptor | undefined>;
       beforeEach(() => {
+        saved = {
+          scrollTo: Object.getOwnPropertyDescriptor(proto, 'scrollTo'),
+          scrollIntoView: Object.getOwnPropertyDescriptor(proto, 'scrollIntoView'),
+        };
         scrollTo = vi.fn();
         scrollIntoView = vi.fn();
         proto['scrollTo'] = scrollTo;
         proto['scrollIntoView'] = scrollIntoView;
       });
       afterEach(() => {
-        proto['scrollTo'] = saved.scrollTo;
-        proto['scrollIntoView'] = saved.scrollIntoView;
+        for (const name of ['scrollTo', 'scrollIntoView'] as const) {
+          const descriptor = saved[name];
+          if (descriptor) {
+            Object.defineProperty(proto, name, descriptor);
+          } else {
+            delete proto[name];
+          }
+        }
       });
       const pageScroller = () => document.scrollingElement ?? document.documentElement;
 

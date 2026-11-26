@@ -788,12 +788,12 @@ describe('AccountRulesComponent', () => {
 
     it('a menu that does not fit below the viewport opens above ⋯ and is scrolled into view; closing clears the flip', async () => {
       const proto = Element.prototype as { scrollIntoView?: unknown };
-      const had = 'scrollIntoView' in proto;
+      // Own property only (`in` also sees an inherited or leaked one; #440): put back exactly what was there.
+      const original = Object.getOwnPropertyDescriptor(proto, 'scrollIntoView');
       const scrolled: Element[] = [];
-      const original = proto.scrollIntoView;
       proto.scrollIntoView = function (this: Element) { scrolled.push(this); };
       onTestFinished(() => {
-        if (had) proto.scrollIntoView = original;
+        if (original) Object.defineProperty(proto, 'scrollIntoView', original);
         else delete proto.scrollIntoView;
       });
       stubMenuBottom(window.innerHeight + 40);
@@ -825,11 +825,10 @@ describe('AccountRulesComponent', () => {
     /** Stubs `document.elementFromPoint` (absent in jsdom): what sits on top at the menu's bottom edge. */
     function stubHit(pick: () => Element | null): void {
       const doc = document as { elementFromPoint?: unknown };
-      const had = 'elementFromPoint' in doc;
-      const original = doc.elementFromPoint;
+      const original = Object.getOwnPropertyDescriptor(doc, 'elementFromPoint');
       doc.elementFromPoint = () => pick();
       onTestFinished(() => {
-        if (had) doc.elementFromPoint = original;
+        if (original) Object.defineProperty(doc, 'elementFromPoint', original);
         else delete doc.elementFromPoint;
       });
     }
