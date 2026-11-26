@@ -19,8 +19,9 @@
   display: contents;
 }
 
-/* One column: a hairline between the equity group and the margin group. */
-[data-cell='r1'] {
+/* One column: a hairline between the equity group and the margin group, 12px clear on both sides. The row class
+   is part of the selector so .futures-row's own `padding: 4px 0` (declared later) cannot undo the top padding. */
+.futures-row[data-cell='r1'] {
   border-top: 1px solid var(--app-border);
   margin-top: var(--space-3);
   padding-top: var(--space-3);
@@ -50,7 +51,7 @@
   [data-cell$='3'] { grid-row: 3; }
   [data-cell$='4'] { grid-row: 4; }
 
-  [data-cell='r1'] {
+  .futures-row[data-cell='r1'] {
     border-top: 0;
     margin-top: 0;
     padding-top: 4px;
