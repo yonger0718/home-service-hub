@@ -49,9 +49,9 @@ export class BtnComponent {
   protected readonly normalizedIcon = computed(() => this.icon().replace(/^pi\s+/, ''));
 
   /**
-   * A button with a spinner state ([loading] bound) and no icon of its own gains the spinner when busy; it keeps the
-   * spinner's slot as side padding while idle, so its width never changes (#441). A button with an icon swaps the icon
-   * for the spinner and needs nothing.
+   * A button with a spinner state ([loading] bound) and no icon of its own: busy, the spinner is centred over its
+   * (transparent) text, so its width never changes (#441). A button with an icon swaps the icon for the spinner and
+   * needs nothing.
    */
   protected readonly steady = computed(() => this.loading() !== undefined && !this.icon() && !this.iconOnly());
 

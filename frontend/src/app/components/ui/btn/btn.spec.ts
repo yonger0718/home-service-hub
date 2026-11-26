@@ -73,16 +73,13 @@ describe('BtnComponent', () => {
     expect(steady.disabled).toBe(true);
   });
 
-  it('pins the reserved slot (source): idle padding 1.1rem + half of (spinner 0.9rem + 7px gap) a side; busy 1.1rem, spinner 0.9rem wide', () => {
+  it('pins the overlay (source): busy, the spinner is centred over transparent text; no padding change', () => {
     const css = readFileSync(join(process.cwd(), 'src/app/components/ui/btn/btn.scss'), 'utf8');
     const block = /\.btn-steady\s*\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
-    expect(block).toMatch(/^\s*padding-inline:\s*calc\(1\.1rem \+ \(0\.9rem \+ 7px\) \/ 2\);/m);
-    expect(block).toMatch(/&\[aria-busy='true'\]\s*\{\s*padding-inline:\s*1\.1rem;\s*\}/);
-    expect(block).toMatch(/\.pi-spinner\s*\{[^}]*width:\s*0\.9rem;/);
-    // The numbers it reserves for are the kit's: 1.1rem side padding, 7px gap, 0.9rem icons.
-    expect(css).toMatch(/gap:\s*7px;/);
-    expect(css).toMatch(/padding:\s*0\.6rem 1\.1rem;/);
-    expect(css).toMatch(/i\s*\{\s*font-size:\s*0\.9rem;/);
+    expect(block).toMatch(/position:\s*relative;/);
+    expect(block).toMatch(/&\[aria-busy='true'\] \.btn-content\s*\{\s*color:\s*transparent;\s*\}/);
+    expect(block).toMatch(/\.pi-spinner\s*\{[^}]*left:\s*50%;[^}]*margin:\s*-0\.45rem 0 0 -0\.45rem;[^}]*position:\s*absolute;[^}]*top:\s*50%;[^}]*width:\s*0\.9rem;/);
+    expect(block).not.toMatch(/padding/);
   });
 
   it('renders the soft variant as .btn-soft', () => {

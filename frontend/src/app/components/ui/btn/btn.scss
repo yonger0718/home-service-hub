@@ -74,18 +74,21 @@
   }
 }
 
-/* A button with a spinner state and no icon of its own (#441): idle, the spinner's slot (0.9rem + the 7px gap) is
-   split over both sides, so the text stays centred; busy, the spinner takes the slot. Same width either way. */
+/* A button with a spinner state and no icon of its own (#441): busy, the spinner sits in the middle over the text,
+   which turns transparent (still the button's name), so the button keeps its idle width. */
 .btn-steady {
-  padding-inline: calc(1.1rem + (0.9rem + 7px) / 2);
+  position: relative;
 
-  &[aria-busy='true'] {
-    padding-inline: 1.1rem;
+  &[aria-busy='true'] .btn-content {
+    color: transparent;
   }
 
   .pi-spinner {
-    flex: 0 0 0.9rem;
+    left: 50%;
+    margin: -0.45rem 0 0 -0.45rem;
+    position: absolute;
     text-align: center;
+    top: 50%;
     width: 0.9rem;
   }
 }
