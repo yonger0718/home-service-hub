@@ -8,7 +8,7 @@ import { PickerComponent, PickerOption } from './picker';
 @Component({
   imports: [PickerComponent],
   template: `<button class="before">before</button>
-    <app-picker [options]="options()" [value]="value()" label="計算方式" (change)="emitted.push($event)"></app-picker>`,
+    <app-picker [options]="options()" [value]="value()" label="計算方式" [ariaLabel]="aria()" (change)="emitted.push($event)"></app-picker>`,
 })
 class PickerHostComponent {
   options = signal<PickerOption[]>([
@@ -17,6 +17,7 @@ class PickerHostComponent {
     { value: 'c', label: '丙方案', disabled: true },
   ]);
   value = signal('a');
+  aria = signal<string | null>(null);
   emitted: string[] = [];
 }
 
@@ -75,6 +76,16 @@ describe('PickerComponent', () => {
     host.value.set(host.emitted[0]);
     fixture.detectChanges();
     expect(q('.pk-trigger').getAttribute('aria-label')).toBe('計算方式：乙方案');
+  });
+
+  it('ariaLabel replaces the trigger name (the visible text and the listbox label stay)', () => {
+    const { fixture, host, q, open } = setup();
+    host.aria.set('稍後提醒：測試房租');
+    fixture.detectChanges();
+    expect(q('.pk-trigger').getAttribute('aria-label')).toBe('稍後提醒：測試房租');
+    expect(q('.pk-text').textContent!.trim()).toBe('甲方案');
+    open();
+    expect(q('[role=listbox]').getAttribute('aria-label')).toBe('計算方式');
   });
 
   it('Escape closes without emitting', () => {

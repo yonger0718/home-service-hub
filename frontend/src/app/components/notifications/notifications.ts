@@ -45,6 +45,7 @@ import {
 } from './notif-task';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
 import { ReconFlowComponent } from './recon-flow/recon-flow';
+import { SnoozeOption, untilText } from './snooze';
 
 /** 409 `already_posted`: the instance was posted before this request (by its own earlier send, or elsewhere). */
 function isAlreadyPosted(err: unknown): boolean {
@@ -452,6 +453,22 @@ export class NotificationsComponent {
   }
 
   /** A row's 入帳 / 全部入帳 / 已處理; ignored while that row is busy (one write per press). */
+  /**
+   * 稍後提醒 (D4, PR E2): the task leaves the list on this device; the toast names the end time and 復原 brings it back.
+   * Focus follows the row as after a command (the next row's primary, else the tracking summary, else the chips).
+   */
+  protected onSnooze(task: NotifTask, option: SnoozeOption): void {
+    this.answered.add(task.id);
+    const until = this.center.snooze(task, option);
+    this.toasts.done(`已延後到 ${untilText(until)}：${task.title}`, { undo: () => this.center.unsnooze(task.id) });
+  }
+
+  /** 現在顯示: every snoozed task comes back; focus goes to the first row. */
+  protected showSnoozed(): void {
+    this.center.showSnoozed();
+    this.restoreFocus(0);
+  }
+
   protected onRun(task: NotifTask, command: NotifCommand): void {
     if (this.isBusy(task.id)) {
       return;

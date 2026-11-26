@@ -74,6 +74,15 @@ describe('NotificationsComponent', () => {
   const failedSources = signal<readonly NotifSourceKey[]>([]);
   const nextUpcoming = signal<NotifTask | null>(null);
   const cathayMore = signal(0);
+  const snoozedCount = signal(0);
+  /** As the service: the task leaves `tasks`, the count of hidden ones grows; returns the end time. */
+  const snooze = vi.fn((t: NotifTask, _option: string) => {
+    tasks.update(list => list.filter(x => x.id !== t.id));
+    snoozedCount.update(n => n + 1);
+    return new Date(2026, 9, 25, 9, 0);
+  });
+  const unsnooze = vi.fn();
+  const showSnoozed = vi.fn();
   const refresh = vi.fn();
   /** As the service: starts the next round and returns its id. */
   const invalidate = vi.fn(() => {
@@ -120,6 +129,10 @@ describe('NotificationsComponent', () => {
     failedSources,
     nextUpcoming,
     cathayMore,
+    snoozedCount,
+    snooze,
+    unsnooze,
+    showSnoozed,
     summary: computed<NotifSummary>(() => summarize(tasks())),
     badges: signal({}),
     refresh,
@@ -168,6 +181,10 @@ describe('NotificationsComponent', () => {
     failedSources.set([]);
     nextUpcoming.set(null);
     cathayMore.set(0);
+    snoozedCount.set(0);
+    snooze.mockClear();
+    unsnooze.mockClear();
+    showSnoozed.mockClear();
     refresh.mockClear();
     invalidate.mockClear();
     accounting.postScheduleInstance.mockClear();
@@ -2149,6 +2166,67 @@ describe('NotificationsComponent', () => {
     it('on a phone the header adds no bottom margin of its own: header to chips is the page gap (14 px), as chips to section', () => {
       const phone = css.slice(css.indexOf('@media (max-width: 759.98px)'));
       expect(phone).toMatch(/app-page-header\s*\{[^}]*margin-bottom:\s*0/);
+    });
+  });
+  describe('稍後提醒 (PR E2)', () => {
+    const q = (root: HTMLElement, sel: string) => root.querySelector<HTMLElement>(sel);
+    const pick = async (root: HTMLElement, id: string, option: string) => {
+      q(root, `app-notif-row[data-task-id="${id}"] .notif-snooze .pk-trigger`)!.click();
+      await settle();
+      q(document.body as HTMLElement, `.pk-option[data-value="${option}"]`)!.click();
+      await settle();
+    };
+
+    afterEach(() => fixture?.nativeElement.remove());
+
+    it('every counted row offers 稍後提醒', () => {
+      const root = mount();
+      const rows = root.querySelectorAll('app-notif-row');
+      expect(rows.length).toBe(5);
+      expect([...rows].every(r => r.querySelector('.notif-snooze .pk-trigger'))).toBe(true);
+    });
+
+    it('picking 明天 09:00 snoozes that task: the row leaves, counts drop, toast 「已延後到 10/25 09:00：…」 with 復原', async () => {
+      const root = mount();
+      const toasts = TestBed.inject(ToastService);
+      await pick(root, 'b1', 'tomorrow');
+      expect(snooze).toHaveBeenCalledTimes(1);
+      expect(snooze.mock.calls[0][0].id).toBe('b1');
+      expect(snooze.mock.calls[0][1]).toBe('tomorrow');
+      expect(q(root, 'app-notif-row[data-task-id="b1"]')).toBeNull();
+      expect(q(root, '#notif-sec-today')).toBeNull();
+      expect(text(q(root, '.notif-chips button[aria-checked="true"] .chip-count'))).toBe('4');
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'done', text: '已延後到 10/25 09:00：測試任務 b1', action: expect.objectContaining({ label: '復原' }) }),
+      );
+      toasts.current()!.action!.run();
+      expect(unsnooze).toHaveBeenCalledWith('b1');
+    });
+
+    it('focus goes to the row now in the snoozed row\'s place', async () => {
+      const root = mount();
+      await pick(root, 'b1', '3h');
+      await settle();
+      expect(document.activeElement).toBe(rowPrimary(root, 'c1'));
+    });
+
+    it('「另有 N 件稍後提醒 · 現在顯示」 shows while some are snoozed; 現在顯示 calls showSnoozed', async () => {
+      const root = mount();
+      expect(q(root, '.notif-snoozed')).toBeNull();
+      snoozedCount.set(2);
+      await settle();
+      expect(text(q(root, '.notif-snoozed'))).toBe('另有 2 件稍後提醒 · 現在顯示');
+      q(root, '.notif-snoozed button')!.click();
+      expect(showSnoozed).toHaveBeenCalledTimes(1);
+    });
+
+    it('everything snoozed: 都處理好了 and the line under it', async () => {
+      tasks.set([]);
+      snoozedCount.set(5);
+      const root = mount();
+      await settle();
+      expect(text(q(root, '.notif-empty h2'))).toBe('都處理好了');
+      expect(text(q(root, '.notif-snoozed'))).toBe('另有 5 件稍後提醒 · 現在顯示');
     });
   });
 });

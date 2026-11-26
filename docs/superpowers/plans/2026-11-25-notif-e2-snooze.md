@@ -111,3 +111,14 @@
 - [ ] **Step 1:** design D4 (stored entry `{until, tier, from, wake}`, wake rule incl. 已逾期 escalation and lower count, bottom line, toast), spec "Snooze on this device" (requirement text + scenarios "Lower count keeps the snooze", "Overdue wakes a snoozed task", "Show snoozed tasks"), tasks 5.3 / 5.4 checked with notes. `openspec validate add-notification-center --strict` valid.
 - [ ] **Step 2: Commit** `docs(openspec): PR E2 snooze rules`.
 - [ ] **Step 3: Evidence** (kit `~/reports/home-hub-playwright-stubs`, fictional data, clock fixed Sat 2026-10-24 10:00): screens at 390 / 1100 / 1440 light + dark — row with 稍後提醒 open (popover / phone sheet), after snoozing (toast with 復原 + bottom line), all snoozed (都處理好了 + line); probes: badge count drops, 現在顯示 restores, reload keeps the snooze, corrupt storage value, expiry by clock. Gallery for the owner.
+
+## Plan review fold (AGENT-603, PASS-with-minor, 2026-11-26)
+
+1. Schedules: the source spec pins `wake: { count: n }` (no `due`); the center test moves 3 → 2 with the oldest due moving later (10/20 → 10/21) and stays hidden with the entry kept; 3 → 4 wakes and removes the entry.
+2. Ruling: `amount` is the same string as the old fingerprint (`${remaining}`); dividend `members` are the ids as strings (`['2', '10']`, numeric order) — one string type for every wake field; the set comparison is what matters — cost if wrong: none (internal).
+3. Picker gets an optional `ariaLabel` input (default unchanged); the row passes `稍後提醒：<title>`; `value=""` so a repeat pick emits.
+4. Focus goes through the command path (`answered` + `restoreFocus`): next row's primary, else tracking summary, else chips; page test asserts it.
+5. Code-fact anchors drifted by a few lines (allTasks :243-280, tasks :302-305, NOTIF_CLOCK :54, import-history :47-81); no behaviour change.
+6. Store: `getItem` throw / corrupt → `{}`; `setItem` throw keeps the in-memory map (test).
+7. `recon-flow.spec.ts` now stubs `countedTasks` (with progress) and an empty visible `tasks`, so the existing 已對上 17 / 28 test pins the snoozed-row case.
+8. Center tests: same-day 3 小時後 10:00 → 13:00 returns by the timer alone with the tier still 今天; a 下週一 snooze survives the 24 h timer tick (the timer effect re-arms whenever the entries or the snooze clock change).

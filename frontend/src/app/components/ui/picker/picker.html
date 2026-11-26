@@ -4,7 +4,7 @@
   class="pk-trigger"
   aria-haspopup="listbox"
   [attr.aria-expanded]="open()"
-  [attr.aria-label]="label() + '：' + selectedLabel()"
+  [attr.aria-label]="ariaLabel() ?? label() + '：' + selectedLabel()"
   [attr.data-value]="value()"
   [disabled]="disabled()"
   (click)="toggle()"

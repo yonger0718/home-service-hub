@@ -355,8 +355,25 @@ describe('NotificationCenterService', () => {
       clockNow = at(24, 13);
       vi.advanceTimersByTime(3_600_000);
       TestBed.tick();
-      expect(ids(svc)).toEqual(['sched:1']);
+      // Back by the timer alone, still 今天 (not the 已逾期 rule).
+      expect(svc.tasks().map(t => [t.id, t.tier])).toEqual([['sched:1', 'today']]);
       expect(stored()).toEqual({});
+    });
+
+    it('a snooze longer than a day survives the daily timer tick (the timer re-arms)', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { inbox: inboxWith(2) });
+      svc.snooze(task(svc, 'recon:10'), 'monday');
+      TestBed.tick();
+      clockNow = at(25, 10);
+      vi.advanceTimersByTime(24 * 3_600_000);
+      TestBed.tick();
+      expect(ids(svc)).toEqual([]);
+      clockNow = at(26, 9);
+      vi.advanceTimersByTime(23 * 3_600_000);
+      TestBed.tick();
+      expect(ids(svc)).toEqual(['recon:10']);
     });
 
     it('a snoozed task gone from a source that read ok drops its entry; a failed source keeps it', async () => {

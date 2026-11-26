@@ -1,7 +1,9 @@
-import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, output } from '@angular/core';
 import { RouterLink } from '@angular/router';
 
+import { NOTIF_CLOCK } from '../../../services/notif-clock';
 import { BtnComponent } from '../../ui/btn/btn';
+import { PickerComponent, PickerOption } from '../../ui/picker/picker';
 import {
   NotifCommand,
   NotifCommandAction,
@@ -10,6 +12,7 @@ import {
   SOURCE_TAGS,
   isCommand,
 } from '../notif-task';
+import { SNOOZE_OPTIONS, SnoozeOption, snoozeUntil, untilText } from '../snooze';
 
 /** The native control of a row's primary action: the inner `<button>` of `app-btn`, or the link (R28). */
 export const NOTIF_PRIMARY_CONTROL = 'app-btn.notif-primary button, a.notif-primary';
@@ -17,7 +20,7 @@ export const NOTIF_PRIMARY_CONTROL = 'app-btn.notif-primary button, a.notif-prim
 /** One notification task: icon tile, title / tag / amount, when · meta, optional progress bar, actions. */
 @Component({
   selector: 'app-notif-row',
-  imports: [BtnComponent, RouterLink],
+  imports: [BtnComponent, PickerComponent, RouterLink],
   templateUrl: './notif-row.html',
   styleUrl: './notif-row.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -38,7 +41,18 @@ export class NotifRowComponent {
    * `aria-current="true"` (still a link; pressing it again is harmless).
    */
   readonly selected = input(false);
+  /** Offers 稍後提醒 (PR E2: every counted task). */
+  readonly snoozable = input(true);
   readonly run = output<NotifCommand>();
+  readonly snooze = output<SnoozeOption>();
+
+  private readonly clock = inject(NOTIF_CLOCK);
+  /** 稍後提醒's options, each hinted with the time it ends (taken when the row renders). */
+  protected readonly snoozeOptions = computed<PickerOption[]>(() => {
+    this.task();
+    const now = this.clock();
+    return SNOOZE_OPTIONS.map((o) => ({ value: o.value, label: o.label, hint: untilText(snoozeUntil(o.value, now)) }));
+  });
 
   protected readonly alert = computed(() => ['overdue', 'system'].includes(this.task().tier));
   protected readonly tag = computed(() => SOURCE_TAGS[this.task().source]);
@@ -64,6 +78,13 @@ export class NotifRowComponent {
   /** The primary's visible label: 對帳中 while the row is selected. */
   protected primaryLabel(label: string): string {
     return this.selected() ? '對帳中' : label;
+  }
+
+  protected onSnooze(value: string): void {
+    const option = SNOOZE_OPTIONS.find((o) => o.value === value);
+    if (option) {
+      this.snooze.emit(option.value);
+    }
   }
 
   /** `label：title`: one accessible name per action, distinct between rows. */

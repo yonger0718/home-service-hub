@@ -177,6 +177,34 @@
   }
 }
 
+/* 稍後提醒 (PR E2): a picker whose trigger reads like the secondary links (no field chrome), chevron kept. */
+.notif-snooze {
+  display: inline-flex;
+
+  ::ng-deep .pk-trigger {
+    background: transparent;
+    border-color: transparent;
+    border-radius: 10px;
+    color: var(--app-text-muted);
+    font-size: 13px;
+    font-weight: 700;
+    gap: 2px;
+    min-height: 36px;
+    padding: 0 8px 0 12px;
+    white-space: nowrap;
+    width: auto;
+
+    &:hover {
+      color: var(--app-text);
+    }
+
+    &:focus-visible {
+      box-shadow: 0 0 0 4px var(--app-focus-ring);
+      outline: none;
+    }
+  }
+}
+
 /* Dark: --app-primary on its own soft tint is 4.18:1 (13.6 px bold text); the ink is --app-text there (>= 13:1). */
 :host-context(.app-dark-mode) {
   .notif-primary--link:not(.solid),
@@ -225,7 +253,8 @@
   /* Tap targets: 44 px high (the artboard draws 36). */
   .notif-primary--link,
   .notif-primary ::ng-deep .btn,
-  .notif-secondary {
+  .notif-secondary,
+  .notif-snooze ::ng-deep .pk-trigger {
     min-height: 44px;
   }
 
@@ -246,7 +275,8 @@
 
   .notif-line,
   .notif-meta,
-  .notif-secondary {
+  .notif-secondary,
+  .notif-snooze ::ng-deep .pk-trigger {
     color: var(--app-text);
   }
 
