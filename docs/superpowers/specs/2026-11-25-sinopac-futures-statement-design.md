@@ -377,7 +377,9 @@ is set when `findings_sha` changes. A day or month with findings is pending (§8
 - Before any futures statement exists the card is one compact line, 「永豐期貨 · 尚無期貨對帳單」: not hidden, and not a
   full block that pushes the chart down.
 - Known display limits: when the total is exactly 0 the 淨值走勢 y-axis repeats 「0.000M」 on every tick (the chart's
-  existing tick format; left as is).
+  existing tick format; left as is). On phones the 「知道了」 toast already sits above the bottom navigation and the
+  safe-area inset, but while it shows it can still cover the lowest ~26px of the last item on /portfolio/import
+  (avoiding that would add blank space to the bottom of every phone page); it goes away on its own.
 - No 風險指標: the statement does not print one and the broker's formula is not on it; the card shows the printed
   margins instead.
 
