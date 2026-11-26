@@ -212,7 +212,8 @@ one per folder, same format as the other entries (the key is the Drive folder; p
 Other overrides (optional, `~/.config/homehub-statements.env`): `STATEMENT_SINOPAC_FUTURES_TIMEOUT_S` (portfolio request timeout),
 `STATEMENT_SINOPAC_FUTURES_VALIDATE_TIMEOUT_S` (default 600, used only by `--validate-history`). State files in `<state_dir>`:
 `sinopac-futures-state.json`, `sinopac-futures-disabled.json` (the latch), `sinopac-futures-history-report.json`, `.sinopac-futures.lock`
-(a second run prints `already running`, exit 3). The futures lock is shared with the 國泰 job: a 國泰 replay holding it can delay the 06:45 import.
+(a second run prints `already running`, exit 3; this file lock is the worker's own). On the portfolio side every import waits for
+the futures advisory lock, which the net-worth replay a 國泰 import can start also takes: such a replay can delay the 06:45 import.
 
 Flags (`python -m worker sinopac-futures`, written out in full as in the 國泰 section; a KEY is `YYYY-MM-DD` for a daily file, `YYYY-MM` for a monthly one):
 
