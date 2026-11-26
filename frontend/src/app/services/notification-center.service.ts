@@ -403,7 +403,8 @@ export class NotificationCenterService {
   /** Whether the card's current bill with this debit day is paid (remaining ≤ 0); false when not among the dues. */
   /**
    * A skipped auto-pay is settled when its statement is the card's current bill and that bill is paid, or when the
-   * card's current bill is a later statement (its due date falls before the current cycle's closing). Statements are
+   * card's current bill is a later statement (its due date falls on or before the current cycle's closing: a bill is
+   * always due after its own closing). Statements are
    * matched by cycle, not by debit day, so a holiday the two calendars shift differently does not matter.
    */
   private autoPaySettled(row: AutoPayRow): boolean {
@@ -411,7 +412,7 @@ export class NotificationCenterService {
     if (!event) {
       return false;
     }
-    if (row.due_date < event.period.end) {
+    if (row.due_date <= event.period.end) {
       return true;
     }
     const state = this.bills.bill(event);

@@ -2039,6 +2039,14 @@ describe('NotificationCenterService', () => {
       expect(svc.tasks().filter(t => t.from === 'autopay').map(t => t.id)).toEqual(['autopay:31']);
     });
 
+    it('an earlier statement due on the current closing day is an earlier cycle too', async () => {
+      // 測試銀行卡1 closes and falls due on the 5th: the 08-06..09-05 statement is due 10/05, the current closing day.
+      const svc = service();
+      svc.start();
+      await answer(0, { accounts: [card(1, 5)], autoPayRows: [skipped({ due_date: '2026-10-05', pay_date: '2026-10-05' })] });
+      expect(svc.tasks().some(t => t.from === 'autopay')).toBe(false);
+    });
+
     it('a failed read names 自動扣繳 and the bill keeps its plain due text', async () => {
       const svc = service();
       svc.start();
