@@ -159,7 +159,7 @@ describe('FuturesStatusCardComponent', () => {
     expect(text(el.querySelector('.futures-none'))).toBe('沒有需要處理的對帳單');
   });
 
-  it('lists pending items with ack: one row per incident, labelled by key, with 知道了 named after the item', () => {
+  it('lists pending items with ack: one row per incident, labelled by key, with 已處理 named after the item', () => {
     futures.set(view([item('2026-09', { reason: 'diff:BK' }), ...[item('2026-10-27', { reason: 'prev:10/23' }), item('2026-10-27', { status: 'conflict', reason: null })]], OK_RUNS));
     const el = mount();
     expect(text(el.querySelector('.futures-items-title'))).toBe('需要你處理的對帳單');
@@ -170,9 +170,9 @@ describe('FuturesStatusCardComponent', () => {
       ['2026-10-27:findings', '10/27', '前日餘額接不上（10/23）'],
     ]);
     const btn = ackButton('2026-10-27:findings')!;
-    expect(text(btn)).toBe('知道了');
-    expect(btn.getAttribute('aria-label')).toBe('知道了：永豐期貨對帳單 10/27 前日餘額接不上（10/23）');
-    expect(ackButton('2026-10-27:conflict')!.getAttribute('aria-label')).toBe('知道了：永豐期貨對帳單 10/27 · 不同版本 收到內容不同的同日對帳單');
+    expect(text(btn)).toBe('已處理');
+    expect(btn.getAttribute('aria-label')).toBe('已處理：永豐期貨對帳單 10/27 前日餘額接不上（10/23）');
+    expect(ackButton('2026-10-27:conflict')!.getAttribute('aria-label')).toBe('已處理：永豐期貨對帳單 10/27 · 不同版本 收到內容不同的同日對帳單');
     expect(el.querySelector('.futures-none')).toBeNull();
   });
 
@@ -183,7 +183,7 @@ describe('FuturesStatusCardComponent', () => {
     expect(text(q('.futures-more'))).toBe('還有 3 件未列出，處理完上面的會接著顯示');
   });
 
-  it('知道了 posts that key and status once; on success 已處理 and a re-read, the row busy until it settles', async () => {
+  it('已處理 posts that key and status once; on success the 已處理 toast and a re-read, the row busy until it settles', async () => {
     futures.set(TWO_ON_ONE_DAY);
     round.set(3);
     settledRound.set(3);

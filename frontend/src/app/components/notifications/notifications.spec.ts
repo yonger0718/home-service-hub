@@ -113,7 +113,7 @@ describe('NotificationsComponent', () => {
   };
   /** One Subject per 確認, in call order. */
   let acks: Subject<{ trade_date: string; ack_status: string }>[] = [];
-  /** One Subject per 知道了 on a 永豐期貨 row, in call order. */
+  /** One Subject per 已處理 on a 永豐期貨 row, in call order. */
   let futuresAcks: Subject<void>[] = [];
   const portfolio = {
     ackCathayDay: vi.fn((_tradeDate: string) => {
@@ -1774,7 +1774,7 @@ describe('NotificationsComponent', () => {
         when: '前日餘額接不上（10/23）',
         meta: null,
         amount: null,
-        primary: { label: '知道了', command: { kind: 'ackFutures', key: '2026-10-27', status: 'findings', name: '永豐期貨對帳單 10/27' } },
+        primary: { label: '已處理', command: { kind: 'ackFutures', key: '2026-10-27', status: 'findings', name: '永豐期貨對帳單 10/27' } },
         secondary: [{ label: '查看', route: '/portfolio/import', fragment: 'sinopac-futures' }],
         sortKey: '2026-10-27',
       });
@@ -1785,12 +1785,12 @@ describe('NotificationsComponent', () => {
         await settle();
       };
 
-      it('知道了 acks that key with that status, then 已處理：永豐期貨對帳單 10/27 and one invalidate(); 查看 links to #sinopac-futures', async () => {
+      it('已處理 acks that key with that status, then 已處理：永豐期貨對帳單 10/27 and one invalidate(); 查看 links to #sinopac-futures', async () => {
         round.set(4);
         settledRound.set(4);
         const root = open([...MIXED, FUTURES]);
-        expect(text(futuresAck(root))).toBe('知道了');
-        expect(futuresAck(root).getAttribute('aria-label')).toBe('知道了：永豐期貨對帳單 10/27');
+        expect(text(futuresAck(root))).toBe('已處理');
+        expect(futuresAck(root).getAttribute('aria-label')).toBe('已處理：永豐期貨對帳單 10/27');
         const look = q(root, `app-notif-row[data-task-id="${FUTURES.id}"]`)!.querySelector('a.notif-secondary')!;
         expect(look.getAttribute('href')).toBe('/portfolio/import#sinopac-futures');
         futuresAck(root).click();
@@ -1846,7 +1846,7 @@ describe('NotificationsComponent', () => {
         );
         const root = open(both);
         const names = Array.from(root.querySelectorAll('app-notif-row')).map(r => r.querySelector(NOTIF_PRIMARY_CONTROL)!.getAttribute('aria-label'));
-        expect(names).toEqual(['知道了：永豐期貨對帳單 10/27 · 不同版本', '知道了：永豐期貨對帳單 10/27']);
+        expect(names).toEqual(['已處理：永豐期貨對帳單 10/27 · 不同版本', '已處理：永豐期貨對帳單 10/27']);
       });
 
       it('futuresMore 7: 還有 7 件永豐期貨對帳單未列出 under 全部 and 投資, after the 國泰 note, not under 財務', async () => {

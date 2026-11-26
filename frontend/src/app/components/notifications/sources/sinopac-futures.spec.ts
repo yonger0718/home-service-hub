@@ -7,7 +7,9 @@ import {
   futuresRunState,
   futuresTasks,
   futuresView,
+  futuresWake,
 } from './sinopac-futures';
+import { snoozeEntry, wakes } from '../snooze';
 
 const at = (s: string) => new Date(s);
 const run = (o: Partial<CathayRun> = {}): CathayRun => ({ run_at: '2026-10-28T06:46:00+08:00', result: 'ok', code: null, files_seen: 1, posted: 1, ...o });
@@ -35,7 +37,7 @@ describe('sinopac futures pending items', () => {
       meta: '自 10/28 起',
       amount: null,
       progress: null,
-      primary: { label: '知道了', command: { kind: 'ackFutures', key: '2026-10-27', status: 'findings', name: '永豐期貨對帳單 10/27' } },
+      primary: { label: '已處理', command: { kind: 'ackFutures', key: '2026-10-27', status: 'findings', name: '永豐期貨對帳單 10/27' } },
       secondary: [LOOK],
       sortKey: '2026-10-27',
       wake: { key: 'findings|prev:10/23' },
@@ -78,8 +80,50 @@ describe('sinopac futures pending items', () => {
 
   it('a changed reason gives a new wake key; a newer last_at alone does not', () => {
     const f = (i: FuturesPendingItem) => futuresTasks(pending([i]), okRuns, now)[0].wake.key;
-    expect(f(item({ reason: 'gap:2' }))).not.toBe(f(item({ reason: 'gap:1' })));
+    expect(f(item({ reason: 'prev:10/24' }))).not.toBe(f(item({ reason: 'prev:10/23' })));
     expect(f(item({ last_at: '2026-10-30T06:46:00+08:00' }))).toBe(f(item({ last_at: '2026-10-29T06:46:00+08:00' })));
+  });
+
+  describe('snooze wake of 缺 N 份日對帳單 (owner ruling 2026-11-26, #442): only a larger N wakes', () => {
+    const task = (reason: string | null, status: FuturesPendingItem['status'] = 'findings') =>
+      futuresTasks(pending([item({ reason, status })]), okRuns, now)[0];
+    const until = at('2026-10-29T09:00:00+08:00');
+    /** Snoozed with `was`; does the task with `is` come back (before the snooze ends)? */
+    const back = (was: string | null, is: string | null) => wakes(snoozeEntry(task(was), until), task(is), now);
+
+    it('the gap count is the wake count; the key keeps the other codes with the gap code as gap', () => {
+      expect(futuresWake({ status: 'findings', reason: 'gap:3' })).toEqual({ key: 'findings|gap', count: 3 });
+      expect(futuresWake({ status: 'findings', reason: 'prev:10/23,gap:12,diff:BK' })).toEqual({ key: 'findings|prev:10/23,gap,diff:BK', count: 12 });
+      expect(futuresWake({ status: 'findings', reason: 'prev:10/23' })).toEqual({ key: 'findings|prev:10/23' });
+      expect(futuresWake({ status: 'findings', reason: null })).toEqual({ key: 'findings|' });
+      expect(futuresWake({ status: 'conflict', reason: null })).toEqual({ key: 'conflict|' });
+      expect(task('gap:2').wake).toEqual({ key: 'findings|gap', count: 2 });
+    });
+
+    it('N grows: back; N shrinks or stays: still snoozed', () => {
+      expect(back('gap:2', 'gap:3')).toBe(true);
+      expect(back('gap:3', 'gap:2')).toBe(false);
+      expect(back('gap:3', 'gap:1')).toBe(false);
+      expect(back('gap:2', 'gap:2')).toBe(false);
+      expect(back('prev:10/23,gap:2', 'prev:10/23,gap:1')).toBe(false);
+      expect(back('prev:10/23,gap:2', 'prev:10/23,gap:4')).toBe(true);
+    });
+
+    it('any other reason change still wakes (the current rule)', () => {
+      expect(back('gap:2', 'prev:10/23')).toBe(true);
+      expect(back('prev:10/23', 'gap:2')).toBe(true);
+      expect(back('gap:2', 'gap:1,carry')).toBe(true);
+      expect(back('prev:10/23,gap:2', 'prev:10/24,gap:1')).toBe(true);
+      expect(back('prev:10/23', 'prev:10/24')).toBe(true);
+      expect(back('gap:2', null)).toBe(true);
+    });
+
+    it('two gap codes, or a gap code cut at the 40-character cap, compare as text (any change wakes)', () => {
+      expect(futuresWake({ status: 'findings', reason: 'gap:1,gap:2' })).toEqual({ key: 'findings|gap:1,gap:2' });
+      const cut = 'prev:10/23,diff:ABCDEFGHIJKLMNOP,carry,gap:1'; // 44 chars: the last code may be cut
+      expect(cut.length).toBeGreaterThanOrEqual(40);
+      expect(futuresWake({ status: 'findings', reason: cut })).toEqual({ key: `findings|${cut}` });
+    });
   });
 
   it.each([

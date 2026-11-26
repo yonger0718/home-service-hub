@@ -67,7 +67,7 @@ const CHIPS: readonly ChipOption[] = [
   { key: 'portfolio', label: SOURCE_TAGS.portfolio },
 ];
 
-/** The 已處理 of a 國泰 statement date, or the 知道了 of a 永豐期貨 incident (records it as known; imports nothing). */
+/** The 已處理 of a 國泰 statement date or of a 永豐期貨 incident (records it as known; imports nothing). */
 type AckCommand = Extract<NotifCommand, { kind: 'ackCathay' | 'ackFutures' }>;
 
 /** What the tracking summary counts, per row. */

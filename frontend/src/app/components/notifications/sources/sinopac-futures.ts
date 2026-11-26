@@ -1,6 +1,6 @@
 import { shortDate } from '../../accounting/dates';
 import { FuturesPending, FuturesPendingItem, FuturesPendingStatus, FuturesRuns } from '../../../models/portfolio.model';
-import { NotifLink, NotifTask } from '../notif-task';
+import { NotifLink, NotifTask, NotifWake } from '../notif-task';
 import { CathayRunState, RunJob, RunSchedule, RunStatusView, cathayRunState, runStatusView, runTask, sinceMeta } from './cathay';
 
 /** The futures job's timer (deploy/statements …sinopac-futures.timer, notifier `sinopac_futures_run_time`). */
@@ -76,6 +76,25 @@ export function futuresReasonText(item: Pick<FuturesPendingItem, 'kind' | 'statu
   return `${parts.join('；')}${cut ? '…' : ''}`;
 }
 
+/**
+ * The snooze wake of an incident (owner ruling 2026-11-26, #442). Findings with exactly one whole `gap:<N>` code
+ * (缺 N 份日對帳單): `count` N and the reason with that code as `gap` in the key, so a larger N wakes a snoozed task and
+ * a smaller one does not; any other change of the reason changes the key and wakes. Otherwise the whole reason is the
+ * key. A code the server cut at the 40-character cap is not whole, so a cut `gap:` code compares as text.
+ */
+export function futuresWake(item: Pick<FuturesPendingItem, 'status' | 'reason'>): NotifWake {
+  const reason = item.reason ?? '';
+  const codes = reason.split(',');
+  const whole = reason.length >= FUTURES_REASON_CHARS ? codes.length - 1 : codes.length;
+  const gaps = codes.slice(0, whole).flatMap((code, i) => (/^gap:\d+$/.test(code) ? [i] : []));
+  if (item.status !== 'findings' || gaps.length !== 1) {
+    return { key: `${item.status}|${reason}` };
+  }
+  const [at] = gaps;
+  const count = Number(codes[at].slice('gap:'.length));
+  return { key: `${item.status}|${codes.map((code, i) => (i === at ? 'gap' : code)).join(',')}`, count };
+}
+
 /** `total − items.length` when `truncated` and positive, else 0. */
 export function futuresMore(pending: FuturesPending): number {
   return pending.truncated ? Math.max(0, pending.total - pending.items.length) : 0;
@@ -110,10 +129,10 @@ export function futuresTasks(pending: FuturesPending, runs: FuturesRuns, now: Da
       meta: sinceMeta(item.since),
       amount: null,
       progress: null,
-      primary: { label: '知道了', command: { kind: 'ackFutures', key: item.key, status: item.status, name } },
+      primary: { label: '已處理', command: { kind: 'ackFutures', key: item.key, status: item.status, name } },
       secondary: [LOOK],
       sortKey: item.key,
-      wake: { key: `${item.status}|${item.reason ?? ''}` },
+      wake: futuresWake(item),
     };
   });
   const state = futuresRunState(runs, now);

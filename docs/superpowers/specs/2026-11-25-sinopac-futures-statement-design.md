@@ -355,7 +355,7 @@ is set when `findings_sha` changes. A day or month with findings is pending (§8
   `11/05 前日餘額接不上 10/28（中間有一天沒有日對帳單）`, `2026-04 月初餘額接不上 3 月月底`,
   `2026-03 月對帳單有 1 天沒有日對帳單`, `2026-03 月對帳單對不上：B K`; weekly block 「永豐期貨對帳單待處理」.
 - SPA notification center: source `sinopac_futures` (「永豐期貨對帳單」) registered the way `cathay` is, one task per
-  item (id `sinopac_futures:<key>:<status>`), primary command 「知道了」 (ack with that status), 查看 → `/portfolio/import#sinopac-futures`.
+  item (id `sinopac_futures:<key>:<status>`), primary command 「已處理」 (ack with that status; renamed from 「知道了」 to match 國泰, #442), 查看 → `/portfolio/import#sinopac-futures`.
 
 ## 9. Frontend
 
@@ -380,7 +380,7 @@ is set when `findings_sha` changes. A day or month with findings is pending (§8
 - Before any futures statement exists the card is one compact line, 「永豐期貨 · 尚無期貨對帳單」: not hidden, and not a
   full block that pushes the chart down.
 - Known display limits: when the total is exactly 0 the 淨值走勢 y-axis repeats 「0.000M」 on every tick (the chart's
-  existing tick format; left as is). On phones the 「知道了」 toast already sits above the bottom navigation and the
+  existing tick format; left as is). On phones the 「已處理」 toast already sits above the bottom navigation and the
   safe-area inset, but while it shows it can still cover the lowest ~26px of the last item on /portfolio/import
   (avoiding that would add blank space to the bottom of every phone page); it goes away on its own.
 - No 風險指標: the statement does not print one and the broker's formula is not on it; the card shows the printed

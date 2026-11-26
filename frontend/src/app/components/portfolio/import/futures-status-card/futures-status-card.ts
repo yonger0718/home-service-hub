@@ -15,7 +15,7 @@ import { BentoComponent } from '../../../ui/bento/bento';
 import { BtnComponent } from '../../../ui/btn/btn';
 import { formatMoney } from '../../../ui/format';
 
-/** An incident's 知道了 button (`id` = `<key>:<status>`). */
+/** An incident's 已處理 button (`id` = `<key>:<status>`). */
 const ackSelector = (id: string) => `li.futures-item[data-item="${id}"] button`;
 const NONE_SELECTOR = '.futures-none';
 const RETRY_SELECTOR = '.banner-action';
@@ -24,7 +24,7 @@ type EquityState = { readonly state: 'loading' } | { readonly state: 'error' } |
 
 /**
  * 永豐期貨對帳單 on the import page (spec §9): 權益總值 with its source date and the frozen note (§6.3), then the
- * notification centre's `futures()` view — the latest run and the pending incidents with 知道了 each (records the
+ * notification centre's `futures()` view — the latest run and the pending incidents with 已處理 each (records the
  * incident as known; changes no data). Built as the 國泰 card.
  */
 @Component({
@@ -45,13 +45,13 @@ export class FuturesStatusCardComponent {
   protected readonly failed = computed(() => this.center.failedSources().includes('sinopac_futures'));
   protected readonly equity = signal<EquityState>({ state: 'loading' });
 
-  /** Per incident id whose 知道了 was sent: null while in flight, then the re-read round it waits for (as 國泰). */
+  /** Per incident id whose 已處理 was sent: null while in flight, then the re-read round it waits for (as 國泰). */
   private readonly waiting = signal<ReadonlyMap<string, number | null>>(new Map());
   private readonly focusedAtSend = new Set<string>();
   private retryRound: number | null = null;
 
   constructor() {
-    // A released 知道了 whose button had focus: focus goes to the same row, else the next, else the previous, else the
+    // A released 已處理 whose button had focus: focus goes to the same row, else the next, else the previous, else the
     // none text — only if it is still lost after the render.
     effect(() => {
       const settled = this.center.settledRound();
@@ -109,7 +109,7 @@ export class FuturesStatusCardComponent {
     this.retryRound = focused ? round : null;
   }
 
-  /** 知道了; ignored while that incident is busy (one request per press). */
+  /** 已處理; ignored while that incident is busy (one request per press). */
   protected ack(item: FuturesItemView): void {
     if (this.isBusy(item.id)) {
       return;
