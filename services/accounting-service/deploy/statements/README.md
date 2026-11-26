@@ -234,15 +234,16 @@ when the archive exceeds the portfolio's batch limit (nothing is sent; exit 1). 
 A Drive error skips that file (the run exits 1 with code `drive:<Class>`) and the next run retries it; it does not latch.
 
 Codes (the summary's `codes` is `[result, code]`; exit codes 0 ok, 1 codes / latched / nothing pending for `--ack`, 2 bad
-flags, 3 already running). Only a commit run (no `--dry-run`, no `--validate-history`) latches; a commit run that latches
-posts nothing from that run (every file is parsed before the first post).
+flags, 3 already running). Only a commit run (no `--dry-run`, no `--validate-history`) latches; a read or parse latch posts
+nothing from that run (every file is parsed before the first post); a `portfolio:<4xx>` latch stops at that file and the files
+posted before it stay recorded.
 
 - Latching: the parser's `title`, `header`, `section`, `currency`, `line`, `column`, `sequence`, `date`, `page2`,
   `identity:<name>` (spec §5.3); `parse:<Class>` (the parser crashed); `decrypt` (no password candidate of that folder
   fits, or the folder has none); `pdf_malformed`; `pdf_too_large`; `extract` (word extraction failed);
   `portfolio:<status>` for a 4xx other than 408 / 429 (for example `portfolio:422`, a broken identity the portfolio
   repeats).
-- Not latching: `drive:<Class>` (`drive:DownloadError`, `drive:VerifyError` for an md5 / size mismatch, `drive:OSError`),
+- Not latching: `drive:<Class>` (`drive:DownloadError`, `drive:VerifyError` for an md5 / size mismatch, `drive:<OSError subclass>` such as `drive:FileNotFoundError`),
   `drive_listing`; `portfolio:<status>` for 5xx / 408 / 429, `portfolio:<Class>` for a timeout or connection error
   (`portfolio:ReadTimeout`, `portfolio:ConnectError`), `portfolio:body` (an answer that fails validation); nothing from
   such an answer is recorded and the run stops there, the files posted before it stay recorded; `password_file`,
