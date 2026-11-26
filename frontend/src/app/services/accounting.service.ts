@@ -1,7 +1,7 @@
 import { HttpClient, HttpErrorResponse, HttpParams } from '@angular/common/http';
 import { Injectable, inject, signal } from '@angular/core';
 import { Observable, catchError, map, of, shareReplay, tap, throwError } from 'rxjs';
-import { AutoPayRow, AutoPaySwitch } from '../components/accounting/billing/auto-pay';
+import { AutoPayRow, AutoPaySwitch, AutoPaySwitchChange } from '../components/accounting/billing/auto-pay';
 
 import {
   AccountDetail,
@@ -413,11 +413,17 @@ export class AccountingService {
   getAutoPaySwitch(): Observable<AutoPaySwitch> {
     return this.http
       .get<{ auto_pay: AutoPaySwitch }>(`${this.apiUrl}/settings/reconciliation`)
-      .pipe(map(settings => ({ enabled: settings.auto_pay.enabled, enabled_from: settings.auto_pay.enabled_from })));
+      .pipe(
+        map(settings => ({
+          enabled: settings.auto_pay.enabled,
+          enabled_from: settings.auto_pay.enabled_from,
+          max_amount: settings.auto_pay.max_amount ?? null,
+        })),
+      );
   }
 
   /** Sets only the sent fields (write scope; the server refuses 「on」 without a start date). */
-  setAutoPay(change: Partial<AutoPaySwitch>): Observable<AutoPaySwitch> {
+  setAutoPay(change: AutoPaySwitchChange): Observable<AutoPaySwitch> {
     return this.http
       .patch<AutoPaySwitch & { version: number }>(`${this.apiUrl}/settings/reconciliation/auto-pay`, change)
       .pipe(map(saved => ({ enabled: saved.enabled, enabled_from: saved.enabled_from })));

@@ -362,7 +362,7 @@ describe('AccountingService', () => {
     const get = httpMock.expectOne('/api/accounting/settings/reconciliation');
     expect(get.request.method).toBe('GET');
     get.flush({ version: 4, auto_pay: { enabled: true, enabled_from: '2026-10-01', max_amount: '200000' }, account_map: {} });
-    expect(seen).toEqual([{ enabled: true, enabled_from: '2026-10-01' }]);
+    expect(seen).toEqual([{ enabled: true, enabled_from: '2026-10-01', max_amount: '200000' }]);
 
     service.setAutoPay({ enabled: false }).subscribe(v => seen.push(v));
     const patch = httpMock.expectOne('/api/accounting/settings/reconciliation/auto-pay');

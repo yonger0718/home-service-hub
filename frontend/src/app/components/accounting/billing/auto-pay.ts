@@ -8,7 +8,15 @@ export interface AutoPaySwitch {
   readonly enabled: boolean;
   /** `YYYY-MM-DD`: bills whose debit day is before it are not paid (the backend's `cutoff`). */
   readonly enabled_from: string | null;
+  /**
+   * 單筆上限 (read only, from `GET /settings/reconciliation`; the write-scope PATCH cannot change it): a statement over
+   * it is skipped as `over_cap` on its debit day. Absent when not read (a PATCH answer).
+   */
+  readonly max_amount?: string | null;
 }
+
+/** What `PATCH /settings/reconciliation/auto-pay` may send. */
+export type AutoPaySwitchChange = Partial<Pick<AutoPaySwitch, 'enabled' | 'enabled_from'>>;
 
 export type AutoPayStatus = 'booked' | 'retired' | 'owner_deleted' | 'owner_edited' | 'skipped';
 
@@ -54,8 +62,10 @@ export function autoPayRowsSince(today: string): string {
 
 /**
  * Whether auto-pay will pay this bill: the card has a pay account, the switch is on with a start date on or before
- * the debit day, the debit day is today or later, and no row of that card and debit day says it was skipped. An unread
- * switch (null) is not pending: the page then shows the plain due pill.
+ * the debit day, the debit day is today or later, the bill (`amount`, the cycle's full statement) is not over 單筆上限,
+ * and no row of that card and debit day says it was skipped. An unread switch (null) is not pending: the page then
+ * shows the plain due pill. The backend gates only on the debit day, so an over-cap bill would otherwise read as
+ * 自動扣繳 until then. 當月上限 depends on the month's other bookings and stays a debit-day skip (a 系統 task).
  */
 export function autoPayPending(
   autoPay: AutoPaySwitch | null,
@@ -63,11 +73,15 @@ export function autoPayPending(
   payDate: string,
   today: string,
   rows: readonly AutoPayRow[] | null,
+  amount?: number,
 ): boolean {
   if (!autoPay?.enabled || !autoPay.enabled_from || account.auto_pay_account_id == null) {
     return false;
   }
   if (payDate < autoPay.enabled_from || payDate < today) {
+    return false;
+  }
+  if (amount !== undefined && autoPay.max_amount != null && amount > Number(autoPay.max_amount)) {
     return false;
   }
   return !(rows ?? []).some(r => r.status === 'skipped' && r.card_account_id === account.id && r.pay_date === payDate);

@@ -280,8 +280,8 @@ describe('AccountingAccountsComponent', () => {
 
     describe('自動扣繳 (E3b)', () => {
       const linked = () => ACCOUNTS.map(a => (a.id === 10 ? { ...a, auto_pay_account_id: 1 } : a));
-      function answerAutoPay(enabled_from: string | null, rows: unknown[] = [], enabled = true): void {
-        http.expectOne('/api/accounting/settings/reconciliation').flush({ auto_pay: { enabled, enabled_from } });
+      function answerAutoPay(enabled_from: string | null, rows: unknown[] = [], enabled = true, max_amount = '200000'): void {
+        http.expectOne('/api/accounting/settings/reconciliation').flush({ auto_pay: { enabled, enabled_from, max_amount } });
         const req = http.expectOne(r => r.url === '/api/accounting/reconciliation/auto-pay');
         expect(req.request.params.get('since')).toBe('2026-08-18');
         req.flush(rows);
@@ -309,6 +309,13 @@ describe('AccountingAccountsComponent', () => {
       ] as const)('the plain due pill: %s', (_name, isLinked, from, enabled, skippedRow) => {
         const fixture = render(isLinked ? linked() : ACCOUNTS, LATEST, UNPAID);
         answerAutoPay(from, skippedRow ? [{ ...booked('2026-10-05'), status: 'skipped', reason: 'over_cap' }] : [], enabled);
+        fixture.detectChanges();
+        expect(master(fixture.nativeElement).querySelector('.due .pill')?.textContent?.trim()).toBe('10/05 繳費截止');
+      });
+
+      it('a bill over 單筆上限 keeps the plain due pill (auto-pay would skip it)', () => {
+        const fixture = render(linked(), LATEST, UNPAID);
+        answerAutoPay('2026-10-01', [], true, '7000');
         fixture.detectChanges();
         expect(master(fixture.nativeElement).querySelector('.due .pill')?.textContent?.trim()).toBe('10/05 繳費截止');
       });

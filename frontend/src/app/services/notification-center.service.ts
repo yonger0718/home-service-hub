@@ -351,7 +351,10 @@ export class NotificationCenterService {
           today,
           autoPay: (event, state) => {
             const account = accounts.find(a => a.id === event.accountId);
-            return !!account && autoPayPending(autoPay?.autoPay ?? null, account, state.payDate, today, autoPay?.rows ?? null);
+            return (
+              !!account &&
+              autoPayPending(autoPay?.autoPay ?? null, account, state.payDate, today, autoPay?.rows ?? null, state.statement)
+            );
           },
         }),
       );

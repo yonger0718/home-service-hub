@@ -56,6 +56,13 @@ describe('autoPayPending', () => {
     expect(autoPayPending(ON, linked, '2026-10-26', '2026-10-22', [{ ...skipped, card_account_id: 8 }])).toBe(true);
     expect(autoPayPending(ON, linked, '2026-10-26', '2026-10-22', [{ ...skipped, pay_date: '2026-09-25' }])).toBe(true);
   });
+
+  it('a bill over 單筆上限 will be skipped (over_cap) on the debit day, so it is not pending now; at the cap it is', () => {
+    const capped = { ...ON, max_amount: '20000' };
+    expect(autoPayPending(capped, linked, '2026-10-26', '2026-10-22', [], 20000.01)).toBe(false);
+    expect(autoPayPending(capped, linked, '2026-10-26', '2026-10-22', [], 20000)).toBe(true);
+    expect(autoPayPending(ON, linked, '2026-10-26', '2026-10-22', [], 20000.01)).toBe(true); // cap not read
+  });
 });
 
 describe('autoPaidSince', () => {

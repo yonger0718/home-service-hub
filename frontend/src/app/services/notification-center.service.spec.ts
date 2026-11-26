@@ -2006,6 +2006,17 @@ describe('NotificationCenterService', () => {
       expect(svc.nextUpcoming()?.when).toBe('10/26 截止');
     });
 
+    it('a bill over 單筆上限 stays a plain to-do: auto-pay would skip it on the debit day', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { accounts: [linked()], autoPaySwitch: { ...ON, max_amount: '1' } });
+      expect(svc.nextUpcoming()?.when).toBe('10/26 截止');
+
+      svc.invalidate();
+      await answer(1, { accounts: [linked()], autoPaySwitch: { ...ON, max_amount: '100000000' } });
+      expect(svc.nextUpcoming()?.when).toBe('10/26 自動扣繳');
+    });
+
     it('a skipped statement is a 系統 task; an informational skip is not', async () => {
       const svc = service();
       svc.start();

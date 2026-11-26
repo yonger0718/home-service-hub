@@ -416,7 +416,7 @@ export class AccountingAccountsComponent {
       return null;
     }
     const autoPay = this.autoPay();
-    const auto = autoPayPending(autoPay?.autoPay ?? null, account, bill.payDate, this.today(), autoPay?.rows ?? null);
+    const auto = autoPayPending(autoPay?.autoPay ?? null, account, bill.payDate, this.today(), autoPay?.rows ?? null, bill.statement);
     return {
       owedText: `待繳帳款 ${formatMoney(bill.remaining, bill.currency)}`,
       pill: auto ? `自動扣繳 ${shortDate(bill.payDate)}` : duePillText(bill.payDate, this.today()),

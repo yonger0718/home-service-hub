@@ -16,7 +16,7 @@ import {
   Project,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
-import { AutoPaySwitch } from '../billing/auto-pay';
+import { AutoPaySwitch, AutoPaySwitchChange } from '../billing/auto-pay';
 import { InboxService } from '../inbox/inbox.service';
 import { invoiceAmount } from '../inbox/einvoice-format';
 import { EinvoiceDismissed, EinvoiceMute, EinvoicePreferences } from '../inbox/einvoice.model';
@@ -246,11 +246,11 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   }
 
   /** `input`: the date field to put back to the stored date when the save fails. */
-  private saveAutoPay(change: Partial<AutoPaySwitch>, input?: HTMLInputElement): void {
+  private saveAutoPay(change: AutoPaySwitchChange, input?: HTMLInputElement): void {
     this.autoPaySaving.set(true);
     this.service.setAutoPay(change).subscribe({
       next: saved => {
-        this.autoPay.set(saved);
+        this.autoPay.set({ ...this.autoPay(), ...saved });
         this.autoPayDraftOn.set(false);
         this.autoPaySaving.set(false);
       },
