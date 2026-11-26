@@ -132,6 +132,7 @@ def test_items_follow_key_then_status_order():
 # A reason is cut to 40 characters, so a reason of exactly 40 may end mid-code ("gap:3" cut from "gap:31"): its
 # last code is not trusted. The codes before it are rendered, and the line ends with the 「另有差異」 pointer.
 FALLBACK = "另有差異請到匯入頁查看"
+FALLBACK_ONLY = "有差異請到匯入頁查看"
 
 
 def test_reason_at_the_cap_drops_the_possibly_cut_last_code():
@@ -152,7 +153,7 @@ def test_reason_cut_mid_code_renders_what_parses():
 
 def test_reason_at_the_cap_with_one_code_is_the_pointer_only():
     reason = "gap:" + "1" * 36
-    assert texts(healthy([finding("2026-04", reason)])) == [f"2026-04 {FALLBACK}"]
+    assert texts(healthy([finding("2026-04", reason)])) == [f"2026-04 {FALLBACK_ONLY}"]
 
 
 def test_reason_of_39_keeps_its_last_code():
@@ -167,18 +168,18 @@ def test_short_reason_keeps_its_last_code():
 
 
 @pytest.mark.parametrize("key,reason,text", [
-    ("2026-03", "weird", f"2026-03 {FALLBACK}"),
+    ("2026-03", "weird", f"2026-03 {FALLBACK_ONLY}"),
     ("2026-03", "carry,weird", f"2026-03 月初餘額接不上 2 月月底；{FALLBACK}"),
-    ("2026-03", "weird,other", f"2026-03 {FALLBACK}"),
+    ("2026-03", "weird,other", f"2026-03 {FALLBACK_ONLY}"),
     ("2026-03", "carry,weird,gap:1", f"2026-03 月初餘額接不上 2 月月底；月對帳單有 1 天沒有日對帳單；{FALLBACK}"),
     ("2026-03", "carry,,", f"2026-03 月初餘額接不上 2 月月底；{FALLBACK}"),
-    ("2026-03", "prev:02/27", f"2026-03 {FALLBACK}"),  # prev belongs to a day
-    ("2026-11-05", "gap:1", f"11/05 {FALLBACK}"),  # gap belongs to a month
-    ("2026-11-05", "prev:13/40", f"11/05 {FALLBACK}"),
-    ("2026-03", "gap:0", f"2026-03 {FALLBACK}"),
-    ("2026-03", "diff:BX", f"2026-03 {FALLBACK}"),
-    ("2026-03", "diff:", f"2026-03 {FALLBACK}"),
-    ("2026-03", "<@123>", f"2026-03 {FALLBACK}"),
+    ("2026-03", "prev:02/27", f"2026-03 {FALLBACK_ONLY}"),  # prev belongs to a day
+    ("2026-11-05", "gap:1", f"11/05 {FALLBACK_ONLY}"),  # gap belongs to a month
+    ("2026-11-05", "prev:13/40", f"11/05 {FALLBACK_ONLY}"),
+    ("2026-03", "gap:0", f"2026-03 {FALLBACK_ONLY}"),
+    ("2026-03", "diff:BX", f"2026-03 {FALLBACK_ONLY}"),
+    ("2026-03", "diff:", f"2026-03 {FALLBACK_ONLY}"),
+    ("2026-03", "<@123>", f"2026-03 {FALLBACK_ONLY}"),
 ])
 def test_unknown_codes_never_print_the_raw_reason(key, reason, text):
     assert texts(healthy([finding(key, reason)])) == [text]

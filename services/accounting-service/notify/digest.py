@@ -8,10 +8,10 @@ from zoneinfo import ZoneInfo
 
 from .api import TZ, Snapshot, created_at_of
 from .cathay import CathayLine
-from .sinopac_futures import FuturesLine
 from .config import NotifyConfig
 from .cycles import shift_period
 from .debits import CUTOFF, SKIPPED, Skip, activity_of, no_bill_expected
+from .sinopac_futures import FuturesLine
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 ACTIVE_DAYS = 90

@@ -14,7 +14,6 @@ from typing import Literal
 
 from .api import READ_DAYS, TZ, Snapshot, created_at_of
 from .cathay import CathayLine
-from .sinopac_futures import FuturesLine
 from .config import NotifyConfig
 from .cycles import (
     Period,
@@ -25,6 +24,7 @@ from .cycles import (
     shift_period,
     statement_period,
 )
+from .sinopac_futures import FuturesLine
 
 REASON_TEXT: dict[str, str] = {
     "no_link": "卡片沒有設定扣款帳戶",

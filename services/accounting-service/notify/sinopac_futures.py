@@ -7,7 +7,8 @@ debit, 國泰 and weekly items are never affected.
 A findings item's `reason` is the portfolio's codes joined by `,` (`prev:<MM/DD>`, `gap:<n>`, `carry`,
 `diff:<letters>`) cut to 40 characters. Only parsed codes are rendered, never the raw text. A reason of exactly 40
 characters may end mid-code, so its last code is not trusted; that, or any code that does not parse for the item's
-kind, adds one 「另有差異請到匯入頁查看」 segment at the end of the line.
+kind, adds one 「另有差異請到匯入頁查看」 segment at the end of the line; when no code parses at all the line is
+`<key> 有差異請到匯入頁查看`. The run-row checks are 國泰's: both run endpoints share one server model.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from datetime import date, datetime
 
 import httpx
 
-from .cathay import _Deadline, _get_bounded, _is_int, _timestamp, last_scheduled_run
+from .cathay import _check_latest, _Deadline, _get_bounded, _is_int, _timestamp, last_scheduled_run
 from .config import NotifyConfig, read_token
 
 PENDING_PATH = "/api/portfolio/imports/sinopac-futures-statement/pending"
@@ -31,11 +32,10 @@ MAX_REASON = 40
 MAX_LINE = 120
 STATUSES = frozenset({"conflict", "findings"})
 KINDS = frozenset({"day", "month"})
-RESULTS = frozenset({"ok", "latched", "failed"})
 UNREADABLE = "永豐期貨對帳單狀態讀不到"
-FALLBACK = "另有差異請到匯入頁查看"
+FALLBACK = "另有差異請到匯入頁查看"  # after parsed codes
+FALLBACK_ONLY = "有差異請到匯入頁查看"  # when no code parses
 ITEM_KEYS = {"key", "kind", "status", "reason", "since", "last_at"}
-RUN_KEYS = {"run_at", "result", "code", "files_seen", "posted"}
 _MONTH = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 _PREV = re.compile(r"^prev:(0[1-9]|1[0-2])/(0[1-9]|[12]\d|3[01])$")
 _GAP = re.compile(r"^gap:([1-9]\d{0,2})$")
@@ -89,28 +89,6 @@ def _check_pending(data: dict) -> list[dict]:
     return items
 
 
-def _check_run(row: object) -> dict | None:
-    if row is None:
-        return None
-    if not isinstance(row, dict) or set(row) != RUN_KEYS:
-        raise ValueError("run keys")
-    _timestamp(row["run_at"])
-    if row["result"] not in RESULTS:
-        raise ValueError("run result")
-    if row["code"] is not None and not isinstance(row["code"], str):
-        raise ValueError("run code")
-    if not _is_int(row["files_seen"]) or not _is_int(row["posted"]):
-        raise ValueError("run counts")
-    return row
-
-
-def _check_latest(data: dict) -> dict | None:
-    if set(data) != {"latest", "latest_ok"}:
-        raise ValueError("latest keys")
-    _check_run(data["latest_ok"])
-    return _check_run(data["latest"])
-
-
 def _previous_month(key: str) -> int:
     month = int(key[5:7])
     return 12 if month == 1 else month - 1
@@ -137,6 +115,8 @@ def _findings_text(reason: str, key: str, kind: str) -> list[str]:
         codes = codes[:-1]
     parts = [_code_text(code, key, kind) for code in codes]
     out = [p for p in parts if p is not None]
+    if not out:
+        return [FALLBACK_ONLY]
     if unsure or len(out) < len(parts):
         out.append(FALLBACK)
     return out
