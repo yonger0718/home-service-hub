@@ -1,6 +1,6 @@
 # 永豐期貨對帳單 auto-import — design
 
-Status: rev 1.6 (2026-11-25). Rev 1.1 folds the builder check (a day-to-day `prev` finding, the scope of the frozen
+Status: rev 1.7 (2026-11-26). Rev 1.1 folds the builder check (a day-to-day `prev` finding, the scope of the frozen
 note, no 永豐 money already in the portfolio); rev 1.2 folds the AGENT-589 review (text columns read in order, the
 per-broker valuation dispatch, the cash-refresh interplay and no commit inside the futures refresh, the monthly
 `carry` finding, the lock tag, the missing-snapshot-row limit); rev 1.3 folds the AGENT-591 re-check (one futures
@@ -12,7 +12,10 @@ review AGENT-592): the §5.1 example is made internally consistent (it is the sh
 re-check AGENT-594): the history fill is a futures-only backfill, not the networth replay (§6.5, §10), and the month
 P&L carries completeness (§9). Rev 1.6 (owner design review of PR #438 screenshots, 2026-11-25): the 永豐期貨 card's
 layout, margin date, margin warning style and empty state (§9), the composition clamp (§6.5), and two known display
-limits (§9). Owner rulings 2026-11-25: on a day without a statement the account's equity is the
+limits (§9). Rev 1.7 (Task 8 census of the 115 archived statements, 2026-11-26): the confirmed daily line
+sequences, the 存提, 留倉 labelled and combination-margin lines, the monthly section grammar, page framing,
+centre-aligned monthly quantities, the month-end block geometry and the 留倉 labelled-line checks (§2, §5.1, §5.3). Owner
+rulings 2026-11-25: on a day without a statement the account's equity is the
 latest statement's value, and the monthly statement's month-end value corrects it (no re-pricing from exchange
 settlement prices); storage is one row per statement day with the fills and positions kept as JSON, not normalised
 tables; net worth uses 權益總值 (it includes the market value of open options). All amounts, product names and order
@@ -72,6 +75,60 @@ Non-goals:
   and a 權別 of `Call` / `Put`; a futures line has neither.
 - The statement date: every dated line of `存提` and `交易紀錄` carries the same date (`無存提` / `無交易` lines too), and it
   equals the file-name date in 88 of 88.
+- Census (rev 1.7, every archived file, counts only; the parser built from it accepts 88 of 88 daily and 27 of 27
+  monthly statements). Page framing: every page ends with a footer `第p頁/共N頁`;
+  page 1 opens with the title, an addressee line ending `啟` and an account line (both masked by the broker, never
+  read); daily page 2 and every monthly continuation page open with the title again. A monthly continuation page
+  that continues a section or the month-end block also repeats the addressee and account lines (13 pages), and a
+  continued 沖銷明細 / 留倉明細 repeats its header row (7 pages).
+- Daily header rows, exactly: 存提 `異動日期 異動序號 類別 異動類別 匯出入銀行 作業說明 手續費用 匯出入金額`; 交易紀錄
+  `成交日期 委託書號 交易所 商品代號 交割月份 履約價格 權別 交易 口數 成交價格 期交稅 手續費 權利金/平倉損益`; 留倉彙總
+  `成交日期 商品代號 交割月份 履約價格 權別 買賣 進場價格 行情價位 部位 原始保證金 權利金市值 未沖銷浮動損益`; 權益帳 rows
+  `本日餘額 本日權益數 權益總值 原始保證金 維持保證金 有價證券抵繳總額 超額保證金 追繳保證金` and `前日餘額 存提淨額 期交稅手續費
+  本日期貨平倉損益淨額 未沖銷期貨浮動損益 權利金收支與轉現價款 加收保證金 可動用(出金)保證金`. Their adjacent right edges are 22.6
+  pt or more apart; the two 權益帳 rows share their right edges, so a value row belongs to the label row just above it.
+- Daily sequences (88 of 88): 存提 is `<date> 無存提` or deposit lines `<date> <異動序號> 當日入金 入 金 <bank>` /
+  `<date> <異動序號> 當日出金 網路出金 <bank> <note>` with the amount under 匯出入金額 (手續費用 never printed; the 異動序號 is
+  an identifier centred under its label, not a right-aligned value). 交易紀錄 is `<date> 無交易` or product groups of
+  fills, each closing fill (平買 / 平賣) followed by its `平倉-> <date> <order> 口數 成交價格 [權利金/平倉損益]` links
+  (Σ link 口數 = fill 口數 in 100 of 100; no link follows an opening fill), each group ended by `商品小計`, then one
+  `總計`. The link's 權利金/平倉損益 is a reference value that does not sum to the fill's (not posted). 留倉彙總 is `無留倉`
+  or groups of positions each ended by `<商品> 小計 [<strike> <right>] <side>`, then the labelled lines in this order:
+  `未沖銷選擇權浮動損益`, `未沖銷選擇權市場價值淨額`, `調整前原始保證金 <部位> <amount>[A]` (the amount extracts glued to `[A]`),
+  in one statement a combination block (leg lines `<legs code> <ratio> 買|賣 <部位> [<組合類別> ]`, `組合合計[B]`,
+  `省組合保證金`, `調整後原始保證金(A - C)`), `有價證券抵繳總額 [D]`, `原始保證金(A - C - D) <部位> [amount]`. The labelled
+  amounts sit under 原始保證金 and the counts under 部位. 權益帳 is `匯率：`, the 本日餘額 label row, its value row, the 前日餘額
+  label row, its value row, then notices to the footer.
+- 留倉 labelled lines (54 of 54 statements with positions): 調整前原始保證金 = Σ positions' 原始保證金; its 部位 and the
+  A−C−D line's 部位 = Σ positions' 部位; 未沖銷選擇權浮動損益 = Σ option positions' 未沖銷浮動損益; 未沖銷選擇權市場價值淨額 =
+  Σ signed 權利金市值; the A−C−D amount = [A] − 省組合保證金 (0 without a combination block; [D] never prints an amount),
+  and in the one combination block 調整後原始保證金(A - C) = [A] − 省組合保證金. The `[A]` glued word's right edge is the
+  原始保證金 label's plus 12.2 pt (the `[A]` suffix) on every glued line. The A−C−D amount equals the 權益帳 原始保證金
+  in 50 of 54 only (not a check). Free words on deposit lines: daily 入金 one (bank) in 25 of 25, 出金 two (bank, note)
+  in 11 of 11; monthly one (account) in 36 of 36.
+- Monthly (27 of 27): markers `新台幣(NTT) ＊國內市場存提＊`, `…＊國內市場交易明細＊`, `…＊國內市場沖銷明細＊`, `…＊國內市場留倉明細＊`,
+  `…＊月底帳戶餘額明細＊` in this order (no `交易幣別：` prefix). Header rows: 存提 `日期 出入金類別 出入金內容 出入金銀行帳號
+  出金金額 入金金額`; 交易明細 `交易日 買入 賣出 委託書號 單別 商品代號 交割月份 履約價格 權別 倉別 成交價格 交易稅 手續費 權利金收付`;
+  沖銷明細 the same up to 成交價格, then `價差損益-支出金額 價差損益-存入金額 參考損益`; 留倉明細 the same up to 權別, then `買賣別
+  成交價格 價差損益(支出) 價差損益(存入)`. Lines: 存提 `無存提` or `<date> 當日入金 新倉入金 <account>` (amount under 入金金額) /
+  `<date> 當日出金 網路出金 <account>` (under 出金金額), then `存提淨額(B)` (unsigned, under the column of its sign);
+  交易明細 `無交易` or `<date> <qty> <order> 網 <product> <month> [<strike> <right>] 新買|新賣|平買|平賣|到期 …` (單別 `網`
+  on all 277; `複` is the other 單別 value, seen in the next two sections), then
+  `<qty> <qty> 權利金收入與支出(G)`, `手續費總計(H)`, `期 - 期交稅總計(H)`, `權 - 期交稅總計(H)`; 沖銷明細 `無沖銷` or a closing
+  line `<date> <qty> <order> <product> <month> [<strike> <right>] 平倉價|結算價 …` followed by its closed lines `<date> <qty>
+  <order> [複] <被平倉>|<被履約> 原價格 …`, then `期貨平倉損益淨額(K)` and `選擇權參考損益合計`; 留倉明細 `無留倉` or groups of
+  `<date> <qty> <order> [複] <product> <month> …` lines (no side word: the side is the quantity column) each ended by
+  `小計 <product> <month>`, then `<qty> 合計 未沖銷期貨浮動損益(N)` and `未沖銷選擇權浮動損益-參考(P)`. The 買入 / 賣出 quantities
+  are centred under their labels (669 of 669 lines and 46 of 46 totals), not right-aligned; every other value is
+  right-aligned within 3 pt. 存提 and 交易明細 dates lie inside the month (313 of 313); 沖銷明細 / 留倉明細 lines also carry
+  opening dates of earlier months.
+- Month-end block (27 of 27): eleven lines in this order, each `<date> <left label> [value] [<right label> [value]]`:
+  A.前月餘額; B.存提淨額 / U.原始保證金; G.權利金收支與轉現價款 / V.維持保證金; H.手續費，期交稅合計 / 有價證券抵繳總額;
+  K.本月期貨平倉損益淨額 / W.超額／追繳保證金; M.本月餘額 / 加收保證金; N.未沖銷期貨浮動損益 / 可動用(出金)保證金; Q.本月權益數 /
+  P.未沖銷選擇權浮動損益; 未沖銷買方權利金市值; 未沖銷賣方權利金市值; 權益總值. No header row: the left values share one right
+  edge and the right values another, 195 pt to its right. The date is the same on all eleven lines, the month's last
+  trading day (the calendar month end in 15 of 27), always in the file-name month. The block may straddle a page
+  break (3 statements).
 - Identities that hold on every archived statement (the self-checks of §4.2):
   - daily, 88 of 88: 本日餘額 = 前日餘額 + 存提淨額 − 期交稅手續費 + 本日期貨平倉損益淨額 + 權利金收支與轉現價款;
     本日權益數 = 本日餘額 + 未沖銷期貨浮動損益; 權益總值 = 本日權益數 + Σ 留倉 權利金市值 (a sold option counts negative),
@@ -121,8 +178,8 @@ Same split as the 國泰 import: the worker reads the document, the portfolio de
 
 ## 5. Statement payloads (worker → portfolio)
 
-Amounts are decimal strings, signed as printed; an empty column is `"0"`. No name, account number, bank or branch is
-posted.
+Amounts are decimal strings, signed as printed, without group separators or trailing fractional zeros (`20,000.00`
+→ `"20000"`, `6.50` → `"6.5"`); an empty column is `"0"`. No name, account number, bank or branch is posted.
 
 ### 5.1 Daily
 
@@ -153,8 +210,12 @@ posted.
 ```
 
 `action` ∈ {新買, 新賣, 平買, 平賣}; `right` ∈ {Call, Put} or null; `direction` ∈ {in, out}; `fills_total` is null on a
-`無交易` day; `position_lines` keeps every labelled line of the 留倉 block (`未沖銷選擇權浮動損益`, `未沖銷選擇權市場價值淨額`,
-the combination-margin lines) as label → amount, for the record.
+`無交易` day; `position_lines` keeps, for the record, the 留倉 labelled lines that print an amount: `option_unrealized`
+(未沖銷選擇權浮動損益), `option_value_net` (未沖銷選擇權市場價值淨額), `combo_margin_saving` (省組合保證金) and
+`margin_after_combo` (調整後原始保證金(A - C)) (rev 1.7). The 調整前原始保證金 [A] and 原始保證金(A - C - D) lines are checked
+(§5.3), not kept: [A] restates the positions' margins and quantities; the A−C−D line is column-checked, its 部位 and
+its amount ([A] − C) checked, but its amount differs from the 權益帳 原始保證金 (`equity.initial_margin`) in 4 of 54
+archived statements and is not posted. `seq` is the printed 異動序號.
 
 ### 5.2 Monthly
 
@@ -171,7 +232,8 @@ the combination-margin lines) as label → amount, for the record.
  "warnings": []}
 ```
 
-`activity_dates` are the dates of the 存提 and 交易明細 lines; `open_positions` counts the 留倉明細 lines.
+`activity_dates` are the dates of the 存提 and 交易明細 lines; `open_positions` counts the 留倉明細 lines. `month` is the
+month of the month-end block's date (the last trading day); `month_end` is that month's last calendar day.
 
 ### 5.3 Parser grammar and self-checks (anything else fails the statement)
 
@@ -179,34 +241,61 @@ the combination-margin lines) as label → amount, for the record.
   keeps each word's x position; `pdf.unlock` picks the password candidate. Not the pypdfium2 text range the 國泰
   parser uses: the columns here can only be told apart by position.
 - Numeric words (amounts, prices, quantities, strikes) belong to the column whose label's right edge is within 3 pt of
-  their own; a numeric word with no such label, or two in one column, fails the statement.
+  their own; the monthly 買入 / 賣出 quantity columns match by centre within 3 pt instead (rev 1.7, §2). A numeric
+  word with no such label, with two, a second word in one column, or a value in a column its line kind does not
+  print, fails the statement. The daily 存提 異動序號 is the one digit word read as text (by its place in the line).
 - Text words are read in order, not by position. On a fill line the non-numeric words must be exactly: the date
   (`NNN/NN/NN`, ROC), the order number (`[A-Za-z0-9]{5}-[0-9]{2}`), `Taiwan`, `F` (the literal pair, nothing else),
   one product word, the contract month (`YYYY/MM`), for an option `Call` or `Put`, then the action (新買 / 新賣 / 平買
   / 平賣). On a position line: the date, one product word, the contract month, for an option `Call` or `Put`, then the
   side (買 / 賣). An option line has both a strike (numeric) and a right; a futures line has neither. Any other
-  sequence fails. The plan's first task confirms these sequences against the 88 archived files before the parser is
-  written.
+  sequence fails. The census confirms these sequences on all 279 fills and 144 positions (rev 1.7); every other line
+  kind's text sequence is the one §2 lists for it.
 - Every numeric word matches exactly one label (labels in one header row are more than 6 pt apart, so two matches
   cannot happen silently: two are a failure). Every header row and every label of the 權益帳 rows must be present
   exactly once with its label set exactly as in §2; the 權益帳 has exactly one value row under each label row (an
   empty column is a missing word in that row, never a missing row).
-- Daily: exactly two pages; title `國內期貨日對帳單`; the four section markers in the order of §2, each exactly once, each with
-  `新台幣(NTT)`; any other currency or a `國外` / `海外` marker fails. Every line of page 1 between the markers is one of
-  the line kinds of §2 (header row, dated data line, `無存提` / `無交易` / `無留倉`, `平倉->` link, `商品小計`, `<商品> 小計`,
-  `總計`, the labelled 留倉 lines, the 權益帳 label and value rows, `匯率：`, numbered notes). Exchange `Taiwan F` only.
-  Page 2 is notices only: a section marker, a header row, a dated line or a `總計` / `小計` line on page 2 fails the
-  statement; its other text is not read.
+- Page framing (both kinds): every page's last line is its footer `第p頁/共N頁`; page 1 is the title, the addressee
+  line ending `啟`, the account line, then the first section marker. Monthly continuation pages open with the title,
+  optionally the addressee and account lines, and then, inside a section, optionally that section's header row once;
+  these lines are dropped before the section grammar runs.
+- Daily: exactly two pages; title `國內期貨日對帳單`; the four section markers in the order of §2, each exactly once, each
+  with `交易幣別：新台幣(NTT)`; any other currency or a `國外` / `海外` marker fails. Every line of page 1 between the
+  markers is one of the line kinds of §2, in the sequences of §2: 存提 `無存提` alone or deposit lines (direction 入 /
+  出 from the two exact word groups, then exactly one unread bank word for 入金 and two (bank, note) for 出金, the
+  amount under 匯出入金額); 交易紀錄 `無交易`
+  alone or `((opening fill | closing fill link+)+ 商品小計)+ 總計`, the links of a closing fill adding up to its 口數;
+  留倉彙總 `無留倉` alone or `(position+ <商品> 小計)+` then the labelled lines in the order of §2 (the combination block
+  optional); 權益帳 `匯率：`, label row, value row, label row, value row, then notices. Exchange `Taiwan F` only. The
+  notices after the 權益帳 and all of page 2 are not read, but a section marker, a header or label row (also a
+  partial one: two or more words that are all labels), a dated line, an all-numeric line or a `總計` / `小計` word
+  there fails the statement. The `[A]` amount, glued to its suffix, must end 12.2 pt (±3) right of 原始保證金's edge.
 - Daily date: every dated line of 存提 and 交易紀錄 carries one date, the `statement_date`. A file-name date that
   differs adds `filename_date_differs` to `warnings` only.
 - Daily self-checks: every identity of §2 (balance, equity, total equity, realised, premium, unrealised, deposits;
-  with fills also the `總計` sums and 期交稅手續費 = 總計.期交稅 + 總計.手續費). The portfolio repeats the balance, equity
-  and total-equity identities on the payload and answers HTTP 422 when one fails.
-- Monthly: title `國內期貨月對帳單`; the five sections of §2; the 月底帳戶餘額明細 lines by left / right column; self-checks
-  M = A + B + G − H + K, Q = M + N, 權益總值 = Q + 未沖銷買方權利金市值 − 未沖銷賣方權利金市值. The other monthly sections are
-  read only for dates and the open-position count; the plan's first task pins their line grammar from a census of the
-  27 archived files, the way §2 pins the daily one, under the same rules: an unknown line in any monthly section, a
-missing or repeated section, or a numeric word without exactly one label fails the statement.
+  with fills also the `總計` sums and 期交稅手續費 = 總計.期交稅 + 總計.手續費); with positions also 未沖銷選擇權市場價值淨額 =
+  Σ signed 權利金市值, 未沖銷選擇權浮動損益 = Σ option 未沖銷浮動損益, and 調整前原始保證金 = Σ position 原始保證金 with its 部位
+  and the A−C−D 部位 = Σ position 部位, A−C−D = [A] − 省組合保證金, and with a combination block 調整後原始保證金(A - C) =
+  [A] − 省組合保證金 (rev 1.7). Identity names in the failure code: `deposits`, `realized`, `premium`, `unrealized`,
+  `option_unrealized`, `option_value`, `position_margin`, `margin_after_combo`, `margin_net`, `total_tax`,
+  `total_fee`, `total_pnl`, `fees`, `balance`, `equity`, `total_equity`. The portfolio repeats the balance, equity and
+  total-equity identities on the payload and answers HTTP 422 when one fails.
+- Monthly: title `國內期貨月對帳單`; the five section markers of §2 in order, each once, each with `新台幣(NTT)`; the
+  section lines in the sequences of §2: 存提 `無存提` or `deposit+ 存提淨額(B)` (exactly one unread account word; an 入金
+  amount under 入金金額, an 出金 one under 出金金額); 交易明細 `無交易` or `fill+ (G) (H) 期 (H) 權 (H)` with 單別
+  網 / 複 and action 新買 / 新賣 / 平買 / 平賣 / 到期;
+  沖銷明細 `無沖銷` or `(closing closed+)+ (K) 選擇權參考損益合計`; 留倉明細 `無留倉` or `(position+ 小計)+ 合計 (P)`. The
+  month-end block is its eleven lines in the order of §2 with one date: a value after the left label belongs to it, a
+  value after the right label to that one, and all left values (and all right values) share one right edge within
+  3 pt; then notices, read only for the guards of the daily notices. Self-checks M = A + B + G − H + K, Q = M + N,
+  權益總值 = Q + 未沖銷買方權利金市值 − 未沖銷賣方權利金市值 (identity names `month_balance`, `month_equity`,
+  `month_total_equity`); every activity date inside the month; a continuation page whose first line is not the title
+  fails with `title`. An unknown line in any
+  monthly section, a missing or repeated section, or a numeric word without exactly one label fails the statement.
+  A file-name month that differs from the block's adds `filename_date_differs`.
+- Failure codes (the worker latches on any; the code never carries statement content): `title`, `header`,
+  `section`, `currency`, `line` (no known line kind, a missing or doubled 權益帳 value row, a bad footer or notice
+  guard), `column`, `sequence`, `date`, `page2` (daily page count or page-2 guard), `identity:<name>`.
 
 ## 6. Portfolio rules
 
