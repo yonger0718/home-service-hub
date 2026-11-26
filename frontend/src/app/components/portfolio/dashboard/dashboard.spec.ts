@@ -245,8 +245,7 @@ describe('PortfolioDashboardComponent', () => {
       const card = root.querySelectorAll('app-futures-card');
       expect(card.length).toBe(1);
       expect(card[0].querySelector('[data-testid="futures-equity"]')?.textContent?.trim()).toBe('−$100');
-      // The full-width dashboard placement may go two columns from 1024px.
-      expect(card[0].querySelector('.futures-cols--wide')).not.toBeNull();
+      expect(card[0].querySelector('.futures-grid')).not.toBeNull();
     });
 
     it('keeps the empty view for an entirely empty portfolio and adds the card in its empty state below it', () => {
@@ -269,9 +268,10 @@ describe('PortfolioDashboardComponent', () => {
 
       expect(root.querySelector('.empty h4')?.textContent?.trim()).toBe('尚未建立投資組合');
       expect(root.querySelector('app-futures-card [data-testid="futures-equity"]')?.textContent?.trim()).toBe('$300');
-      // The narrow empty-portfolio host keeps the data view in one column (no ≥1024px two-column grid).
-      expect(root.querySelector('app-futures-card .futures-cols')).not.toBeNull();
-      expect(root.querySelector('app-futures-card .futures-cols--wide')).toBeNull();
+      // The narrow empty-portfolio host needs no input: the card's container query keeps it one column.
+      const host = root.querySelector('app-futures-card.empty-futures')!;
+      expect(host.querySelector('.futures-grid')).not.toBeNull();
+      expect(host.hasAttribute('ng-reflect-stacked')).toBe(false);
     });
 
     it('shows the card error state under the empty view', () => {

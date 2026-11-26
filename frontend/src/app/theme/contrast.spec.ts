@@ -453,6 +453,15 @@ describe('futures card margin warning (spec §9: amber, never red / accent)', ()
     expect(stripComments(cardScss)).not.toContain('--app-danger');
   });
 
+  it('columns follow the card width: an inline-size container, a 600px container query, no width cap', () => {
+    const css = stripComments(cardScss);
+    expect(css).toMatch(/container:\s*futures-card\s*\/\s*inline-size/);
+    expect(css).toMatch(/@container futures-card \(min-width: 600px\)/);
+    expect(css).not.toMatch(/max-width/);
+    expect(css).not.toContain('30rem');
+    expect(css).not.toMatch(/@media/);
+  });
+
   // The card is a bento on --app-surface. Pinned (2 decimals): the value on the surface, the tag on its tint.
   const pinned: Record<string, [number, number]> = { light: [6.15, 5.36], dark: [7.26, 5.71] };
 

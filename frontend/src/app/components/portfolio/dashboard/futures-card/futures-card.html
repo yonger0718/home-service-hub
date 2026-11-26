@@ -3,72 +3,75 @@
   @let v = d.value!;
   @let daily = d.latest_daily;
   <app-bento class="futures-card" title="永豐期貨">
-    <div class="futures-cols" [class.futures-cols--wide]="!stacked()">
-      <div class="futures-col" data-testid="futures-col-main">
-        <div class="futures-row futures-equity-row">
-          <span class="futures-label">權益總值</span>
-          <b
-            class="futures-value"
-            data-testid="futures-equity"
-            [class.down]="sign(v.total_equity) < 0"
-          >{{ money(v.total_equity) }}</b>
+    <!-- One shared grid; the group wrappers are display: contents. DOM order = the one-column order. -->
+    <div class="futures-body">
+      <div class="futures-grid">
+        <div class="futures-group" data-testid="futures-col-main">
+          <div class="futures-row futures-equity-row" data-cell="l1">
+            <span class="futures-label">權益總值</span>
+            <b
+              class="futures-value"
+              data-testid="futures-equity"
+              [class.down]="sign(v.total_equity) < 0"
+            >{{ money(v.total_equity) }}</b>
+          </div>
+          @if (d.month; as m) {
+            <div class="futures-row" data-cell="l2">
+              <span class="futures-label">本月損益</span>
+              @if (m.pnl === null) {
+                <span class="futures-value">—（沒有上月底基準）</span>
+              } @else {
+                <span class="futures-value">
+                  <span [class.up]="sign(m.pnl) > 0" [class.down]="sign(m.pnl) < 0">{{ money(m.pnl, true) }}</span>
+                  @if (!m.pnl_complete && m.pnl_reason === 'findings') {
+                    <span class="futures-muted">可能不完整</span>
+                  }
+                </span>
+              }
+            </div>
+            <div class="futures-row" data-cell="l3">
+              <span class="futures-label">本月期貨平倉損益</span>
+              <span
+                class="futures-value"
+                [class.up]="sign(m.futures_realized) > 0"
+                [class.down]="sign(m.futures_realized) < 0"
+              >{{ money(m.futures_realized, true) }}</span>
+            </div>
+          }
+          <p class="futures-meta" data-cell="l4">
+            資料日 {{ md(v.source_date) }}
+            @if (v.frozen) {
+              <span class="futures-frozen">持倉中，數字停在 {{ md(v.source_date) }}</span>
+            }
+          </p>
         </div>
-        @if (d.month; as m) {
-          <div class="futures-row">
-            <span class="futures-label">本月損益</span>
-            @if (m.pnl === null) {
-              <span class="futures-value">—（沒有上月底基準）</span>
-            } @else {
+        <div class="futures-group" data-testid="futures-col-margin">
+          <div class="futures-row" data-cell="r1">
+            <span class="futures-label">可動用(出金)保證金</span>
+            <span class="futures-value">{{ daily ? money(daily.withdrawable) : '—' }}</span>
+          </div>
+          <div class="futures-row" data-cell="r2">
+            <span class="futures-label">原始 / 維持保證金</span>
+            <span class="futures-value">{{ daily ? money(daily.initial_margin) + ' / ' + money(daily.maintenance_margin) : '—' }}</span>
+          </div>
+          @let warn = daily ? marginWarning(daily) : null;
+          <div class="futures-row" data-cell="r3" data-testid="futures-margin-row" [class.futures-row--warn]="warn !== null">
+            <span class="futures-label">超額 / 追繳保證金</span>
+            @if (daily) {
               <span class="futures-value">
-                <span [class.up]="sign(m.pnl) > 0" [class.down]="sign(m.pnl) < 0">{{ money(m.pnl, true) }}</span>
-                @if (!m.pnl_complete && m.pnl_reason === 'findings') {
-                  <span class="futures-muted">可能不完整</span>
+                @if (warn) {
+                  <span class="margin-warn-tag" data-testid="futures-margin-warn"><i class="pi pi-exclamation-triangle" aria-hidden="true"></i>{{ warn }}</span>
                 }
+                {{ money(daily.excess_margin) }} / {{ money(daily.margin_call) }}
               </span>
+            } @else {
+              <span class="futures-value">—</span>
             }
           </div>
-          <div class="futures-row">
-            <span class="futures-label">本月期貨平倉損益</span>
-            <span
-              class="futures-value"
-              [class.up]="sign(m.futures_realized) > 0"
-              [class.down]="sign(m.futures_realized) < 0"
-            >{{ money(m.futures_realized, true) }}</span>
-          </div>
-        }
-        <p class="futures-meta futures-foot">
-          資料日 {{ md(v.source_date) }}
-          @if (v.frozen) {
-            <span class="futures-frozen">持倉中，數字停在 {{ md(v.source_date) }}</span>
-          }
-        </p>
-      </div>
-      <div class="futures-col futures-col-margin" data-testid="futures-col-margin">
-        <div class="futures-row">
-          <span class="futures-label">可動用(出金)保證金</span>
-          <span class="futures-value">{{ daily ? money(daily.withdrawable) : '—' }}</span>
-        </div>
-        <div class="futures-row">
-          <span class="futures-label">原始 / 維持保證金</span>
-          <span class="futures-value">{{ daily ? money(daily.initial_margin) + ' / ' + money(daily.maintenance_margin) : '—' }}</span>
-        </div>
-        @let warn = daily ? marginWarning(daily) : null;
-        <div class="futures-row" data-testid="futures-margin-row" [class.futures-row--warn]="warn !== null">
-          <span class="futures-label">超額 / 追繳保證金</span>
-          @if (daily) {
-            <span class="futures-value">
-              @if (warn) {
-                <span class="margin-warn-tag" data-testid="futures-margin-warn"><i class="pi pi-exclamation-triangle" aria-hidden="true"></i>{{ warn }}</span>
-              }
-              {{ money(daily.excess_margin) }} / {{ money(daily.margin_call) }}
-            </span>
-          } @else {
-            <span class="futures-value">—</span>
+          @if (showMarginDate(d)) {
+            <p class="futures-meta" data-cell="r4" data-testid="futures-margin-date">保證金資料日 {{ md(daily!.statement_date) }}</p>
           }
         </div>
-        @if (showMarginDate(d)) {
-          <p class="futures-meta futures-foot" data-testid="futures-margin-date">保證金資料日 {{ md(daily!.statement_date) }}</p>
-        }
       </div>
     </div>
   </app-bento>

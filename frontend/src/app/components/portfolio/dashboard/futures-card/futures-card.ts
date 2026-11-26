@@ -8,8 +8,9 @@ import { Amount, displayedSign, formatMoney } from '../../../ui/format';
 type LoadState = 'loading' | 'ready' | 'error';
 
 /**
- * The 永豐期貨 dashboard card (spec §9): equity, month P&L and the frozen note in one group, the printed margins in
- * another (two columns from 1024 px); loading, error and no statement yet are one compact line.
+ * The 永豐期貨 dashboard card (spec §9): equity, month P&L and the frozen note on the left, the printed margins on
+ * the right of one shared row grid; the card's own width picks one or two columns (container query, spec §9).
+ * Loading, error and no statement yet are one compact line.
  */
 @Component({
   selector: 'app-futures-card',
@@ -26,9 +27,6 @@ export class FuturesCardComponent implements OnInit, OnChanges {
 
   /** A changing value asks for a fresh read (the first value is the initial load's). */
   readonly refresh = input(0);
-
-  /** A narrow host (the empty-portfolio view) keeps the data view in one column at every width. */
-  readonly stacked = input(false);
 
   ngOnInit(): void {
     this.load();

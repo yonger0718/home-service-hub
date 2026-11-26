@@ -230,14 +230,34 @@ describe('FuturesCardComponent', () => {
     expect(text()).not.toContain('保證金資料日');
   });
 
-  it('goes two columns on wide screens by default, one column when stacked (narrow host)', () => {
-    const wide = render(summary());
-    expect(wide.el.querySelector('.futures-cols')!.classList.contains('futures-cols--wide')).toBe(true);
-    TestBed.resetTestingModule();
-    const narrow = render(summary());
-    narrow.fixture.componentRef.setInput('stacked', true);
-    narrow.fixture.detectChanges();
-    expect(narrow.el.querySelector('.futures-cols')!.classList.contains('futures-cols--wide')).toBe(false);
+  it('one shared grid: cells in one-column order, each keyed to its two-column slot', () => {
+    const base = summary();
+    const { el } = render(
+      summary({
+        value: { ...base.value!, frozen: true, source_kind: 'monthly', source_date: '2026-11-30' },
+        latest_daily: { ...base.latest_daily!, statement_date: '2026-11-23' },
+      }),
+    );
+    const grid = el.querySelector('.futures-grid')!;
+    const cells = [...grid.querySelectorAll<HTMLElement>('[data-cell]')];
+    expect(cells.map(c => c.dataset['cell'])).toEqual(['l1', 'l2', 'l3', 'l4', 'r1', 'r2', 'r3', 'r4']);
+    const text = (c: HTMLElement) => c.textContent!.replace(/\s+/g, ' ').trim();
+    expect(text(cells[0])).toContain('權益總值');
+    expect(text(cells[1])).toContain('本月損益');
+    expect(text(cells[2])).toContain('本月期貨平倉損益');
+    expect(text(cells[3])).toContain('資料日 11/30');
+    expect(text(cells[4])).toContain('可動用(出金)保證金');
+    expect(text(cells[5])).toContain('原始 / 維持保證金');
+    expect(text(cells[6])).toContain('超額 / 追繳保證金');
+    expect(text(cells[7])).toBe('保證金資料日 11/23');
+    // Every cell belongs to the one grid (the group wrappers are display: contents), and nothing caps its width.
+    for (const c of cells) expect(c.closest('.futures-grid')).toBe(grid);
+    expect(el.querySelector('.futures-cols, .futures-cols--wide')).toBeNull();
+  });
+
+  it('has no stacked input any more (the container query decides the columns)', () => {
+    const { fixture } = render(summary());
+    expect(() => fixture.componentRef.setInput('stacked', true)).toThrow();
   });
 
   it('shows a compact error line when the summary fails to load', () => {
