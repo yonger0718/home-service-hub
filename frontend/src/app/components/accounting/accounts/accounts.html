@@ -33,7 +33,7 @@
       @if (cardDue(account); as owed) {
         <span class="due">
           <span class="owed">{{ owed.owedText }}</span>
-          <span class="pill warn" [class.overdue]="owed.overdue">{{ owed.pill }}</span>
+          <span class="pill" [class.warn]="!owed.auto" [class.rv]="owed.auto" [class.overdue]="owed.overdue">{{ owed.pill }}</span>
         </span>
       } @else if (duePill(account); as pill) {
         <span class="due"><span class="pill rv">{{ pill }}</span></span>

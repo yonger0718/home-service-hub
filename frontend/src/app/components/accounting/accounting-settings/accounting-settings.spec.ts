@@ -70,6 +70,11 @@ const DISMISSED = [
 /** What the three 發票 reads answer at page start; a body, 'error' for a 500 or 'notfound' for a 404. Reset after each test. */
 let einvoiceInit: { prefs: unknown; mutes: unknown; dismissed: unknown } = { prefs: { ...EINVOICE_PREFS, enabled: false }, mutes: [], dismissed: [] };
 const DEFAULT_EINVOICE_INIT = einvoiceInit;
+const RECON_SETTINGS_URL = '/api/accounting/settings/reconciliation';
+const AUTO_PAY_URL = '/api/accounting/settings/reconciliation/auto-pay';
+/** What the reconciliation settings read answers at page start (the 對帳 block); reset after each test. */
+let autoPayInit: unknown = { auto_pay: { enabled: false, enabled_from: null } };
+const DEFAULT_AUTO_PAY_INIT = autoPayInit;
 
 function answer(http: HttpTestingController, url: string, body: unknown): void {
   const req = http.expectOne(r => r.method === 'GET' && r.url === url);
@@ -106,6 +111,7 @@ describe('AccountingSettingsComponent', () => {
     http.expectOne('/api/accounting/counterparties').flush(COUNTERPARTIES);
     http.expectOne('/api/accounting/imports/latest').flush({ detail: 'none' }, { status: 404, statusText: 'Not Found' });
     flushAccountsAndRules();
+    answer(http, RECON_SETTINGS_URL, autoPayInit);
     answer(http, `${EINVOICE_URL}/preferences`, einvoiceInit.prefs);
     if ((einvoiceInit.prefs as { enabled?: boolean }).enabled) {
       answer(http, `${EINVOICE_URL}/mutes`, einvoiceInit.mutes);
@@ -628,6 +634,121 @@ describe('AccountingSettingsComponent', () => {
       expect(Array.from(el.querySelectorAll('.rule-toggle')).map(button => button.textContent?.trim())).toEqual(['停用', '停用']);
     });
   });
+  describe('對帳 › 自動扣繳 (E3b)', () => {
+    const toggle = () => el.querySelector<HTMLButtonElement>('.autopay-toggle')!;
+    const from = () => el.querySelector<HTMLInputElement>('.autopay-from')!;
+    const patch = () => http.expectOne(r => r.method === 'PATCH' && r.url === AUTO_PAY_URL);
+    const labels = () => Array.from(el.querySelectorAll('.lbl')).map(node => node.textContent?.trim());
+
+    it('a 對帳 block after 顯示 with the switch off, an empty 起始日 and the note', () => {
+      expect(labels().indexOf('對帳')).toBe(labels().indexOf('顯示') + 1);
+      expect(toggle().getAttribute('role')).toBe('switch');
+      expect(toggle().getAttribute('aria-label')).toBe('自動扣繳');
+      expect(toggle().getAttribute('aria-checked')).toBe('false');
+      expect(from().value).toBe('');
+      expect(el.querySelector('label[for="autopay-from"]')?.textContent?.trim()).toBe('起始日');
+      expect(el.querySelector('.autopay-note')?.textContent).toContain('扣款帳戶');
+    });
+
+    it('on without a 起始日: no request, the date is asked for; choosing one turns it on', () => {
+      toggle().click();
+      fixture.detectChanges();
+      http.expectNone(r => r.method === 'PATCH');
+      expect(toggle().getAttribute('aria-checked')).toBe('true');
+      expect(from().getAttribute('aria-invalid')).toBe('true');
+      expect(el.querySelector('.autopay-hint')?.textContent?.trim()).toBe('選好起始日才會開啟自動扣繳');
+      expect(document.activeElement).toBe(from());
+
+      change('.autopay-from', '2026-12-01');
+      const req = patch();
+      expect(req.request.body).toEqual({ enabled: true, enabled_from: '2026-12-01' });
+      req.flush({ enabled: true, enabled_from: '2026-12-01', version: 6 });
+      fixture.detectChanges();
+      expect(toggle().getAttribute('aria-checked')).toBe('true');
+      expect(from().value).toBe('2026-12-01');
+      expect(from().hasAttribute('aria-invalid')).toBe(false);
+      expect(el.querySelector('.autopay-hint')).toBeNull();
+    });
+
+    it('switching back off before choosing a date sends nothing', () => {
+      toggle().click();
+      fixture.detectChanges();
+      toggle().click();
+      fixture.detectChanges();
+      http.expectNone(r => r.method === 'PATCH');
+      expect(toggle().getAttribute('aria-checked')).toBe('false');
+      expect(el.querySelector('.autopay-hint')).toBeNull();
+    });
+
+    it('a failed save says so and keeps the stored state', () => {
+      change('.autopay-from', '2026-12-01');
+      patch().flush({ detail: 'x' }, { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(el.querySelector('.autopay-message')?.textContent?.trim()).toBe('自動扣繳設定儲存失敗，請稍後再試');
+      expect(from().value).toBe('');
+    });
+
+    describe('when on', () => {
+      beforeAll(() => {
+        autoPayInit = { auto_pay: { enabled: true, enabled_from: '2026-10-01' } };
+      });
+      afterAll(() => {
+        autoPayInit = DEFAULT_AUTO_PAY_INIT;
+      });
+
+      it('off sends enabled: false and keeps the date', () => {
+        expect(toggle().getAttribute('aria-checked')).toBe('true');
+        expect(from().value).toBe('2026-10-01');
+        toggle().click();
+        const req = patch();
+        expect(req.request.body).toEqual({ enabled: false });
+        req.flush({ enabled: false, enabled_from: '2026-10-01', version: 7 });
+        fixture.detectChanges();
+        expect(toggle().getAttribute('aria-checked')).toBe('false');
+        expect(from().value).toBe('2026-10-01');
+      });
+
+      it('a new date sends only the date; clearing it while on is refused here', () => {
+        change('.autopay-from', '2026-11-01');
+        const req = patch();
+        expect(req.request.body).toEqual({ enabled_from: '2026-11-01' });
+        req.flush({ enabled: true, enabled_from: '2026-11-01', version: 7 });
+        fixture.detectChanges();
+        change('.autopay-from', '');
+        http.expectNone(r => r.method === 'PATCH');
+        expect(el.querySelector('.autopay-message')?.textContent?.trim()).toBe('自動扣繳開啟時需要起始日');
+        expect(from().value).toBe('2026-11-01');
+      });
+    });
+
+  });
+
+  describe('對帳 read refused', () => {
+    beforeAll(() => {
+      autoPayInit = 'notfound';
+    });
+    afterAll(() => {
+      autoPayInit = DEFAULT_AUTO_PAY_INIT;
+    });
+    it('a 404 (reconciliation off): no 對帳 block, no error', () => {
+      expect(Array.from(el.querySelectorAll('.lbl')).map(node => node.textContent?.trim())).not.toContain('對帳');
+      expect(el.querySelector('.autopay-error')).toBeNull();
+    });
+  });
+
+  describe('對帳 read failed', () => {
+    beforeAll(() => {
+      autoPayInit = 'error';
+    });
+    afterAll(() => {
+      autoPayInit = DEFAULT_AUTO_PAY_INIT;
+    });
+    it('a 500: the block says 自動扣繳設定讀取失敗', () => {
+      expect(el.querySelector('.autopay-error')?.textContent?.trim()).toBe('自動扣繳設定讀取失敗');
+      expect(el.querySelector('.autopay-toggle')).toBeNull();
+    });
+  });
+
   describe('發票', () => {
     beforeAll(() => {
       einvoiceInit = { prefs: EINVOICE_PREFS, mutes: MUTES, dismissed: DISMISSED };
@@ -641,7 +762,7 @@ describe('AccountingSettingsComponent', () => {
 
     it('shows the block between 顯示 and 匯入 when enabled', () => {
       const labels = Array.from(el.querySelectorAll('.lbl')).map(node => node.textContent?.trim());
-      expect(labels.indexOf('發票')).toBe(labels.indexOf('顯示') + 1);
+      expect(labels.indexOf('發票')).toBe(labels.indexOf('對帳') + 1);
       expect(labels.indexOf('匯入')).toBe(labels.indexOf('發票') + 1);
       expect(block()).not.toBeNull();
     });

@@ -130,4 +130,26 @@ describe('billTasks', () => {
     const [t] = run(due(), state({ statement: 0.1 + 0.2, paid: 0, remaining: 0.1 + 0.2, currency: 'USD' }));
     expect(t.amount).toBe('US$0.3');
   });
+
+  it('a bill auto-pay will pay is tracked, not a to-do: 今天自動扣繳 / MM/DD 自動扣繳 (E3b)', () => {
+    const today = billTasks({ dues: [due({ date: TODAY })], bill: () => state({ payDate: TODAY }), today: TODAY, autoPay: () => true });
+    expect(today[0]).toMatchObject({ tier: 'tracking', when: '今天自動扣繳' });
+    const later = billTasks({
+      dues: [due({ date: '2026-10-26' })],
+      bill: () => state({ payDate: '2026-10-26' }),
+      today: TODAY,
+      autoPay: () => true,
+    });
+    expect(later[0]).toMatchObject({ tier: 'tracking', when: '10/26 自動扣繳' });
+    const plain = billTasks({ dues: [due({ date: TODAY })], bill: () => state({ payDate: TODAY }), today: TODAY, autoPay: () => false });
+    expect(plain[0]).toMatchObject({ tier: 'today', when: '今天截止' });
+  });
+
+  it('autoPay is asked with the event and its state', () => {
+    const seen: unknown[] = [];
+    const event = due({ date: TODAY });
+    const bill = state({ payDate: TODAY });
+    billTasks({ dues: [event], bill: () => bill, today: TODAY, autoPay: (e, b) => (seen.push([e, b]), false) });
+    expect(seen).toEqual([[event, bill]]);
+  });
 });

@@ -1,6 +1,7 @@
 import { HttpClient, HttpErrorResponse, HttpParams } from '@angular/common/http';
 import { Injectable, inject, signal } from '@angular/core';
-import { Observable, catchError, of, shareReplay, tap, throwError } from 'rxjs';
+import { Observable, catchError, map, of, shareReplay, tap, throwError } from 'rxjs';
+import { AutoPayRow, AutoPaySwitch } from '../components/accounting/billing/auto-pay';
 
 import {
   AccountDetail,
@@ -406,6 +407,25 @@ export class AccountingService {
 
   deleteCounterparty(id: number): Observable<void> {
     return this.http.delete<void>(`${this.apiUrl}/counterparties/${id}`);
+  }
+
+  /** The card-statement auto-pay switch and start date (the `auto_pay` block of the reconciliation settings). */
+  getAutoPaySwitch(): Observable<AutoPaySwitch> {
+    return this.http
+      .get<{ auto_pay: AutoPaySwitch }>(`${this.apiUrl}/settings/reconciliation`)
+      .pipe(map(settings => ({ enabled: settings.auto_pay.enabled, enabled_from: settings.auto_pay.enabled_from })));
+  }
+
+  /** Sets only the sent fields (write scope; the server refuses 「on」 without a start date). */
+  setAutoPay(change: Partial<AutoPaySwitch>): Observable<AutoPaySwitch> {
+    return this.http
+      .patch<AutoPaySwitch & { version: number }>(`${this.apiUrl}/settings/reconciliation/auto-pay`, change)
+      .pipe(map(saved => ({ enabled: saved.enabled, enabled_from: saved.enabled_from })));
+  }
+
+  /** One auto-pay row per statement whose debit day is on or after `since`, newest first. */
+  getAutoPayRows(since: string): Observable<AutoPayRow[]> {
+    return this.http.get<AutoPayRow[]>(`${this.apiUrl}/reconciliation/auto-pay`, { params: new HttpParams().set('since', since) });
   }
 
   /** Read once per session (design D27); a failed read is retried on the next call. */

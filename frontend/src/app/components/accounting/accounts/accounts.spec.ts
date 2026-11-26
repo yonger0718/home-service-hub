@@ -59,6 +59,13 @@ describe('AccountingAccountsComponent', () => {
     for (const req of http.match('/api/accounting/accounts/debts')) {
       req.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
     }
+    // 自動扣繳 (switch + rows) never gates the page either; tests that do not care leave it (switch off, no row).
+    for (const req of http.match('/api/accounting/settings/reconciliation')) {
+      req.flush({ auto_pay: { enabled: false, enabled_from: null } });
+    }
+    for (const req of http.match(r => r.url === '/api/accounting/reconciliation/auto-pay')) {
+      req.flush([]);
+    }
     // The business-day calendar is read once per session and never gates the page; tests that do not care leave it.
     for (const req of http.match(r => r.url === '/api/accounting/calendar/business-days')) {
       req.flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
@@ -269,6 +276,66 @@ describe('AccountingAccountsComponent', () => {
       expect(uni.querySelector('.due .pill')?.textContent).not.toContain('繳費截止');
       // Payments are read on the master card only.
       http.expectNone(r => /\/accounts\/1[123]\/entries$/.test(r.url));
+    });
+
+    describe('自動扣繳 (E3b)', () => {
+      const linked = () => ACCOUNTS.map(a => (a.id === 10 ? { ...a, auto_pay_account_id: 1 } : a));
+      function answerAutoPay(enabled_from: string | null, rows: unknown[] = [], enabled = true): void {
+        http.expectOne('/api/accounting/settings/reconciliation').flush({ auto_pay: { enabled, enabled_from } });
+        const req = http.expectOne(r => r.url === '/api/accounting/reconciliation/auto-pay');
+        expect(req.request.params.get('since')).toBe('2026-08-18');
+        req.flush(rows);
+      }
+      const booked = (pay_date: string) => ({
+        statement_id: 5, card_account_id: 10, pay_account_id: 1, amount: '7345.0000', due_date: pay_date, pay_date,
+        status: 'booked', reason: null, updated_at: `${pay_date}T01:00:00Z`,
+      });
+
+      it('a linked card with auto-pay on: 自動扣繳 MM/DD (the debit day), not a warning', () => {
+        const fixture = render(linked(), LATEST, UNPAID);
+        answerAutoPay('2026-10-01');
+        fixture.detectChanges();
+        const pill = master(fixture.nativeElement).querySelector('.due .pill')!;
+        expect(pill.textContent?.trim()).toBe('自動扣繳 10/05');
+        expect(pill.classList).not.toContain('warn');
+        expect(master(fixture.nativeElement).querySelector('.owed')?.textContent?.trim()).toBe('待繳帳款 $7,345');
+      });
+
+      it.each([
+        ['switch off', true, '2026-10-01', false, false],
+        ['a debit day before 起始日', true, '2026-10-06', true, false],
+        ['an unlinked card', false, '2026-10-01', true, false],
+        ['a skipped row', true, '2026-10-01', true, true],
+      ] as const)('the plain due pill: %s', (_name, isLinked, from, enabled, skippedRow) => {
+        const fixture = render(isLinked ? linked() : ACCOUNTS, LATEST, UNPAID);
+        answerAutoPay(from, skippedRow ? [{ ...booked('2026-10-05'), status: 'skipped', reason: 'over_cap' }] : [], enabled);
+        fixture.detectChanges();
+        expect(master(fixture.nativeElement).querySelector('.due .pill')?.textContent?.trim()).toBe('10/05 繳費截止');
+      });
+
+      it('paid by auto-pay in the open cycle: 已自動扣繳 instead of the cycle pill', () => {
+        const fixture = render(linked(), LATEST);
+        answerAutoPay('2026-09-01', [booked('2026-09-16')]);
+        fixture.detectChanges();
+        expect(master(fixture.nativeElement).querySelector('.due .pill')?.textContent?.trim()).toBe('已自動扣繳');
+      });
+
+      it('a booking before the open cycle (16 Sep–15 Oct) is the previous bill: the cycle pill', () => {
+        const fixture = render(linked(), LATEST);
+        answerAutoPay('2026-09-01', [booked('2026-09-15')]);
+        fixture.detectChanges();
+        expect(master(fixture.nativeElement).querySelector('.due .pill')?.textContent?.trim()).toBe('結帳 10/15 · 繳款 11/04');
+      });
+
+      it('a failed auto-pay read keeps the plain pills', () => {
+        const fixture = render(linked(), LATEST, UNPAID);
+        http.expectOne('/api/accounting/settings/reconciliation').flush('boom', { status: 500, statusText: 'Server Error' });
+        for (const req of http.match(r => r.url === '/api/accounting/reconciliation/auto-pay')) {
+          if (!req.cancelled) req.flush([]);
+        }
+        fixture.detectChanges();
+        expect(master(fixture.nativeElement).querySelector('.due .pill')?.textContent?.trim()).toBe('10/05 繳費截止');
+      });
     });
 
     it('falls back to the cycle pill when the statement cannot be read', () => {
@@ -852,6 +919,8 @@ describe('AccountingAccountsComponent', () => {
         for (const req of http.match('/api/accounting/accounts/debts')) {
           req.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
         }
+        http.match('/api/accounting/settings/reconciliation').forEach(req => req.flush({ auto_pay: { enabled: false, enabled_from: null } }));
+        http.match(r => r.url === '/api/accounting/reconciliation/auto-pay').forEach(req => req.flush([]));
         for (const req of http.match(r => r.url === '/api/accounting/calendar/business-days')) {
           req.flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
         }

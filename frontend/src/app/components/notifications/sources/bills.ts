@@ -11,6 +11,8 @@ export interface BillTaskInput {
   readonly dues: readonly BillingEvent[];
   readonly bill: (event: BillingEvent) => BillState | null;
   readonly today: string;
+  /** Whether card-statement auto-pay will pay this bill (`autoPayPending`): it is then tracked, not a to-do (E3b). */
+  readonly autoPay?: (event: BillingEvent, state: BillState) => boolean;
 }
 
 /** The figures beside the row's own amount (the remaining): the statement total when it differs, and what was paid. Null when it would only repeat. */
@@ -33,9 +35,11 @@ export function billTasks(input: BillTaskInput): NotifTask[] {
     if (!state || !(state.remaining > 0)) continue;
     const payDate = state.payDate;
     if (payDate > horizon) continue;
-    const tier: NotifTier = payDate < today ? 'overdue' : payDate === today ? 'today' : 'tracking';
-    const when =
-      tier === 'overdue'
+    const auto = input.autoPay?.(event, state) ?? false;
+    const tier: NotifTier = auto ? 'tracking' : payDate < today ? 'overdue' : payDate === today ? 'today' : 'tracking';
+    const when = auto
+      ? `${payDate === today ? '今天' : `${shortDate(payDate)} `}自動扣繳`
+      : tier === 'overdue'
         ? `${shortDate(payDate)} 截止 · 逾期 ${daysBetween(payDate, today)} 天`
         : tier === 'today'
           ? '今天截止'
