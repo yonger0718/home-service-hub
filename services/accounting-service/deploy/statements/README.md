@@ -15,7 +15,7 @@ in production and no real-data `run`/`backfill` happens until then; the first re
 | `homehub-statements.service` / `homehub-statements-daily.timer` | 03:30 Asia/Taipei, `Persistent=true`: `python -m worker run --trigger timer` (full run, ends with the sweep) |
 | `gate.sh` | operator evidence: `exec .venv/bin/python -m worker gate` (prints JSON, exit 0 only when every check passed) |
 
-All three units read `EnvironmentFile=-%h/.config/homehub-statements.env` (optional, mode 0600) for `STATEMENT_*`
+All units read `EnvironmentFile=-%h/.config/homehub-statements.env` (optional, mode 0600) for `STATEMENT_*`
 overrides; every variable has a default (table in the service README).
 
 ## Install (timers stay disabled for now)
@@ -224,14 +224,14 @@ Flags (`python -m worker sinopac-futures`, written out in full as in the 國泰 
 | `--file <drive-id>` / `--since DATE` / `--until DATE` | restrict the run to one Drive file / a date range |
 | `--retry KEY` | re-post the settled file of that day or month |
 | `--ack KEY --status conflict\|findings` | acknowledge a pending day or month at the portfolio; touches neither Drive nor state, works while latched, exclusive with every other flag except `--status` (exit 2 otherwise) |
-| `--unlatch` | clear the latch (a plain daily run that ends with no codes clears it too) |
+| `--unlatch` | run the plain daily commit run and remove the latch only if it ends with no codes; while latched every other flag except `--ack` is refused (exit 1) |
 | `--validate-history` | dry run over every archived file; writes `sinopac-futures-history-report.json` and prints counts only |
 
-`--validate-history` has its own timeout (`..._VALIDATE_TIMEOUT_S`) and takes far longer than an import (one batch over the whole archive). Its report
-`result` is `partial` when some files failed to parse or download (they are listed under `errors`; the rest was still posted) or `validate_too_many`
+`--validate-history` has its own timeout (`..._VALIDATE_TIMEOUT_S`) and takes far longer than an import (one batch over the whole archive; 116 files: about 13 s at the portfolio, about 4 min with the Drive downloads). Its report
+`result` is `partial` when some files failed to parse or download (they are listed under `errors`; the rest was still validated) or `validate_too_many`
 when the archive exceeds the portfolio's batch limit (nothing is sent; exit 1). Run it only on request, never from the timer.
 
-A Drive error skips that file and the next run retries it; it does not latch. Latch rule, exit codes and recovery are as for 國泰: a non-transient
+A Drive error skips that file (the run exits 1 with code `drive:<Class>`) and the next run retries it; it does not latch. Latch rule, exit codes and recovery are as for 國泰: a non-transient
 failure latches, later runs exit 1 until fixed and cleared with:
 
     sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker sinopac-futures --unlatch'
