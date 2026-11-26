@@ -12,7 +12,7 @@ import {
   SOURCE_TAGS,
   isCommand,
 } from '../notif-task';
-import { SNOOZE_OPTIONS, SnoozeOption, snoozeUntil, untilText } from '../snooze';
+import { SNOOZE_OPTIONS, SnoozeOption, snoozeChoices } from '../snooze';
 
 /** The native control of a row's primary action: the inner `<button>` of `app-btn`, or the link (R28). */
 export const NOTIF_PRIMARY_CONTROL = 'app-btn.notif-primary button, a.notif-primary';
@@ -51,7 +51,7 @@ export class NotifRowComponent {
   protected readonly snoozeOptions = computed<PickerOption[]>(() => {
     this.task();
     const now = this.clock();
-    return SNOOZE_OPTIONS.map((o) => ({ value: o.value, label: o.label, hint: untilText(snoozeUntil(o.value, now)) }));
+    return snoozeChoices(now).map((c) => ({ value: c.value, label: c.label, hint: c.hint }));
   });
 
   protected readonly alert = computed(() => ['overdue', 'system'].includes(this.task().tier));

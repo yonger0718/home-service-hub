@@ -303,6 +303,29 @@ describe('NotificationCenterService', () => {
       expect(stored()).toEqual({ 'sched:1': { until: at(25, 9).toISOString(), tier: 'today', from: 'schedules', wake: { count: 1 } } });
     });
 
+    it('snoozedEarliest is the earliest end among the hidden tasks; showSnoozed clears them and returns them; restoreSnoozes hides them again', async () => {
+      const svc = service();
+      svc.start();
+      await answer(0, { queue: [instance(1, 1, '測試房租', TODAY), instance(2, 2, '測試月費', TODAY)] });
+      expect(svc.snoozedEarliest()).toBeNull();
+      svc.snooze(task(svc, 'sched:1'), 'monday');
+      svc.snooze(task(svc, 'sched:2'), '3h');
+      TestBed.tick();
+      expect(svc.snoozedEarliest()).toEqual(at(24, 13));
+      const saved = svc.showSnoozed();
+      TestBed.tick();
+      expect(Object.keys(saved).sort()).toEqual(['sched:1', 'sched:2']);
+      expect(ids(svc)).toEqual(['sched:1', 'sched:2']);
+      expect(svc.snoozedCount()).toBe(0);
+      expect(svc.snoozedEarliest()).toBeNull();
+      expect(localStorage.getItem(SNOOZE_KEY)).toBeNull();
+      svc.restoreSnoozes(saved);
+      TestBed.tick();
+      expect(ids(svc)).toEqual([]);
+      expect(svc.snoozedCount()).toBe(2);
+      expect(svc.snoozedEarliest()).toEqual(at(24, 13));
+    });
+
     it('fewer open instances keep the snooze; a new instance wakes the task and drops the entry', async () => {
       const svc = service();
       svc.start();

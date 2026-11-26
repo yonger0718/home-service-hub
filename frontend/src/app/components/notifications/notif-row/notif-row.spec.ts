@@ -89,6 +89,9 @@ describe('NotifRowComponent', () => {
       const trigger = q<HTMLButtonElement>('.notif-snooze .pk-trigger')!;
       expect(trigger.textContent!.trim()).toBe('稍後提醒');
       expect(trigger.getAttribute('aria-label')).toBe('稍後提醒：測試月費 · 3 期未入帳');
+      // From 760 px the trigger is the clock icon alone (CSS); its hover title says 稍後提醒 (owner design review 2026-11-26).
+      expect(trigger.querySelector('.pk-icon.pi-clock')).not.toBeNull();
+      expect(trigger.getAttribute('title')).toBe('稍後提醒');
       expect(q('.notif-actions')!.lastElementChild!.matches('app-picker.notif-snooze')).toBe(true);
       trigger.click();
       fixture.detectChanges();
@@ -97,9 +100,9 @@ describe('NotifRowComponent', () => {
         o.querySelector('.pk-hint')!.textContent!.trim(),
       ]);
       expect(options).toEqual([
-        ['3 小時後', '10/24 13:00'],
-        ['明天 09:00', '10/25 09:00'],
-        ['下週一 09:00', '10/26 09:00'],
+        ['3 小時後', '10/24（六）13:00'],
+        ['明天 09:00', '10/25（日）'],
+        ['下週一 09:00', '10/26（一）'],
       ]);
     });
 
@@ -408,7 +411,7 @@ describe('NotifRowComponent', () => {
 
     it('at 760 px and up the actions have one fixed width, content right-aligned, so every amount ends at the same x', () => {
       const top = css.slice(0, css.indexOf('@media'));
-      expect(rule(top, '.notif-actions')).toMatch(/flex:\s*0 0 200px/);
+      expect(rule(top, '.notif-actions')).toMatch(/flex:\s*0 0 240px/);
       expect(rule(top, '.notif-actions')).toMatch(/justify-content:\s*flex-end/);
       expect(rule(phone, '.notif-actions')).toMatch(/flex:\s*0 0 100%/);
       expect(rule(phone, '.notif-actions')).toMatch(/justify-content:\s*flex-start/);

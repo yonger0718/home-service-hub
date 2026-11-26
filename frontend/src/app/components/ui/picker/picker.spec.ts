@@ -8,7 +8,7 @@ import { PickerComponent, PickerOption } from './picker';
 @Component({
   imports: [PickerComponent],
   template: `<button class="before">before</button>
-    <app-picker [options]="options()" [value]="value()" label="計算方式" [ariaLabel]="aria()" (change)="emitted.push($event)"></app-picker>`,
+    <app-picker [options]="options()" [value]="value()" label="計算方式" [ariaLabel]="aria()" [triggerIcon]="icon()" [triggerTitle]="tip()" (change)="emitted.push($event)"></app-picker>`,
 })
 class PickerHostComponent {
   options = signal<PickerOption[]>([
@@ -18,6 +18,8 @@ class PickerHostComponent {
   ]);
   value = signal('a');
   aria = signal<string | null>(null);
+  icon = signal<string | null>(null);
+  tip = signal<string | null>(null);
   emitted: string[] = [];
 }
 
@@ -76,6 +78,21 @@ describe('PickerComponent', () => {
     host.value.set(host.emitted[0]);
     fixture.detectChanges();
     expect(q('.pk-trigger').getAttribute('aria-label')).toBe('計算方式：乙方案');
+  });
+
+  it('no icon and no title by default; triggerIcon adds an aria-hidden pi icon before the text, triggerTitle the hover title', () => {
+    const { fixture, host, q } = setup();
+    expect(q('.pk-trigger .pk-icon')).toBeNull();
+    expect(q('.pk-trigger').hasAttribute('title')).toBe(false);
+    host.icon.set('pi-clock');
+    host.tip.set('稍後提醒');
+    fixture.detectChanges();
+    const icon = q('.pk-trigger .pk-icon');
+    expect(icon.classList).toContain('pi');
+    expect(icon.classList).toContain('pi-clock');
+    expect(icon.getAttribute('aria-hidden')).toBe('true');
+    expect(icon.nextElementSibling).toBe(q('.pk-trigger .pk-text'));
+    expect(q('.pk-trigger').getAttribute('title')).toBe('稍後提醒');
   });
 
   it('ariaLabel replaces the trigger name (the visible text and the listbox label stay)', () => {

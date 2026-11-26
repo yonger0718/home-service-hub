@@ -1,5 +1,5 @@
 import { NotifTask, NotifWake } from './notif-task';
-import { SNOOZE_OPTIONS, SnoozeEntry, parseSnoozes, snoozeEntry, snoozeUntil, untilText, wakes } from './snooze';
+import { SNOOZE_OPTIONS, SnoozeEntry, optionHint, parseSnoozes, snoozeChoices, snoozeEntry, snoozeUntil, untilText, wakes } from './snooze';
 
 /** Local time (the device clock), so the tests hold in any TZ. */
 const at = (y: number, mo: number, d: number, h = 10, mi = 0) => new Date(y, mo - 1, d, h, mi);
@@ -52,6 +52,25 @@ describe('snooze options', () => {
     expect(snoozeUntil('monday', SAT)).toEqual(at(2026, 10, 26, 9));
     expect(snoozeUntil('monday', at(2026, 10, 25, 20))).toEqual(at(2026, 10, 26, 9));
     expect(snoozeUntil('monday', at(2026, 10, 26, 8))).toEqual(at(2026, 11, 2, 9));
+  });
+
+  it('option hints: the date and weekday; the time only for 3 小時後 (owner design review 2026-11-26)', () => {
+    expect(optionHint('3h', at(2026, 10, 24, 13))).toBe('10/24（六）13:00');
+    expect(optionHint('tomorrow', at(2026, 10, 25, 9))).toBe('10/25（日）');
+    expect(optionHint('monday', at(2026, 10, 26, 9))).toBe('10/26（一）');
+  });
+
+  it('snoozeChoices: three options with their end and hint; on a Sunday 下週一 09:00 is 明天 09:00, so only 明天 09:00 shows', () => {
+    expect(snoozeChoices(SAT)).toEqual([
+      { value: '3h', label: '3 小時後', until: at(2026, 10, 24, 13), hint: '10/24（六）13:00' },
+      { value: 'tomorrow', label: '明天 09:00', until: at(2026, 10, 25, 9), hint: '10/25（日）' },
+      { value: 'monday', label: '下週一 09:00', until: at(2026, 10, 26, 9), hint: '10/26（一）' },
+    ]);
+    const sun = at(2026, 10, 25, 10);
+    expect(snoozeChoices(sun).map((c) => [c.value, c.hint])).toEqual([
+      ['3h', '10/25（日）13:00'],
+      ['tomorrow', '10/26（一）'],
+    ]);
   });
 
   it('untilText is MM/DD HH:mm in local time', () => {

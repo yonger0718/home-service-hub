@@ -121,8 +121,9 @@
   display: flex;
   /* One width for every row, content at the right: the body (and so the amount) then ends at the same x on every
      row. 200 px = the widest pair, 全部入帳 (4 x 13.6 px + 2 x 17.6 px padding = 90 px, +22 px for the busy spinner)
-     + 8 px gap + 逐期處理 (4 x 13 px + 2 x 12 px = 76 px) = 174 px idle / 196 px busy. */
-  flex: 0 0 200px;
+     + 8 px gap + 逐期處理 (4 x 13 px + 2 x 12 px = 76 px) = 174 px idle / 196 px busy, + 8 px gap + the 36 px 稍後提醒
+     clock (PR E2) = 218 / 240 px: every row's actions stay on one line, so rows keep one height. */
+  flex: 0 0 240px;
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
@@ -177,11 +178,24 @@
   }
 }
 
-/* 稍後提醒 (PR E2): a picker whose trigger reads like the secondary links (no field chrome), chevron kept. */
+/* 稍後提醒 (PR E2): from 760 px a 36 px clock button, last on the actions line, its name in the hover title (owner
+   design review 2026-11-26); on a phone the text and chevron, read like the secondary links. No field chrome. */
 .notif-snooze {
   display: inline-flex;
 
+  ::ng-deep .pk-text,
+  ::ng-deep .pk-chevron {
+    display: none;
+  }
+
+  ::ng-deep .pk-icon {
+    font-size: 15px;
+  }
+
   ::ng-deep .pk-trigger {
+    justify-content: center;
+    min-width: 36px;
+    padding: 0;
     background: transparent;
     border-color: transparent;
     border-radius: 10px;
@@ -190,7 +204,6 @@
     font-weight: 700;
     gap: 2px;
     min-height: 36px;
-    padding: 0 8px 0 12px;
     white-space: nowrap;
     width: auto;
 
@@ -216,6 +229,21 @@
 @media (max-width: 759.98px) {
   :host {
     align-items: flex-start;
+  }
+
+  .notif-snooze {
+    ::ng-deep .pk-icon {
+      display: none;
+    }
+
+    ::ng-deep .pk-text,
+    ::ng-deep .pk-chevron {
+      display: inline;
+    }
+
+    ::ng-deep .pk-trigger {
+      padding: 0 8px 0 12px;
+    }
   }
 
   .notif-body {

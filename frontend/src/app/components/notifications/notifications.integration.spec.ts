@@ -470,13 +470,22 @@ describe('NotificationsComponent with the real services (入帳 interleavings)',
       expect(localStorage.getItem('hh-notif-snooze')).toBeNull();
     });
 
-    it('現在顯示 brings every snoozed row back', async () => {
+    it('現在顯示 cancels every snooze (toast 已取消 1 件延後); 復原 hides the row again with the same end', async () => {
       await openRent();
       await snooze('monday');
+      const until = JSON.parse(localStorage.getItem('hh-notif-snooze')!)['sched:1'].until;
       root.querySelector<HTMLButtonElement>('.notif-snoozed button')!.click();
       await settle();
       expect(rentRow()).not.toBeNull();
       expect(root.querySelector('.notif-snoozed')).toBeNull();
+      expect(localStorage.getItem('hh-notif-snooze')).toBeNull();
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'done', text: '已取消 1 件延後', action: expect.objectContaining({ label: '復原' }) }),
+      );
+      toasts.runAction(toasts.current()!.id);
+      await settle();
+      expect(rentRow()).toBeNull();
+      expect(JSON.parse(localStorage.getItem('hh-notif-snooze')!)['sched:1'].until).toBe(until);
     });
   });
 

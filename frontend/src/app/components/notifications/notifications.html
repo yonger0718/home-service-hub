@@ -14,13 +14,22 @@
 
       @if (state() === 'empty') {
         <div class="notif-empty">
-          <i class="pi pi-check-circle" aria-hidden="true"></i>
-          <h2>都處理好了</h2>
+          <i class="pi" [class.pi-check-circle]="center.snoozedCount() === 0" [class.pi-clock]="center.snoozedCount() > 0" aria-hidden="true"></i>
+          @if (center.snoozedCount() > 0) {
+            <!-- Everything left is snoozed (owner design review 2026-11-26): not an all-clear. -->
+            <h2>目前沒有要處理的事</h2>
+            <p class="empty-snoozed">{{ center.snoozedCount() }} 件稍後提醒，最早 {{ snoozedEarliestText() }} 回來</p>
+          } @else {
+            <h2>都處理好了</h2>
+          }
           @if (nextLine(); as next) {
             <p class="empty-next">{{ next }}</p>
           }
           @if (trackingCount() > 0) {
             <button type="button" class="empty-tracking" (click)="openTracking()">看追蹤中的 {{ trackingCount() }} 件 ›</button>
+          }
+          @if (center.snoozedCount() > 0) {
+            <button type="button" class="empty-tracking empty-show" (click)="showSnoozed()">現在顯示</button>
           }
         </div>
       }
@@ -50,7 +59,7 @@
         <p class="notif-overflow notif-overflow--portfolio">還有 {{ cathayMore() }} 天未列出，處理完上面的會接著顯示</p>
       }
 
-      @if (center.snoozedCount() > 0) {
+      @if (center.snoozedCount() > 0 && state() !== 'empty') {
         <p class="notif-snoozed">另有 {{ center.snoozedCount() }} 件稍後提醒 · <button type="button" class="notif-foot-link notif-snoozed-show" (click)="showSnoozed()">現在顯示</button></p>
       }
 

@@ -39,6 +39,14 @@ describe('NotifSnoozeStore', () => {
     expect(localStorage.getItem(SNOOZE_KEY)).toBeNull();
   });
 
+  it('restore puts saved entries back beside the current ones (復原 after 現在顯示)', () => {
+    const store = make();
+    store.set('a', entry(13));
+    store.restore({ b: entry(14), c: entry(15) });
+    expect(store.entries()).toEqual({ a: entry(13), b: entry(14), c: entry(15) });
+    expect(Object.keys(JSON.parse(localStorage.getItem(SNOOZE_KEY)!))).toEqual(['a', 'b', 'c']);
+  });
+
   it('remove of several ids, and of an unknown id, is harmless', () => {
     const store = make();
     store.set('a', entry(13));

@@ -43,6 +43,34 @@ export function untilText(until: Date): string {
   return `${pad(until.getMonth() + 1)}/${pad(until.getDate())} ${pad(until.getHours())}:${pad(until.getMinutes())}`;
 }
 
+const WEEKDAYS = '日一二三四五六';
+
+/**
+ * The option's hint in the menu (owner design review 2026-11-26): `10/24（六）13:00` for 3 小時後, the date and
+ * weekday alone (`10/25（日）`) for the 09:00 options, whose label already says the time.
+ */
+export function optionHint(option: SnoozeOption, until: Date): string {
+  const day = `${pad(until.getMonth() + 1)}/${pad(until.getDate())}（${WEEKDAYS[until.getDay()]}）`;
+  return option === '3h' ? `${day}${pad(until.getHours())}:${pad(until.getMinutes())}` : day;
+}
+
+export interface SnoozeChoice {
+  readonly value: SnoozeOption;
+  readonly label: string;
+  readonly until: Date;
+  readonly hint: string;
+}
+
+/** The menu at `now`: on a Sunday 下週一 09:00 is the same time as 明天 09:00, so only 明天 09:00 is offered. */
+export function snoozeChoices(now: Date): SnoozeChoice[] {
+  const choices = SNOOZE_OPTIONS.map((o) => {
+    const until = snoozeUntil(o.value, now);
+    return { value: o.value, label: o.label, until, hint: optionHint(o.value, until) };
+  });
+  const tomorrow = choices.find((c) => c.value === 'tomorrow')!.until.getTime();
+  return choices.filter((c) => c.value !== 'monday' || c.until.getTime() !== tomorrow);
+}
+
 export function snoozeEntry(task: NotifTask, until: Date): SnoozeEntry {
   return { until: until.toISOString(), tier: task.tier, from: task.from, wake: task.wake };
 }

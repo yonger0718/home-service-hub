@@ -40,7 +40,7 @@ import {
   recalcFailed,
   splitPendingDividends,
 } from '../components/notifications/sources/portfolio';
-import { SnoozeOption, snoozeEntry, snoozeUntil, wakes } from '../components/notifications/snooze';
+import { SnoozeMap, SnoozeOption, snoozeEntry, snoozeUntil, wakes } from '../components/notifications/snooze';
 import { scheduleTasks } from '../components/notifications/sources/schedules';
 import { allPages } from '../components/portfolio/paging';
 import { NavBadge } from '../components/shell/navigation';
@@ -333,6 +333,16 @@ export class NotificationCenterService {
   });
   /** Counted tasks hidden by a snooze on this device. */
   readonly snoozedCount: Signal<number> = computed(() => this.hiddenIds().size);
+  /** When the first hidden task comes back by the clock (earliest `until`), or null with nothing hidden. */
+  readonly snoozedEarliest: Signal<Date | null> = computed(() => {
+    const entries = this.snoozes.entries();
+    let earliest: number | null = null;
+    for (const id of this.hiddenIds()) {
+      const t = Date.parse(entries[id].until);
+      earliest = earliest === null || t < earliest ? t : earliest;
+    }
+    return earliest === null ? null : new Date(earliest);
+  });
   /** The debts row, the upcoming row, then the dividends waiting for their payment date; each absent when it has nothing. */
   readonly trackingRows: Signal<readonly NotifTrackingRow[]> = computed(() => {
     const counterparties = this.counterparties();
@@ -645,9 +655,16 @@ export class NotificationCenterService {
     this.snoozes.remove(id);
   }
 
-  /** Brings every snoozed task back (現在顯示). */
-  showSnoozed(): void {
+  /** Cancels every snooze (現在顯示) and returns what was stored, for 復原. */
+  showSnoozed(): SnoozeMap {
+    const saved = this.snoozes.entries();
     this.snoozes.clear();
+    return saved;
+  }
+
+  /** 復原 after 現在顯示: the cancelled snoozes come back (the wake rule still applies to each). */
+  restoreSnoozes(saved: SnoozeMap): void {
+    this.snoozes.restore(saved);
   }
 
   /**

@@ -52,6 +52,10 @@ export class PickerComponent {
   readonly disabled = input(false);
   /** The trigger's accessible name; default 「<label>：<chosen label>」. */
   readonly ariaLabel = input<string | null>(null);
+  /** A PrimeIcons class (`pi-clock`) shown before the trigger text; a caller's CSS may show the icon alone. */
+  readonly triggerIcon = input<string | null>(null);
+  /** The trigger's hover title (for an icon-only trigger). */
+  readonly triggerTitle = input<string | null>(null);
   readonly change = output<string>();
 
   private readonly trigger = viewChild.required<ElementRef<HTMLButtonElement>>('trigger');

@@ -82,7 +82,10 @@ describe('NotificationsComponent', () => {
     return new Date(2026, 9, 25, 9, 0);
   });
   const unsnooze = vi.fn();
-  const showSnoozed = vi.fn();
+  const snoozedEarliest = signal<Date | null>(null);
+  const SAVED = { 'sched:1': { until: new Date(2026, 9, 26, 9, 0).toISOString(), tier: 'today', from: 'schedules', wake: { count: 1 } } };
+  const showSnoozed = vi.fn(() => SAVED);
+  const restoreSnoozes = vi.fn();
   const refresh = vi.fn();
   /** As the service: starts the next round and returns its id. */
   const invalidate = vi.fn(() => {
@@ -133,6 +136,8 @@ describe('NotificationsComponent', () => {
     snooze,
     unsnooze,
     showSnoozed,
+    restoreSnoozes,
+    snoozedEarliest,
     summary: computed<NotifSummary>(() => summarize(tasks())),
     badges: signal({}),
     refresh,
@@ -185,6 +190,8 @@ describe('NotificationsComponent', () => {
     snooze.mockClear();
     unsnooze.mockClear();
     showSnoozed.mockClear();
+    restoreSnoozes.mockClear();
+    snoozedEarliest.set(null);
     refresh.mockClear();
     invalidate.mockClear();
     accounting.postScheduleInstance.mockClear();
@@ -2210,23 +2217,44 @@ describe('NotificationsComponent', () => {
       expect(document.activeElement).toBe(rowPrimary(root, 'c1'));
     });
 
-    it('「另有 N 件稍後提醒 · 現在顯示」 shows while some are snoozed; 現在顯示 calls showSnoozed', async () => {
+    it('「另有 N 件稍後提醒 · 現在顯示」 shows while some are snoozed; 現在顯示 cancels them: toast 「已取消 2 件延後」, 復原 restores them', async () => {
       const root = mount();
+      const toasts = TestBed.inject(ToastService);
       expect(q(root, '.notif-snoozed')).toBeNull();
       snoozedCount.set(2);
       await settle();
       expect(text(q(root, '.notif-snoozed'))).toBe('另有 2 件稍後提醒 · 現在顯示');
       q(root, '.notif-snoozed button')!.click();
       expect(showSnoozed).toHaveBeenCalledTimes(1);
+      expect(toasts.current()).toEqual(
+        expect.objectContaining({ kind: 'done', text: '已取消 2 件延後', action: expect.objectContaining({ label: '復原' }) }),
+      );
+      toasts.current()!.action!.run();
+      expect(restoreSnoozes).toHaveBeenCalledWith(SAVED);
     });
 
-    it('everything snoozed: 都處理好了 and the line under it', async () => {
+    it('everything snoozed: 目前沒有要處理的事, 「5 件稍後提醒，最早 10/25 09:00 回來」 and 現在顯示 in the card; subtitle 沒有要處理的事 · 5 件稍後提醒; no line under the card', async () => {
       tasks.set([]);
       snoozedCount.set(5);
+      snoozedEarliest.set(new Date(2026, 9, 25, 9, 0));
+      const root = mount();
+      await settle();
+      expect(text(q(root, '.notif-empty h2'))).toBe('目前沒有要處理的事');
+      expect(text(q(root, '.notif-empty .empty-snoozed'))).toBe('5 件稍後提醒，最早 10/25 09:00 回來');
+      expect(text(q(root, '.notif-empty .empty-show'))).toBe('現在顯示');
+      expect(text(q(root, 'app-page-header .page-subtitle'))).toBe('沒有要處理的事 · 5 件稍後提醒');
+      expect(q(root, '.notif-snoozed')).toBeNull();
+      q(root, '.notif-empty .empty-show')!.click();
+      expect(showSnoozed).toHaveBeenCalledTimes(1);
+    });
+
+    it('nothing snoozed and nothing to do: still 都處理好了, no snooze line', async () => {
+      tasks.set([]);
       const root = mount();
       await settle();
       expect(text(q(root, '.notif-empty h2'))).toBe('都處理好了');
-      expect(text(q(root, '.notif-snoozed'))).toBe('另有 5 件稍後提醒 · 現在顯示');
+      expect(q(root, '.empty-snoozed')).toBeNull();
+      expect(text(q(root, 'app-page-header .page-subtitle'))).toBe('沒有要處理的事');
     });
   });
 });

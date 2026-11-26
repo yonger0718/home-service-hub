@@ -210,7 +210,11 @@ export class NotificationsComponent {
     }
     if (total === 0) {
       // Nothing counted, but the inbox has items this page could not list: not an all-clear.
-      return this.center.overflow() ? '還有對帳項目未列出' : '沒有要處理的事';
+      if (this.center.overflow()) {
+        return '還有對帳項目未列出';
+      }
+      const snoozed = this.center.snoozedCount();
+      return snoozed > 0 ? `沒有要處理的事 · ${snoozed} 件稍後提醒` : '沒有要處理的事';
     }
     const parts = [`${total} 件要處理`];
     if (overdue > 0) {
@@ -463,9 +467,20 @@ export class NotificationsComponent {
     this.toasts.done(`已延後到 ${untilText(until)}：${task.title}`, { undo: () => this.center.unsnooze(task.id) });
   }
 
-  /** 現在顯示: every snoozed task comes back; focus goes to the first row. */
+  /** The empty card's 「N 件稍後提醒，最早 MM/DD HH:mm 回來」 time, or null with nothing snoozed. */
+  protected readonly snoozedEarliestText = computed(() => {
+    const earliest = this.center.snoozedEarliest();
+    return earliest ? untilText(earliest) : null;
+  });
+
+  /**
+   * 現在顯示 cancels every snooze (owner design review 2026-11-26): the tasks come back, the toast 「已取消 N 件延後」 has
+   * 復原 (the cancelled snoozes return); focus goes to the first row.
+   */
   protected showSnoozed(): void {
-    this.center.showSnoozed();
+    const n = this.center.snoozedCount();
+    const saved = this.center.showSnoozed();
+    this.toasts.done(`已取消 ${n} 件延後`, { undo: () => this.center.restoreSnoozes(saved) });
     this.restoreFocus(0);
   }
 

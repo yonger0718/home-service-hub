@@ -39,6 +39,11 @@ export class NotifSnoozeStore {
     this.save(next);
   }
 
+  /** Puts saved entries back beside the current ones (復原 after 現在顯示). */
+  restore(saved: SnoozeMap): void {
+    this.save({ ...this.state(), ...saved });
+  }
+
   clear(): void {
     this.save({});
   }
