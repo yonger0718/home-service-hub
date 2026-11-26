@@ -146,4 +146,10 @@ def test_rows_since_newest_pay_date_first(client, seed, db_session, run):
 def test_rows_need_since_and_read_scope(client):
     assert client.get(ROWS, headers=READ).status_code == 422
     assert client.get(ROWS, headers=READ, params={"since": "nope"}).status_code == 422
+
+
+@pytest.mark.parametrize("since", ["0", "86400", "1700000000", "20261001", "2026-10-1", "2026-13-01", "2026-10-01T00:00:00"])
+def test_rows_since_is_a_calendar_day_only(client, since):
+    """Pydantic's lax `date` turns a small number string (`0`) into a Unix-epoch day; `since` takes YYYY-MM-DD only."""
+    assert client.get(ROWS, headers=READ, params={"since": since}).status_code == 422
     assert client.get(ROWS, params={"since": "2026-10-01"}).status_code == 401
