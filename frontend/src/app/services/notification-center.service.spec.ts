@@ -2029,6 +2029,16 @@ describe('NotificationCenterService', () => {
       expect(svc.tasks().some(t => t.from === 'autopay')).toBe(false);
     });
 
+    it('a skip of an earlier statement ends with its cycle, like the bill: once the card closed again, no task', async () => {
+      // 測試銀行卡1 closes on the 5th, due on the 28th: the current bill is the 09-06..10-05 statement, due 10/28.
+      const older = skipped({ statement_id: 30, due_date: '2026-09-28', pay_date: '2026-09-28' });
+      const current = skipped({ statement_id: 31, due_date: '2026-10-28', pay_date: '2026-10-28' });
+      const svc = service();
+      svc.start();
+      await answer(0, { accounts: [card(1, 28)], autoPayRows: [older, current] });
+      expect(svc.tasks().filter(t => t.from === 'autopay').map(t => t.id)).toEqual(['autopay:31']);
+    });
+
     it('a failed read names 自動扣繳 and the bill keeps its plain due text', async () => {
       const svc = service();
       svc.start();

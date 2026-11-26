@@ -361,7 +361,7 @@ export class NotificationCenterService {
     }
     if (autoPay) {
       tasks.push(
-        ...autoPayTasks({ rows: autoPay.rows, accounts: accounts ?? [], paid: (cardId, payDate) => this.billPaid(cardId, payDate), today }),
+        ...autoPayTasks({ rows: autoPay.rows, accounts: accounts ?? [], settled: row => this.autoPaySettled(row), today }),
       );
     }
     const queue = this.queue();
@@ -401,14 +401,21 @@ export class NotificationCenterService {
   });
 
   /** Whether the card's current bill with this debit day is paid (remaining ≤ 0); false when not among the dues. */
-  private billPaid(cardId: number, payDate: string): boolean {
-    for (const event of this.dues()) {
-      const state = event.accountId === cardId ? this.bills.bill(event) : null;
-      if (state && state.payDate === payDate) {
-        return !(state.remaining > 0);
-      }
+  /**
+   * A skipped auto-pay is settled when its statement is the card's current bill and that bill is paid, or when the
+   * card's current bill is a later statement (its due date falls before the current cycle's closing). Statements are
+   * matched by cycle, not by debit day, so a holiday the two calendars shift differently does not matter.
+   */
+  private autoPaySettled(row: AutoPayRow): boolean {
+    const event = this.dues().find(e => e.accountId === row.card_account_id);
+    if (!event) {
+      return false;
     }
-    return false;
+    if (row.due_date < event.period.end) {
+      return true;
+    }
+    const state = this.bills.bill(event);
+    return !!state && !(state.remaining > 0);
   }
 
   private readonly trackingBills: Signal<NotifTask[]> = computed(() =>

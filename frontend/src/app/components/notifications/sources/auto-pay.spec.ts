@@ -18,8 +18,8 @@ const row = (over: Partial<AutoPayRow> = {}): AutoPayRow => ({
 });
 const card = { id: 7, name: '測試卡', currency: 'TWD' } as LedgerAccount;
 
-function run(rows: AutoPayRow[], paid: (cardId: number, payDate: string) => boolean = () => false) {
-  return autoPayTasks({ rows, accounts: [card], paid, today: TODAY });
+function run(rows: AutoPayRow[], settled: (row: AutoPayRow) => boolean = () => false) {
+  return autoPayTasks({ rows, accounts: [card], settled, today: TODAY });
 }
 
 describe('autoPayTasks', () => {
@@ -62,7 +62,7 @@ describe('autoPayTasks', () => {
     }
   });
 
-  it('no task: informational reasons, other statuses, older than 30 days, or the bill already paid', () => {
+  it('no task: informational reasons, other statuses, older than 30 days, or settled (paid, or an earlier cycle)', () => {
     for (const reason of ['twin', 'cutoff', 'duplicate_statement']) {
       expect(run([row({ reason })])).toEqual([]);
     }
@@ -72,8 +72,8 @@ describe('autoPayTasks', () => {
     expect(run([row({ pay_date: '2026-10-26' })])).toEqual([]);
     expect(run([row({ pay_date: '2026-10-27' })])).toHaveLength(1); // exactly 30 days
     const seen: unknown[] = [];
-    expect(run([row()], (cardId, payDate) => (seen.push([cardId, payDate]), true))).toEqual([]);
-    expect(seen).toEqual([[7, '2026-11-24']]);
+    expect(run([row()], r => (seen.push(r.statement_id), true))).toEqual([]);
+    expect(seen).toEqual([row().statement_id]);
   });
 
   it('an unknown card: no meta, the amount without a currency guess falls back to TWD', () => {

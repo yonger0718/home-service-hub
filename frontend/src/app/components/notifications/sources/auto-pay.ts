@@ -13,23 +13,26 @@ const LINK_REASONS: ReadonlySet<string> = new Set(['no_link', 'link_ineligible']
 export interface AutoPayTaskInput {
   readonly rows: readonly AutoPayRow[];
   readonly accounts: readonly LedgerAccount[];
-  /** Whether the card's bill with this debit day is paid (remaining ≤ 0); false when unknown. */
-  readonly paid: (cardId: number, payDate: string) => boolean;
+  /**
+   * Whether the skip no longer needs the owner: its statement's bill is paid, or the card has closed a later cycle (the
+   * center follows only each card's current bill, so the skip ends with its cycle like the bill does). False when unknown.
+   */
+  readonly settled: (row: AutoPayRow) => boolean;
   readonly today: string;
 }
 
 /**
  * One 系統 task per statement whose auto-pay row is `skipped` with a task reason (D9: the transient reasons and
- * `expired`), its debit day within the last AUTO_PAY_TASK_DAYS days, and its bill not paid yet.
+ * `expired`), its debit day within the last AUTO_PAY_TASK_DAYS days, and not `settled`.
  */
 export function autoPayTasks(input: AutoPayTaskInput): NotifTask[] {
-  const { rows, accounts, paid, today } = input;
+  const { rows, accounts, settled, today } = input;
   const oldest = addDays(today, -AUTO_PAY_TASK_DAYS);
   const tasks: NotifTask[] = [];
   for (const row of rows) {
     const reason = row.reason ?? '';
     if (row.status !== 'skipped' || !AUTO_PAY_TASK_REASONS.has(reason) || row.pay_date < oldest) continue;
-    if (paid(row.card_account_id, row.pay_date)) continue;
+    if (settled(row)) continue;
     const card = accounts.find(a => a.id === row.card_account_id);
     const secondary: NotifLink[] = LINK_REASONS.has(reason)
       ? [{ label: '設定扣款帳戶', route: `/accounting/accounts/${row.card_account_id}/settings` }]
