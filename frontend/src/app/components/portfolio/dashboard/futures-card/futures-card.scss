@@ -3,11 +3,13 @@
 }
 
 /* Two groups: equity / month P&L / 資料日, then the printed margins / 保證金資料日. Stacked below 1024 px (phones keep
-   the same order, so 保證金資料日 stays right under the margin rows); side by side from 1024 px like the chart row.
-   Each column is capped so a label stays within scanning distance of its value on wide screens. */
+   the same order, so 保證金資料日 stays right under the margin rows); side by side from 1024 px like the chart row,
+   unless the host asks for `stacked` (the narrow empty-portfolio view). Every column, stacked or not, is capped at
+   30rem so a label stays within scanning distance of its value on a wide card. */
 .futures-cols {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  max-width: 30rem;
 }
 
 .futures-col {
@@ -23,12 +25,13 @@
 }
 
 @media (min-width: 1024px) {
-  .futures-cols {
+  .futures-cols--wide {
     column-gap: var(--space-8);
     grid-template-columns: repeat(2, minmax(0, 30rem));
+    max-width: none;
   }
 
-  .futures-col-margin {
+  .futures-cols--wide .futures-col-margin {
     border-left: 1px solid var(--app-border);
     border-top: 0;
     margin-top: 0;
@@ -37,7 +40,7 @@
   }
 
   /* Both feet (資料日, 保證金資料日) sit on the card's bottom line. */
-  .futures-foot {
+  .futures-cols--wide .futures-foot {
     margin-top: auto;
   }
 }

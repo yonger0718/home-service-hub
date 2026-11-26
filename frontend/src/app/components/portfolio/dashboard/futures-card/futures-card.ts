@@ -27,6 +27,9 @@ export class FuturesCardComponent implements OnInit, OnChanges {
   /** A changing value asks for a fresh read (the first value is the initial load's). */
   readonly refresh = input(0);
 
+  /** A narrow host (the empty-portfolio view) keeps the data view in one column at every width. */
+  readonly stacked = input(false);
+
   ngOnInit(): void {
     this.load();
   }

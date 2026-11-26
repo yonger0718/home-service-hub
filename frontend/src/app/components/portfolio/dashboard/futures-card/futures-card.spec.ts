@@ -208,6 +208,38 @@ describe('FuturesCardComponent', () => {
     expect(margin.lastElementChild).toBe(date);
   });
 
+  it('a negative excess of −1 warns (注意追繳) and a call of 1 warns (追繳)', () => {
+    const neg = render(daily({ excess_margin: '-1', margin_call: '0' }));
+    expect(marginRow(neg.el).classList.contains('futures-row--warn')).toBe(true);
+    expect(marginRow(neg.el).querySelector('[data-testid="futures-margin-warn"]')!.textContent!.trim()).toBe('注意追繳');
+    TestBed.resetTestingModule();
+    const call = render(daily({ excess_margin: '-1', margin_call: '1' }));
+    expect(marginRow(call.el).classList.contains('futures-row--warn')).toBe(true);
+    expect(marginRow(call.el).querySelector('[data-testid="futures-margin-warn"]')!.textContent!.trim()).toBe('追繳');
+  });
+
+  it('judges the warning on the displayed figure: sub-dollar amounts shown as $0 stay calm', () => {
+    const { el } = render(daily({ excess_margin: '-0.4', margin_call: '0.4' }));
+    expect(marginRow(el).classList.contains('futures-row--warn')).toBe(false);
+    expect(el.querySelector('[data-testid="futures-margin-warn"]')).toBeNull();
+  });
+
+  it('has no 保證金資料日 foot when there is no daily statement', () => {
+    const { el, text } = render(summary({ latest_daily: null }));
+    expect(el.querySelector('[data-testid="futures-margin-date"]')).toBeNull();
+    expect(text()).not.toContain('保證金資料日');
+  });
+
+  it('goes two columns on wide screens by default, one column when stacked (narrow host)', () => {
+    const wide = render(summary());
+    expect(wide.el.querySelector('.futures-cols')!.classList.contains('futures-cols--wide')).toBe(true);
+    TestBed.resetTestingModule();
+    const narrow = render(summary());
+    narrow.fixture.componentRef.setInput('stacked', true);
+    narrow.fixture.detectChanges();
+    expect(narrow.el.querySelector('.futures-cols')!.classList.contains('futures-cols--wide')).toBe(false);
+  });
+
   it('shows a compact error line when the summary fails to load', () => {
     const { el } = render(new Error('boom'));
     const line = el.querySelector('[data-testid="futures-compact"]')!;

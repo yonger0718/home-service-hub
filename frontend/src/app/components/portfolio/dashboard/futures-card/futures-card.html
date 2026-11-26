@@ -3,7 +3,7 @@
   @let v = d.value!;
   @let daily = d.latest_daily;
   <app-bento class="futures-card" title="永豐期貨">
-    <div class="futures-cols">
+    <div class="futures-cols" [class.futures-cols--wide]="!stacked()">
       <div class="futures-col" data-testid="futures-col-main">
         <div class="futures-row futures-equity-row">
           <span class="futures-label">權益總值</span>
