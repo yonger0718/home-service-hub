@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub portfolio: import the 永豐期貨 daily and monthly futures statements from Drive
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/home-hub/services/accounting-service
+EnvironmentFile=-%h/.config/homehub-statements.env
+UMask=0077
+ExecStart=%h/workspace/home-hub/services/accounting-service/.venv/bin/python -m worker sinopac-futures
+Nice=10

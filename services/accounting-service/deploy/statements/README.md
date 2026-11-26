@@ -24,7 +24,7 @@ During the interim deviation (rulings 3/11: `opc`, scope `export-masked` and `ve
 installed but the timers are NOT enabled:
 
     mkdir -p ~/.config/systemd/user
-    ln -sf ~/workspace/home-hub/services/accounting-service/deploy/statements/homehub-{statements,portfolio-flex,portfolio-cathay,einvoice}*.{service,timer} ~/.config/systemd/user/
+    ln -sf ~/workspace/home-hub/services/accounting-service/deploy/statements/homehub-{statements,portfolio-flex,portfolio-cathay,portfolio-sinopac-futures,einvoice}*.{service,timer} ~/.config/systemd/user/
     systemctl --user daemon-reload
 
 Today's hard guard is the feature flag: with `ACCOUNTING_RECONCILIATION_ENABLED` off the statement routes answer 404, so a
@@ -194,6 +194,50 @@ Deploy order (the portfolio side is already live):
        journalctl --user -u homehub-portfolio-cathay.service
 
 In Loki `{job="homehub", unit="homehub-portfolio-cathay.service"} |~ "\"codes\": \\[\"|cathay disabled"` shows a run that fails every day, including runs refused while latched (those print `cathay disabled`).
+
+## 永豐期貨 futures statement timer (2026-11-26)
+
+`homehub-portfolio-sinopac-futures.service` / `.timer` run `python -m worker sinopac-futures` daily at 06:45 Asia/Taipei (`Persistent=true`).
+The worker lists two Drive folders, `投資/永豐期貨/日對帳單` (`STATEMENT_SINOPAC_FUTURES_DAILY_FOLDER`) and `投資/永豐期貨/月對帳單`
+(`STATEMENT_SINOPAC_FUTURES_MONTHLY_FOLDER`), downloads each new PDF, unlocks and parses it, POSTs it to the portfolio service and reports the run
+(`/runs`, best effort). Design: spec `docs/superpowers/specs/2026-11-25-sinopac-futures-statement-design.md`. Install with the glob in the install section
+above (it now includes this unit). Enable the timer on the same day as the first manual commit run, not before.
+
+Password lines, added by the owner to the worker's password file (`STATEMENT_PASSWORD_FILE`, default `~/.config/homehub-statement-passwords.env`),
+one per folder, same format as the other entries (the key is the Drive folder; placeholders here, never a value in the repo):
+
+    投資/永豐期貨/日對帳單=$ID
+    投資/永豐期貨/月對帳單=$ID
+
+Other overrides (optional, `~/.config/homehub-statements.env`): `STATEMENT_SINOPAC_FUTURES_TIMEOUT_S` (portfolio request timeout),
+`STATEMENT_SINOPAC_FUTURES_VALIDATE_TIMEOUT_S` (default 600, used only by `--validate-history`). State files in `<state_dir>`:
+`sinopac-futures-state.json`, `sinopac-futures-disabled.json` (the latch), `sinopac-futures-history-report.json`, `.sinopac-futures.lock`
+(a second run prints `already running`, exit 3). The futures lock is shared with the 國泰 job: a 國泰 replay holding it can delay the 06:45 import.
+
+Flags (`python -m worker sinopac-futures`, written out in full as in the 國泰 section; a KEY is `YYYY-MM-DD` for a daily file, `YYYY-MM` for a monthly one):
+
+| Flag | Effect |
+|---|---|
+| (none) | plain daily commit run over both folders; the only run that reports |
+| `--dry-run` | post with `dry_run=true`; no state, no latch, no run report |
+| `--file <drive-id>` / `--since DATE` / `--until DATE` | restrict the run to one Drive file / a date range |
+| `--retry KEY` | re-post the settled file of that day or month |
+| `--ack KEY --status conflict\|findings` | acknowledge a pending day or month at the portfolio; touches neither Drive nor state, works while latched, exclusive with every other flag except `--status` (exit 2 otherwise) |
+| `--unlatch` | clear the latch (a plain daily run that ends with no codes clears it too) |
+| `--validate-history` | dry run over every archived file; writes `sinopac-futures-history-report.json` and prints counts only |
+
+`--validate-history` has its own timeout (`..._VALIDATE_TIMEOUT_S`) and takes far longer than an import (one batch over the whole archive). Its report
+`result` is `partial` when some files failed to parse or download (they are listed under `errors`; the rest was still posted) or `validate_too_many`
+when the archive exceeds the portfolio's batch limit (nothing is sent; exit 1). Run it only on request, never from the timer.
+
+A Drive error skips that file and the next run retries it; it does not latch. Latch rule, exit codes and recovery are as for 國泰: a non-transient
+failure latches, later runs exit 1 until fixed and cleared with:
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker sinopac-futures --unlatch'
+
+Before enabling the timer add `_SYSTEMD_USER_UNIT=homehub-portfolio-sinopac-futures.service` to the Alloy journal matcher in
+`/home/opc/workspace/monitoring/alloy/config.alloy` (outside this repo). Then `systemctl --user enable --now homehub-portfolio-sinopac-futures.timer`
+and `journalctl --user -u homehub-portfolio-sinopac-futures.service`.
 
 ## 電子發票 (`homehub-einvoice`)
 

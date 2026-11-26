@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub portfolio: 永豐期貨 futures statements at 06:45 Taipei (after the previous day's statement is on Drive)
+
+[Timer]
+OnCalendar=*-*-* 06:45:00 Asia/Taipei
+Persistent=true
+Unit=homehub-portfolio-sinopac-futures.service
+
+[Install]
+WantedBy=timers.target
