@@ -49,7 +49,7 @@ The count SHALL be the number of tasks in 已逾期, 今天, 要你確認 and �
 
 ### Requirement: Snooze on this device
 
-Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and 下週一 09:00. A snoozed task SHALL leave the list and the count until the time passes, its count grows, its amount or due date changes, or it becomes 已逾期; a lower count SHALL NOT bring it back. While any task is snoozed the list SHALL end with 「另有 N 件稍後提醒 · 現在顯示」; 現在顯示 SHALL cancel every snooze and offer 復原. With every remaining task snoozed the page SHALL say 「目前沒有要處理的事」, not 都處理好了. Snoozes SHALL be stored in `localStorage` key `hh-notif-snooze` and never sent to the server.
+Each counted task SHALL offer 稍後提醒 with 3 小時後, 明天 09:00 and 下週一 09:00. A snoozed task SHALL leave the list and the count until the time passes, its count grows, its amount or due date changes, or it becomes 已逾期; a lower count SHALL NOT bring it back. 現在顯示 SHALL cancel every snooze and offer 復原. Snoozes SHALL be stored in `localStorage` key `hh-notif-snooze` and never sent to the server.
 
 #### Scenario: Snooze until tomorrow
 - **WHEN** the owner snoozes the 房租 task until 明天 09:00
