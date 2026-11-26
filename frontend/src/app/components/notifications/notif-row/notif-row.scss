@@ -313,3 +313,16 @@
     background: var(--app-surface);
   }
 }
+
+/* 760–1023 px is a tablet's touch range (owner design review 2026-11-26): the clock keeps its size, its target grows
+   to 44 x 44 px, and the actions column takes the extra 8 px (196 busy + 8 gap + 44 = 248 px) to stay on one line. */
+@media (min-width: 760px) and (max-width: 1023.98px) {
+  .notif-actions {
+    flex-basis: 248px;
+  }
+
+  .notif-snooze ::ng-deep .pk-trigger {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

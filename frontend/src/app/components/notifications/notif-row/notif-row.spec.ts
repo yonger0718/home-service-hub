@@ -417,6 +417,14 @@ describe('NotifRowComponent', () => {
       expect(rule(phone, '.notif-actions')).toMatch(/justify-content:\s*flex-start/);
     });
 
+    it('760–1023 px (tablet, touch): the clock is a 44 x 44 px target and the actions column widens to 248 px to keep one line', () => {
+      const start = css.indexOf('@media (min-width: 760px) and (max-width: 1023.98px)');
+      expect(start).toBeGreaterThan(-1);
+      const tablet = css.slice(start, css.indexOf('@media', start + 1) === -1 ? undefined : css.indexOf('@media', start + 1));
+      expect(tablet).toMatch(/\.notif-snooze ::ng-deep \.pk-trigger\s*\{[^}]*min-height:\s*44px[^}]*min-width:\s*44px/);
+      expect(rule(tablet, '.notif-actions')).toMatch(/flex-basis:\s*248px/);
+    });
+
     it('at 760 px and up the title is a single-line ellipsis', () => {
       const t = rule(css.slice(0, css.indexOf('@media')), '.notif-title');
       expect(t).toMatch(/white-space:\s*nowrap/);
