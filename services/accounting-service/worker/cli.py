@@ -124,7 +124,7 @@ def _cathay(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
 
 
 def _ack_key(value: str) -> str:
-    """`--ack` for sinopac-futures: a statement date `YYYY-MM-DD` or a month `YYYY-MM`, both real."""
+    """`--ack` / `--retry` for sinopac-futures: a statement date `YYYY-MM-DD` or a month `YYYY-MM`, both real."""
     try:
         if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
             date.fromisoformat(value)
@@ -229,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     p_sf.add_argument("--file", default=None)
     p_sf.add_argument("--since", type=date.fromisoformat, default=None)
     p_sf.add_argument("--until", type=date.fromisoformat, default=None)
-    p_sf.add_argument("--retry", type=date.fromisoformat, default=None)
+    p_sf.add_argument("--retry", type=_ack_key, default=None)
     p_sf.add_argument("--ack", type=_ack_key, default=None)
     p_sf.add_argument("--status", choices=sinopac_futures.ACK_STATUSES, default=None)
     p_sf.add_argument("--unlatch", action="store_true")

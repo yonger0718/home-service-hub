@@ -4,8 +4,10 @@ by month.
 
 Shaped like the 國泰 job (`worker/cathay.py`): state, latch and lock files in `state_dir`, failures as codes only
 (never statement content), a run report from a plain commit run only. Differences: every file is read and parsed
-before anything is posted, so a statement that fails the grammar, or a file that cannot be read, posts nothing and
-the order of the posts never depends on the Drive listing; every portfolio outcome is terminal for its sha.
+before anything is posted, so a statement that fails the grammar (or cannot be decrypted) latches and posts nothing,
+and the posts never follow the Drive listing's order; a file Drive fails to deliver is dropped from the run like
+國泰 does (no state entry, the next run retries it) while the rest still posts: the portfolio re-checks the day, the
+next accepted day and the month when a late daily arrives. Every portfolio outcome is terminal for its sha.
 """
 from __future__ import annotations
 
@@ -41,6 +43,7 @@ HISTORY = "sinopac-futures-history-report.json"
 ENDPOINT = "/api/portfolio/imports/sinopac-futures-statement"
 OUTCOMES = frozenset({"imported", "duplicate", "conflict"})  # every one is terminal for its sha (§6.2)
 ACK_STATUSES = ("conflict", "findings")
+VALIDATE_MAX = 200  # the portfolio's `/validate` cap (FuturesValidateBody.payloads max_length)
 
 _KEY_RE = re.compile(r"^[0-9]{4}-[0-9]{2}(-[0-9]{2})?$")
 _CODE_RE = re.compile(r"^[a-z_]{1,40}$")
@@ -77,7 +80,7 @@ class _Parsed:
     sha: str
     payload: dict
     key: str  # statement date or YYYY-MM
-    when: date  # statement date or month end: --since / --until / --retry compare this
+    when: date  # statement date or month end: --since / --until compare this (--retry matches `key`)
 
     @property
     def order(self) -> tuple:
@@ -161,7 +164,8 @@ def _validate(cfg: WorkerConfig, http: httpx.Client, batch: list[_Parsed]) -> di
                        for it, p in zip(items, batch))
             or not all(isinstance(k, str) and _KEY_RE.match(k) and _findings_ok(v) for k, v in findings.items())):
         raise FuturesError("portfolio:body", stop=True)
-    return {"items": [{"key": it["key"], "outcome": it["outcome"]} for it in items], "findings": findings}
+    return {"items": [{"drive_file_id": p.item.drive_file_id, "key": it["key"], "outcome": it["outcome"]}
+                      for it, p in zip(items, batch)], "findings": findings}
 
 
 def _report(cfg: WorkerConfig, http: httpx.Client, summary: dict) -> None:
@@ -233,6 +237,8 @@ class _Job:
         log.info("sinopac-futures: %s", exc.code)
         if exc.stop:
             self._stopped = True
+            if self.validate:  # no batch goes out: the report says why
+                self.history["result"] = exc.code
         if exc.latch and self.commit:
             parser.write_private_json(self.cfg.state_dir, self.cfg.state_dir / LATCH,
                                       {"reason": exc.code, "at": datetime.now(timezone.utc).isoformat()})
@@ -240,7 +246,8 @@ class _Job:
         elif not self.codes:
             self.codes = ["failed", exc.code]
         if self.validate and item is not None:
-            self.history["errors"].append({"folder": parsed_folder, "file_date": _file_date(item.name), "code": exc.code})
+            self.history["errors"].append({"drive_file_id": item.drive_file_id, "folder": parsed_folder,
+                                           "file_date": _file_date(item.name), "code": exc.code})
 
     def candidates(self, folder_key: str) -> list[str]:
         if self._passwords is None:
@@ -274,7 +281,7 @@ class _Job:
         for key, entry in self.state.items():
             if (key.rpartition(":")[0] == item.drive_file_id and isinstance(entry, dict) and entry.get("md5") == item.md5
                     and entry.get("outcome") in OUTCOMES
-                    and not (self.retry_date and entry.get("date") == self.retry_date.isoformat())):
+                    and not (self.retry_date and entry.get("key") == self.retry_date)):
                 return True
         return False
 
@@ -360,7 +367,13 @@ class _Job:
                 self.remember(parsed, outcome)
 
     def post_batch(self, batch: list[_Parsed]) -> None:
+        if self.history["errors"]:
+            self.history["result"] = "partial"
         if not batch:
+            return
+        if len(batch) > VALIDATE_MAX:  # the portfolio would answer 422: send nothing
+            self.history["result"] = "validate_too_many"
+            self.fail(FuturesError("validate_too_many"))
             return
         self.posted = len(batch)
         started = time.monotonic()
@@ -402,8 +415,8 @@ class _Job:
                 continue
             if parsed is not None:
                 batch.append(parsed)
-        # A commit run posts only when every file was read: a missing day would post the next one out of order.
-        if self._stopped or (self.commit and self.codes):
+        # A latch posts nothing; a file Drive failed to deliver is left out and retried by the next run.
+        if self._stopped or (self.commit and self.codes[:1] == ["latched"]):
             return
         batch.sort(key=lambda p: p.order)
         if self.validate:
@@ -414,9 +427,12 @@ class _Job:
 
 def run(cfg: WorkerConfig, *, portfolio_http: httpx.Client, drive: Drive, dry_run: bool = False,
         file_id: str | None = None, since: date | None = None, until: date | None = None,
-        retry_date: date | None = None, ack_key: str | None = None, ack_status: str | None = None,
+        retry_date: str | None = None, ack_key: str | None = None, ack_status: str | None = None,
         unlatch: bool = False, validate_history: bool = False) -> dict:
-    """List, read and post the statements; failures become codes, never exceptions (a dry run never touches state)."""
+    """List, read and post the statements; failures become codes, never exceptions (a dry run never touches state).
+
+    `retry_date` is a key, `YYYY-MM-DD` or `YYYY-MM`: the settled file with that statement date or month is posted again.
+    """
     latch = cfg.state_dir / LATCH
     with _lock(cfg):
         if ack_key:  # touches neither Drive nor state: allowed while latched

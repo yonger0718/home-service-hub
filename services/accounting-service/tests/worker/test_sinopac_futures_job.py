@@ -275,11 +275,22 @@ def test_conflict_is_terminal_and_retry_reposts(w):
     w.go()
     w.go()
     assert len(w.portfolio.posts) == 1 and outcomes(w.state) == {"id-1": "conflict"}
-    w.go(retry_date=date(2026, 3, 10))  # another date: still skipped
+    w.go(retry_date="2026-03-10")  # another date: still skipped
     assert len(w.portfolio.posts) == 1
     w.portfolio.reply = lambda payload, params: Portfolio.ok(payload, "duplicate")
-    w.go(retry_date=date(2026, 3, 9))
+    w.go(retry_date="2026-03-09")
     assert len(w.portfolio.posts) == 2 and outcomes(w.state) == {"id-1": "duplicate"}
+
+
+def test_retry_matches_the_entry_key(w):
+    w.daily("id-31", 31)
+    w.monthly("id-m")  # month end 2026-03-31
+    w.go()
+    assert w.portfolio.keys == ["2026-03-31", "2026-03"]
+    w.go(retry_date="2026-03-31")  # the day only: not the month whose month end it is
+    assert w.portfolio.keys[2:] == ["2026-03-31"]
+    w.go(retry_date="2026-03")  # the month only
+    assert w.portfolio.keys[3:] == ["2026-03"]
 
 
 def test_same_statement_twice_in_run(w):
@@ -369,17 +380,47 @@ def test_each_folder_uses_its_own_password_key(tmp_path, monkeypatch):
     assert w.extract_calls == [PASSWORD]  # the daily file unlocked with its folder's second candidate
 
 
-def test_drive_download_failure_posts_nothing(w):
+def test_drive_download_failure_skips_that_file(w):
     w.daily("id-1", 9)
-    w.daily("id-2", 10)
+    later = w.daily("id-2", 10)
+    w.monthly("id-m")
     w.fail_ids = {"id-1"}
     summary = w.go()
     assert summary["codes"] == ["failed", "drive:DownloadError"] and not w.latch.exists()
-    assert w.portfolio.posts == [] and w.state == {}  # a gap would post the later day out of order
-    assert w.portfolio.runs[-1]["result"] == "failed" and w.portfolio.runs[-1]["code"] == "drive:DownloadError"
+    assert w.portfolio.keys == ["2026-03-10", "2026-03"]  # the rest posts, in order; the portfolio re-checks D later
+    assert w.state.keys() == {f"id-2:{sha(later)}", f"id-m:{sha(w.files[MONTHLY][0]['data'])}"}
+    assert w.portfolio.runs[-1] | {"run_at": ""} == {"run_at": "", "result": "failed", "code": "drive:DownloadError",
+                                                     "files_seen": 3, "posted": 2}
     w.fail_ids = set()
-    w.go()
-    assert w.portfolio.keys == ["2026-03-09", "2026-03-10"]
+    assert w.go()["codes"] == []  # no state entry for the failed file: the next run posts it
+    assert w.portfolio.keys == ["2026-03-10", "2026-03", "2026-03-09"]
+
+
+def test_md5_mismatch_skips_that_file(w, monkeypatch):
+    w.daily("id-1", 9)
+    w.daily("id-2", 10)
+    real = w._rclone
+
+    def corrupt(args, stdin):
+        out = real(args, stdin)
+        if args[1] == "backend" and args[4] == "id-2":
+            Path(args[5]).write_bytes(b"truncated")
+        return out
+    w.runner.handlers["rclone"] = corrupt
+    summary = w.go()
+    assert summary["codes"] == ["failed", "drive:VerifyError"] and w.portfolio.keys == ["2026-03-09"]
+    assert not w.latch.exists() and len(w.state) == 1
+
+
+def test_latch_after_a_drive_error_still_posts_nothing(w):
+    w.daily("id-1", 9)
+    name, kw = DAILY_IDENTITIES[0]
+    w.add(DAILY, "id-2", "2026-03-10_日對帳單.pdf", day_rows(10, **kw))
+    w.daily("id-3", 11)
+    w.fail_ids = {"id-1"}
+    summary = w.go()
+    assert summary["codes"] == ["latched", f"identity:{name}"] and w.latch.exists()
+    assert w.portfolio.posts == [] and w.state == {}
 
 
 def test_drive_listing_failure_reports_failed(w):
@@ -412,7 +453,7 @@ def test_unlatch(w):
     assert w.go(unlatch=True)["codes"] == ["latched", "portfolio:422"] and w.latch.exists()  # still failing
     w.portfolio.reply = lambda payload, params: Portfolio.ok(payload)
     for kw in ({"file_id": "id-1"}, {"since": date(2026, 1, 1)}, {"until": date(2026, 12, 31)},
-               {"retry_date": date(2026, 3, 9)}, {"dry_run": True}):
+               {"retry_date": "2026-03-09"}, {"dry_run": True}):
         (w.cfg.state_dir / "sinopac-futures-state.json").unlink(missing_ok=True)
         assert w.go(unlatch=True, **kw)["codes"] == [] and w.latch.exists(), kw
     (w.cfg.state_dir / "sinopac-futures-state.json").unlink(missing_ok=True)
@@ -456,14 +497,14 @@ def test_only_plain_run_reports(w):
     w.go(file_id="id-1")
     w.go(since=date(2026, 1, 1))
     w.go(until=date(2026, 12, 31))
-    w.go(retry_date=date(2026, 3, 9))
+    w.go(retry_date="2026-03-09")
     w.go(unlatch=True)
     w.go(dry_run=True)
     w.go(validate_history=True)
     w.go(ack_key="2026-03-09", ack_status="findings")
     assert w.portfolio.runs == []
     w.latch.write_text('{"reason": "x"}')
-    for kw in ({"dry_run": True}, {"file_id": "id-1"}, {"since": date(2026, 1, 1)}, {"retry_date": date(2026, 3, 9)},
+    for kw in ({"dry_run": True}, {"file_id": "id-1"}, {"since": date(2026, 1, 1)}, {"retry_date": "2026-03-09"},
                {"validate_history": True}):
         with pytest.raises(sinopac_futures.FuturesDisabled):
             w.go(**kw)
@@ -554,8 +595,9 @@ def test_validate_history_posts_one_batch(w):
     report = w.report
     assert report.pop("duration_s") >= 0
     assert report == {"result": "ok", "counts": {"imported": 2, "duplicate": 1},
-                      "items": [{"key": "2026-03-09", "outcome": "imported"}, {"key": "2026-03-10", "outcome": "duplicate"},
-                                {"key": "2026-03", "outcome": "imported"}],
+                      "items": [{"drive_file_id": "id-09", "key": "2026-03-09", "outcome": "imported"},
+                                {"drive_file_id": "id-10", "key": "2026-03-10", "outcome": "duplicate"},
+                                {"drive_file_id": "id-m", "key": "2026-03", "outcome": "imported"}],
                       "findings": findings, "errors": []}
     assert oct((w.cfg.state_dir / "sinopac-futures-history-report.json").stat().st_mode)[-3:] == "600"
     assert json.loads(state_path.read_text(encoding="utf-8")) == before  # no state written, none read
@@ -586,9 +628,44 @@ def test_validate_history_collects_parse_errors_and_posts_the_rest(w):
     w.add(DAILY, "id-3", "scan.pdf", day_rows(11, **kw))
     summary = w.go(validate_history=True)
     assert [key_of(p) for p in w.portfolio.validates[0]["payloads"]] == ["2026-03-09"]
-    assert w.report["errors"] == [{"folder": "daily", "file_date": "2026-03-10", "code": f"identity:{name}"},
-                                  {"folder": "daily", "file_date": None, "code": f"identity:{name}"}]
+    report = w.report
+    assert report["errors"] == [
+        {"drive_file_id": "id-2", "folder": "daily", "file_date": "2026-03-10", "code": f"identity:{name}"},
+        {"drive_file_id": "id-3", "folder": "daily", "file_date": None, "code": f"identity:{name}"}]
+    assert report["result"] == "partial" and report["items"] == [
+        {"drive_file_id": "id-1", "key": "2026-03-09", "outcome": "imported"}]
     assert summary["codes"] == ["failed", f"identity:{name}"] and not w.latch.exists()
+
+
+def test_validate_history_with_every_file_failing_is_partial(w):
+    name, kw = DAILY_IDENTITIES[0]
+    w.add(DAILY, "id-2", "2026-03-10_日對帳單.pdf", day_rows(10, **kw))
+    w.go(validate_history=True)
+    assert w.portfolio.validates == [] and w.report["result"] == "partial" and len(w.report["errors"]) == 1
+
+
+def test_validate_history_over_the_portfolio_cap_sends_nothing(w, monkeypatch):
+    monkeypatch.setattr(sinopac_futures, "VALIDATE_MAX", 2)
+    for day in (9, 10, 11):
+        w.daily(f"id-{day}", day)
+    summary = w.go(validate_history=True)
+    assert w.portfolio.validates == [] and summary["codes"] == ["failed", "validate_too_many"]
+    assert w.report["result"] == "validate_too_many" and w.report["items"] == [] and w.report["duration_s"] is None
+    assert sinopac_futures.VALIDATE_MAX == 2
+    monkeypatch.setattr(sinopac_futures, "VALIDATE_MAX", 3)
+    assert w.go(validate_history=True)["codes"] == [] and len(w.portfolio.validates) == 1
+
+
+def test_validate_history_stopped_by_a_bad_password_file_is_not_ok(w):
+    w.daily("id-1", 9)
+    w.cfg.password_file.write_text(f"{DAILY}=@{DAILY}\n", encoding="utf-8")  # an alias cycle: unreadable
+    summary = w.go(validate_history=True)
+    assert summary["codes"] == ["failed", "password_file"] and w.portfolio.validates == []
+    assert w.report["result"] == "password_file"
+
+
+def test_validate_cap_matches_the_portfolio():
+    assert sinopac_futures.VALIDATE_MAX == 200
 
 
 @pytest.mark.parametrize("answer, code", [
@@ -686,8 +763,9 @@ def test_cli_flags_and_exit_codes(tmp_path, monkeypatch, capsys):
     assert cli.main(argv) == 0
     assert json.loads(capsys.readouterr().out) == {"counts": {"imported": 1}}  # --validate-history prints counts only
     assert {k: v for k, v in seen.items() if k not in ("portfolio_http", "drive")} == {"dry_run": True, "file_id": "F", "since": date(2026, 3, 1), "until": date(2026, 3, 31),
-                    "retry_date": date(2026, 3, 9), "ack_key": None, "ack_status": None, "unlatch": True,
+                    "retry_date": "2026-03-09", "ack_key": None, "ack_status": None, "unlatch": True,
                     "validate_history": True}
+    assert cli.main(["sinopac-futures", "--retry", "2026-03"]) == 0 and seen["retry_date"] == "2026-03"
     assert cli.main(["sinopac-futures", "--ack", "2026-03", "--status", "findings"]) == 0
     assert (seen["ack_key"], seen["ack_status"]) == ("2026-03", "findings")
     assert cli.main(["sinopac-futures", "--ack", "2026-03-09", "--status", "conflict"]) == 0
@@ -709,6 +787,7 @@ def test_cli_ack_needs_status_alone(tmp_path, monkeypatch, capsys, argv):
 @pytest.mark.parametrize("argv", [
     ["--ack", "2026-13", "--status", "findings"], ["--ack", "2026-02-30", "--status", "findings"],
     ["--ack", "20260309", "--status", "findings"], ["--ack", "2026-03-09", "--status", "held"],
+    ["--retry", "2026-13"], ["--retry", "2026-02-30"], ["--retry", "202603"],
 ])
 def test_cli_rejects_bad_ack_key_or_status(tmp_path, monkeypatch, argv):
     cfg = config.load({"STATEMENT_STATE_DIR": str(tmp_path / "s")})
