@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator, model_validator
 
 from app.models import STATEMENT_SOURCE_ROOTS
 from app.models.statements import (
@@ -412,6 +412,28 @@ class StatementDetailOut(StatementOut):
 
 
 # ---- settings ----
+class AutoPaySwitchIn(BaseModel):
+    """`PATCH /settings/reconciliation/auto-pay` (write scope): only the switch and its start date; at least one.
+    `enabled_from` stays a string here and is checked (ISO date, required while on) with the merged block."""
+    model_config = Strict
+    enabled: StrictBool | None = None
+    enabled_from: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def _one_field(self):
+        if not self.model_fields_set:
+            raise ValueError("send enabled and/or enabled_from")
+        if "enabled" in self.model_fields_set and self.enabled is None:
+            raise ValueError("enabled must be a boolean")
+        return self
+
+
+class AutoPaySwitchOut(BaseModel):
+    enabled: bool
+    enabled_from: str | None
+    version: int
+
+
 class ReconciliationSettingsIn(BaseModel):
     """`account_map`: Drive folder `<root>/<folder>/<subfolder>` -> account id (the service checks the key shape).
     `dirty_enabled`: the ledger dirty triggers write coverage_dirty only while it is true (a PUT replaces it).

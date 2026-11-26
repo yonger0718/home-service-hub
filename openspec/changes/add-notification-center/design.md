@@ -78,7 +78,7 @@ Group items show a dot when their page has a task: 股利 (dividend batch), 匯�
 ### D9. Auto-pay surfaces
 
 - Bill pill: for a card with `auto_pay_account_id` while `auto_pay.enabled` and the statement is on or after `enabled_from`, the pill reads 自動扣繳 MM/DD (the shifted business day) until paid; after the booking it reads 已自動扣繳.
-- 記帳設定 › 對帳: switch 自動扣繳 (`auto_pay.enabled`) and date 起始日 (`enabled_from`, required when on), saved through `PUT /settings/reconciliation`.
+- 記帳設定 › 對帳: switch 自動扣繳 (`auto_pay.enabled`) and date 起始日 (`enabled_from`, required when on), saved through `PATCH /settings/reconciliation/auto-pay` (write scope; merges only those two keys — owner ruling 2026-11-25, since `PUT /settings/reconciliation` is admin and replaces the whole document).
 - Skip reasons map to copy: `over_cap` 超過單筆上限, `monthly_budget` 超過當月上限, `no_link` 沒有設定扣款帳戶, `link_ineligible` 扣款帳戶不符規定, `header_disputed` 帳單金額待確認, `twin` 已有相同的繳款記錄, `duplicate_statement` 重複的帳單, `cutoff` 早於起始日, `expired` 已超過重試期限. Transient reasons are 系統 tasks; `twin`, `cutoff`, `duplicate_statement` are informational and do not create a task.
 
 ### D10. E-invoice task and flow

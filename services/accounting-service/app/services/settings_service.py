@@ -555,6 +555,23 @@ def merge_einvoice_preferences(db: Session, *, remind_unmatched: bool) -> dict:
     return read_einvoice_settings(db)
 
 
+def merge_auto_pay_switch(db: Session, changes: dict) -> dict:
+    """Set only `auto_pay.enabled` / `auto_pay.enabled_from` (the keys in `changes`), keeping every other key of the
+    document, and bump `version` (the write-scope switch; `update_reconciliation_settings` is admin and replaces the
+    whole document). The merged block passes `_check_auto_pay`, so on without a start date is refused."""
+    unknown = set(changes) - {"enabled", "enabled_from"}
+    if unknown or not changes:
+        raise ValidationError("auto_pay", f"only 'enabled' and 'enabled_from' can be changed here, got {sorted(unknown)}")
+    row = _reconciliation_row(db, lock=True)
+    data = dict(row.data or {})
+    data["auto_pay"] = _check_auto_pay({**(data.get("auto_pay") or {}), **changes})
+    row.data = data
+    row.version = row.version + 1
+    db.flush()
+    effective = {**AUTO_PAY_DEFAULTS, **data["auto_pay"]}
+    return {"enabled": effective["enabled"], "enabled_from": effective["enabled_from"], "version": row.version}
+
+
 def read_reconciliation_rules(db: Session) -> dict:
     settings = read_reconciliation_settings(db)
     row = db.get(ReconciliationSettings, 1)
