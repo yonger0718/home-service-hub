@@ -85,8 +85,9 @@ class _Deadline(Exception):
     pass
 
 
-def _get_bounded(client: httpx.Client, path: str) -> dict:
-    """Run `_get` in a daemon thread and give up after REQUEST_DEADLINE; a stalled server cannot extend it."""
+def _get_bounded(client: httpx.Client, path: str, deadline: float | None = None) -> dict:
+    """Run `_get` in a daemon thread and give up after `deadline` (default REQUEST_DEADLINE); a stalled server cannot
+    extend it. The 永豐期貨 section passes its own deadline."""
     box: dict = {}
 
     def work() -> None:
@@ -97,7 +98,7 @@ def _get_bounded(client: httpx.Client, path: str) -> dict:
 
     thread = threading.Thread(target=work, daemon=True)
     thread.start()
-    thread.join(REQUEST_DEADLINE)
+    thread.join(REQUEST_DEADLINE if deadline is None else deadline)
     if thread.is_alive():
         raise _Deadline(path)  # the thread is abandoned; it is a daemon and cannot block exit
     if "error" in box:

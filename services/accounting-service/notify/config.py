@@ -37,6 +37,8 @@ class NotifyConfig:
     portfolio_token_file: Path | None = None  # issue #117: bearer token for the portfolio API; absent = no header
     cathay_run_time: time = time(6, 40)
     cathay_run_grace_minutes: int = 15
+    sinopac_futures_run_time: time = time(6, 45)
+    sinopac_futures_run_grace_minutes: int = 15
     terms: TermsConfig | None = None
 
 
@@ -146,6 +148,8 @@ def load_config(path: Path, *, with_terms: bool = False) -> NotifyConfig:
         portfolio_token_file=_optional_path(raw, "portfolio_token_file"),
         cathay_run_time=_hhmm(raw, "cathay_run_time", time(6, 40)),
         cathay_run_grace_minutes=_grace(raw, "cathay_run_grace_minutes", 15),
+        sinopac_futures_run_time=_hhmm(raw, "sinopac_futures_run_time", time(6, 45)),
+        sinopac_futures_run_grace_minutes=_grace(raw, "sinopac_futures_run_grace_minutes", 15),
         terms=load_terms(raw) if with_terms else None,
     )
 
