@@ -12,6 +12,7 @@ import httpx
 import pytest
 from notify import cli, render, send
 from notify.cathay import LATEST_PATH, PENDING_PATH
+from notify.sinopac_futures import LATEST_PATH as FUTURES_LATEST, PENDING_PATH as FUTURES_PENDING
 from notify.state import load_state
 from tests.notify.test_cathay import BAD_CASES, FAULT_PATH, _CloseFails, _blocking_stream, LATEST as _L, PENDING as _P, TIMEOUT_CASE, item as cathay_item, pending as cathay_pending
 
@@ -68,8 +69,8 @@ def _routes(snap, *, status: int | None = None):
 PORTFOLIO = "http://portfolio.invalid"
 
 
-def _portfolio_row(day: date) -> dict:
-    return {"run_at": f"{day.isoformat()}T06:41:00+08:00", "result": "ok", "code": None, "files_seen": 1, "posted": 1}
+def _portfolio_row(day: date, at: str = "06:41") -> dict:
+    return {"run_at": f"{day.isoformat()}T{at}:00+08:00", "result": "ok", "code": None, "files_seen": 1, "posted": 1}
 
 
 class Env:
@@ -92,12 +93,14 @@ class Env:
 
         def handler(request: httpx.Request) -> httpx.Response:
             path = request.url.path
-            if path not in (PENDING_PATH, LATEST_PATH):
+            if path not in (PENDING_PATH, LATEST_PATH, FUTURES_PENDING, FUTURES_LATEST):
                 return api(request)
             self.portfolio_paths.append(path)
             row = _portfolio_row(self.today)  # fresh: this morning's run, 06:41 Asia/Taipei
-            default = {PENDING_PATH: {"items": [], "total": 0, "truncated": False},
-                       LATEST_PATH: {"latest": row, "latest_ok": row}}[path]
+            futures_row = _portfolio_row(self.today, "06:46")  # the futures job runs at 06:45
+            empty = {"items": [], "total": 0, "truncated": False}
+            default = {PENDING_PATH: empty, LATEST_PATH: {"latest": row, "latest_ok": row},
+                       FUTURES_PENDING: empty, FUTURES_LATEST: {"latest": futures_row, "latest_ok": futures_row}}[path]
             value = self.portfolio.get(path, default)
             if isinstance(value, Exception):
                 raise value
@@ -352,7 +355,7 @@ def test_daily_only_cathay_section_sends(cli_env_quiet):
     cli_env_quiet.portfolio[PENDING_PATH] = HELD
     assert main(["daily", "--as-of", "2026-11-20", "--send", "--config", cli_env_quiet.cfg]) == 0
     assert len(cli_env_quiet.sent) == 1 and CATHAY_BLOCK in cli_env_quiet.sent[0][1]
-    assert set(cli_env_quiet.portfolio_paths) == {PENDING_PATH, LATEST_PATH}
+    assert set(cli_env_quiet.portfolio_paths) == {PENDING_PATH, LATEST_PATH, FUTURES_PENDING, FUTURES_LATEST}
 
 
 def test_daily_dedupe_includes_cathay_keys(cli_env_quiet):
@@ -452,6 +455,8 @@ def test_portfolio_cleanup_failure_still_delivers_the_debit_message(cli_env, mon
     assert main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env.cfg]) == 0
     text = "\n\n".join(t for _, t in cli_env.sent)
     assert UNREADABLE_LINE in text and "旅遊卡" in text
+    # every portfolio client fails to close here, so the 永豐期貨 section collapses as well
+    text = text.replace("\n\n**永豐期貨對帳單**\n• 永豐期貨對帳單狀態讀不到", "")
     assert text.replace(f"\n\n**國泰對帳單**\n• {UNREADABLE_LINE}", "") == base
 
 

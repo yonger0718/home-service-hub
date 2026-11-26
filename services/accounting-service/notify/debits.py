@@ -24,6 +24,7 @@ from .cycles import (
     shift_period,
     statement_period,
 )
+from .sinopac_futures import FuturesLine
 
 REASON_TEXT: dict[str, str] = {
     "no_link": "卡片沒有設定扣款帳戶",
@@ -101,6 +102,7 @@ class DailyReport:
     skips: list[Skip]
     cleared: list[SourceBlock] = field(default_factory=list)  # filled by dedupe (Task 5) only
     cathay: list[CathayLine] = field(default_factory=list)  # 國泰證券 statement status (spec §7.2), set by cli
+    futures: list[FuturesLine] = field(default_factory=list)  # 永豐期貨 statement status, set by cli
 
 
 def _day(value) -> date | None:

@@ -98,6 +98,19 @@ def test_cathay_values(tmp_path):
     assert cfg.cathay_run_grace_minutes == 20
 
 
+def test_sinopac_futures_defaults_and_values(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(MINIMAL)
+    cfg = load_config(p)
+    assert (cfg.sinopac_futures_run_time.hour, cfg.sinopac_futures_run_time.minute) == (6, 45)
+    assert cfg.sinopac_futures_run_grace_minutes == 15
+    p.write_text('sinopac_futures_run_time = "07:10"\nsinopac_futures_run_grace_minutes = 5\n' + MINIMAL)
+    cfg = load_config(p)
+    assert (cfg.sinopac_futures_run_time.hour, cfg.sinopac_futures_run_time.minute) == (7, 10)
+    assert cfg.sinopac_futures_run_grace_minutes == 5
+    assert (cfg.cathay_run_time.hour, cfg.cathay_run_time.minute) == (6, 40)  # independent of the 國泰 keys
+
+
 def test_portfolio_token_file_expands_tilde(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text('portfolio_token_file = "~/.config/portfolio-token"\n' + MINIMAL)
@@ -121,6 +134,12 @@ def test_portfolio_token_file_expands_tilde(tmp_path):
         ("cathay_run_grace_minutes = 1440", "cathay_run_grace_minutes"),
         ('cathay_run_grace_minutes = "15"', "cathay_run_grace_minutes"),
         ("cathay_run_grace_minutes = true", "cathay_run_grace_minutes"),
+        ('sinopac_futures_run_time = "6:45"', "sinopac_futures_run_time"),
+        ('sinopac_futures_run_time = "24:00"', "sinopac_futures_run_time"),
+        ("sinopac_futures_run_time = 645", "sinopac_futures_run_time"),
+        ("sinopac_futures_run_grace_minutes = -1", "sinopac_futures_run_grace_minutes"),
+        ("sinopac_futures_run_grace_minutes = 1440", "sinopac_futures_run_grace_minutes"),
+        ('sinopac_futures_run_grace_minutes = "15"', "sinopac_futures_run_grace_minutes"),
     ],
 )
 def test_cathay_invalid(tmp_path, line, key):
