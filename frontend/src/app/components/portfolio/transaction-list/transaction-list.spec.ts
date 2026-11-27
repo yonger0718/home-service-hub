@@ -153,6 +153,18 @@ describe('PortfolioTransactionListComponent', () => {
       expect(link?.getAttribute('href')).toBe('/portfolio/import');
     });
 
+    it('links 期貨明細 → to /portfolio/futures in the desktop header', () => {
+      const fixture = create();
+      const link = Array.from(el(fixture).querySelectorAll<HTMLAnchorElement>('app-page-header a')).find(a => a.textContent?.includes('期貨明細 →'));
+      expect(link?.getAttribute('href')).toBe('/portfolio/futures');
+      expect(link?.classList.contains('btn-outline-secondary')).toBe(true);
+    });
+
+    it('phoneMenu carries the 期貨明細 entry', () => {
+      const fixture = create();
+      expect(fixture.componentInstance.phoneMenu).toContainEqual(expect.objectContaining({ label: '期貨明細', routerLink: '/portfolio/futures' }));
+    });
+
     it('shows the period and the server total, then the date range after a date filter', () => {
       const fixture = create();
       respond(listCalls[0], { items: [buy, sell], total: 24 });
@@ -180,10 +192,12 @@ describe('PortfolioTransactionListComponent', () => {
       more!.click();
       fixture.detectChanges();
       const items = root.querySelectorAll<HTMLElement>('app-page-header .header-menu [role="menuitem"]');
-      expect(items.length).toBe(1);
+      expect(items.length).toBe(2);
       expect(items[0].tagName).toBe('A');
       expect(items[0].textContent).toContain('匯入 CSV');
       expect(items[0].getAttribute('href')).toBe('/portfolio/import');
+      expect(items[1].textContent).toContain('期貨明細');
+      expect(items[1].getAttribute('href')).toBe('/portfolio/futures');
       expect(root.querySelector('app-page-header')?.classList).not.toContain('actions-below');
     });
 

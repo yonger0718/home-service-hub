@@ -2,6 +2,7 @@
 
 <app-page-header [subtitle]="headerSubtitle()" [menu]="phoneMenu">
   @if (!isPhone()) {
+    <a routerLink="/portfolio/futures" class="btn btn-outline-secondary btn-sm">期貨明細 →</a>
     <a routerLink="/portfolio/import" class="btn btn-outline-secondary btn-sm">
       <i class="pi pi-upload" aria-hidden="true"></i>
       匯入 CSV

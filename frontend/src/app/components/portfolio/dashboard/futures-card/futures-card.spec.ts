@@ -1,4 +1,5 @@
 import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { of, throwError } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -25,7 +26,7 @@ function summary(over: Partial<FuturesSummary> = {}): FuturesSummary {
 
 function render(result: FuturesSummary | Error) {
   const getFuturesSummary = vi.fn(() => (result instanceof Error ? throwError(() => result) : of(result)));
-  TestBed.configureTestingModule({ providers: [{ provide: PortfolioService, useValue: { getFuturesSummary } }] });
+  TestBed.configureTestingModule({ providers: [provideRouter([]), { provide: PortfolioService, useValue: { getFuturesSummary } }] });
   const fixture = TestBed.createComponent(FuturesCardComponent);
   fixture.detectChanges();
   const el = fixture.nativeElement as HTMLElement;
@@ -33,6 +34,21 @@ function render(result: FuturesSummary | Error) {
 }
 
 describe('FuturesCardComponent', () => {
+  const detailLink = (el: HTMLElement) => Array.from(el.querySelectorAll<HTMLAnchorElement>('a')).find(a => a.textContent?.includes('明細 →'));
+
+  it('shows detail link when data present', () => {
+    const link = detailLink(render(summary()).el);
+    expect(link?.getAttribute('href')).toMatch(/\/portfolio\/futures$/);
+  });
+
+  it('hides detail link when no statements', () => {
+    expect(detailLink(render(summary({ value: null, latest_daily: null, month: null })).el)).toBeUndefined();
+  });
+
+  it('hides detail link on error', () => {
+    expect(detailLink(render(new Error('x')).el)).toBeUndefined();
+  });
+
   it('dates the margins when the latest daily is older than the monthly source', () => {
     const base = summary();
     const { text } = render(summary({ value: { ...base.value!, source_kind: 'monthly', source_date: '2026-11-30' }, latest_daily: { ...base.latest_daily!, statement_date: '2026-11-23' } }));

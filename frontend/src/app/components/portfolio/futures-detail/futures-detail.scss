@@ -1,0 +1,144 @@
+:host {
+  display: block;
+}
+
+.fd-card {
+  display: block;
+  margin-bottom: 1.25rem;
+}
+
+.fd-note {
+  color: var(--app-text-muted);
+  margin: 1rem 0;
+}
+
+.fd-picker {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.fd-select {
+  background: var(--app-surface, transparent);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  color: inherit;
+  font: inherit;
+  padding: 0.35rem 0.6rem;
+}
+
+.fd-summary {
+  display: grid;
+  gap: 0.25rem 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+
+.fd-summary-row {
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+.fd-label,
+.fd-meta,
+.fd-pnl-label {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+}
+
+.fd-meta {
+  margin: 0.5rem 0 0;
+}
+
+.fd-warn {
+  color: var(--app-warning, var(--app-text-muted));
+  margin-left: 0.5rem;
+}
+
+.fd-meta.fd-warn {
+  margin-left: 0;
+}
+
+.fd-scroll {
+  overflow-x: auto;
+}
+
+.fd-table {
+  border-collapse: collapse;
+  width: 100%;
+
+  th,
+  td {
+    border-bottom: 1px solid var(--app-border);
+    padding: 6px 8px;
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  th {
+    color: var(--app-text-muted);
+    font-size: 0.8rem;
+    font-weight: 500;
+  }
+
+  .num {
+    text-align: right;
+  }
+
+  tfoot td {
+    font-weight: 600;
+  }
+}
+
+.fd-pnl-label {
+  margin-right: 0.4rem;
+}
+
+.fd-toggle {
+  background: none;
+  border: 0;
+  color: var(--app-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.25rem 0;
+}
+
+.fd-close {
+  font-size: 0.85rem;
+  margin: 0.15rem 0;
+}
+
+.fd-fill-card {
+  border-bottom: 1px solid var(--app-border);
+  padding: 0.5rem 0;
+}
+
+.fd-fill-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.fd-fill-line {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.fd-deposit {
+  display: flex;
+  justify-content: space-between;
+  margin: 0.5rem 0 0;
+}
+
+.up {
+  color: var(--app-trend-positive);
+}
+
+.down {
+  color: var(--app-trend-negative);
+}

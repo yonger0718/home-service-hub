@@ -10,6 +10,8 @@ export interface NavItem {
   title: string;
   group: NavGroupId;
   sub?: boolean;
+  /** Shown in the desktop sidebar only, not among the phone sub-tabs. */
+  sidebarOnly?: boolean;
   exact?: boolean;
   /** Other path prefixes that select this item (checked before the longest-prefix match). */
   also?: readonly string[];
@@ -43,6 +45,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'portfolio', path: '/portfolio', icon: 'pi-chart-line', label: '概覽', sidebarLabel: '投資概覽', title: '投資概覽', group: 'portfolio', exact: true },
       { id: 'transactions', path: '/portfolio/transactions', icon: 'pi-list', label: '交易', sidebarLabel: '交易紀錄', title: '股票交易紀錄', group: 'portfolio', sub: true },
+      { id: 'futures-detail', path: '/portfolio/futures', icon: 'pi-chart-bar', label: '期貨明細', sidebarLabel: '期貨明細', title: '期貨明細', group: 'portfolio', sub: true, sidebarOnly: true },
       { id: 'dividends', path: '/portfolio/dividends', icon: 'pi-percentage', label: '股利', sidebarLabel: '股利', title: '股利領取紀錄', group: 'portfolio', sub: true },
       { id: 'realized-pnl', path: '/portfolio/realized-pnl', icon: 'pi-dollar', label: '已實現', sidebarLabel: '已實現損益', title: '已實現損益', group: 'portfolio', sub: true },
       { id: 'accounts', path: '/portfolio/accounts', icon: 'pi-wallet', label: '現金', sidebarLabel: '現金帳戶', title: '現金帳戶', group: 'portfolio', sub: true },
