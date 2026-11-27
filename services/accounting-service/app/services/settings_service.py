@@ -543,12 +543,18 @@ def read_einvoice_settings(db: Session) -> dict:
     return {**settings["einvoice"], "version": settings["version"]}
 
 
-def merge_einvoice_preferences(db: Session, *, remind_unmatched: bool) -> dict:
-    """Set only `einvoice.remind_unmatched`, keeping every other key of the document, and bump `version`.
-    Deliberately not `update_reconciliation_settings` (which replaces the whole document)."""
+EINVOICE_PREFERENCE_KEYS = frozenset({"remind_unmatched", "date_window_days", "mute_prompt_after"})
+
+
+def merge_einvoice_preferences(db: Session, changes: dict) -> dict:
+    """Set only the given owner preferences (`remind_unmatched`, `date_window_days`, `mute_prompt_after`) in the
+    `einvoice` block, keeping every other key of the document, and bump `version`. The merged block goes through the
+    PUT's `_check_einvoice`. Deliberately not `update_reconciliation_settings` (which replaces the whole document)."""
+    if not changes or not set(changes) <= EINVOICE_PREFERENCE_KEYS:
+        raise ValidationError("einvoice", f"preferences take only {sorted(EINVOICE_PREFERENCE_KEYS)}")
     row = _reconciliation_row(db, lock=True)
     data = dict(row.data or {})
-    data["einvoice"] = {**(data.get("einvoice") or {}), "remind_unmatched": remind_unmatched}
+    data["einvoice"] = _check_einvoice({**(data.get("einvoice") or {}), **changes})
     row.data = data
     row.version = row.version + 1
     db.flush()

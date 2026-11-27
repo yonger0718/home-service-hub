@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StrictBool, StrictInt, model_validator
 
 from .ledger import EinvoiceItemOut
 from .statements import Strict
@@ -103,14 +103,33 @@ class EinvoiceMuteOut(BaseModel):
 
 
 class EinvoicePreferencesIn(BaseModel):
+    """The owner's e-invoice preferences (write scope): any of the three, merged into the stored block. `enabled` and
+    the read-only status fields are not accepted (extra=forbid)."""
     model_config = Strict
-    remind_unmatched: bool
+    remind_unmatched: StrictBool | None = None
+    date_window_days: StrictInt | None = Field(None, ge=0, le=7)
+    mute_prompt_after: StrictInt | None = Field(None, ge=1, le=10)
+
+    @model_validator(mode="after")
+    def _some_field(self):
+        if not self.model_fields_set:
+            raise ValueError("send at least one of remind_unmatched, date_window_days, mute_prompt_after")
+        nulls = [k for k in self.model_fields_set if getattr(self, k) is None]
+        if nulls:
+            raise ValueError(f"{nulls[0]} cannot be null")
+        return self
 
 
 class EinvoicePreferencesOut(BaseModel):
     model_config = Strict
     enabled: bool
     remind_unmatched: bool
+    date_window_days: int
+    mute_prompt_after: int
+    #: Read only: the newest invoice's `first_seen_at` (null before the first import).
+    last_import_at: datetime | None
+    #: Read only: invoices the matcher linked (`linked_by = 'auto'`).
+    auto_linked_count: int
     version: int
 
 
