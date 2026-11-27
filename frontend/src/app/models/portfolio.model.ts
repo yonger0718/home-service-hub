@@ -596,3 +596,90 @@ export interface FuturesSummary {
   latest_daily: FuturesLatestDaily | null;
   month: FuturesMonth | null;
 }
+
+/** `GET /api/portfolio/futures/months`: month keys (`YYYY-MM`), newest first. */
+export interface FuturesMonths {
+  months: string[];
+}
+
+export interface FuturesClose {
+  date: string;
+  qty: number;
+  price: string;
+}
+
+export interface FuturesFill {
+  kind: 'future' | 'option';
+  order_no: string;
+  product: string;
+  month: string;
+  strike: string | null;
+  right: 'Call' | 'Put' | null;
+  action: '新買' | '新賣' | '平買' | '平賣';
+  qty: number;
+  price: string;
+  tax: string;
+  fee: string;
+  /** 平倉損益 for a future, 權利金 for an option. */
+  pnl: string;
+  closes: FuturesClose[];
+}
+
+export interface FuturesFillsTotal {
+  tax: string;
+  fee: string;
+  pnl: string;
+}
+
+export interface FuturesDeposit {
+  direction: 'in' | 'out';
+  amount: string;
+}
+
+export interface FuturesDay {
+  date: string;
+  no_trade: boolean;
+  fills: FuturesFill[];
+  fills_total: FuturesFillsTotal | null;
+  deposits: FuturesDeposit[];
+}
+
+export interface FuturesDetailSummary {
+  futures_realized: string;
+  premium_net: string;
+  fees_and_tax: string;
+  deposits_net: string;
+  source: 'monthly' | 'daily_sum';
+  complete: boolean;
+  reason: 'findings' | null;
+  missing_days: number;
+}
+
+export interface FuturesPosition {
+  product: string;
+  month: string;
+  strike: string | null;
+  right: 'Call' | 'Put' | null;
+  side: '買' | '賣';
+  qty: number;
+  entry_price: string;
+  mark_price: string;
+  /** 未沖銷損益, for a future. */
+  unrealized: string;
+  /** 權利金市值, for an option. */
+  premium_value: string;
+}
+
+export interface FuturesPositions {
+  date: string;
+  month_end_may_differ: boolean;
+  items: FuturesPosition[];
+}
+
+/** `GET /api/portfolio/futures/detail?month=YYYY-MM`. */
+export interface FuturesDetail {
+  month: string;
+  summary: FuturesDetailSummary;
+  days: FuturesDay[];
+  positions: FuturesPositions | null;
+}
