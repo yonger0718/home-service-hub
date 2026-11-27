@@ -255,6 +255,14 @@ def delete_mute(db: Session, tax_id: str) -> None:
     db.flush()
 
 
+def preference_status(db: Session) -> dict:
+    """Read-only status for 記帳設定 › 發票: when invoices last arrived (the newest `first_seen_at`, null before the
+    first import) and how many the matcher linked (`linked_by = 'auto'`)."""
+    return {"last_import_at": db.scalar(select(func.max(Einvoice.first_seen_at))),
+            "auto_linked_count": db.scalar(select(func.count()).select_from(EinvoiceLink)
+                                           .where(EinvoiceLink.linked_by == "auto")) or 0}
+
+
 def list_mutes(db: Session) -> list[dict]:
     """Every mute, newest first, with the seller name of that seller's latest invoice. Read-only: no lock."""
     latest_name = (select(Einvoice.seller_name).where(Einvoice.seller_tax_id == EinvoiceSellerMute.seller_tax_id)

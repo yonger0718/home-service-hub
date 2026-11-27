@@ -43,11 +43,13 @@ PR E is split (2026-11-25): E1 = 5.1 (+ its 5.4 tests); E2 = 5.3 snooze; E3 = 5.
 - [x] 5.2b Read-scope `GET /reconciliation/auto-pay?since=` (one row per statement, for the 系統 tasks and the pill; replaces the audit read; PR E3a)
 - [x] 5.2 Auto-pay: pill text, 記帳設定 switch + 起始日, skipped auto-pay rows → 系統 tasks with the reason copy from D9 (PR E3b: a bill over 單筆上限 stays a plain to-do; a skip settles when its bill is paid or the card closed a later cycle)
 - [x] 5.3 Snooze (D4) with wake values (PR E2: 稍後提醒 picker on every counted row; wake on count growth, amount / due change, a new member, a key change or 已逾期, never on a lower count; toast with 復原; 「另有 N 件稍後提醒 · 現在顯示」)
-- [ ] 5.4 Tests: pair_transfer payload; ambiguous adjust asks for the entry; snooze hides and wakes (PR E1: the pair_transfer and ambiguous-leg tests are in `recon-flow.spec.ts`; PR E2: `snooze.spec.ts`, `notif-snooze.store.spec.ts`, the center's and the page's snooze tests; auto-pay tests come with E3)
+- [x] 5.4 Tests: pair_transfer payload; ambiguous adjust asks for the entry; snooze hides and wakes (PR E1: the pair_transfer and ambiguous-leg tests are in `recon-flow.spec.ts`; PR E2: `snooze.spec.ts`, `notif-snooze.store.spec.ts`, the center's and the page's snooze tests; auto-pay tests come with E3)
 
 ## 6. E-invoices (PR F)
 
-- [ ] 6.1 API: `PATCH /einvoices/preferences` accepts optional `date_window_days` (0–7) and `mute_prompt_after` (1–10), merged with a version bump; `GET` returns both fields plus read-only `last_import_at` and `auto_linked_count`; tests for partial update, range, the GET fields and a PATCH that sends a read-only field
+PR F is split (2026-11-27): F1 = 6.1 (API); F2 = 6.2 task source + 6.3 flow (D10); F3 = 6.4 unmatched page (D11); F4 = 6.5 entry card + 記帳設定 › 發票 (D12) and 6.6 removal of the inbox panel section and bell sums, once 通知 owns all of it. 6.7 tests ship with each part.
+
+- [x] 6.1 API: `PATCH /einvoices/preferences` accepts optional `date_window_days` (0–7) and `mute_prompt_after` (1–10), merged with a version bump; `GET` returns both fields plus read-only `last_import_at` and `auto_linked_count`; tests for partial update, range, the GET fields and a PATCH that sends a read-only field
 - [ ] 6.2 Task source: one 要你確認 task for `ambiguous` + `near`; one 追蹤中 row for `unmatched` (hidden when `remind_unmatched` is off)
 - [ ] 6.3 `/notifications/einvoices` flow (D10)
   - kind chip

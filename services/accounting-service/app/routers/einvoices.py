@@ -50,9 +50,10 @@ def match(db: Session = Depends(get_db)):
     return out
 
 
-def _preferences(settings: dict) -> dict:
+def _preferences(db: Session, settings: dict) -> dict:
     return {"enabled": settings["enabled"], "remind_unmatched": settings["remind_unmatched"],
-            "version": settings["version"]}
+            "date_window_days": settings["date_window_days"], "mute_prompt_after": settings["mute_prompt_after"],
+            **einvoice_service.preference_status(db), "version": settings["version"]}
 
 
 @router.get("/mutes", response_model=list[EinvoiceMuteOut], dependencies=WRITE)
@@ -70,14 +71,15 @@ def delete_mute(tax_id: str, db: Session = Depends(get_db)):
 
 @router.get("/preferences", response_model=EinvoicePreferencesOut, dependencies=WRITE)
 def get_preferences(db: Session = Depends(get_db)):
-    return _preferences(settings_service.read_einvoice_settings(db))
+    return _preferences(db, settings_service.read_einvoice_settings(db))
 
 
 @router.patch("/preferences", response_model=EinvoicePreferencesOut, dependencies=WRITE)
 def patch_preferences(body: EinvoicePreferencesIn, db: Session = Depends(get_db)):
-    settings = settings_service.merge_einvoice_preferences(db, remind_unmatched=body.remind_unmatched)
+    with service_errors():
+        settings = settings_service.merge_einvoice_preferences(db, body.model_dump(include=body.model_fields_set))
     db.commit()
-    return _preferences(settings)
+    return _preferences(db, settings)
 
 
 @router.post("/runbook-dismiss", response_model=RunbookDismissOut, dependencies=ADMIN)  # rollout step (R1)

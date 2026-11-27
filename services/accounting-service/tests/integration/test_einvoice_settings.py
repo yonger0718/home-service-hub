@@ -57,7 +57,7 @@ def test_put_without_block_reverts_to_defaults(client):
 def test_merge_preferences_keeps_other_keys(client, db_session):
     put = client.put("/settings/reconciliation", json=_body(
         client, {"enabled": True, "date_window_days": 5}, auto_pay={"twin_window_days": 9})).json()
-    out = settings_service.merge_einvoice_preferences(db_session, remind_unmatched=False)
+    out = settings_service.merge_einvoice_preferences(db_session, {"remind_unmatched": False})
     db_session.commit()
     assert out["version"] == put["version"] + 1
     after = client.get("/settings/reconciliation").json()

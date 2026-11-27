@@ -2,7 +2,7 @@
 Synthetic data only."""
 import queue
 import threading
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from sqlalchemy import func, select, text, update
@@ -400,11 +400,13 @@ def test_preferences_patch_merges_and_bumps(client, db_session):
     before = client.get("/settings/reconciliation").json()
     prefs = client.get("/einvoices/preferences")
     assert prefs.status_code == 200, prefs.text
-    assert prefs.json() == {"enabled": True, "remind_unmatched": True, "version": before["version"]}
+    base = {"enabled": True, "remind_unmatched": True, "date_window_days": 5, "mute_prompt_after": 3,
+            "last_import_at": None, "auto_linked_count": 0}
+    assert prefs.json() == {**base, "version": before["version"]}
 
     res = client.patch("/einvoices/preferences", json={"remind_unmatched": False})
     assert res.status_code == 200, res.text
-    assert res.json() == {"enabled": True, "remind_unmatched": False, "version": before["version"] + 1}
+    assert res.json() == {**base, "remind_unmatched": False, "version": before["version"] + 1}
 
     after = client.get("/settings/reconciliation").json()
     assert after["einvoice"] == {**before["einvoice"], "remind_unmatched": False}
@@ -413,6 +415,51 @@ def test_preferences_patch_merges_and_bumps(client, db_session):
     others = ("einvoice", "version")
     assert {k: v for k, v in after.items() if k not in others} == {k: v for k, v in before.items() if k not in others}
     assert client.patch("/einvoices/preferences", json={}).status_code == 422
+
+
+def test_preferences_patch_numeric_fields(client):
+    enable(client)
+    version = client.get("/einvoices/preferences").json()["version"]
+    res = client.patch("/einvoices/preferences", json={"date_window_days": 0})
+    assert res.status_code == 200, res.text
+    assert (res.json()["date_window_days"], res.json()["mute_prompt_after"], res.json()["remind_unmatched"]) == (0, 3, True)
+    res = client.patch("/einvoices/preferences", json={"date_window_days": 7, "mute_prompt_after": 10})
+    assert res.status_code == 200, res.text
+    assert (res.json()["date_window_days"], res.json()["mute_prompt_after"]) == (7, 10)
+    assert res.json()["version"] == version + 2
+    stored = client.get("/settings/reconciliation").json()["einvoice"]
+    assert (stored["date_window_days"], stored["mute_prompt_after"], stored["remind_unmatched"]) == (7, 10, True)
+
+
+@pytest.mark.parametrize("body", [
+    {"date_window_days": -1}, {"date_window_days": 8}, {"date_window_days": "3"}, {"date_window_days": True},
+    {"date_window_days": 2.5}, {"date_window_days": None}, {"mute_prompt_after": 0}, {"mute_prompt_after": 11},
+    {"mute_prompt_after": "3"}, {"remind_unmatched": None}, {"remind_unmatched": 1},
+    # read-only and unknown fields
+    {"last_import_at": "2026-10-05T00:00:00Z"}, {"auto_linked_count": 1}, {"enabled": False}, {"version": 1},
+    {"date_window_days": 2, "auto_linked_count": 1},
+])
+def test_preferences_patch_refuses(client, body):
+    enable(client)
+    before = client.get("/settings/reconciliation").json()
+    assert client.patch("/einvoices/preferences", json=body).status_code == 422
+    assert client.get("/settings/reconciliation").json() == before
+
+
+def test_preferences_read_import_time_and_auto_links(client, db_session, seed):
+    enable(client)
+    entry = seed.entry(seed.account("A"), "-120", day=D)
+    db_session.commit()
+    import_(client, invoice(), invoice(number="AB00000002", issue_date="2026-10-20", total="999", items=(("測試品項", "999"),)))
+    assert _link(db_session).linked_by == "auto" and _link(db_session).entry_id == entry.id
+    newest = db_session.scalar(select(func.max(Einvoice.first_seen_at)))
+    prefs = client.get("/einvoices/preferences").json()
+    assert prefs["auto_linked_count"] == 1
+    assert prefs["last_import_at"] is not None and datetime.fromisoformat(prefs["last_import_at"]) == newest
+
+    db_session.execute(update(EinvoiceLink).values(linked_by="owner"))  # an owner link is not counted
+    db_session.commit()
+    assert client.get("/einvoices/preferences").json()["auto_linked_count"] == 0
 
 
 # --- runbook --------------------------------------------------------------------------------------------------
