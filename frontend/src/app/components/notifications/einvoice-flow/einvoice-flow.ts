@@ -1,14 +1,57 @@
-import { ChangeDetectionStrategy, Component, computed, inject, output } from '@angular/core';
+import { DOCUMENT } from '@angular/common';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  Injector,
+  afterNextRender,
+  computed,
+  effect,
+  inject,
+  output,
+  signal,
+  untracked,
+} from '@angular/core';
+import { Router } from '@angular/router';
 
+import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { isHandledKey } from '../../accounting/accounting-ui';
+import { EinvoiceLinkTarget, InboxEinvoice } from '../../accounting/inbox/einvoice.model';
+import { EinvoiceService } from '../../accounting/inbox/einvoice.service';
+import { einvoiceErrorText } from '../../accounting/inbox/einvoice-section/einvoice-section';
+import { AppEinvoiceTargetSheetComponent, targetBody } from '../../accounting/inbox/einvoice-target-sheet/einvoice-target-sheet';
+import { InboxService } from '../../accounting/inbox/inbox.service';
+import { BannerComponent } from '../../ui/banner/banner';
+import { OPEN_DIALOG, keyHint, typing } from '../flow-keys';
+import { INBOX_READ_LIMIT } from '../sources/recon';
+import {
+  EinvoiceFlowSession,
+  EinvoiceFlowState,
+  EinvoiceOutcome,
+  afterRead,
+  answer,
+  move,
+  progress,
+  resume,
+  skip,
+  startFlow,
+} from './einvoice-flow-session';
+import { answerKeys, einvoiceStep } from './einvoice-flow-view';
+
+/** The new-entry form 記成新的一筆 opens. */
+const ENTRY_FORM = ['/accounting/entry'];
 
 /**
- * The e-invoice flow (D10) at `/notifications/einvoices`: one ambiguous / near invoice at a time, beside the list from
- * 1024 px, full screen below, in the review flow's frame (its header, progress and answer styles).
+ * The e-invoice flow (D10) at `/notifications/einvoices`: the ambiguous / near invoices one at a time, beside the list
+ * from 1024 px, full screen below, in the review flow's frame. Keys 1–N pick a candidate, N + 1 is 都不是, S skips,
+ * ← → move, Esc closes. The order and answers live in `EinvoiceFlowSession`, so 記成新的一筆 (the entry form, another
+ * route) comes back to the next invoice.
  */
 @Component({
   selector: 'app-einvoice-flow',
   standalone: true,
+  imports: [BannerComponent, AppEinvoiceTargetSheetComponent],
   templateUrl: './einvoice-flow.html',
   styleUrls: ['../recon-flow/recon-flow.scss', './einvoice-flow.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -17,12 +60,248 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
     'aria-label': '電子發票',
     tabindex: '-1',
     '[class.flow--panes]': 'panes()',
+    '(document:keydown)': 'onKey($event)',
   },
 })
 export class EinvoiceFlowComponent {
+  private readonly inbox = inject(InboxService);
+  private readonly einvoices = inject(EinvoiceService);
+  private readonly accounting = inject(AccountingService);
   private readonly layout = inject(LayoutModeService);
+  private readonly session = inject(EinvoiceFlowSession);
+  private readonly router = inject(Router);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
+  private readonly document = inject(DOCUMENT);
 
   readonly closed = output<void>();
 
   readonly panes = computed(() => this.layout.mode() === 'panes');
+  readonly load = signal<'loading' | 'failed' | 'ready'>('loading');
+  /** From a press until its write answers. */
+  readonly busy = signal(false);
+  /** The failed write's text, shown under the answers of the invoice it was for. */
+  readonly error = signal<{ id: number; text: string } | null>(null);
+  /** 選其他帳… is open for this invoice. */
+  readonly picking = signal<InboxEinvoice | null>(null);
+
+  private readonly state = this.session.state;
+  readonly invoice = computed(() => {
+    const s = this.state();
+    return s && s.cursor !== null ? (s.open.get(s.cursor) ?? null) : null;
+  });
+  readonly step = computed(() => {
+    const invoice = this.invoice();
+    return invoice ? einvoiceStep(invoice) : null;
+  });
+  readonly keys = computed(() => answerKeys(this.invoice()?.candidates.length ?? 0));
+  readonly keyText = computed(() => {
+    const k = this.keys();
+    return keyHint(k.dismiss ?? k.candidates.filter((d) => d !== null).length, '張');
+  });
+  readonly progressInfo = computed(() => {
+    const s = this.state();
+    return s ? progress(s) : { position: 0, total: 0, handled: 0, skipped: 0 };
+  });
+  readonly progressText = computed(() => {
+    const p = this.progressInfo();
+    if (p.position === 0) return `已處理 ${p.handled} / ${p.total} 張`;
+    return this.panes() ? `第 ${p.position} / ${p.total} 張` : `${p.position} / ${p.total}`;
+  });
+  readonly handledPercent = computed(() => {
+    const p = this.progressInfo();
+    return p.total ? (p.handled / p.total) * 100 : 0;
+  });
+  readonly errorText = computed(() => {
+    const e = this.error();
+    return e && e.id === this.invoice()?.id ? e.text : null;
+  });
+  readonly endTitle = computed(() => {
+    const skipped = this.progressInfo().skipped;
+    return skipped > 0 ? `還有 ${skipped} 張略過` : '發票都處理完了';
+  });
+  /** 「連結 a 張 · 都不是 b 張 · 記成新的一筆 c 張 · 略過 K 張」, zero parts left out. */
+  readonly endLine = computed(() => {
+    const s = this.state();
+    if (!s) return '';
+    const count = (o: EinvoiceOutcome) => [...s.outcome.values()].filter((v) => v === o).length;
+    return [
+      ['連結', count('linked')],
+      ['都不是', count('dismissed')],
+      ['記成新的一筆', count('recorded')],
+      ['略過', s.skipped.size],
+    ]
+      .filter(([, n]) => (n as number) > 0)
+      .map(([label, n]) => `${label} ${n} 張`)
+      .join(' · ');
+  });
+
+  constructor() {
+    if (this.session.pendingRecord() === null) {
+      this.session.state.set(null); // a fresh open (not the way back from 記成新的一筆)
+    }
+    // Every entries write (this flow's, the entry form's, another page's) re-reads: invoices answered elsewhere leave.
+    let first = true;
+    effect(() => {
+      this.accounting.entriesChanged();
+      untracked(() => {
+        if (first) {
+          first = false;
+          this.read();
+        } else if (this.state()) {
+          this.read();
+        }
+      });
+    });
+  }
+
+  retryLoad(): void {
+    this.read();
+  }
+
+  private read(): void {
+    if (!this.state()) this.load.set('loading');
+    this.inbox.get({ limit: INBOX_READ_LIMIT }).subscribe({
+      next: (out) => {
+        const list = out.einvoices ?? [];
+        const current = this.state();
+        let next: EinvoiceFlowState = current ? afterRead(current, list) : startFlow(list);
+        const pending = this.session.pendingRecord();
+        if (pending) {
+          this.session.pendingRecord.set(null);
+          if (this.accounting.entriesChanged() > pending.mark && next.open.has(pending.id)) {
+            next = answer(next, pending.id, 'recorded');
+          } else if (next.open.has(pending.id)) {
+            next = { ...next, cursor: pending.id };
+          }
+        }
+        this.state.set(next);
+        this.load.set('ready');
+      },
+      error: () => {
+        if (!this.state()) this.load.set('failed');
+      },
+    });
+  }
+
+  link(index: number): void {
+    const invoice = this.invoice();
+    const target = invoice?.candidates[index];
+    if (invoice && target) this.write(invoice, 'linked', this.einvoices.link(invoice.id, targetBody(target)));
+  }
+
+  dismiss(): void {
+    const invoice = this.invoice();
+    if (invoice) this.write(invoice, 'dismissed', this.einvoices.dismiss(invoice.id));
+  }
+
+  pickOther(): void {
+    this.picking.set(this.invoice());
+  }
+
+  picked(invoice: InboxEinvoice, target: EinvoiceLinkTarget): void {
+    this.picking.set(null);
+    this.write(invoice, 'linked', this.einvoices.link(invoice.id, target));
+  }
+
+  /** 記成新的一筆: the entry form prefilled; the flow moves on when the form saved (the invoice links later). */
+  record(): void {
+    const invoice = this.invoice();
+    if (!invoice || this.busy()) return;
+    this.session.awaitRecord(invoice.id, this.accounting.entriesChanged());
+    void this.router.navigate(ENTRY_FORM, {
+      queryParams: {
+        kind: 'expense',
+        date: invoice.issue_date,
+        amount: invoice.total_amount,
+        merchant: invoice.seller_name,
+        invoice: invoice.number,
+      },
+    });
+  }
+
+  skipStep(): boolean {
+    const s = this.state();
+    if (!s || s.cursor === null || this.busy()) return false;
+    this.state.set(skip(s));
+    this.focusStep();
+    return true;
+  }
+
+  moveStep(by: -1 | 1): boolean {
+    const s = this.state();
+    if (!s || this.busy()) return false;
+    const next = move(s, by);
+    if (next === s) return false;
+    this.state.set(next);
+    this.focusStep();
+    return true;
+  }
+
+  resumeFlow(): void {
+    const s = this.state();
+    if (s) {
+      this.state.set(resume(s));
+      this.focusStep();
+    }
+  }
+
+  onKey(event: KeyboardEvent): void {
+    if (isHandledKey(event) || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (this.busy() || this.picking()) return;
+    if (this.document.querySelector(OPEN_DIALOG) || typing(this.document.activeElement)) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.closed.emit();
+      return;
+    }
+    if (this.load() !== 'ready' || !this.invoice()) return;
+    if (/^[1-9]$/.test(event.key)) {
+      if (event.repeat) return; // a held key must not answer the next invoice once busy clears
+      const digit = Number(event.key);
+      const keys = this.keys();
+      const index = keys.candidates.indexOf(digit);
+      if (index >= 0) {
+        event.preventDefault();
+        this.link(index);
+      } else if (keys.dismiss === digit) {
+        event.preventDefault();
+        this.dismiss();
+      }
+      return;
+    }
+    if ((event.key === 's' || event.key === 'S') && !event.repeat) {
+      if (this.skipStep()) event.preventDefault();
+      return;
+    }
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      if (this.moveStep(event.key === 'ArrowLeft' ? -1 : 1)) event.preventDefault();
+    }
+  }
+
+  private write(invoice: InboxEinvoice, outcome: EinvoiceOutcome, call: ReturnType<EinvoiceService['link']>): void {
+    if (this.busy()) return;
+    this.busy.set(true);
+    this.error.set(null);
+    call.subscribe({
+      next: () => {
+        this.busy.set(false);
+        const s = this.state();
+        if (s) this.state.set(answer(s, invoice.id, outcome));
+        this.focusStep();
+      },
+      error: (err: unknown) => {
+        this.busy.set(false);
+        this.error.set({ id: invoice.id, text: einvoiceErrorText(err) });
+      },
+    });
+  }
+
+  /** The new invoice's headline (or the end state's heading), so a screen reader reads it. */
+  private focusStep(): void {
+    afterNextRender(
+      () => this.host.nativeElement.querySelector<HTMLElement>('h2[tabindex="-1"]')?.focus(),
+      { injector: this.injector },
+    );
+  }
 }

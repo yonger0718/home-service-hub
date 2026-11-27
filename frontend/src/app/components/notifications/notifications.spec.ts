@@ -101,6 +101,7 @@ describe('NotificationsComponent', () => {
   let posts: Subject<ScheduleInstance>[] = [];
   let catchUps: Subject<ScheduleCatchUpResult>[] = [];
   const accounting = {
+    entriesChanged: signal(0),
     postScheduleInstance: vi.fn((_id: number) => {
       const s = new Subject<ScheduleInstance>();
       posts.push(s);

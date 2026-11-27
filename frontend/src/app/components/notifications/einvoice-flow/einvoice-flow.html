@@ -18,3 +18,114 @@
     </button>
   }
 </header>
+
+@switch (load()) {
+  @case ('loading') {
+    <p class="flow-loading" role="status">讀取中…</p>
+  }
+  @case ('failed') {
+    <app-banner tone="error" heading="發票資料讀取失敗" actionLabel="重試" (action)="retryLoad()" />
+  }
+  @default {
+    @if (progressInfo().total > 0) {
+      <div class="flow-progress">
+        <div class="flow-bar" aria-hidden="true">
+          <div class="flow-plain"><span [style.width.%]="handledPercent()"></span></div>
+        </div>
+        <p class="flow-progress-text">{{ progressText() }}</p>
+      </div>
+    }
+
+    @if (step(); as s) {
+      <section class="flow-step">
+        <span class="flow-chip">{{ s.chip }}</span>
+        <p class="einv-reason">{{ s.reason }}</p>
+        <h2 id="einv-headline" class="flow-headline" tabindex="-1">這張發票是哪一筆帳？</h2>
+
+        <div class="einv-card">
+          <div class="einv-card-head">
+            <span class="einv-seller">{{ s.card.seller }}</span>
+            <span class="einv-total">{{ s.card.total }}</span>
+          </div>
+          <p class="einv-card-meta">{{ s.card.date }} · {{ s.card.number }} · 統編 {{ s.card.taxId }}</p>
+          @if (s.card.items.length) {
+            <ul class="einv-items">
+              @for (item of s.card.items; track $index) {
+                <li><span>{{ item.name }}</span><span>{{ item.subtotal }}</span></li>
+              }
+            </ul>
+          }
+        </div>
+
+        <div class="flow-answers einv-answers" role="group" aria-labelledby="einv-headline" [attr.aria-busy]="busy()">
+          @for (a of s.answers; track a.target.kind + a.target.id; let i = $index) {
+            <button
+              type="button"
+              class="einv-answer"
+              [class.solid]="$first"
+              [disabled]="busy()"
+              [attr.aria-keyshortcuts]="keys().candidates[i]"
+              (click)="link(i)"
+            >
+              @if (panes() && keys().candidates[i]; as key) {
+                <kbd aria-hidden="true">{{ key }}</kbd>
+              }
+              <span class="einv-answer-body">
+                <span class="flow-answer-label">{{ a.label }}</span>
+                <span class="einv-answer-sub">{{ a.sub }}</span>
+                @if (a.chips.length) {
+                  <span class="einv-diffs">
+                    @for (chip of a.chips; track chip) {
+                      <span class="einv-diff">{{ chip }}</span>
+                    }
+                  </span>
+                }
+              </span>
+              <span class="einv-answer-amount">{{ a.amount }}</span>
+            </button>
+          }
+          <button type="button" class="einv-none" [disabled]="busy()" [attr.aria-keyshortcuts]="keys().dismiss" (click)="dismiss()">
+            @if (panes() && keys().dismiss; as key) {
+              <kbd aria-hidden="true">{{ key }}</kbd>
+            }
+            <span class="flow-answer-label">都不是</span>
+          </button>
+        </div>
+
+        <div class="einv-more">
+          <button type="button" class="einv-link" [disabled]="busy()" (click)="pickOther()">選其他帳…</button>
+          <button type="button" class="einv-link" [disabled]="busy()" (click)="record()">記成新的一筆</button>
+        </div>
+
+        @if (errorText(); as text) {
+          <div class="flow-error" role="alert">{{ text }}</div>
+        }
+
+        <footer class="flow-foot">
+          <button type="button" class="flow-skip" [disabled]="busy()" (click)="skipStep()">略過，稍後再看</button>
+          @if (panes()) {
+            <p class="flow-hint">{{ keyText() }}</p>
+          }
+        </footer>
+      </section>
+    } @else {
+      <section class="flow-end">
+        <div class="flow-check" aria-hidden="true"><i class="pi pi-check"></i></div>
+        <h2 class="flow-end-title" tabindex="-1">{{ endTitle() }}</h2>
+        @if (endLine(); as line) {
+          <p class="flow-end-text">{{ line }}</p>
+        }
+        <div class="flow-end-actions">
+          @if (progressInfo().skipped > 0) {
+            <button type="button" class="solid" (click)="resumeFlow()">繼續確認</button>
+          }
+          <button type="button" (click)="closed.emit()">回到通知</button>
+        </div>
+      </section>
+    }
+  }
+}
+
+@if (picking(); as invoice) {
+  <app-einvoice-target-sheet [invoice]="invoice" (picked)="picked(invoice, $event)" (closed)="picking.set(null)" />
+}
