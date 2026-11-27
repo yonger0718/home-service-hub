@@ -564,9 +564,11 @@ describe('EntryFormComponent', () => {
     }
 
     it('fills date, amount, merchant and the invoice number', async () => {
-      const { el, form } = await prefilled('kind=expense&date=2026-10-22&amount=85&merchant=%E6%B8%AC%E8%A9%A6%E5%92%96%E5%95%A1&invoice=AB00000001');
+      const { el, form } = await prefilled('kind=expense&date=2026-10-22&amount=85&name=%E6%B8%AC%E8%A9%A6%E6%8B%BF%E9%90%B5&merchant=%E6%B8%AC%E8%A9%A6%E5%92%96%E5%95%A1&invoice=AB00000001');
       expect((el.querySelector('input.date-input') as HTMLInputElement).value).toBe('2026-10-22');
       expect(form.amountExpr()).toBe('85');
+      expect(form.name()).toBe('測試拿鐵');
+      expect((el.querySelector('input.name-input') as HTMLInputElement).value).toBe('測試拿鐵');
       expect(form.merchant()).toBe('測試咖啡');
       expect(form.invoiceNumber()).toBe('AB00000001');
       expect(form.kind()).toBe('expense');
@@ -579,8 +581,9 @@ describe('EntryFormComponent', () => {
 
     it('malformed values are ignored one by one', async () => {
       const long = encodeURIComponent('測'.repeat(101));
-      const { form } = await prefilled(`amount=8x5&invoice=ab1&merchant=${long}`);
+      const { form } = await prefilled(`amount=8x5&invoice=ab1&merchant=${long}&name=${long}`);
       expect(form.amountExpr()).toBe('');
+      expect(form.name()).toBe('');
       expect(form.invoiceNumber()).toBe('');
       expect(form.merchant()).toBe('');
     });

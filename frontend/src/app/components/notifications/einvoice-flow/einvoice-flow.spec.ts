@@ -5,6 +5,7 @@ import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountingService } from '../../../services/accounting.service';
+import { ToastService } from '../../../services/toast.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { InboxEinvoice } from '../../accounting/inbox/einvoice.model';
 import { makeEinvoice, makeEinvoiceTarget, makeInbox, text } from '../../accounting/inbox/testing';
@@ -210,7 +211,7 @@ describe('EinvoiceFlowComponent', () => {
     const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
     (Array.from(el.querySelectorAll<HTMLButtonElement>('.einv-link')).find((b) => text(b) === '記成新的一筆'))!.click();
     expect(navigate).toHaveBeenCalledWith(['/accounting/entry'], {
-      queryParams: { kind: 'expense', date: '2026-10-22', amount: '85', merchant: '測試咖啡', invoice: 'AB00000001' },
+      queryParams: { kind: 'expense', date: '2026-10-22', amount: '85', name: '測試品項', merchant: '測試咖啡', invoice: 'AB00000001' },
     });
     expect(TestBed.inject(EinvoiceFlowSession).pendingRecord()).toEqual({ id: 1, mark: TestBed.inject(AccountingService).entriesChanged() });
   });
@@ -263,6 +264,82 @@ describe('EinvoiceFlowComponent', () => {
     key('9');
     post('1/link').flush({ id: 1, state: 'linked' });
     flushRead([]);
+  });
+
+  describe('toast and 復原', () => {
+    const toast = () => TestBed.inject(ToastService).current();
+
+    it('a link says 已連結 with 復原; 復原 unlinks + undismisses and shows the invoice again', () => {
+      open();
+      key('1');
+      post('1/link').flush({ id: 1, state: 'linked' });
+      flushRead([coffee(2), coffee(3)]);
+      expect(toast()).toMatchObject({ kind: 'done', text: '已連結：測試咖啡 $85', action: { label: '復原' } });
+      toast()!.action!.run();
+      detect();
+      post('1/unlink').flush({ id: 1, state: 'dismissed' });
+      post('1/undismiss').flush({ id: 1, state: 'unmatched' });
+      // the API now lists it as unmatched (until the next matcher run): the flow keeps its candidates
+      flushRead([makeEinvoice({ ...coffee(1), state: 'unmatched', candidates: [] }), coffee(2), coffee(3)]);
+      expect(shownNumber()).toContain('AB00000001');
+      expect(answers().length).toBe(2);
+      expect(progressText()).toBe('第 1 / 3 張');
+      expect(toast()).toMatchObject({ kind: 'done', text: '已復原：測試咖啡 $85' });
+    });
+
+    it('a 都不是 says so; 復原 is one undismiss', () => {
+      open();
+      key('3');
+      post('1/dismiss').flush({ id: 1, state: 'dismissed' });
+      flushRead([coffee(2), coffee(3)]);
+      expect(toast()).toMatchObject({ text: '已標成都不是：測試咖啡 $85', action: { label: '復原' } });
+      toast()!.action!.run();
+      detect();
+      post('1/undismiss').flush({ id: 1, state: 'unmatched' });
+      flushRead([makeEinvoice({ ...coffee(1), state: 'unmatched', candidates: [] }), coffee(2), coffee(3)]);
+      expect(shownNumber()).toContain('AB00000001');
+      http.expectNone((r) => r.url.endsWith('/unlink'));
+    });
+
+    it('a pick from 選其他帳… also offers 復原', () => {
+      open();
+      (Array.from(el.querySelectorAll<HTMLButtonElement>('.einv-link')).find((b) => text(b) === '選其他帳…'))!.click();
+      detect();
+      http.expectOne((r) => r.url === `${EINVOICE_URL}/1/targets`).flush([makeEinvoiceTarget({ id: 77 })]);
+      detect();
+      el.querySelector<HTMLButtonElement>('app-einvoice-target-sheet .target-row')!.click();
+      detect();
+      post('1/link').flush({ id: 1, state: 'linked' });
+      flushRead([coffee(2), coffee(3)]);
+      expect(toast()).toMatchObject({ text: '已連結：測試咖啡 $85', action: { label: '復原' } });
+    });
+
+    it('a failed 復原 says so and changes nothing here', () => {
+      open();
+      key('3');
+      post('1/dismiss').flush({ id: 1, state: 'dismissed' });
+      flushRead([coffee(2), coffee(3)]);
+      toast()!.action!.run();
+      detect();
+      post('1/undismiss').flush({ detail: 'seller_muted' }, { status: 409, statusText: 'Conflict' });
+      detect();
+      expect(toast()).toMatchObject({ kind: 'error', text: '復原沒成功：這家已設為不提醒' });
+      expect(shownNumber()).toContain('AB00000002');
+    });
+  });
+
+  it('a near invoice beyond the threshold has no solid answer; 沒有統編 stands alone', () => {
+    open([coffee(1, { state: 'near', seller_tax_id: '', candidates: [makeEinvoiceTarget({ id: 11, amount: '-300', date: '2026-10-22' })] })]);
+    expect(text(el.querySelector('.einv-reason'))).toBe('商家名稱對得上，金額不同');
+    expect(el.querySelectorAll('.einv-answer.solid').length).toBe(0);
+    expect(shownNumber()).toBe('2026/10/22 · AB00000001 · 沒有統編');
+  });
+
+  it('記成新的一筆 names the record by the seller when the invoice has several items', () => {
+    open([coffee(1, { items: [{ name: '甲', subtotal: '40' }, { name: '乙', subtotal: '45' }] })]);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    (Array.from(el.querySelectorAll<HTMLButtonElement>('.einv-link')).find((b) => text(b) === '記成新的一筆'))!.click();
+    expect(navigate.mock.calls[0][1]!.queryParams!['name']).toBe('測試咖啡');
   });
 
   it('full screen: h1, short progress, no key caps or hint', () => {

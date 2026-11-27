@@ -18,7 +18,20 @@
     } @else {
       <div class="targets">
         @for (row of rows(); track row.target.kind + row.target.id) {
-          <button type="button" class="target-row" (click)="pick(row.target)">{{ row.label }}</button>
+          <button type="button" class="target-row" (click)="pick(row.target)">
+            <span class="target-body">
+              <span class="target-name">{{ row.name }}</span>
+              <span class="target-sub">{{ row.sub }}</span>
+              @if (row.chips.length) {
+                <span class="target-diffs">
+                  @for (chip of row.chips; track chip) {
+                    <span class="target-diff">{{ chip }}</span>
+                  }
+                </span>
+              }
+            </span>
+            <span class="target-amount">{{ row.amount }}</span>
+          </button>
         } @empty {
           <p class="muted">沒有可連結的帳</p>
         }

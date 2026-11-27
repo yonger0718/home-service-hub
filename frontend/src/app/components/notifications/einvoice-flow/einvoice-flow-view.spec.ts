@@ -32,17 +32,28 @@ describe('einvoiceStep', () => {
     expect(step.answers[0].chips).toEqual(['金額差 $5']);
   });
 
-  it('near outside the tolerance (a seller-name match) → 商家名稱對得上，金額不同', () => {
+  it('near outside the threshold (a seller-name match) → 商家名稱對得上，金額不同, and no answer is solid', () => {
     const step = einvoiceStep(coffee({ state: 'near', candidates: [entry({ amount: '-300', date: '2026-10-24' })] }));
     expect(step.reason).toBe('商家名稱對得上，金額不同');
     expect(step.answers[0].chips).toEqual(['日期差 2 天', '金額差 $215']);
+    expect(step.solidFirst).toBe(false);
   });
 
-  it('a large invoice uses the 20% tolerance: 1000 vs 1150 is close, 1000 vs 1250 is not', () => {
-    const at = (amount: string) =>
-      einvoiceStep(coffee({ state: 'near', total_amount: '1000', candidates: [entry({ amount })] })).reason;
-    expect(at('-1150')).toBe('沒有金額完全相同的帳，這筆最接近');
-    expect(at('-1250')).toBe('商家名稱對得上，金額不同');
+  it('close needs BOTH: gap ≤ $50 AND gap ≤ 20% of the total', () => {
+    const at = (total: string, amount: string) =>
+      einvoiceStep(coffee({ state: 'near', total_amount: total, candidates: [entry({ amount })] }));
+    // $85: 20% = $17 → $17 is close, $18 is not (even though ≤ $50).
+    expect(at('85', '-68').reason).toBe('沒有金額完全相同的帳，這筆最接近');
+    expect(at('85', '-68').solidFirst).toBe(true);
+    expect(at('85', '-67').reason).toBe('商家名稱對得上，金額不同');
+    expect(at('85', '-67').solidFirst).toBe(false);
+    // $1000: 20% = $200 → $50 is close, $51 is not.
+    expect(at('1000', '-1050').reason).toBe('沒有金額完全相同的帳，這筆最接近');
+    expect(at('1000', '-1051').reason).toBe('商家名稱對得上，金額不同');
+  });
+
+  it('ambiguous always offers the first answer as the solid default', () => {
+    expect(einvoiceStep(coffee({ candidates: [entry()] })).solidFirst).toBe(true);
   });
 
   it('labels fall back from name to category to 這筆帳; no category leaves it out of the sub line', () => {
@@ -53,7 +64,11 @@ describe('einvoiceStep', () => {
     ]);
   });
 
-  it('the invoice card: seller, date, number, tax id (or 沒有統編), items and total', () => {
+  it('the invoice card with a tax id reads 統編 <id>', () => {
+    expect(einvoiceStep(coffee()).card.taxId).toBe('統編 00000001');
+  });
+
+  it('the invoice card: seller, date, number, 沒有統編, items and total', () => {
     const step = einvoiceStep(coffee({ seller_tax_id: '', items: [{ name: '拿鐵', subtotal: '85' }] }));
     expect(step.card).toEqual({
       seller: '測試咖啡', date: '2026/10/22', number: 'AB00000001', taxId: '沒有統編',

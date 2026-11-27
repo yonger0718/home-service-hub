@@ -47,7 +47,7 @@
             <span class="einv-seller">{{ s.card.seller }}</span>
             <span class="einv-total">{{ s.card.total }}</span>
           </div>
-          <p class="einv-card-meta">{{ s.card.date }} · {{ s.card.number }} · 統編 {{ s.card.taxId }}</p>
+          <p class="einv-card-meta">{{ s.card.date }} · {{ s.card.number }} · {{ s.card.taxId }}</p>
           @if (s.card.items.length) {
             <ul class="einv-items">
               @for (item of s.card.items; track $index) {
@@ -62,7 +62,7 @@
             <button
               type="button"
               class="einv-answer"
-              [class.solid]="$first"
+              [class.solid]="$first && s.solidFirst"
               [disabled]="busy()"
               [attr.aria-keyshortcuts]="keys().candidates[i]"
               (click)="link(i)"

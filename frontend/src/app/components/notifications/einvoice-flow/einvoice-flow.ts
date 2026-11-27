@@ -13,12 +13,15 @@ import {
   untracked,
 } from '@angular/core';
 import { Router } from '@angular/router';
+import { switchMap } from 'rxjs';
 
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { injectToasts } from '../../../services/toast.service';
 import { isHandledKey } from '../../accounting/accounting-ui';
 import { EinvoiceLinkTarget, InboxEinvoice } from '../../accounting/inbox/einvoice.model';
 import { EinvoiceService } from '../../accounting/inbox/einvoice.service';
+import { invoiceAmount } from '../../accounting/inbox/einvoice-format';
 import { einvoiceErrorText } from '../../accounting/inbox/einvoice-section/einvoice-section';
 import { AppEinvoiceTargetSheetComponent, targetBody } from '../../accounting/inbox/einvoice-target-sheet/einvoice-target-sheet';
 import { InboxService } from '../../accounting/inbox/inbox.service';
@@ -33,6 +36,7 @@ import {
   answer,
   move,
   progress,
+  restore,
   resume,
   skip,
   startFlow,
@@ -73,6 +77,7 @@ export class EinvoiceFlowComponent {
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly injector = inject(Injector);
   private readonly document = inject(DOCUMENT);
+  private readonly toasts = injectToasts();
 
   readonly closed = output<void>();
 
@@ -214,6 +219,8 @@ export class EinvoiceFlowComponent {
         kind: 'expense',
         date: invoice.issue_date,
         amount: invoice.total_amount,
+        // One item names the purchase; several (or none) take the seller's name (owner, 2026-11-27).
+        name: invoice.items.length === 1 ? invoice.items[0].name : invoice.seller_name,
         merchant: invoice.seller_name,
         invoice: invoice.number,
       },
@@ -288,11 +295,40 @@ export class EinvoiceFlowComponent {
         this.busy.set(false);
         const s = this.state();
         if (s) this.state.set(answer(s, invoice.id, outcome));
+        const what = `${invoice.seller_name} ${invoiceAmount(invoice.total_amount)}`;
+        this.toasts.done(outcome === 'linked' ? `已連結：${what}` : `已標成都不是：${what}`, {
+          undo: () => this.undo(invoice, outcome),
+        });
         this.focusStep();
       },
       error: (err: unknown) => {
         this.busy.set(false);
         this.error.set({ id: invoice.id, text: einvoiceErrorText(err) });
+      },
+    });
+  }
+
+  /**
+   * 復原 a link or 都不是: unlink + undismiss, or undismiss. The API leaves the invoice `unmatched` until the next
+   * matcher run; the flow shows it again at once with its candidates, so it can be answered again.
+   */
+  private undo(invoice: InboxEinvoice, outcome: EinvoiceOutcome): void {
+    const call =
+      outcome === 'linked'
+        ? this.einvoices.unlink(invoice.id).pipe(switchMap(() => this.einvoices.undismiss(invoice.id)))
+        : this.einvoices.undismiss(invoice.id);
+    this.busy.set(true);
+    call.subscribe({
+      next: () => {
+        this.busy.set(false);
+        const s = this.state();
+        if (s) this.state.set(restore(s, invoice));
+        this.toasts.done(`已復原：${invoice.seller_name} ${invoiceAmount(invoice.total_amount)}`);
+        this.focusStep();
+      },
+      error: (err: unknown) => {
+        this.busy.set(false);
+        this.toasts.error('復原沒成功：' + einvoiceErrorText(err).replace(/^沒成功[：，]/, ''));
       },
     });
   }

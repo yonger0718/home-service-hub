@@ -208,22 +208,29 @@ export function scheduleDraftKey(draft: ScheduleDraft): unknown {
 /** The new-record prefill the e-invoice flow's 記成新的一筆 sends (each part optional, malformed parts ignored). */
 interface EntryPrefill {
   readonly amount: string | null;
+  readonly name: string | null;
   readonly merchant: string | null;
   readonly invoice: string | null;
 }
 
-const NO_PREFILL: EntryPrefill = { amount: null, merchant: null, invoice: null };
+const NO_PREFILL: EntryPrefill = { amount: null, name: null, merchant: null, invoice: null };
 const PREFILL_AMOUNT = /^\d{1,12}(\.\d{1,4})?$/;
 const PREFILL_INVOICE = /^[A-Z]{2}[0-9]{8}$/;
-const PREFILL_MERCHANT_MAX = 100;
+const PREFILL_TEXT_MAX = 100;
+
+/** A trimmed, non-blank text of at most 100 characters, else null. */
+function prefillText(raw: string | null): string | null {
+  const text = raw?.trim() ?? '';
+  return text && text.length <= PREFILL_TEXT_MAX ? text : null;
+}
 
 function prefillOf(query: ParamMap): EntryPrefill {
   const amount = query.get('amount');
   const invoice = query.get('invoice');
-  const merchant = query.get('merchant')?.trim() ?? '';
   return {
     amount: amount !== null && PREFILL_AMOUNT.test(amount) ? amount : null,
-    merchant: merchant && merchant.length <= PREFILL_MERCHANT_MAX ? merchant : null,
+    name: prefillText(query.get('name')),
+    merchant: prefillText(query.get('merchant')),
     invoice: invoice !== null && PREFILL_INVOICE.test(invoice) ? invoice : null,
   };
 }
@@ -911,10 +918,13 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     return null;
   }
 
-  /** A new record's amount, merchant and invoice number from the URL (the e-invoice flow's 記成新的一筆). */
+  /** A new record's amount, name, merchant and invoice number from the URL (the e-invoice flow's 記成新的一筆). */
   private applyPrefill(prefill: EntryPrefill): void {
     if (prefill.amount !== null) {
       this.amountExpr.set(prefill.amount);
+    }
+    if (prefill.name !== null) {
+      this.name.set(prefill.name);
     }
     if (prefill.merchant !== null) {
       this.merchant.set(prefill.merchant);

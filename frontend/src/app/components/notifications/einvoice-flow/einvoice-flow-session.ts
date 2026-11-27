@@ -44,12 +44,18 @@ export function startFlow(invoices: readonly InboxEinvoice[]): EinvoiceFlowState
 
 /**
  * A later read: invoices no longer listed and not answered here left elsewhere (another tab, the inbox panel) and
- * drop out of the flow; open ones take the new data; new invoices are not added (they show on the next open).
+ * drop out of the flow; open ones take the new data; new invoices are not added (they show on the next open). An
+ * invoice listed as `unmatched` (an answer undone here: the API puts it back to unmatched until the next matcher run)
+ * stays open with the data the flow already has.
  */
 export function afterRead(state: EinvoiceFlowState, invoices: readonly InboxEinvoice[]): EinvoiceFlowState {
-  const listed = new Map(asking(invoices).map((invoice) => [invoice.id, invoice]));
+  const listed = new Map(invoices.map((invoice) => [invoice.id, invoice]));
   const order = state.order.filter((id) => state.outcome.has(id) || listed.has(id));
-  const open = new Map(order.filter((id) => !state.outcome.has(id)).map((id) => [id, listed.get(id)!]));
+  const data = (id: number): InboxEinvoice => {
+    const fresh = listed.get(id)!;
+    return fresh.state === 'unmatched' ? (state.open.get(id) ?? fresh) : fresh;
+  };
+  const open = new Map(order.filter((id) => !state.outcome.has(id)).map((id) => [id, data(id)]));
   const skipped = new Set([...state.skipped].filter((id) => open.has(id)));
   const next: EinvoiceFlowState = { ...state, order, open, skipped };
   if (state.cursor !== null && open.has(state.cursor)) {
@@ -65,6 +71,14 @@ export function answer(state: EinvoiceFlowState, id: number, outcome: EinvoiceOu
   open.delete(id);
   const next: EinvoiceFlowState = { ...state, open, outcome: new Map(state.outcome).set(id, outcome) };
   return { ...next, cursor: nextFrom(next, id) ?? nextFrom(next, null) };
+}
+
+/** 復原: the answer is undone; the invoice is open again (with the data it had) and shown. */
+export function restore(state: EinvoiceFlowState, invoice: InboxEinvoice): EinvoiceFlowState {
+  if (!state.order.includes(invoice.id)) return state;
+  const outcome = new Map(state.outcome);
+  outcome.delete(invoice.id);
+  return { ...state, outcome, open: new Map(state.open).set(invoice.id, invoice), cursor: invoice.id };
 }
 
 export function skip(state: EinvoiceFlowState): EinvoiceFlowState {

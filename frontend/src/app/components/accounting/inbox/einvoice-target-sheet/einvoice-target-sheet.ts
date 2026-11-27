@@ -18,6 +18,7 @@ import { formatMoney } from '../../format';
 import { SheetPullDirective } from '../../sheet-pull.directive';
 import { EinvoiceLinkTarget, EinvoiceTarget, InboxEinvoice } from '../einvoice.model';
 import { EinvoiceService } from '../einvoice.service';
+import { EinvoiceAnswer, einvoiceAnswer } from '../einvoice-answer';
 
 /** The body that links an invoice to this target. */
 export function targetBody(target: EinvoiceTarget): EinvoiceLinkTarget {
@@ -38,11 +39,10 @@ export function candidateLabel(target: EinvoiceTarget): string {
 }
 
 type TargetsState =
-  | { status: 'loading' }
-  | { status: 'error' }
-  | { status: 'ready'; rows: { target: EinvoiceTarget; label: string }[] };
+  { status: 'loading' } | { status: 'error' } | { status: 'ready'; rows: EinvoiceAnswer[] };
 
-/** 選帳…: the entries and split groups near the invoice, one tap to pick. The section turns `picked` into the link. */
+/** 選帳…: the entries and split groups near the invoice, one tap to pick, laid out as the flow's answers (name /
+ * account · date · category / amount, 日期差 / 金額差 marks). The section turns `picked` into the link. */
 @Component({
   selector: 'app-einvoice-target-sheet',
   standalone: true,
@@ -68,7 +68,7 @@ export class AppEinvoiceTargetSheetComponent implements OnInit {
         this.service.targets(invoice.id).pipe(
           map((targets): TargetsState => ({
             status: 'ready',
-            rows: targets.map((target) => ({ target, label: candidateLabel(target) })),
+            rows: targets.map((target) => einvoiceAnswer(invoice, target)),
           })),
           catchError(() => of<TargetsState>({ status: 'error' })),
           startWith<TargetsState>({ status: 'loading' }),
