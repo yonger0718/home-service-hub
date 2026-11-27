@@ -1,7 +1,8 @@
 # 期貨明細 page — design (short)
 
-Status: rev 1.1 2026-11-27 — approved by the owner with four additions (folded below: completeness, positions
-source, explicit response models, monthly-wins note). Builds on the 永豐期貨 statement import
+Status: rev 1.2 2026-11-27 — rev 1.1 approved by the owner with four additions (completeness, positions source,
+explicit response models, monthly-wins note); rev 1.2 folds the owner's screenshot-round decisions (opening-fill dash,
+option unrealized, sidebar entry, toggle, API-signed premium value). Builds on the 永豐期貨 statement import
 (`2026-11-25-sinopac-futures-statement-design.md`, rev 1.7), which already stores every daily statement's fills,
 closing links and positions as JSON and every 權益帳 figure as a column.
 
@@ -28,15 +29,21 @@ two use different P&L sources (FIFO vs the broker's 平倉損益).
   `missing_days` is counted only when a monthly statement exists (its activity dates without a daily row); for a
   `daily_sum` month it is 0.
 - **Trades**: one block per statement day, newest first: each fill with 商品 / 月份 / 履約價 / 權別, 動作 (新買 新賣
-  平買 平賣), 口數, 成交價, 期交稅, 手續費, and 平倉損益 (futures) or 權利金 (options, signed); the day's totals; a
-  closing fill expands to its 平倉 links (date, 口數, price of the opening fill). `無交易` days show 「當日無交易」;
+  平買 平賣), 口數, 成交價, 期交稅, 手續費, and 平倉損益 (futures) or 權利金 (options, signed); a futures opening
+  fill (新買 / 新賣) shows 「—」 instead of 平倉損益 $0; the day's totals; a closing fill expands to its 平倉 links
+  (date, 口數, price of the opening fill) through an accent-text toggle 「▸ 平倉明細」 / 「▾ 收合」 with aria-expanded. `無交易` days show 「當日無交易」;
   deposit / withdrawal days show the amounts.
 - **Positions**: from the latest daily statement dated on or before the month's `month_end` (no monthly statement:
   the calendar month's last day) — it may belong to an earlier month — with its date shown (「持倉：MM/DD 日對帳單」):
-  商品, 買／賣, 口數, 進場價, 行情價, 未沖銷損益 or 權利金市值. When the month has a monthly statement whose
+  商品, 買／賣, 口數, 進場價, 行情價, 權利金市值 (options, signed by side by the API: a sold option is negative, as
+  in the 權益總值 identity; no gain/loss colour) and 未沖銷損益 (every position — the statement prints it per position,
+  and the import rejects a statement whose option positions do not sum to the printed 未沖銷選擇權浮動損益 line;
+  nothing is computed on the page). When the month has a monthly statement whose
   `open_positions` differs from that daily statement's position count, add 「月底持倉可能不同」. `null` only when no
   daily statement exists on or before that date.
-- Entry points: a 「明細 →」 link on the dashboard futures card and a 「期貨明細 →」 link in the 交易明細 page header.
+- Entry points: a 「明細 →」 link on the dashboard futures card, a 「期貨明細 →」 link in the 交易明細 page header and
+  phone menu, and a 「期貨明細」 entry in the desktop left sidebar under 投資 right after 交易紀錄 (not in the phone
+  sub-tabs).
 
 ## Non-goals / anti-goals
 
