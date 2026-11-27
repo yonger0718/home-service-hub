@@ -204,3 +204,29 @@ def test_edit_adding_the_number_does_not_link(client, db_session, seed):
     assert res.status_code == 200, res.text
     assert res.json()["einvoice"] is None
     assert _row(db_session).state == "unmatched"
+
+
+def test_failing_settings_read_keeps_the_entry(client, db_session, seed, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    def failing(db):
+        raise OperationalError("SELECT 1", {}, Exception("statement timeout"))
+
+    account = _setup(client, db_session, seed)
+    monkeypatch.setattr(einvoice_matcher, "read_einvoice_settings", failing)
+    out = _save(client, account.id)
+    assert out["einvoice"] is None and db_session.get(LedgerEntry, out["id"]) is not None
+    assert _row(db_session).state == "unmatched"
+
+
+def test_busy_invoice_row_skips_without_waiting(client, db_session, seed):
+    """An owner action holds the invoice row: the save skips it (SKIP LOCKED) instead of waiting."""
+    account = _setup(client, db_session, seed)
+    db_session.execute(select(Einvoice).where(Einvoice.number == NUMBER).with_for_update()).scalars().one()
+    try:
+        out = _save(client, account.id)
+    finally:
+        db_session.rollback()
+    assert out["einvoice"] is None and out["invoice_number"] == NUMBER
+    assert _row(db_session).state == "unmatched" and _links(db_session) == 0
+
