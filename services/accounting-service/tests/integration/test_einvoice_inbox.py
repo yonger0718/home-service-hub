@@ -225,12 +225,18 @@ def test_seller_dismissed_counts_owner_dismissals_of_that_seller(client, db_sess
 
 
 def test_seller_dismissed_is_zero_on_questions(client, db_session, seed):
+    """One tax id with an owner dismissal, a reminder and two questions on the same page: only the reminder counts."""
     _seed_three(client, db_session, seed)
-    res = client.post(f"/einvoices/{_row(db_session, 'AB00000003').id}/dismiss")
+    import_(client, invoice(number="AB00000006", issue_date="2026-08-20", total="55", items=(("孤兒三", "55"),)))
+    res = client.post(f"/einvoices/{_row(db_session, 'AB00000006').id}/dismiss")
     assert res.status_code == 200, res.text
-    import_(client, invoice(number="AB00000004", issue_date="2026-10-21", total="104", seller_tax_id="00000002",
-                            seller_name="近似店有限公司", items=(("近似品", "104"),)))
-    assert {c["state"]: c["seller_dismissed"] for c in _inbox(client)["einvoices"]}["near"] == 0
+    for number in ("AB00000002", "AB00000003"):  # the near question and the reminder join the same seller
+        _row(db_session, number).seller_tax_id = "00000001"
+        db_session.commit()  # before the next _row's expire_all
+    cards = {c["number"]: c for c in _inbox(client)["einvoices"]}
+    assert (cards["AB00000001"]["state"], cards["AB00000001"]["seller_dismissed"]) == ("ambiguous", 0)
+    assert (cards["AB00000002"]["state"], cards["AB00000002"]["seller_dismissed"]) == ("near", 0)
+    assert (cards["AB00000003"]["state"], cards["AB00000003"]["seller_dismissed"]) == ("unmatched", 1)
 
 
 def test_unmatched_count_is_the_whole_set(client, db_session, seed):

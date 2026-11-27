@@ -296,10 +296,10 @@ def link_saved_entry(db: Session, entry_id: int, number: str) -> None:
     fallback and no other invoice is touched; anything less certain (no such invoice, the entry outside the period or
     in a group, two entries with the number) waits for the daily pass. Never blocks on the matcher lock and never
     fails the save: a busy lock or a conflict leaves the invoice for the daily pass."""
-    if not read_einvoice_settings(db)["enabled"]:
-        return
     try:
         with db.begin_nested():
+            if not read_einvoice_settings(db)["enabled"]:
+                return
             if not db.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": EINVOICE_LOCK_KEY}):
                 _log.info("einvoice link at save skipped (matcher busy); the daily pass will link")
                 return

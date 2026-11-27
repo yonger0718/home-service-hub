@@ -136,4 +136,4 @@ PR F3b: full frontend suite + production build, review through lead-claude, owne
 - P2 F2 記成新的一筆 count → Task 6 fix + tests; deploy order note.
 - P2 cut read with none listed → Task 5 copy, link to the F2 flow, tests; 「都整理好了」 only at count 0.
 - Minor (Task 2 assertions for disabled / account_id / questions = 0) → done in `test_unmatched_count_zero_when_reminders_off_or_disabled` and `test_seller_dismissed_is_zero_on_questions`.
-
+- Re-check (AGENT-629 @ 45d597a9, CHANGES, one P2): the settings read sat outside the savepoint → moved inside; `test_failing_settings_read_keeps_the_entry` (RED before), `test_busy_invoice_row_skips_without_waiting` (SKIP LOCKED); the questions = 0 test now puts an owner dismissal, a reminder and both question states on one tax id.
