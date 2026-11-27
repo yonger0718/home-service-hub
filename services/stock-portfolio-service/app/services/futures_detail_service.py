@@ -54,6 +54,33 @@ def _day(row: FuturesStatementDay) -> dict:
     }
 
 
+def _position(raw: dict) -> dict:
+    return {
+        "product": raw["product"], "month": raw["month"],
+        "strike": None if raw.get("strike") is None else _price(raw["strike"]),
+        "right": raw.get("right"), "side": raw["side"], "qty": raw["qty"],
+        "entry_price": _price(raw["entry_price"]), "mark_price": _price(raw["mark_price"]),
+        "unrealized": _amount(raw["unrealized"]), "premium_value": _amount(raw["premium_value"]),
+    }
+
+
+def _positions(db: Session, cutoff: date, month_row: FuturesStatementMonth | None) -> dict | None:
+    source = db.scalars(
+        select(FuturesStatementDay)
+        .where(FuturesStatementDay.statement_date <= cutoff)
+        .order_by(FuturesStatementDay.statement_date.desc())
+        .limit(1)
+    ).first()
+    if source is None:
+        return None
+    items = [_position(p) for p in source.positions or []]
+    return {
+        "date": source.statement_date.isoformat(),
+        "month_end_may_differ": month_row is not None and month_row.open_positions != len(items),
+        "items": items,
+    }
+
+
 def detail(db: Session, month: str) -> dict | None:
     first = date(int(month[:4]), int(month[5:]), 1)
     last = date(first.year, first.month, calendar.monthrange(first.year, first.month)[1])
@@ -90,5 +117,5 @@ def detail(db: Session, month: str) -> dict | None:
     return {
         "month": month, "summary": summary,
         "days": [_day(r) for r in reversed(rows)],
-        "positions": None,
+        "positions": _positions(db, month_row.month_end if month_row is not None else last, month_row),
     }

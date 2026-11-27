@@ -10,7 +10,7 @@ from app.models.sinopac_futures_statement import (
     FuturesStatementDay,
     FuturesStatementMonth,
 )
-from app.schemas.futures_detail import CloseOut, DepositOut, FillOut
+from app.schemas.futures_detail import CloseOut, DepositOut, FillOut, PositionOut
 
 NOW = datetime(2026, 4, 1, tzinfo=timezone.utc)
 FILL_KEYS = set(FillOut.model_fields)
@@ -154,3 +154,61 @@ def test_detail_404_and_422(client):
     assert client.get(url, params={"month": "2025-01"}).status_code == 404
     assert client.get(url, params={"month": "2026-13"}).status_code == 422
     assert client.get(url, params={"month": "202603"}).status_code == 422
+
+
+def _pos(**over):
+    base = {
+        "product": "範例期貨", "month": "2026/03", "strike": None, "right": None, "opened": "2026-03-02",
+        "side": "買", "entry_price": "20500", "mark_price": "20600", "qty": 1, "initial_margin": "100000",
+        "premium_value": "0", "unrealized": "100",
+    }
+    return {**base, **over}
+
+
+def test_positions_from_last_daily_of_month(client, db_session):
+    _day(db_session, date(2026, 3, 5), positions=[_pos()])
+    _day(db_session, date(2026, 3, 20), positions=[
+        _pos(), _pos(product="範例選", strike="21000", right="Call", side="賣", entry_price="6",
+                     mark_price="4", premium_value="-200", unrealized="100"),
+    ])
+    positions = _detail(client)["positions"]
+    assert positions["date"] == "2026-03-20"
+    assert len(positions["items"]) == 2
+    assert positions["month_end_may_differ"] is False
+    future, option = positions["items"]
+    assert set(future) == set(PositionOut.model_fields)
+    assert future["strike"] is None
+    assert (future["unrealized"], future["premium_value"]) == ("100.0000", "0.0000")
+    assert (option["strike"], option["right"], option["premium_value"]) == ("21000", "Call", "-200.0000")
+    assert option["entry_price"] == "6"
+
+
+def test_positions_carried_from_earlier_month(client, db_session):
+    _day(db_session, date(2026, 1, 28), positions=[_pos()])
+    _month(db_session, date(2026, 2, 27), open_positions=1)
+    positions = _detail(client, "2026-02")["positions"]
+    assert positions["date"] == "2026-01-28"
+    assert positions["month_end_may_differ"] is False
+
+
+def test_positions_month_end_may_differ(client, db_session):
+    _day(db_session, date(2026, 1, 28), positions=[_pos()])
+    _month(db_session, date(2026, 2, 27), open_positions=0)
+    assert _detail(client, "2026-02")["positions"]["month_end_may_differ"] is True
+
+
+def test_positions_ignore_daily_after_month_end(client, db_session):
+    _day(db_session, date(2026, 2, 25), positions=[_pos()])
+    _day(db_session, date(2026, 2, 27), positions=[_pos(), _pos()])
+    _month(db_session, date(2026, 2, 26), open_positions=1)
+    assert _detail(client, "2026-02")["positions"]["date"] == "2026-02-25"
+
+
+def test_positions_null_without_earlier_daily(client, db_session):
+    _month(db_session, date(2026, 2, 27))
+    assert _detail(client, "2026-02")["positions"] is None
+
+
+def test_positions_null_json(client, db_session):
+    _day(db_session, date(2026, 3, 5), positions=None)
+    assert _detail(client)["positions"] == {"date": "2026-03-05", "month_end_may_differ": False, "items": []}
