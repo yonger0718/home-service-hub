@@ -69,7 +69,7 @@ export interface NotifWake {
 }
 
 export interface NotifTrackingRow {
-  readonly id: 'debts' | 'upcoming' | 'dividends';
+  readonly id: 'debts' | 'upcoming' | 'einvoices' | 'dividends';
   readonly source: NotifSource;
   readonly title: string;
   readonly meta: string;

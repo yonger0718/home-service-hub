@@ -40,6 +40,8 @@ export interface InboxEinvoice extends EinvoiceSummary {
   state: 'ambiguous' | 'near' | 'unmatched';
   candidates: EinvoiceTarget[];
   offer_mute: boolean;
+  /** The owner's 不用記帳 of this seller (tax id) so far; 0 without one and on questions. Absent on an older API. */
+  seller_dismissed?: number;
 }
 
 /** The invoice linked to an entry directly or through its split group. */

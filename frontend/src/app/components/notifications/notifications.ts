@@ -76,6 +76,7 @@ type AckCommand = Extract<NotifCommand, { kind: 'ackCathay' | 'ackFutures' }>;
 const TRACKING_UNIT: Record<NotifTrackingRow['id'], { name: string; unit: string }> = {
   debts: { name: '借還款', unit: '位' },
   upcoming: { name: '即將到來', unit: '件' },
+  einvoices: { name: '發票', unit: '張' },
   dividends: { name: '股利', unit: '筆' },
 };
 

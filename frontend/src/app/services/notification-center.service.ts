@@ -31,6 +31,7 @@ import {
   INBOX_READ_LIMIT,
   askAccountIds,
   einvoiceTask,
+  einvoiceUnmatchedRow,
   inboxMissing,
   reconOverflowTask,
   reconTasks,
@@ -473,13 +474,18 @@ export class NotificationCenterService {
     }
     return earliest === null ? null : new Date(earliest);
   });
-  /** The debts row, the upcoming row, then the dividends waiting for their payment date; each absent when it has nothing. */
+  /**
+   * The debts row, the upcoming row, the invoices without an entry (D11), then the dividends waiting for their payment
+   * date; each absent when it has nothing.
+   */
   readonly trackingRows: Signal<readonly NotifTrackingRow[]> = computed(() => {
     const counterparties = this.counterparties();
     const dividends = this.dividendSplit();
+    const inbox = this.inboxData();
     return [
       counterparties ? debtsRow(counterparties) : null,
       upcomingRow(this.trackingBills()),
+      inbox ? einvoiceUnmatchedRow(inbox) : null,
       dividends ? dividendsRow(dividends.waiting) : null,
     ].filter((row): row is NotifTrackingRow => row !== null);
   });

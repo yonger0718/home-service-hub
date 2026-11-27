@@ -2,7 +2,7 @@ import { shortDate } from '../../accounting/dates';
 import { InboxCounts, InboxOut } from '../../accounting/inbox/inbox.model';
 import { isAskQuestion } from '../../accounting/inbox/inbox-view';
 import { ReconProgress } from '../../accounting/statements/statement-view';
-import { NotifLink, NotifTask } from '../notif-task';
+import { NotifLink, NotifTask, NotifTrackingRow } from '../notif-task';
 
 /** The API's maximum page (`routers/reconciliation.py:70`); the service reads the inbox with it. */
 export const INBOX_READ_LIMIT = 1000;
@@ -105,6 +105,40 @@ export function einvoiceTask(inbox: Pick<InboxOut, 'counts' | 'einvoices'>): Not
     secondary: [],
     sortKey: '9999-12-31',
     wake: asking.length >= n ? { count: n, members: asking.map((invoice) => String(invoice.id)) } : { count: n },
+  };
+}
+
+/** The page for invoices without an entry (D11). */
+export const EINVOICE_UNMATCHED_LINK: NotifLink = {
+  label: '查看',
+  route: EINVOICE_FLOW_ROUTE,
+  queryParams: { state: 'unmatched' },
+};
+
+/**
+ * D11: the 追蹤中 row for invoices without an entry, never counted. N is `counts.einvoice_unmatched` (the whole set;
+ * 0 while reminders are off, absent on an older API: no row either way). The meta names the top three sellers among
+ * the listed invoices by count, then by total, then first listed, with 「等 K 家」 for K sellers in all past three.
+ */
+export function einvoiceUnmatchedRow(inbox: Pick<InboxOut, 'counts' | 'einvoices'>): NotifTrackingRow | null {
+  const n = inbox.counts.einvoice_unmatched ?? 0;
+  if (n <= 0) return null;
+  const sellers = new Map<string, { name: string; count: number; total: number }>();
+  for (const invoice of (inbox.einvoices ?? []).filter((i) => i.state === 'unmatched')) {
+    const key = invoice.seller_tax_id || invoice.seller_name;
+    const seller = sellers.get(key) ?? { name: invoice.seller_name, count: 0, total: 0 };
+    sellers.set(key, { ...seller, count: seller.count + 1, total: seller.total + Number(invoice.total_amount) });
+  }
+  const ranked = [...sellers.values()].sort((a, b) => b.count - a.count || b.total - a.total);
+  const parts = ranked.slice(0, EINVOICE_META_SELLERS).map((s) => `${s.name} ${s.count}`);
+  const tail = ranked.length > EINVOICE_META_SELLERS ? ` 等 ${ranked.length} 家` : '';
+  return {
+    id: 'einvoices',
+    source: 'ledger',
+    title: `有發票沒有帳 · ${n} 張`,
+    meta: parts.join('、') + tail,
+    count: n,
+    link: EINVOICE_UNMATCHED_LINK,
   };
 }
 
