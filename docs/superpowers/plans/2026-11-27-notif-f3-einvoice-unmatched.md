@@ -39,7 +39,7 @@
 2. An entry created with an invoice number while e-invoices are disabled: no matcher work, create succeeds.
 3. 這 N 張都不用記帳 where one dismiss fails midway: the done ones stay done, the toast's 復原 undoes exactly those, the failure is shown.
 4. 復原 of 這家以後都不提醒 when the mute already turned the seller's other invoices into `seller_muted`: `DELETE /mutes/{tax_id}` brings them back, then `undismiss` the one dismissed with the mute (the order matters: undismiss refuses while the mute exists).
-5. The page with `remind_unmatched` off (nothing listed) and with a cut read (fewer unmatched listed than `counts.einvoice_unmatched`).
+5. The page with `remind_unmatched` off (nothing listed, direct URL), with a cut read (fewer unmatched listed than `counts.einvoice_unmatched`), and with a read that lists none while the count is > 0 (≥ 1000 questions fill the page).
 
 ---
 
@@ -48,24 +48,24 @@
 ### Task 1: Link at save
 
 **Files:**
-- Modify: `services/accounting-service/app/services/einvoice_matcher.py` (`run_matcher`)
+- Modify: `services/accounting-service/app/services/einvoice_matcher.py` (new `link_saved_entry`; `run_matcher` unchanged except sharing the open-state filter `_open_invoice()`)
 - Modify: `services/accounting-service/app/routers/entries.py` (`post_entry`)
 - Test: `services/accounting-service/tests/integration/test_einvoice_link_at_save.py` (new)
 
 **Interfaces:**
-- Produces: `run_matcher(db, *, numbers: Collection[str] | None = None) -> dict` — `numbers` limits the pass to invoices with those numbers (same states, same decisions); `None` = every invoice (unchanged behaviour for import / `/match`).
+- Produces: `link_saved_entry(db, entry_id: int, number: str) -> None` (AGENT-629 P1 ×2). Exact rule only (§7.3): the one open invoice with `number` whose period holds the entry's date, linked when the new entry is the only eligible entry stamped with `number` in that period. No amount / date fallback; no other invoice is read or changed (so no `decide()` over a subset). Open = the matcher's states (`unmatched`, `ambiguous`, `near`, `dismissed`/`seller_muted`); owner / runbook dismissals, `void`, `linked` untouched. The whole step runs in a savepoint; the matcher lock is taken with `pg_try_advisory_xact_lock` and the invoice row with `FOR UPDATE SKIP LOCKED` (never waits: busy → skip); `IntegrityError` / `OperationalError` roll the savepoint back and log the exception type only (messages carry SQL parameters). The save always succeeds.
 
-- [ ] **Step 1: Failing tests** (fictional invoice `AB00000001`, $85, issue date inside the period):
-  - `test_entry_with_invoice_number_links_open_invoice`: an `unmatched` invoice and `POST /entries` with `invoice_number="AB00000001"`, matching amount/date → 201, response `einvoice.number == "AB00000001"`, `linked_by == "auto"`; invoice state `linked`.
-  - same for an `ambiguous` and a `near` invoice (the exact rule wins over amount).
-  - `test_entry_with_number_of_dismissed_or_linked_invoice_changes_nothing`: `dismissed(owner)`, `linked` to another entry, `void` → no link row added, states unchanged, 201.
-  - `test_entry_number_outside_period_does_not_link`: entry date outside `period_bounds` → invoice stays as it was.
-  - `test_entry_without_number_runs_no_matcher` (spy / no state change on other invoices) and `test_einvoices_disabled_no_link`.
-  - `test_link_at_save_touches_only_that_number`: a second unmatched invoice whose amount now has a candidate stays `unmatched` (only the 04:10 pass changes it).
-- [ ] **Step 2:** run → FAIL (no link).
-- [ ] **Step 3:** `run_matcher(numbers=…)`: add `Einvoice.number.in_(numbers)` to the select when given. In `post_entry`, after `create_entry` and before `commit`, when `payload.invoice_number` is set: `einvoice_matcher.run_matcher(db, numbers={payload.invoice_number})` inside the same `service_errors()` block. Only `POST /entries` (owner decision covers saves from the form; `PUT` / transfers / splits unchanged — ruling: a later edit that adds a number links at 04:10 as today).
+- [ ] **Step 1: Failing tests** (fictional `AB00000001`, $120, issued 2026-10-05) in `test_einvoice_link_at_save.py`:
+  - links: `unmatched`, `ambiguous`, `near`, `dismissed/seller_muted` → 201, response `einvoice.number`, `linked_by == "auto"`, state `linked`, link row on the new entry; the number wins over a different amount.
+  - untouched: `dismissed/owner`, `dismissed/runbook`, `void`, linked to another entry; a number with no invoice (201, number stored).
+  - `test_outside_the_period_never_falls_back_to_amount`: issued 2026-02-28 (period Jan–Feb), saved 2026-03-01 same number and amount → not linked.
+  - `test_shared_candidate_leaves_the_other_invoice`: two $120 invoices ambiguous on one unnumbered entry; save with the first number → first linked, second still `ambiguous`.
+  - `test_two_entries_with_the_number_wait_for_the_daily_pass`; `test_only_that_number_is_matched`; no number; e-invoices disabled.
+  - `test_busy_matcher_lock_skips_without_waiting` (another connection holds the lock); `test_failure_mid_link_rolls_back_the_link_and_keeps_the_entry` (fail after the link insert → 201, entry kept, no link row); `test_edit_adding_the_number_does_not_link` (PUT).
+- [ ] **Step 2:** run → FAIL. The outside-period case must fail against a number-filtered `run_matcher` too.
+- [ ] **Step 3:** implement `link_saved_entry`; `post_entry` calls it after `create_entry`, before `commit`, when `payload.invoice_number` is set. Only `POST /entries` (ruling: an edit that adds a number links at the daily pass as today; transfers / splits unchanged).
 - [ ] **Step 4:** run → PASS; full accounting suite.
-- [ ] **Step 5:** commit `feat(accounting): link an open e-invoice when an entry is saved with its number`.
+- [ ] **Step 5:** commit.
 
 ### Task 2: Inbox fields for the unmatched page
 
@@ -104,7 +104,7 @@ PR F3a: full accounting suite, strict validate, review through lead-claude, merg
 
 **View (`einvoice-unmatched-view.ts`, pure):** `unmatchedGroups(invoices)` → groups by `seller_tax_id || seller_name`, ordered by count desc, then total desc, then seller; rows by date desc. Group: seller, meta 「N 張 · 統編 X」 / 「N 張 · 沒有統編」 + 「 · 已標不用記帳 K 次」 when K > 0 (K = max `seller_dismissed` in the group), total, `canMute` = tax id and any `offer_mute`. Row: `MM/DD`, items 「a、b · N 項」 (first two names), amount. Headline 「N 張 · M 家 · 不計入通知數字」.
 
-**Page:** intro 「這些發票找不到對應的帳。記一筆、選一筆連上，或標成不用記帳；同一家常常不用記的話，可以以後都不提醒。」; per row 記一筆 (entry form prefill as D10) / 選帳… (target sheet) / 不用記帳; group footer for > 1 invoice 「這 N 張都不用記帳」 and, when `canMute`, 「這家以後都不提醒」 (solo invoice: the mute button under its row); no tax id → note 「沒有統編的商家無法設定不提醒」; empty 「都整理好了」; footer 「不想看到這頁？記帳設定 › 發票 可以關掉提醒 ›」 → `/accounting/settings` (the 發票 section arrives with F4; ruling: link the page now). Reads the inbox itself (`InboxService.get({limit: INBOX_READ_LIMIT})`), newest-read-wins and cancelled on destroy (as the F2 flow), re-read on `entriesChanged`. A cut read (listed unmatched < `counts.einvoice_unmatched`) adds 「還有 K 張未列出，處理完上面的會接著顯示」.
+**Page:** intro 「這些發票找不到對應的帳。記一筆、選一筆連上，或標成不用記帳；同一家常常不用記的話，可以以後都不提醒。」; per row 記一筆 (entry form prefill as D10) / 選帳… (target sheet) / 不用記帳; group footer for > 1 invoice 「這 N 張都不用記帳」 and, when `canMute`, 「這家以後都不提醒」 (solo invoice: the mute button under its row); no tax id → note 「沒有統編的商家無法設定不提醒」; empty 「都整理好了」; footer 「不想看到這頁？記帳設定 › 發票 可以關掉提醒 ›」 → `/accounting/settings` (the 發票 section arrives with F4; ruling: link the page now). Reads the inbox itself (`InboxService.get({limit: INBOX_READ_LIMIT})`), newest-read-wins and cancelled on destroy (as the F2 flow), re-read on `entriesChanged`. A cut read (0 < listed unmatched < `counts.einvoice_unmatched`) adds 「還有 K 張未列出，處理完上面的會接著顯示」. A read that lists none while the count is > 0 (questions fill the 1000-row page; AGENT-629 P2) shows 「先確認 N 張要確認的發票，這裡才會列出」 with a link to `/notifications/einvoices` (the F2 flow), never 「都整理好了」. 「都整理好了」 only when the count is 0. Reminders off (direct URL): 「提醒已關閉」 + the 記帳設定 link.
 
 **Toasts / 復原 (D11, artboard copy):**
 - 不用記帳 → 「已把 <seller> <MM/DD> 標成不用記帳」; 復原 = `undismiss`.
@@ -113,11 +113,14 @@ PR F3a: full accounting suite, strict validate, review through lead-claude, merg
 - 選帳… pick → `link`; 「已連結：<seller> $<total>」; 復原 = `unlink` + `undismiss` (as F2; #454 will replace it).
 - 記一筆 → the entry form; after the save the invoice is linked (F3a) and leaves on the re-read; no toast here (the form has its own).
 
-**Tests (page spec):** grouping / order / meta (K, 沒有統編); each action's request and toast; 復原 for each (mute order: DELETE then undismiss); dismiss-all partial failure; no tax id → note, no mute; empty state; cut read note; FAB hidden (`shell.spec` already has the URL).
+**Tests (page spec):** grouping / order / meta (K, 沒有統編); each action's request and toast; 復原 for each (mute order: DELETE then undismiss); dismiss-all partial failure; no tax id → note, no mute; empty state (count 0 only); cut read note; listed 0 / count > 0 → the F2 link, not the empty state; reminders off; FAB hidden (`shell.spec` already has the URL).
 
-### Task 6: Flow end-state link
+### Task 6: Flow end-state link and the 記成新的一筆 count
 
-**Files:** `einvoice-flow.html/.ts` + spec. When `counts.einvoice_unmatched > 0` the end state adds the link 「有發票沒有帳 N 張 ›」 to `/notifications/einvoices?state=unmatched` (D10). Test: shown with N, absent at 0.
+**Files:** `einvoice-flow.html/.ts` + spec.
+- When `counts.einvoice_unmatched > 0` the end state adds 「有發票沒有帳 N 張 ›」 to `/notifications/einvoices?state=unmatched` (D10). Test: shown with N, absent at 0.
+- **F2 count fix (AGENT-629 P2):** with link at save the next read no longer lists the recorded invoice, and `afterRead` drops it before the pending check (`einvoice-flow.ts` ~L184–191), so a successful 記成新的一筆 is never counted. Apply `answer(current, pending.id, 'recorded')` to the state *before* `afterRead` when `invoiceCreatedSince(number, mark)` is true (an answered invoice survives `afterRead`); keep the cursor move when not saved. Tests: save → read without the invoice → counted `recorded` once; cancel → not counted; an unrelated write → not counted; 連續記帳 two saves → once.
+- Deploy order: F3a (API) may ship alone (the live SPA has no F2). The F2 SPA ships together with F3b, never F2 alone after F3a.
 
 ### Task 7: OpenSpec + screenshots
 
@@ -125,3 +128,12 @@ PR F3a: full accounting suite, strict validate, review through lead-claude, merg
 - [ ] Fictional screenshots (1440 / 1100 / 390, light + dark): notifications list with the 追蹤中 row; the page (several groups, mute offered, no tax id); each toast; empty; the flow end state with the link; before / after.
 
 PR F3b: full frontend suite + production build, review through lead-claude, owner design check of the screenshots, merge on owner go.
+
+## Plan review resolution (AGENT-629, CHANGES @ b35a5214)
+
+- P1 failure isolation / lock wait → Task 1: savepoint around the whole step, try-lock + `SKIP LOCKED`, busy-lock and mid-link-failure tests. The step holds no lock another writer waits on before it takes its own (new entry row only), and takes nothing it would wait for.
+- P1 exactness → Task 1: dedicated exact-rule link instead of a number-filtered `run_matcher`; outside-period fallback and shared-candidate tests; seller_muted links, owner / runbook dismissals untouched.
+- P2 F2 記成新的一筆 count → Task 6 fix + tests; deploy order note.
+- P2 cut read with none listed → Task 5 copy, link to the F2 flow, tests; 「都整理好了」 only at count 0.
+- Minor (Task 2 assertions for disabled / account_id / questions = 0) → done in `test_unmatched_count_zero_when_reminders_off_or_disabled` and `test_seller_dismissed_is_zero_on_questions`.
+

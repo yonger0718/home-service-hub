@@ -85,7 +85,7 @@ def post_entry(payload: EntryIn, db: Session = Depends(get_db)):
     with service_errors():
         entry_id = entry_write_service.create_entry(db, payload)
         if payload.invoice_number:
-            einvoice_matcher.link_saved_number(db, payload.invoice_number)
+            einvoice_matcher.link_saved_entry(db, entry_id, payload.invoice_number)
     db.commit()
     return _written(db, entry_id)
 

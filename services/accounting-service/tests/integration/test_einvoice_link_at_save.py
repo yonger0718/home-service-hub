@@ -3,10 +3,12 @@ Synthetic data only."""
 from datetime import date
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app import auth
 from app.models import Einvoice, EinvoiceLink, LedgerEntry
+from app.services import einvoice_matcher
+from app.services.einvoice_service import EINVOICE_LOCK_KEY
 from tests.integration.einvoice_fixtures import enable, import_, invoice
 
 
@@ -43,38 +45,38 @@ def _save(client, account_id, *, number=NUMBER, amount="120", day="2026-10-06") 
     return res.json()
 
 
-@pytest.mark.parametrize("state", ["unmatched", "ambiguous", "near"])
-def test_entry_with_invoice_number_links_open_invoice(client, db_session, seed, state):
+def _setup(client, db_session, seed, *invoices):
     enable(client)
     account = seed.account("A")
     db_session.commit()
-    import_(client, invoice())  # no entry yet: unmatched
-    if state != "unmatched":
-        _set_state(db_session, NUMBER, state)
+    import_(client, *(invoices or (invoice(),)))
+    return account
+
+
+@pytest.mark.parametrize("state,reason", [("unmatched", None), ("ambiguous", None), ("near", None),
+                                          ("dismissed", "seller_muted")])
+def test_entry_with_invoice_number_links_open_invoice(client, db_session, seed, state, reason):
+    account = _setup(client, db_session, seed)
+    _set_state(db_session, NUMBER, state, reason)
     out = _save(client, account.id)
     assert out["einvoice"]["number"] == NUMBER and out["einvoice"]["linked_by"] == "auto"
-    assert _row(db_session).state == "linked"
-    link = db_session.get(EinvoiceLink, _row(db_session).id)
+    row = _row(db_session)
+    assert (row.state, row.dismiss_reason) == ("linked", None)
+    link = db_session.get(EinvoiceLink, row.id)
     assert link.entry_id == out["id"] and link.linked_by == "auto"
 
 
 def test_exact_number_wins_over_amount(client, db_session, seed):
     """The owner typed the number: the exact rule links even when the amount differs."""
-    enable(client)
-    account = seed.account("A")
-    db_session.commit()
-    import_(client, invoice())
+    account = _setup(client, db_session, seed)
     out = _save(client, account.id, amount="99")
     assert out["einvoice"]["number"] == NUMBER
     assert _row(db_session).state == "linked"
 
 
-@pytest.mark.parametrize("state,reason", [("dismissed", "owner"), ("void", None)])
+@pytest.mark.parametrize("state,reason", [("dismissed", "owner"), ("dismissed", "runbook"), ("void", None)])
 def test_closed_invoice_is_left_alone(client, db_session, seed, state, reason):
-    enable(client)
-    account = seed.account("A")
-    db_session.commit()
-    import_(client, invoice())
+    account = _setup(client, db_session, seed)
     _set_state(db_session, NUMBER, state, reason)
     out = _save(client, account.id)
     assert out["einvoice"] is None
@@ -96,22 +98,51 @@ def test_invoice_linked_elsewhere_is_left_alone(client, db_session, seed):
     assert _links(db_session) == 1
 
 
-def test_entry_outside_the_invoice_period_does_not_link(client, db_session, seed):
+def test_number_with_no_invoice_saves(client, db_session, seed):
+    account = _setup(client, db_session, seed)
+    out = _save(client, account.id, number="ZZ99999999")
+    assert out["einvoice"] is None and out["invoice_number"] == "ZZ99999999"
+    assert _row(db_session).state == "unmatched"
+
+
+def test_outside_the_period_never_falls_back_to_amount(client, db_session, seed):
+    """Issued 02-28 (period Jan–Feb), saved 03-01 with the same number and amount: within the date window, but the
+    save links by the exact rule only; the daily pass decides the rest."""
+    account = _setup(client, db_session, seed,
+                     invoice(issue_date="2026-02-28", total="85", items=(("測試品項", "85"),)))
+    out = _save(client, account.id, amount="85", day="2026-03-01")
+    assert out["einvoice"] is None
+    assert _row(db_session).state == "unmatched" and _links(db_session) == 0
+
+
+def test_shared_candidate_leaves_the_other_invoice(client, db_session, seed):
+    """Two $120 invoices share one unnumbered entry (both ambiguous); saving a new entry with the first number links
+    the first and leaves the second as it was."""
     enable(client)
     account = seed.account("A")
+    seed.entry(account, "-120", day=date(2026, 10, 5))
     db_session.commit()
-    import_(client, invoice())  # issue date 2026-10-05: period Sep–Oct
-    out = _save(client, account.id, day="2026-11-02")
+    import_(client, invoice(), invoice(number="AB00000002", seller_tax_id="00000002"))
+    assert {_row(db_session).state, _row(db_session, "AB00000002").state} == {"ambiguous"}
+    out = _save(client, account.id)
+    assert out["einvoice"]["number"] == NUMBER
+    assert _row(db_session, "AB00000002").state == "ambiguous"
+    assert _links(db_session) == 1
+
+
+def test_two_entries_with_the_number_wait_for_the_daily_pass(client, db_session, seed):
+    account = _setup(client, db_session, seed)
+    seed.entry(account, "-120", day=date(2026, 10, 7), invoice_number=NUMBER)
+    db_session.commit()
+    out = _save(client, account.id)
     assert out["einvoice"] is None
-    assert _row(db_session).state == "unmatched"
+    assert _row(db_session).state == "unmatched" and _links(db_session) == 0
 
 
 def test_only_that_number_is_matched(client, db_session, seed):
     """Another open invoice that now has a candidate waits for the daily pass."""
-    enable(client)
-    account = seed.account("A")
-    db_session.commit()
-    import_(client, invoice(), invoice(number="AB00000002", total="300", items=(("測試品項二", "300"),)))
+    account = _setup(client, db_session, seed,
+                     invoice(), invoice(number="AB00000002", total="300", items=(("測試品項二", "300"),)))
     seed.entry(account, "-300", day=date(2026, 10, 5))
     db_session.commit()
     _save(client, account.id)
@@ -120,20 +151,14 @@ def test_only_that_number_is_matched(client, db_session, seed):
 
 
 def test_entry_without_number_matches_nothing(client, db_session, seed):
-    enable(client)
-    account = seed.account("A")
-    db_session.commit()
-    import_(client, invoice())
+    account = _setup(client, db_session, seed)
     out = _save(client, account.id, number=None)
     assert out["einvoice"] is None
     assert _row(db_session).state == "unmatched"
 
 
 def test_einvoices_disabled_no_link(client, db_session, seed):
-    enable(client)
-    account = seed.account("A")
-    db_session.commit()
-    import_(client, invoice())
+    account = _setup(client, db_session, seed)
     enable(client, enabled=False)
     out = _save(client, account.id)
     assert out["einvoice"] is None
@@ -141,29 +166,37 @@ def test_einvoices_disabled_no_link(client, db_session, seed):
     assert db_session.get(LedgerEntry, out["id"]).invoice_number == NUMBER
 
 
-def test_lock_conflict_never_fails_the_save(client, db_session, seed, monkeypatch):
+def test_busy_matcher_lock_skips_without_waiting(client, db_session, seed):
+    """An import holds the matcher lock: the save neither waits nor fails; the invoice waits for the daily pass."""
+    account = _setup(client, db_session, seed)
+    db_session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": EINVOICE_LOCK_KEY})
+    try:
+        out = _save(client, account.id)
+    finally:
+        db_session.rollback()
+    assert out["einvoice"] is None and out["invoice_number"] == NUMBER
+    assert _row(db_session).state == "unmatched" and _links(db_session) == 0
+
+
+def test_failure_mid_link_rolls_back_the_link_and_keeps_the_entry(client, db_session, seed, monkeypatch):
     from sqlalchemy.exc import OperationalError
 
-    from app.services import einvoice_matcher
+    real_insert = einvoice_matcher._insert_link
 
-    def boom(db, *, numbers=None):
+    def insert_then_fail(db, inv, key):
+        real_insert(db, inv, key)  # the link row is written, then the pass fails
         raise OperationalError("SELECT 1", {}, Exception("deadlock detected"))
 
-    enable(client)
-    account = seed.account("A")
-    db_session.commit()
-    import_(client, invoice())
-    monkeypatch.setattr(einvoice_matcher, "run_matcher", boom)
+    account = _setup(client, db_session, seed)
+    monkeypatch.setattr(einvoice_matcher, "_insert_link", insert_then_fail)
     out = _save(client, account.id)
     assert out["einvoice"] is None and out["invoice_number"] == NUMBER
-    assert _row(db_session).state == "unmatched"
+    assert db_session.get(LedgerEntry, out["id"]) is not None
+    assert _row(db_session).state == "unmatched" and _links(db_session) == 0
 
 
 def test_edit_adding_the_number_does_not_link(client, db_session, seed):
-    enable(client)
-    account = seed.account("A")
-    db_session.commit()
-    import_(client, invoice())
+    account = _setup(client, db_session, seed)
     out = _save(client, account.id, number=None)
     body = {"account_id": account.id, "kind": "expense", "amount": "120", "entry_date": "2026-10-06",
             "invoice_number": NUMBER}
