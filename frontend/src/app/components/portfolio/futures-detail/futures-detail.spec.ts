@@ -178,7 +178,8 @@ describe('PortfolioFuturesDetailComponent', () => {
       month_end_may_differ: true,
       items: [
         { product: '範例期貨', month: '202603', strike: null, right: null, side: '買', qty: 1, entry_price: '20000', mark_price: '20100', unrealized: '100.0000', premium_value: '0.0000' },
-        { product: '範例選', month: '202603', strike: '21000', right: 'Call', side: '賣', qty: 1, entry_price: '6', mark_price: '5', unrealized: '0.0000', premium_value: '-200.0000' },
+        { product: '範例選', month: '202603', strike: '21000', right: 'Call', side: '賣', qty: 1, entry_price: '6', mark_price: '5', unrealized: '0.0000', premium_value: '200.0000' },
+        { product: '範例選', month: '202603', strike: '21500', right: 'Put', side: '買', qty: 1, entry_price: '4', mark_price: '5', unrealized: '0.0000', premium_value: '150.0000' },
       ],
       ...over,
     });
@@ -189,6 +190,19 @@ describe('PortfolioFuturesDetailComponent', () => {
       expect(text()).toContain('月底持倉可能不同');
       expect(text()).toContain('未沖銷損益');
       expect(text()).toContain('權利金市值');
+    });
+
+    it('shows option 權利金市值 signed by side with no trend colour', () => {
+      const { el } = loaded(detail({ positions: positions() }));
+      const vals = Array.from(el.querySelectorAll('[data-testid="positions-card"] tbody tr')).map(r => r.querySelector('td.num:last-child b') as HTMLElement);
+      const [fut, sold, bought] = vals;
+      expect(sold.textContent).toMatch(/[-−]/);
+      expect(sold.classList.contains('up')).toBe(false);
+      expect(sold.classList.contains('down')).toBe(false);
+      expect(bought.textContent).not.toMatch(/[-−]/);
+      expect(bought.classList.contains('up')).toBe(false);
+      expect(bought.classList.contains('down')).toBe(false);
+      expect(fut.classList.contains('up')).toBe(true);
     });
 
     it('hides the card when positions is null', () => {
@@ -239,6 +253,15 @@ describe('PortfolioFuturesDetailComponent', () => {
       s.detailReq('2026-03').flush('boom', { status: 500, statusText: 'Server Error' });
       s.fixture.detectChanges();
       expect(s.text()).toContain('期貨資料載入失敗');
+      expect(s.el.querySelector('[data-testid="month-picker"]')).not.toBeNull();
+    });
+
+    it('malformed month param falls back to the newest month', () => {
+      const s = setup({ month: '2026-13' });
+      s.months(['2026-03', '2026-02']);
+      s.detailReq('2026-03').flush(detail());
+      s.fixture.detectChanges();
+      expect(s.el.querySelector('[data-testid="fd-error"]')).toBeNull();
     });
 
     it('no months shows 尚無期貨對帳單 and makes no detail request', () => {

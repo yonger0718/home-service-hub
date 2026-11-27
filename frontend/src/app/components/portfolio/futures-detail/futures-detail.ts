@@ -10,6 +10,8 @@ import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BentoComponent } from '../../ui/bento/bento';
 import { Amount, displayedSign, formatMoney } from '../../ui/format';
 
+const MONTH_KEY = /^\d{4}-(0[1-9]|1[0-2])$/;
+
 type LoadState = 'loading' | 'ready' | 'no-months' | 'not-found' | 'error';
 
 interface SummaryRow {
@@ -41,6 +43,7 @@ export class PortfolioFuturesDetailComponent implements OnInit, OnDestroy {
 
   protected readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   protected readonly state = signal<LoadState>('loading');
+  protected readonly monthsFailed = signal(false);
   protected readonly months = signal<string[]>([]);
   protected readonly selected = signal<string | null>(null);
   protected readonly detail = signal<FuturesDetail | null>(null);
@@ -67,9 +70,13 @@ export class PortfolioFuturesDetailComponent implements OnInit, OnDestroy {
           this.state.set('no-months');
           return;
         }
-        this.loadDetail(this.route.snapshot.queryParamMap.get('month') ?? months[0]);
+        const wanted = this.route.snapshot.queryParamMap.get('month');
+        this.loadDetail(wanted !== null && MONTH_KEY.test(wanted) ? wanted : months[0]);
       },
-      error: () => this.state.set('error'),
+      error: () => {
+        this.monthsFailed.set(true);
+        this.state.set('error');
+      },
     });
   }
 
@@ -115,6 +122,13 @@ export class PortfolioFuturesDetailComponent implements OnInit, OnDestroy {
 
   protected sign(value: Amount): -1 | 0 | 1 {
     return displayedSign(value, formatMoney(value));
+  }
+
+  /** 權利金市值 is stored unsigned; a sold (賣) option counts negative, as in the equity identity. */
+  protected premiumValue(pos: { side: string; premium_value: Amount }): string {
+    const raw = String(pos.premium_value);
+    const negative = pos.side === '賣' && Number(raw) !== 0;
+    return this.money(negative ? `-${raw.replace(/^-/, '')}` : raw, true);
   }
 
   protected pnlLabel(fill: FuturesFill): string {

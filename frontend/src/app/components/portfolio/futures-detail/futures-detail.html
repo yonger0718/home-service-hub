@@ -2,7 +2,7 @@
 
 @if (state() === 'no-months') {
   <p class="fd-note" data-testid="fd-empty">尚無期貨對帳單</p>
-} @else if (state() === 'error') {
+} @else if (state() === 'error' && monthsFailed()) {
   <p class="fd-note" role="alert" data-testid="fd-error">期貨資料載入失敗</p>
 } @else {
   <div class="fd-picker">
@@ -25,6 +25,8 @@
 
   @if (state() === 'loading') {
     <p class="fd-note">載入中…</p>
+  } @else if (state() === 'error') {
+    <p class="fd-note" role="alert" data-testid="fd-error">期貨資料載入失敗</p>
   } @else if (state() === 'not-found') {
     <p class="fd-note" data-testid="fd-not-found">這個月份沒有期貨對帳單</p>
   } @else if (detail(); as d) {
@@ -184,7 +186,6 @@
             <tbody>
               @for (pos of p.items; track $index) {
                 @let isOption = pos.strike !== null;
-                @let value = isOption ? pos.premium_value : pos.unrealized;
                 <tr>
                   <td>{{ pos.product }} {{ pos.month }}@if (isOption) { {{ pos.strike }} {{ pos.right }}}</td>
                   <td>{{ pos.side }}</td>
@@ -193,7 +194,11 @@
                   <td class="num">{{ pos.mark_price }}</td>
                   <td class="num">
                     <span class="fd-pnl-label">{{ isOption ? '權利金市值' : '未沖銷損益' }}</span>
-                    <b [class.up]="sign(value) > 0" [class.down]="sign(value) < 0">{{ money(value, true) }}</b>
+                    @if (isOption) {
+                      <b>{{ premiumValue(pos) }}</b>
+                    } @else {
+                      <b [class.up]="sign(pos.unrealized) > 0" [class.down]="sign(pos.unrealized) < 0">{{ money(pos.unrealized, true) }}</b>
+                    }
                   </td>
                 </tr>
               }
