@@ -170,16 +170,18 @@ def test_positions_from_last_daily_of_month(client, db_session):
     _day(db_session, date(2026, 3, 20), positions=[
         _pos(), _pos(product="範例選", strike="21000", right="Call", side="賣", entry_price="6",
                      mark_price="4", premium_value="200", unrealized="100"),
+        _pos(product="範例選", strike="21500", right="Put", side="買", premium_value="150"),
     ])
     positions = _detail(client)["positions"]
     assert positions["date"] == "2026-03-20"
-    assert len(positions["items"]) == 2
+    assert len(positions["items"]) == 3
     assert positions["month_end_may_differ"] is False
-    future, option = positions["items"]
+    future, option, bought = positions["items"]
     assert set(future) == set(PositionOut.model_fields)
     assert future["strike"] is None
     assert (future["unrealized"], future["premium_value"]) == ("100.0000", "0.0000")
-    assert (option["strike"], option["right"], option["premium_value"]) == ("21000", "Call", "200.0000")
+    assert (option["strike"], option["right"], option["premium_value"]) == ("21000", "Call", "-200.0000")  # sold: signed negative
+    assert bought["premium_value"] == "150.0000"
     assert option["entry_price"] == "6"
 
 

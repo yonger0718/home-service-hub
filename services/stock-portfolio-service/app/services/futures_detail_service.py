@@ -54,13 +54,21 @@ def _day(row: FuturesStatementDay) -> dict:
     }
 
 
+def _signed_premium(raw: dict) -> str:
+    """The stored 權利金市值 is unsigned; a sold (賣) option counts negative, as in the equity identity."""
+    value = _amount(raw["premium_value"])
+    if raw["side"] == "賣" and Decimal(value) != 0:
+        return _amount(-Decimal(value))
+    return value
+
+
 def _position(raw: dict) -> dict:
     return {
         "product": raw["product"], "month": raw["month"],
         "strike": None if raw.get("strike") is None else _price(raw["strike"]),
         "right": raw.get("right"), "side": raw["side"], "qty": raw["qty"],
         "entry_price": _price(raw["entry_price"]), "mark_price": _price(raw["mark_price"]),
-        "unrealized": _amount(raw["unrealized"]), "premium_value": _amount(raw["premium_value"]),
+        "unrealized": _amount(raw["unrealized"]), "premium_value": _signed_premium(raw),
     }
 
 
