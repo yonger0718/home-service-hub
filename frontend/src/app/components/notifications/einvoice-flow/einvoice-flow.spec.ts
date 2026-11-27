@@ -241,6 +241,27 @@ describe('EinvoiceFlowComponent', () => {
     expect(session.pendingRecord()).toBeNull();
   });
 
+  it('back from the form after a save that linked the invoice (no longer listed): still counted once', () => {
+    const session = sentToForm(1);
+    created('AB00000001');
+    open(THREE.slice(1)); // linked at save (F3a): the read no longer lists invoice 1
+    expect(shownNumber()).toContain('AB00000002');
+    expect(progressText()).toBe('第 2 / 3 張');
+    expect(session.pendingRecord()).toBeNull();
+    key('S');
+    key('S');
+    expect(text(el.querySelector('.flow-end-text'))).toContain('記成新的一筆 1 張');
+  });
+
+  it('back from the form without a save while the invoice left the list: not counted', () => {
+    sentToForm(1);
+    created('AB00000009'); // another number: not this invoice's record
+    open(THREE.slice(1));
+    key('S');
+    key('S');
+    expect(text(el.querySelector('.flow-end-text'))).not.toContain('記成新的一筆');
+  });
+
   it('連續記帳: two saves count the invoice once', () => {
     sentToForm(1);
     created('AB00000001');

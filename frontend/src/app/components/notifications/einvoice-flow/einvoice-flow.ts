@@ -180,19 +180,21 @@ export class EinvoiceFlowComponent {
         const list = out.einvoices ?? [];
         // A cut page (more to confirm than listed) proves nothing about an invoice it does not list.
         const complete = list.filter((invoice) => invoice.state !== 'unmatched').length >= (out.counts.einvoice_ask ?? 0);
-        const current = this.state();
-        let next: EinvoiceFlowState = current ? afterRead(current, list, complete) : startFlow(list);
+        let current = this.state();
         const pending = this.session.pendingRecord();
+        // Counted only when an entry carrying this invoice's number was created since: not any write (a schedule
+        // definition, another page's edit), not a cancel; several saves (連續記帳) count once. Answered before the
+        // read is applied: the save links the invoice (F3a), so the read no longer lists it and would drop it.
+        const saved = !!pending && this.accounting.invoiceCreatedSince(pending.number, pending.mark);
         if (pending) {
           this.session.pendingRecord.set(null);
-          // Counted only when an entry carrying this invoice's number was created since: not any write (a schedule
-          // definition, another page's edit), not a cancel; several saves (連續記帳) count once.
-          const saved = this.accounting.invoiceCreatedSince(pending.number, pending.mark);
-          if (saved && next.open.has(pending.id)) {
-            next = answer(next, pending.id, 'recorded');
-          } else if (next.open.has(pending.id)) {
-            next = { ...next, cursor: pending.id };
+          if (saved && current?.open.has(pending.id)) {
+            current = answer(current, pending.id, 'recorded');
           }
+        }
+        let next: EinvoiceFlowState = current ? afterRead(current, list, complete) : startFlow(list);
+        if (pending && next.open.has(pending.id)) {
+          next = saved ? answer(next, pending.id, 'recorded') : { ...next, cursor: pending.id };
         }
         this.state.set(next);
         this.load.set('ready');
