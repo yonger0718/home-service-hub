@@ -24,8 +24,8 @@ function tabLabels(hidden: NavGroupId[]) {
 
 describe('navigation model', () => {
   it('portfolio sub-nav order and labels', () => {
-    expect(portfolio.items.map(i => i.label)).toEqual(['概覽', '交易', '股利', '已實現', '現金', '匯入']);
-    expect(portfolio.items.map(i => i.sidebarLabel)).toEqual(['投資概覽', '交易紀錄', '股利', '已實現損益', '現金帳戶', '匯入']);
+    expect(portfolio.items.map(i => i.label)).toEqual(['概覽', '交易', '期貨明細', '股利', '已實現', '現金', '匯入']);
+    expect(portfolio.items.map(i => i.sidebarLabel)).toEqual(['投資概覽', '交易紀錄', '期貨明細', '股利', '已實現損益', '現金帳戶', '匯入']);
   });
 
   it('the reward rules overview marks 記帳設定 current (#323 PR B)', () => {

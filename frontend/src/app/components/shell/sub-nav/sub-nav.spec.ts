@@ -42,6 +42,14 @@ describe('SubNavComponent', () => {
     expect(el.querySelector('.seg-control')).not.toBeNull();
   });
 
+  it('phone portfolio sub-tabs do not include 期貨明細', async () => {
+    const el = await render('/portfolio');
+
+    const links = Array.from(el.querySelectorAll('a'));
+    expect(links.map(a => a.textContent?.trim())).toEqual(['概覽', '交易', '股利', '已實現', '現金', '匯入']);
+    expect(links.some(a => a.getAttribute('href') === '/portfolio/futures')).toBe(false);
+  });
+
   it('marks 報表 active on /accounting/reports', async () => {
     const el = await render('/accounting/reports?month=2026-10&tab=trend');
 

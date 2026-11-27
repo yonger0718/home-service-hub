@@ -124,11 +124,9 @@ export class PortfolioFuturesDetailComponent implements OnInit, OnDestroy {
     return displayedSign(value, formatMoney(value));
   }
 
-  /** 權利金市值 is stored unsigned; a sold (賣) option counts negative, as in the equity identity. */
-  protected premiumValue(pos: { side: string; premium_value: Amount }): string {
-    const raw = String(pos.premium_value);
-    const negative = pos.side === '賣' && Number(raw) !== 0;
-    return this.money(negative ? `-${raw.replace(/^-/, '')}` : raw, true);
+  /** A futures opening fill (新買 / 新賣) realizes nothing: no 平倉損益 label and a dash instead of $0. */
+  protected isFuturesOpening(fill: FuturesFill): boolean {
+    return fill.kind === 'future' && (fill.action === '新買' || fill.action === '新賣');
   }
 
   protected pnlLabel(fill: FuturesFill): string {

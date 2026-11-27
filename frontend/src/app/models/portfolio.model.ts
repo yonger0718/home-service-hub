@@ -666,7 +666,7 @@ export interface FuturesPosition {
   mark_price: string;
   /** 未沖銷損益, for a future. */
   unrealized: string;
-  /** 權利金市值, for an option. */
+  /** 權利金市值 for an option, signed by side as the API returns it (a sold option is negative). */
   premium_value: string;
 }
 

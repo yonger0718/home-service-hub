@@ -75,12 +75,17 @@
                 <div class="fd-fill-line"><span>期交稅</span><span>{{ money(fill.tax) }}</span></div>
                 <div class="fd-fill-line"><span>手續費</span><span>{{ money(fill.fee) }}</span></div>
                 <div class="fd-fill-line">
-                  <span>{{ pnlLabel(fill) }}</span>
-                  <b data-testid="fill-pnl" [class.up]="sign(fill.pnl) > 0" [class.down]="sign(fill.pnl) < 0">{{ money(fill.pnl, true) }}</b>
+                  @if (isFuturesOpening(fill)) {
+                    <span>損益</span>
+                    <b data-testid="fill-pnl">—</b>
+                  } @else {
+                    <span>{{ pnlLabel(fill) }}</span>
+                    <b data-testid="fill-pnl" [class.up]="sign(fill.pnl) > 0" [class.down]="sign(fill.pnl) < 0">{{ money(fill.pnl, true) }}</b>
+                  }
                 </div>
                 @if (fill.closes.length > 0) {
                   <button type="button" class="fd-toggle" data-testid="close-toggle" [attr.aria-expanded]="isOpen(key)" (click)="toggle(key)">
-                    {{ isOpen(key) ? '收合平倉明細' : '平倉明細' }}
+                    {{ isOpen(key) ? '▾ 收合' : '▸ 平倉明細' }}
                   </button>
                   @if (isOpen(key)) {
                     @for (c of fill.closes; track $index) {
@@ -114,13 +119,17 @@
                       <td class="num">{{ money(fill.tax) }}</td>
                       <td class="num">{{ money(fill.fee) }}</td>
                       <td class="num">
-                        <span class="fd-pnl-label">{{ pnlLabel(fill) }}</span>
-                        <b data-testid="fill-pnl" [class.up]="sign(fill.pnl) > 0" [class.down]="sign(fill.pnl) < 0">{{ money(fill.pnl, true) }}</b>
+                        @if (isFuturesOpening(fill)) {
+                          <b data-testid="fill-pnl">—</b>
+                        } @else {
+                          <span class="fd-pnl-label">{{ pnlLabel(fill) }}</span>
+                          <b data-testid="fill-pnl" [class.up]="sign(fill.pnl) > 0" [class.down]="sign(fill.pnl) < 0">{{ money(fill.pnl, true) }}</b>
+                        }
                       </td>
                       <td>
                         @if (fill.closes.length > 0) {
                           <button type="button" class="fd-toggle" data-testid="close-toggle" [attr.aria-expanded]="isOpen(key)" (click)="toggle(key)">
-                            {{ isOpen(key) ? '收合' : '平倉明細' }}
+                            {{ isOpen(key) ? '▾ 收合' : '▸ 平倉明細' }}
                           </button>
                         }
                       </td>
@@ -179,7 +188,7 @@
             @if (p.items.length > 0) {
               <thead>
                 <tr>
-                  <th>商品</th><th>買／賣</th><th class="num">口數</th><th class="num">進場價</th><th class="num">行情價</th><th class="num">損益</th>
+                  <th>商品</th><th>買／賣</th><th class="num">口數</th><th class="num">進場價</th><th class="num">行情價</th><th class="num">權利金市值</th><th class="num">未沖銷損益</th>
                 </tr>
               </thead>
             }
@@ -192,14 +201,8 @@
                   <td class="num">{{ pos.qty }}</td>
                   <td class="num">{{ pos.entry_price }}</td>
                   <td class="num">{{ pos.mark_price }}</td>
-                  <td class="num">
-                    <span class="fd-pnl-label">{{ isOption ? '權利金市值' : '未沖銷損益' }}</span>
-                    @if (isOption) {
-                      <b>{{ premiumValue(pos) }}</b>
-                    } @else {
-                      <b [class.up]="sign(pos.unrealized) > 0" [class.down]="sign(pos.unrealized) < 0">{{ money(pos.unrealized, true) }}</b>
-                    }
-                  </td>
+                  <td class="num" data-testid="pos-premium">{{ isOption ? money(pos.premium_value, true) : '—' }}</td>
+                  <td class="num" data-testid="pos-unrealized" [class.up]="sign(pos.unrealized) > 0" [class.down]="sign(pos.unrealized) < 0">{{ money(pos.unrealized, true) }}</td>
                 </tr>
               }
             </tbody>

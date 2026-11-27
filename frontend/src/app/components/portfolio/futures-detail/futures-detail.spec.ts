@@ -145,6 +145,39 @@ describe('PortfolioFuturesDetailComponent', () => {
     expect(futRow.querySelector('[data-testid="fill-pnl"]')!.classList.contains('up')).toBe(true);
   });
 
+  it('shows a dash for a futures opening fill and keeps 權利金 for option openings', () => {
+    const open = fill({ action: '新買', pnl: '0.0000' });
+    const optOpen = fill({ kind: 'option', product: '範例選', strike: '21000', right: 'Call', action: '新賣', pnl: '300.0000' });
+    const { el } = loaded(detail({ days: [day({ fills: [open, optOpen] })] }));
+    const rows = Array.from(el.querySelectorAll('tbody tr[data-testid="fill-row"]'));
+    const futRow = rows.find(r => r.textContent!.includes('範例期貨'))!;
+    expect(futRow.textContent).not.toContain('平倉損益');
+    expect(futRow.querySelector('[data-testid="fill-pnl"]')!.textContent!.trim()).toBe('—');
+    const optRow = rows.find(r => r.textContent!.includes('範例選'))!;
+    expect(optRow.textContent).toContain('權利金');
+    expect(optRow.querySelector('[data-testid="fill-pnl"]')!.classList.contains('up')).toBe(true);
+  });
+
+  it('shows a dash on the phone card for a futures opening fill', () => {
+    const { el } = loaded(detail({ days: [day({ fills: [fill({ action: '新賣', pnl: '0.0000' })] })] }), {}, true);
+    const card = el.querySelector('[data-testid="fill-card"]')!;
+    expect(card.textContent).not.toContain('平倉損益');
+    expect(card.querySelector('[data-testid="fill-pnl"]')!.textContent!.trim()).toBe('—');
+  });
+
+  it('toggles 平倉明細 with arrows, accent text and aria-expanded', () => {
+    const closing = fill({ closes: [{ date: '2026-03-02', qty: 1, price: '20400' }] });
+    const { el, fixture } = loaded(detail({ days: [day({ fills: [closing] })] }));
+    const btn = () => el.querySelector('[data-testid="close-toggle"]') as HTMLButtonElement;
+    expect(btn().textContent!.trim()).toBe('▸ 平倉明細');
+    expect(btn().getAttribute('aria-expanded')).toBe('false');
+    expect(btn().classList.contains('fd-toggle')).toBe(true);
+    btn().click();
+    fixture.detectChanges();
+    expect(btn().textContent!.trim()).toBe('▾ 收合');
+    expect(btn().getAttribute('aria-expanded')).toBe('true');
+  });
+
   it('expands closing links', () => {
     const closing = fill({ closes: [{ date: '2026-03-02', qty: 1, price: '20400' }] });
     const { el, fixture, text } = loaded(detail({ days: [day({ fills: [closing] })] }));
@@ -178,8 +211,8 @@ describe('PortfolioFuturesDetailComponent', () => {
       month_end_may_differ: true,
       items: [
         { product: '範例期貨', month: '202603', strike: null, right: null, side: '買', qty: 1, entry_price: '20000', mark_price: '20100', unrealized: '100.0000', premium_value: '0.0000' },
-        { product: '範例選', month: '202603', strike: '21000', right: 'Call', side: '賣', qty: 1, entry_price: '6', mark_price: '5', unrealized: '0.0000', premium_value: '200.0000' },
-        { product: '範例選', month: '202603', strike: '21500', right: 'Put', side: '買', qty: 1, entry_price: '4', mark_price: '5', unrealized: '0.0000', premium_value: '150.0000' },
+        { product: '範例選', month: '202603', strike: '21000', right: 'Call', side: '賣', qty: 1, entry_price: '6', mark_price: '5', unrealized: '-30.0000', premium_value: '-200.0000' },
+        { product: '範例選', month: '202603', strike: '21500', right: 'Put', side: '買', qty: 1, entry_price: '4', mark_price: '5', unrealized: '40.0000', premium_value: '150.0000' },
       ],
       ...over,
     });
@@ -192,17 +225,22 @@ describe('PortfolioFuturesDetailComponent', () => {
       expect(text()).toContain('權利金市值');
     });
 
-    it('shows option 權利金市值 signed by side with no trend colour', () => {
+    it('has separate 權利金市值 and 未沖銷損益 columns', () => {
       const { el } = loaded(detail({ positions: positions() }));
-      const vals = Array.from(el.querySelectorAll('[data-testid="positions-card"] tbody tr')).map(r => r.querySelector('td.num:last-child b') as HTMLElement);
-      const [fut, sold, bought] = vals;
-      expect(sold.textContent).toMatch(/[-−]/);
-      expect(sold.classList.contains('up')).toBe(false);
-      expect(sold.classList.contains('down')).toBe(false);
-      expect(bought.textContent).not.toMatch(/[-−]/);
-      expect(bought.classList.contains('up')).toBe(false);
-      expect(bought.classList.contains('down')).toBe(false);
-      expect(fut.classList.contains('up')).toBe(true);
+      const heads = Array.from(el.querySelectorAll('[data-testid="positions-card"] thead th')).map(h => h.textContent!.trim());
+      expect(heads.slice(-2)).toEqual(['權利金市值', '未沖銷損益']);
+      const rows = Array.from(el.querySelectorAll('[data-testid="positions-card"] tbody tr'));
+      const cell = (r: Element, k: string) => r.querySelector(`[data-testid="${k}"]`) as HTMLElement;
+      const [fut, sold, bought] = rows;
+      expect(cell(fut, 'pos-premium').textContent!.trim()).toBe('—');
+      expect(cell(fut, 'pos-unrealized').classList.contains('up')).toBe(true);
+      expect(cell(sold, 'pos-premium').textContent).toMatch(/[-−]\$?200/);
+      expect(cell(sold, 'pos-premium').classList.contains('up')).toBe(false);
+      expect(cell(sold, 'pos-premium').classList.contains('down')).toBe(false);
+      expect(cell(sold, 'pos-unrealized').classList.contains('down')).toBe(true);
+      expect(cell(bought, 'pos-premium').textContent).not.toMatch(/[-−]/);
+      expect(cell(bought, 'pos-premium').classList.contains('up')).toBe(false);
+      expect(cell(bought, 'pos-unrealized').classList.contains('up')).toBe(true);
     });
 
     it('hides the card when positions is null', () => {
