@@ -47,9 +47,11 @@ PR E is split (2026-11-25): E1 = 5.1 (+ its 5.4 tests); E2 = 5.3 snooze; E3 = 5.
 
 ## 6. E-invoices (PR F)
 
+PR F is split (2026-11-27): F1 = 6.1 (API); F2 = 6.2 task source + 6.3 flow (D10); F3 = 6.4 unmatched page (D11); F4 = 6.5 entry card + 記帳設定 › 發票 (D12) and 6.6 removal of the inbox panel section and bell sums, once 通知 owns all of it. 6.7 tests ship with each part.
+
 - [ ] 6.1 API: `PATCH /einvoices/preferences` accepts optional `date_window_days` (0–7) and `mute_prompt_after` (1–10), merged with a version bump; `GET` returns both fields plus read-only `last_import_at` and `auto_linked_count`; tests for partial update, range, the GET fields and a PATCH that sends a read-only field
-- [ ] 6.2 Task source: one 要你確認 task for `ambiguous` + `near`; one 追蹤中 row for `unmatched` (hidden when `remind_unmatched` is off)
-- [ ] 6.3 `/notifications/einvoices` flow (D10)
+- [ ] 6.2 Task source: one 要你確認 task for `ambiguous` + `near`; one 追蹤中 row for `unmatched` (hidden when `remind_unmatched` is off) (F2: the 要你確認 task; the 追蹤中 row comes with F3)
+- [x] 6.3 `/notifications/einvoices` flow (D10) (F2; the end state's link to the unmatched page comes with F3)
   - kind chip
   - invoice card
   - candidate answers with difference chips (日期差, 金額差; the API has no invoice time); link by `entry_id` or `group_id` from the candidate kind
