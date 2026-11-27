@@ -314,6 +314,20 @@ describe('EinvoiceFlowComponent', () => {
       expect(toast()).toMatchObject({ text: '已連結：測試咖啡 $85', action: { label: '復原' } });
     });
 
+    it('a link 復原 whose undismiss fails says the invoice was unlinked and left as 都不是', () => {
+      open();
+      key('1');
+      post('1/link').flush({ id: 1, state: 'linked' });
+      flushRead([coffee(2), coffee(3)]);
+      toast()!.action!.run();
+      detect();
+      post('1/unlink').flush({ id: 1, state: 'dismissed' });
+      post('1/undismiss').flush({ detail: 'seller_muted' }, { status: 409, statusText: 'Conflict' });
+      flushRead([coffee(2), coffee(3)]); // the unlink went through: the inbox is read again
+      expect(toast()).toMatchObject({ kind: 'error', text: '已取消連結，但這張留在「都不是」：這家已設為不提醒' });
+      expect(shownNumber()).toContain('AB00000002');
+    });
+
     it('a failed 復原 says so and changes nothing here', () => {
       open();
       key('3');

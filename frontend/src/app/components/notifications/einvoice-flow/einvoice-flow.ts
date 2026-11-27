@@ -313,9 +313,16 @@ export class EinvoiceFlowComponent {
    * matcher run; the flow shows it again at once with its candidates, so it can be answered again.
    */
   private undo(invoice: InboxEinvoice, outcome: EinvoiceOutcome): void {
+    // A link's 復原 is two writes; when only the unlink went through, the invoice is left as 都不是 and the error says so.
+    let unlinked = false;
     const call =
       outcome === 'linked'
-        ? this.einvoices.unlink(invoice.id).pipe(switchMap(() => this.einvoices.undismiss(invoice.id)))
+        ? this.einvoices.unlink(invoice.id).pipe(
+            switchMap(() => {
+              unlinked = true;
+              return this.einvoices.undismiss(invoice.id);
+            }),
+          )
         : this.einvoices.undismiss(invoice.id);
     this.busy.set(true);
     call.subscribe({
@@ -328,7 +335,8 @@ export class EinvoiceFlowComponent {
       },
       error: (err: unknown) => {
         this.busy.set(false);
-        this.toasts.error('復原沒成功：' + einvoiceErrorText(err).replace(/^沒成功[：，]/, ''));
+        const why = einvoiceErrorText(err).replace(/^沒成功[：，]/, '');
+        this.toasts.error(unlinked ? `已取消連結，但這張留在「都不是」：${why}` : `復原沒成功：${why}`);
       },
     });
   }
