@@ -220,21 +220,30 @@ The e-invoice flow SHALL show one invoice at a time with progress `n / N`:
 
 - a kind chip with its reason;
 - the invoice: seller, date, number, tax id, items and total;
-- one answer button per candidate, 「連結 <name>」, with account, date, category and amount, and a chip naming what differs from the invoice (日期差 N 天, 金額差 $N);
-- 都不是, 選其他帳… and 記成新的一筆.
+- one answer button per candidate, 「連結 <name>」, with account, date, category and unsigned amount, and a chip naming what differs from the invoice (日期差 N 天, 金額差 $N); the first is solid unless the invoice is 差一點 beyond $50 or 20 % of its total;
+- 都不是, 選其他帳… (rows laid out as the answers) and 記成新的一筆.
 
 #### Scenario: Two candidates
 - **GIVEN** an `ambiguous` invoice 路易莎咖啡 $85 on 10/22 with candidates 咖啡 −$85 on 玉山 Pi 卡 on 10/22 and 咖啡 −$85 in 現金 on 10/21
 - **WHEN** the flow shows it
 - **THEN** it SHALL read 有兩筆都像, list both candidates with keys 1 and 2, mark the second 「日期差 1 天」, and offer 3 都不是
 
+#### Scenario: Near beyond the threshold
+- **GIVEN** a `near` invoice $129 whose only candidate is −$200
+- **WHEN** the flow shows it
+- **THEN** it SHALL read 「商家名稱對得上，金額不同」, mark the candidate 「金額差 $71」 and show no solid answer
+
 ### Requirement: E-invoice flow answers
 
-Keys 1–N SHALL pick candidates and N+1 都不是. S, ← → and Esc SHALL work as in the reconciliation flow. 連結 SHALL call `POST /einvoices/{id}/link` and 都不是 `POST /einvoices/{id}/dismiss`. 記成新的一筆 SHALL open the entry form prefilled with the invoice's date, amount, seller as merchant and number. The end state SHALL count linked, 都不是 and skipped invoices, and link to the invoices without an entry.
+Keys 1–N SHALL pick candidates and N+1 都不是. S, ← → and Esc SHALL work as in the reconciliation flow. 連結 SHALL call `POST /einvoices/{id}/link` and 都不是 `POST /einvoices/{id}/dismiss`. 記成新的一筆 SHALL open the entry form prefilled with the invoice's date, amount, name (the item if one, else the seller), seller as merchant and number. The end state SHALL count linked, 都不是 and skipped invoices, and link to the invoices without an entry.
 
 #### Scenario: Linking moves on
 - **WHEN** the owner presses 1
 - **THEN** `POST /einvoices/{id}/link` SHALL be sent with the first candidate's `entry_id`, or its `group_id` when the candidate is a group, and the next invoice SHALL show with progress `2 / 3`
+
+#### Scenario: Undoing a link
+- **WHEN** the owner links 路易莎咖啡 $85 and presses 復原 on the toast 「已連結：路易莎咖啡 $85」
+- **THEN** `unlink` then `undismiss` SHALL be sent and the flow SHALL show that invoice again with its candidates
 
 ### Requirement: Invoices without an entry
 

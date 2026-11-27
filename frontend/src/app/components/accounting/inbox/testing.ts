@@ -1,5 +1,6 @@
 import { InboxCard, buildCards } from './inbox-view';
 import { InboxAccount, InboxApplyOut, InboxCounts, InboxItem, InboxOut } from './inbox.model';
+import { EinvoiceTarget, InboxEinvoice } from './einvoice.model';
 
 /** Synthetic inbox DTOs for specs: a bank_only 全家 line by default; pass only what the test is about. */
 export function makeItem(overrides: Partial<InboxItem> = {}): InboxItem {
@@ -93,4 +94,17 @@ export function categoryTile(scope: Element, name: string): HTMLButtonElement {
   return Array.from(scope.querySelectorAll<HTMLButtonElement>('app-category-picker .cat')).find(
     (node) => node.lastChild?.textContent?.trim() === name,
   )!;
+}
+
+/** A candidate of an inbox e-invoice (fictional): an entry of −120 on 2026-10-05 in 測試銀行. */
+export function makeEinvoiceTarget(overrides: Partial<EinvoiceTarget> = {}): EinvoiceTarget {
+  return { kind: 'entry', id: 501, account_name: '測試銀行', date: '2026-10-05', amount: '-120', currency: 'TWD',
+    category: '餐飲', name: '測試午餐', ...overrides };
+}
+
+/** An inbox e-invoice (fictional): ambiguous, 測試商店 $120 on 2026-10-05, one item, no candidates. */
+export function makeEinvoice(overrides: Partial<InboxEinvoice> = {}): InboxEinvoice {
+  return { id: 1, number: 'AB00000001', issue_date: '2026-10-05', seller_name: '測試商店', seller_tax_id: '00000001',
+    total_amount: '120', status_raw: '開立', state: 'ambiguous', items: [{ name: '測試品項', subtotal: '120' }],
+    candidates: [], offer_mute: false, ...overrides };
 }

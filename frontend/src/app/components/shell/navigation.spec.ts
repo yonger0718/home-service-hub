@@ -86,7 +86,7 @@ describe('navigation model', () => {
   });
 
   it('/notifications and anything under it resolve to the synthetic 通知 item', () => {
-    for (const url of ['/notifications', '/notifications?x=1', '/notifications/recon/5']) {
+    for (const url of ['/notifications', '/notifications?x=1', '/notifications/recon/5', '/notifications/einvoices']) {
       expect(navItemForUrl(url), url).toBe(NOTIFICATIONS_ITEM);
     }
     expect(navItemForUrl('/nowhere').id).toBe('inventory');

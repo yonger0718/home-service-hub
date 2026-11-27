@@ -315,6 +315,19 @@ describe('notifications route', () => {
     expect(result?.posParams?.['statementId'].path).toBe('12');
   });
 
+  it('matches /notifications/einvoices as the same route, with flow einvoices and no statement id', () => {
+    const result = notificationsMatcher(segments('notifications/einvoices'));
+    expect(result?.consumed.map(s => s.path)).toEqual(['notifications', 'einvoices']);
+    expect(result?.posParams?.['flow'].path).toBe('einvoices');
+    expect(result?.posParams?.['statementId']).toBeUndefined();
+  });
+
+  for (const url of ['notifications/einvoices/2', 'notifications/einvoicesx', 'notifications/einvoice']) {
+    it(`does not match /${url}`, () => {
+      expect(notificationsMatcher(segments(url))).toBeNull();
+    });
+  }
+
   for (const url of ['notifications/recon/abc', 'notifications/recon', 'notifications/x', 'notifications/recon/12/x', 'notifications/recon/-1', 'notifications/recon/1.5', 'notifications/recon/0', 'notifications/recon/012', 'settings']) {
     it(`does not match /${url}`, () => {
       expect(notificationsMatcher(segments(url))).toBeNull();

@@ -100,27 +100,10 @@ import {
   transferLegs,
 } from './recon-flow-view';
 import { ReconReverted, ReconUndoService } from './recon-undo.service';
+import { OPEN_DIALOG, keyHint, typing } from '../flow-keys';
 
 /** Above this many cases the bar is one plain fill instead of one segment per case. */
 const MAX_SEGMENTS = 20;
-
-/** ARIA text widgets whose letters are input (as the shell's global keys). */
-const TYPING_ROLES = '[role="combobox"], [role="listbox"], [role="spinbutton"]';
-const TYPING_TAGS: ReadonlySet<string> = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
-const OPEN_DIALOG = '[role="dialog"], [aria-modal="true"]';
-const EDITABLE = '[contenteditable]:not([contenteditable="false"])';
-
-function typing(node: Element | null): boolean {
-  if (!(node instanceof HTMLElement)) {
-    return false;
-  }
-  return (
-    TYPING_TAGS.has(node.tagName) ||
-    node.isContentEditable ||
-    !!node.closest(EDITABLE) ||
-    !!node.closest(TYPING_ROLES)
-  );
-}
 
 /** `2026-09-30` → `9/30`. */
 function monthDay(iso: string): string {
@@ -329,7 +312,7 @@ export class ReconFlowComponent {
       noteLink: partOf ? `/accounting/entries/${partOf.id}` : null,
       highlight: !flowPartOf(item),
       answers,
-      keys: this.keyHint(Math.min(answers.length, 4)),
+      keys: keyHint(Math.min(answers.length, 4)),
       learn:
         hint && flowLearnable(item)
           ? {
@@ -880,12 +863,6 @@ export class ReconFlowComponent {
       this.focusStep();
     }
     return true;
-  }
-
-  /** 「1–3 選擇 · …」 with the digits this step really has. */
-  private keyHint(digits: number): string {
-    const pick = digits === 0 ? null : digits === 1 ? '1 選擇' : `1–${digits} 選擇`;
-    return [pick, 'S 略過', '← → 上下筆', 'Esc 關閉'].filter((part) => part !== null).join(' · ');
   }
 
   private pairNote(item: InboxItem): string | null {

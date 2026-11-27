@@ -1,0 +1,134 @@
+/* The e-invoice flow's own parts; the frame (header, progress, answers, end state) comes from recon-flow.scss. */
+
+.einv-reason {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.einv-card {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+}
+
+.einv-card-head {
+  align-items: baseline;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.einv-seller {
+  font-size: 16px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.einv-total {
+  flex: none;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.einv-card-meta {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.einv-items {
+  border-top: 1px solid var(--app-border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 6px 0 0;
+
+  li {
+    display: flex;
+    font-size: 13px;
+    gap: 12px;
+    justify-content: space-between;
+  }
+
+  li span:last-child {
+    flex: none;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.einv-answers .einv-answer {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.einv-answer-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.einv-answer-sub {
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.8;
+}
+
+.einv-answer-amount {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.einv-diffs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+/* Warning ink on its soft fill (the banner-warn pair), as the other "differs" marks. */
+.einv-diff {
+  background: var(--app-banner-warn-soft);
+  border-radius: 999px;
+  color: var(--app-banner-warn);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 2px 8px;
+}
+
+.solid .einv-diff {
+  background: var(--app-surface);
+}
+
+.einv-more {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.einv-link {
+  background: none;
+  border: 0;
+  color: var(--app-primary);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  min-height: 44px;
+  padding: 0;
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+}

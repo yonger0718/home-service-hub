@@ -1,4 +1,4 @@
-<div class="notif-split" [class.notif-split--open]="statementId() !== null && panes()">
+<div class="notif-split" [class.notif-split--open]="flow() !== null && panes()">
   <!-- Below 1024 px with a statement the list (header, chips, rows, links) is not rendered; it returns on close. -->
   @if (!flowAlone()) {
     <div class="notif-page">
@@ -106,12 +106,16 @@
     </div>
   }
 
-  @if (statementId(); as id) {
+  @if (flow(); as open) {
     <!-- One flow at one template position for every width, so crossing 1024 px never remounts it (cursor, open sheet,
          undo offer and focus survive). From 1024 px the pane is its card beside the list; below, the flow draws its
          own card and header and is the whole page. -->
     <div class="notif-pane" [class.notif-pane--card]="panes()">
-      <app-recon-flow [statementId]="id" (closed)="closeFlow()" />
+      @if (open.kind === 'recon') {
+        <app-recon-flow [statementId]="open.id" (closed)="closeFlow()" />
+      } @else {
+        <app-einvoice-flow (closed)="closeFlow()" />
+      }
     </div>
   }
 </div>

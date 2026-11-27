@@ -371,7 +371,7 @@ export class NotificationCenterService {
     const inbox = this.inboxData();
     if (inbox) {
       tasks.push(...reconTasks(inbox, this.progress()));
-      const einvoice = einvoiceTask(inbox.counts);
+      const einvoice = einvoiceTask(inbox);
       if (einvoice) {
         tasks.push(einvoice);
       }

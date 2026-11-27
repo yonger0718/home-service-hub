@@ -71,24 +71,40 @@ export function reconTasks(inbox: InboxOut, progress: ReadonlyMap<number, ReconP
   });
 }
 
-export function einvoiceTask(counts: Pick<InboxCounts, 'einvoice_ask'>): NotifTask | null {
-  const n = counts.einvoice_ask ?? 0;
+/** The e-invoice flow's route (D10): beside the list from 1024 px, full screen below. */
+export const EINVOICE_FLOW_ROUTE = '/notifications/einvoices';
+
+/** How many sellers the task's meta names. */
+const EINVOICE_META_SELLERS = 3;
+
+/**
+ * Every ambiguous / near invoice as ONE 要你確認 task (D10), counting 1. N is `counts.einvoice_ask` (the whole set,
+ * not the listed page); the meta names up to three sellers and `when` the newest date of the listed ones. A snoozed
+ * task wakes when an invoice is new (members), not when one is answered. The count rides along: a snooze saved
+ * before members existed (`{count}` only) still wakes on growth. When the page cut the list (fewer listed than N),
+ * members are left out: an invoice moving into the page is not new.
+ */
+export function einvoiceTask(inbox: Pick<InboxOut, 'counts' | 'einvoices'>): NotifTask | null {
+  const n = inbox.counts.einvoice_ask ?? 0;
   if (n <= 0) return null;
+  const asking = (inbox.einvoices ?? []).filter((invoice) => invoice.state !== 'unmatched');
+  const sellers = [...new Set(asking.map((invoice) => invoice.seller_name))].slice(0, EINVOICE_META_SELLERS);
+  const newest = asking.reduce<string | null>((max, i) => (max === null || i.issue_date > max ? i.issue_date : max), null);
   return {
     id: 'einvoice',
     source: 'ledger',
     from: 'recon',
     tier: 'confirm',
     icon: 'pi-receipt',
-    title: `${n} 張發票要確認`,
-    when: '電子發票',
-    meta: '到提醒中心回答',
+    title: `電子發票 · ${n} 張要確認`,
+    when: newest ? `最新 ${shortDate(newest)}` : '',
+    meta: sellers.length ? sellers.join('、') : null,
     amount: null,
     progress: null,
-    primary: REMINDERS_TODO,
+    primary: { label: '確認', route: EINVOICE_FLOW_ROUTE },
     secondary: [],
     sortKey: '9999-12-31',
-    wake: { count: n },
+    wake: asking.length >= n ? { count: n, members: asking.map((invoice) => String(invoice.id)) } : { count: n },
   };
 }
 

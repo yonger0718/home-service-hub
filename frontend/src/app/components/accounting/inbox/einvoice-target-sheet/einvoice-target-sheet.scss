@@ -21,8 +21,50 @@
   font-variant-numeric: tabular-nums;
   min-height: 46px;
   overflow-wrap: anywhere;
-  padding: 6px 0;
+  padding: 8px 0;
   text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.target-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.target-name {
+  font-weight: 700;
+}
+
+.target-sub {
+  color: var(--app-text-muted);
+  font-size: 0.85rem;
+}
+
+.target-amount {
+  flex: none;
+  font-weight: 700;
+}
+
+.target-diffs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+/* As the flow's 日期差 / 金額差 marks: warning ink on its soft fill. */
+.target-diff {
+  background: var(--app-banner-warn-soft);
+  border-radius: 999px;
+  color: var(--app-banner-warn);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 2px 8px;
 }
 
 .muted {

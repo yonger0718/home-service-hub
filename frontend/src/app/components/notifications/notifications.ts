@@ -14,7 +14,7 @@ import {
 import { DOCUMENT } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, ParamMap, Router, RouterLink } from '@angular/router';
 import { map } from 'rxjs';
 
 import { AccountingService } from '../../services/accounting.service';
@@ -44,7 +44,9 @@ import {
   isCommand,
 } from './notif-task';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
+import { EinvoiceFlowComponent } from './einvoice-flow/einvoice-flow';
 import { ReconFlowComponent } from './recon-flow/recon-flow';
+import { EINVOICE_FLOW_SEGMENT } from './review-flow-url';
 import { SnoozeOption, untilText } from './snooze';
 
 /** 409 `already_posted`: the instance was posted before this request (by its own earlier send, or elsewhere). */
@@ -83,8 +85,24 @@ function statementIdOf(raw: string | null): number | null {
   return raw !== null && Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
+/** The flow open beside (or instead of) the list: a statement's review flow or the e-invoice flow. */
+export type NotifFlow = { kind: 'recon'; id: number } | { kind: 'einvoice' };
+
+/** The flow's task id, which is also the id of its row (`recon:<id>`, `einvoice`). */
+function flowTaskId(flow: NotifFlow | null): string | null {
+  return flow === null ? null : flow.kind === 'recon' ? `recon:${flow.id}` : 'einvoice';
+}
+
+function flowOf(params: ParamMap): NotifFlow | null {
+  if (params.get('flow') === EINVOICE_FLOW_SEGMENT) {
+    return { kind: 'einvoice' };
+  }
+  const id = statementIdOf(params.get('statementId'));
+  return id === null ? null : { kind: 'recon', id };
+}
+
 /**
- * `/notifications`: one column (R20). `/notifications/recon/:statementId` adds the review flow (D5): beside the list
+ * `/notifications`: one column (R20). `/notifications/recon/:statementId` adds the review flow (D5), `/notifications/einvoices` the e-invoice flow (D10): beside the list
  * from 1024 px (the row of that statement selected), alone below (the flow draws its own card and header). Header with the count, source chips (a radiogroup, as 提醒中心's tabs), the
  * counted tasks by tier, the folded 追蹤中 (never counted) and the links out. 入帳 / 全部入帳 / 已處理 run in place (R4). Before the first round
  * settles a 讀取中… row ends the page (the only one, whether or not tasks have arrived); then the empty state or the
@@ -92,7 +110,7 @@ function statementIdOf(raw: string | null): number | null {
  */
 @Component({
   selector: 'app-notifications',
-  imports: [BannerComponent, NotifRowComponent, PageHeaderComponent, ReconFlowComponent, RouterLink],
+  imports: [BannerComponent, EinvoiceFlowComponent, NotifRowComponent, PageHeaderComponent, ReconFlowComponent, RouterLink],
   templateUrl: './notifications.html',
   styleUrl: './notifications.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -108,19 +126,14 @@ export class NotificationsComponent {
   private readonly router = inject(Router);
   private readonly document = inject(DOCUMENT);
 
-  /** The statement whose review flow is open (the route's `statementId`), or null on `/notifications`. */
-  protected readonly statementId = toSignal(
-    inject(ActivatedRoute).paramMap.pipe(map((params) => statementIdOf(params.get('statementId')))),
-    { initialValue: null },
-  );
+  private readonly routeFlow = toSignal(inject(ActivatedRoute).paramMap.pipe(map(flowOf)), { initialValue: null });
+  /** The open flow (the route's `statementId` or `flow`), or null on `/notifications`; equal while its task id is. */
+  protected readonly flow = computed(() => this.routeFlow(), { equal: (a, b) => flowTaskId(a) === flowTaskId(b) });
   protected readonly panes = computed(() => this.layout.mode() === 'panes');
-  /** Below 1024 px with a statement: its id, and the flow renders alone, full screen (no header, chips, list or links). */
-  protected readonly flowAlone = computed(() => (this.panes() ? null : this.statementId()));
-  /** The task id of the row the open flow belongs to (`recon:<id>`), or null. */
-  protected readonly selectedTaskId = computed(() => {
-    const id = this.statementId();
-    return id === null ? null : `recon:${id}`;
-  });
+  /** Below 1024 px with a flow: it renders alone, full screen (no header, chips, list or links). */
+  protected readonly flowAlone = computed(() => (this.panes() ? null : this.flow()));
+  /** The task id of the row the open flow belongs to (`recon:<id>`, `einvoice`), or null. */
+  protected readonly selectedTaskId = computed(() => flowTaskId(this.flow()));
 
   /**
    * Rows whose command runs or has answered: task id → `null` while the write runs, then the id of the newest round
@@ -298,9 +311,9 @@ export class NotificationsComponent {
 
     // The flow opens (or changes statement): focus goes to its host once it is rendered. It closes: focus goes to the
     // row of that statement (the list is back below 1024 px), else the page heading.
-    let shown: number | null = null;
+    let shown: string | null = null;
     effect(() => {
-      const id = this.statementId();
+      const id = this.selectedTaskId();
       const previous = shown;
       shown = id;
       if (id === previous) {
@@ -404,15 +417,15 @@ export class NotificationsComponent {
         scroller?.scrollTo?.({ top: 0 });
       }
     }
-    this.host.querySelector<HTMLElement>('app-recon-flow')?.focus({ preventScroll: true });
+    this.host.querySelector<HTMLElement>('app-recon-flow, app-einvoice-flow')?.focus({ preventScroll: true });
   }
 
   /**
    * The flow closed: the row of that statement takes focus, else the page heading, scrolled into view (below 1024 px
    * the list was just rendered again at the top of a page that may be scrolled).
    */
-  private focusAfterClose(statementId: number): void {
-    const row = this.host.querySelector(`app-notif-row[data-task-id="recon:${statementId}"]`);
+  private focusAfterClose(taskId: string): void {
+    const row = this.host.querySelector(`app-notif-row[data-task-id="${taskId}"]`);
     const target = row?.querySelector<HTMLElement>(NOTIF_PRIMARY_CONTROL) ?? this.focusableHeading();
     if (!target) {
       return;

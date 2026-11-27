@@ -18,7 +18,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Params, Router } from '@angular/router';
+import { ActivatedRoute, ParamMap, Params, Router } from '@angular/router';
 import { calendarParams, isRealDay } from '../timeline/calendar-url';
 import {
   EMPTY,
@@ -205,6 +205,36 @@ export function scheduleDraftKey(draft: ScheduleDraft): unknown {
  * until both stages of the latest load have answered; an answer from either stage carrying an older `loadId` is
  * dropped.
  */
+/** The new-record prefill the e-invoice flow's 記成新的一筆 sends (each part optional, malformed parts ignored). */
+interface EntryPrefill {
+  readonly amount: string | null;
+  readonly name: string | null;
+  readonly merchant: string | null;
+  readonly invoice: string | null;
+}
+
+const NO_PREFILL: EntryPrefill = { amount: null, name: null, merchant: null, invoice: null };
+const PREFILL_AMOUNT = /^\d{1,12}(\.\d{1,4})?$/;
+const PREFILL_INVOICE = /^[A-Z]{2}[0-9]{8}$/;
+const PREFILL_TEXT_MAX = 100;
+
+/** A trimmed, non-blank text of at most 100 characters, else null. */
+function prefillText(raw: string | null): string | null {
+  const text = raw?.trim() ?? '';
+  return text && text.length <= PREFILL_TEXT_MAX ? text : null;
+}
+
+function prefillOf(query: ParamMap): EntryPrefill {
+  const amount = query.get('amount');
+  const invoice = query.get('invoice');
+  return {
+    amount: amount !== null && PREFILL_AMOUNT.test(amount) ? amount : null,
+    name: prefillText(query.get('name')),
+    merchant: prefillText(query.get('merchant')),
+    invoice: invoice !== null && PREFILL_INVOICE.test(invoice) ? invoice : null,
+  };
+}
+
 @Component({
   selector: 'app-entry-form',
   standalone: true,
@@ -747,12 +777,13 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           schedule: query.get('schedule'),
           select: query.get('select') === 'parent',
           date: query.get('date'),
+          prefill: prefillOf(query),
         })),
         distinctUntilChanged((a, b) => JSON.stringify(a) === JSON.stringify(b)),
         takeUntilDestroyed(),
       )
-      .subscribe(({ id, kind, copy, schedule, select, date }) => {
-        const target = this.start(id, kind, copy, schedule, select, date);
+      .subscribe(({ id, kind, copy, schedule, select, date, prefill }) => {
+        const target = this.start(id, kind, copy, schedule, select, date, prefill);
         this.load(target);
         if (schedule !== null) {
           this.loadDefinition(Number(schedule));
@@ -848,6 +879,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     scheduleParam: string | null = null,
     parent = false,
     dateParam: string | null = null,
+    prefill: EntryPrefill = NO_PREFILL,
   ): EntryTarget | null {
     this.baseline.set(null);
     this.clearDiscardFocus();
@@ -882,7 +914,24 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       this.setParentDate('entryDate', dateParam);
     }
     this.accountId.set(this.accounts().find(account => !account.is_archived)?.id ?? null);
+    this.applyPrefill(prefill);
     return null;
+  }
+
+  /** A new record's amount, name, merchant and invoice number from the URL (the e-invoice flow's 記成新的一筆). */
+  private applyPrefill(prefill: EntryPrefill): void {
+    if (prefill.amount !== null) {
+      this.amountExpr.set(prefill.amount);
+    }
+    if (prefill.name !== null) {
+      this.name.set(prefill.name);
+    }
+    if (prefill.merchant !== null) {
+      this.merchant.set(prefill.merchant);
+    }
+    if (prefill.invoice !== null) {
+      this.setInvoice('number', prefill.invoice);
+    }
   }
 
   /** Takes the clean snapshot after the next render, once child effects (schedule dates, transfer legs) settled. */

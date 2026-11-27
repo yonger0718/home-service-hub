@@ -10,6 +10,8 @@ import { AppEinvoiceTargetSheetComponent } from './einvoice-target-sheet';
 const INVOICE = {
   id: 7,
   seller_name: '示範早餐店',
+  issue_date: '2026-09-03',
+  total_amount: '120',
   candidates: [],
   offer_mute: false,
   state: 'unmatched',
@@ -60,6 +62,29 @@ describe('AppEinvoiceTargetSheetComponent', () => {
     expect(picked).toHaveBeenCalledWith({ entry_id: 3 });
     rows[1].click();
     expect(picked).toHaveBeenCalledWith({ group_id: 4 });
+  });
+
+  it("rows read as the flow's answers: name / account · date · category / amount without a sign, with 日期差 and 金額差", () => {
+    const { fixture, el, req } = render();
+    req.flush([
+      row(3),
+      { ...row(4), amount: '-130.0000', date: '2026-09-05', category: '餐飲', name: null },
+    ]);
+    fixture.detectChanges();
+    const rows = Array.from(el.querySelectorAll<HTMLElement>('.target-row'));
+    const parts = (r: HTMLElement) => [
+      r.querySelector('.target-name')?.textContent?.trim(),
+      r.querySelector('.target-sub')?.textContent?.trim(),
+      r.querySelector('.target-amount')?.textContent?.trim(),
+      Array.from(r.querySelectorAll('.target-diff')).map((c) => c.textContent?.trim()),
+    ];
+    expect(parts(rows[0])).toEqual(['早餐', '玉山 · 09/03', '$120', []]);
+    expect(parts(rows[1])).toEqual([
+      '餐飲',
+      '玉山 · 09/05 · 餐飲',
+      '$130',
+      ['日期差 2 天', '金額差 $10'],
+    ]);
   });
 
   it('says so when there is nothing to link', () => {

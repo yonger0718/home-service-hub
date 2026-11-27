@@ -89,6 +89,8 @@ export class AccountingService {
   private readonly changeCount = signal(0);
   private readonly accountChangeCount = signal(0);
   private readonly preferenceChangeCount = signal(0);
+  /** Every create that carried an invoice number, in order (the sequence is the 1-based position). */
+  private readonly invoiceCreates: string[] = [];
   private preference$: Observable<Preference> | null = null;
 
   /** Bumped after every successful write that adds, changes or removes entries; list pages reload on it. */
@@ -99,6 +101,19 @@ export class AccountingService {
 
   /** Bumped after every successful preference save; mounted pages re-read `getPreference()` on it. */
   readonly preferenceChanged = this.preferenceChangeCount.asReadonly();
+
+  /**
+   * How many entries have been created with an invoice number in this session: a mark for `invoiceCreatedSince`.
+   * The e-invoice flow's 記成新的一筆 counts its own save by these (not by `entriesChanged`, which every write bumps).
+   */
+  invoiceCreateMark(): number {
+    return this.invoiceCreates.length;
+  }
+
+  /** Whether an entry carrying `invoiceNumber` was created after `mark` (any of them, not only the last one). */
+  invoiceCreatedSince(invoiceNumber: string, mark: number): boolean {
+    return this.invoiceCreates.slice(mark).includes(invoiceNumber);
+  }
 
   /** Bumps `entriesChanged` after a write made through another service (the reconciliation inbox), so list pages reload. */
   markEntriesChanged(): void {
@@ -234,7 +249,11 @@ export class AccountingService {
   }
 
   createEntry(input: EntryInput): Observable<EntryDetail> {
-    return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries`, input));
+    return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries`, input)).pipe(
+      tap(() => {
+        if (input.invoice_number) this.invoiceCreates.push(input.invoice_number);
+      }),
+    );
   }
 
   /**

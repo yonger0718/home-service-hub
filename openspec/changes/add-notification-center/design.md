@@ -91,12 +91,12 @@ Each invoice screen shows:
 
 1. **A kind chip with a reason.**
    - 有兩筆都像 (`ambiguous`): 「同一天、同金額的帳有 2 筆」.
-   - 差一點 (`near`): 「沒有金額完全相同的帳，這筆最接近」, or 「商家名稱對得上，金額不同」.
-2. **The invoice card:** seller, date, number, tax id, items with subtotals, and the total.
-3. **Candidates as answer buttons:** 「連結 <name>」 with account, date, category and merchant, plus the amount. The first candidate is solid. What differs from the invoice gets a chip: 日期差 1 天, 金額差 $3. The carrier CSV and the API carry the invoice's date only, so no time is shown or compared; the times on the artboards are illustration.
-4. **都不是** (dismiss), **選其他帳…** (the existing picker of eligible entries), and **記成新的一筆**. The last opens the entry form prefilled with date, amount, merchant = seller and the invoice number. The flow moves on after the save; the invoice links at the next matcher run or by 選其他帳… (there is no owner-run match endpoint).
+   - 差一點 (`near`): 「沒有金額完全相同的帳，這筆最接近」 when the first candidate is within $50 **and** within 20 % of the total (owner, 2026-11-27); otherwise 「商家名稱對得上，金額不同」.
+2. **The invoice card:** seller, date, number, 「統編 <id>」 or 「沒有統編」, items with subtotals, and the total.
+3. **Candidates as answer buttons:** 「連結 <name>」 with account, date, category and merchant, plus the amount without a sign. The first candidate is solid, except for a 差一點 beyond the threshold, where every answer is outlined (no default). What differs from the invoice gets a chip: 日期差 1 天, 金額差 $3. The carrier CSV and the API carry the invoice's date only, so no time is shown or compared; the times on the artboards are illustration.
+4. **都不是** (dismiss), **選其他帳…** (the existing picker of eligible entries, its rows laid out as the answer buttons, with the same 日期差 / 金額差 chips), and **記成新的一筆**. The last opens the entry form prefilled with date, amount, name (the item when there is one item, else the seller), merchant = seller and the invoice number (the 發票號碼 field). The flow moves on after the save; the invoice links at the next matcher run or by 選其他帳… (there is no owner-run match endpoint).
 
-Linking calls `POST /einvoices/{id}/link`. 都不是 calls `dismiss`. A failed write keeps the screen and shows the error inline.
+Linking calls `POST /einvoices/{id}/link`. 都不是 calls `dismiss`. A failed write keeps the screen and shows the error inline. A link never changes the entry: it records the pair and fills the entry's empty invoice number. Each link (a candidate or a 選其他帳… pick) toasts 「已連結：<seller> $<total>」 and each 都不是 「已標成都不是：<seller> $<total>」, with 復原 (owner, 2026-11-27): `unlink` + `undismiss`, or `undismiss`. The API then holds the invoice as `unmatched` until the next matcher run (daily 04:10, `homehub-einvoice.timer`), so it leaves the 要確認 count until then; the flow shows it again at once with the candidates it had. When a link's 復原 unlinks but the undismiss fails, the toast says the invoice stays 都不是.
 
 ### D11. Invoices without an entry
 
