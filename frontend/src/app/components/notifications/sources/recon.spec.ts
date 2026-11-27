@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { makeInbox, makeInboxAccount, makeItem } from '../../accounting/inbox/testing';
+import { makeEinvoice, makeInbox, makeInboxAccount, makeItem } from '../../accounting/inbox/testing';
+import { InboxEinvoice } from '../../accounting/inbox/einvoice.model';
 import { InboxCounts, InboxItem, InboxOut, InboxQuestion } from '../../accounting/inbox/inbox.model';
 import { sortTasks, summarize } from '../notif-task';
 import {
@@ -97,35 +98,60 @@ describe('askAccountIds', () => {
 });
 
 describe('einvoiceTask', () => {
-  it('3 gives the task linking to the reminders 待處理 tab', () => {
-    expect(einvoiceTask({ einvoice_ask: 3 })).toMatchObject({
+  const asking = [
+    makeEinvoice({ id: 1, seller_name: '測試咖啡', issue_date: '2026-10-22' }),
+    makeEinvoice({ id: 2, seller_name: '測試咖啡', issue_date: '2026-10-20' }),
+    makeEinvoice({ id: 3, state: 'near', seller_name: '測試超商', issue_date: '2026-10-21' }),
+  ];
+  const withEinvoices = (einvoices: InboxEinvoice[], einvoice_ask: number) =>
+    ({ ...inboxWith([], { einvoice_ask }), einvoices });
+
+  it('three to decide give one task: count, up to three sellers, the newest date, the flow route, wake by members', () => {
+    expect(einvoiceTask(withEinvoices(asking, 3))).toEqual({
       id: 'einvoice',
       source: 'ledger',
       from: 'recon',
       tier: 'confirm',
       icon: 'pi-receipt',
-      title: '3 張發票要確認',
-      when: '電子發票',
-      meta: '到提醒中心回答',
+      title: '電子發票 · 3 張要確認',
+      when: '最新 10/22',
+      meta: '測試咖啡、測試超商',
       amount: null,
       progress: null,
-      primary: { label: '查看', route: '/accounting/reminders', queryParams: { tab: 'todo' } },
+      primary: { label: '確認', route: '/notifications/einvoices' },
       secondary: [],
       sortKey: '9999-12-31',
-      wake: { count: 3 },
+      wake: { members: ['1', '2', '3'] },
     });
   });
 
-  it('comes from counts.einvoice_ask alone: a truncated inbox (6 of 10 ask items listed) still gives 2, and the item list adds none', () => {
-    const inbox = inboxWith(items(6, 31), { ask_items: 10, einvoice_ask: 2 });
-    expect(inboxMissing(inbox)).toBe(4);
-    expect(einvoiceTask(inbox.counts)).toMatchObject({ id: 'einvoice', title: '2 張發票要確認', wake: { count: 2 } });
-    expect(reconTasks(inbox, new Map()).map((t) => t.id)).toEqual(['recon:31']);
+  it('counts 1 in the notification count (3 invoices + 6 other counted tasks → 7)', () => {
+    const others = Array.from({ length: 6 }, (_, i) => ({ ...einvoiceTask(withEinvoices(asking, 3))!, id: `x${i}` }));
+    expect(summarize([einvoiceTask(withEinvoices(asking, 3))!, ...others]).total).toBe(7);
   });
 
-  it('0 or absent gives null', () => {
-    expect(einvoiceTask({ einvoice_ask: 0 })).toBeNull();
-    expect(einvoiceTask({})).toBeNull();
+  it('names the first three distinct sellers only', () => {
+    const four = ['測試甲', '測試乙', '測試丙', '測試丁'].map((seller_name, i) => makeEinvoice({ id: i + 1, seller_name }));
+    expect(einvoiceTask(withEinvoices(four, 4))!.meta).toBe('測試甲、測試乙、測試丙');
+  });
+
+  it('the count is the whole set (counts.einvoice_ask), not the listed page; unmatched invoices add nothing', () => {
+    const listed = [asking[0], makeEinvoice({ id: 9, state: 'unmatched', seller_name: '測試書店', issue_date: '2026-10-30' })];
+    const t = einvoiceTask(withEinvoices(listed, 5))!;
+    expect(t.title).toBe('電子發票 · 5 張要確認');
+    expect(t.meta).toBe('測試咖啡');
+    expect(t.when).toBe('最新 10/22');
+    expect(t.wake).toEqual({ members: ['1'] });
+  });
+
+  it('none listed (an older API or a truncated page) still gives the task, with no meta and no date', () => {
+    const t = einvoiceTask(inboxWith([], { einvoice_ask: 2 }))!;
+    expect(t).toMatchObject({ title: '電子發票 · 2 張要確認', meta: null, when: '', wake: { members: [] } });
+  });
+
+  it('0 or absent gives null, even with unmatched invoices listed', () => {
+    expect(einvoiceTask(withEinvoices([makeEinvoice({ state: 'unmatched' })], 0))).toBeNull();
+    expect(einvoiceTask(inboxWith([]))).toBeNull();
   });
 });
 
