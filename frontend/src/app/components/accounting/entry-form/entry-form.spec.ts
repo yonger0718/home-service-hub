@@ -554,6 +554,43 @@ describe('EntryFormComponent', () => {
     expect((el.querySelector('input.date-input') as HTMLInputElement).value).toBe('2026-10-21');
   });
 
+  describe('prefill from an e-invoice (記成新的一筆: ?amount= &merchant= &invoice=)', () => {
+    async function prefilled(query: string) {
+      const { el } = await open(`/accounting/entry?${query}`);
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+      return { el, form };
+    }
+
+    it('fills date, amount, merchant and the invoice number', async () => {
+      const { el, form } = await prefilled('kind=expense&date=2026-10-22&amount=85&merchant=%E6%B8%AC%E8%A9%A6%E5%92%96%E5%95%A1&invoice=AB00000001');
+      expect((el.querySelector('input.date-input') as HTMLInputElement).value).toBe('2026-10-22');
+      expect(form.amountExpr()).toBe('85');
+      expect(form.merchant()).toBe('測試咖啡');
+      expect(form.invoiceNumber()).toBe('AB00000001');
+      expect(form.kind()).toBe('expense');
+    });
+
+    it('a foreign amount with decimals is kept as given', async () => {
+      const { form } = await prefilled('amount=12.5');
+      expect(form.amountExpr()).toBe('12.5');
+    });
+
+    it('malformed values are ignored one by one', async () => {
+      const long = encodeURIComponent('測'.repeat(101));
+      const { form } = await prefilled(`amount=8x5&invoice=ab1&merchant=${long}`);
+      expect(form.amountExpr()).toBe('');
+      expect(form.invoiceNumber()).toBe('');
+      expect(form.merchant()).toBe('');
+    });
+
+    it('a blank merchant is ignored; surrounding spaces are trimmed', async () => {
+      const { form } = await prefilled(`merchant=${encodeURIComponent('  測試店  ')}`);
+      expect(form.merchant()).toBe('測試店');
+    });
+  });
+
   it('ignores a malformed date', async () => {
     const { el } = await open('/accounting/entry?date=tomorrow');
     respond('/api/accounting/categories', [FOOD]);
