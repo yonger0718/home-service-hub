@@ -6,6 +6,8 @@ import {
   FuturesPending,
   FuturesPendingStatus,
   FuturesRuns,
+  FuturesDetail,
+  FuturesMonths,
   FuturesSummary,
   HoldingIdentity,
   HoldingKey,
@@ -77,6 +79,14 @@ export class PortfolioService extends BaseApiService<Transaction> {
   getFuturesSummary(asOf?: string): Observable<FuturesSummary> {
     const params = asOf ? new HttpParams().set('as_of', asOf) : undefined;
     return this.http.get<FuturesSummary>('/api/portfolio/futures/summary', { params });
+  }
+
+  getFuturesMonths(): Observable<FuturesMonths> {
+    return this.http.get<FuturesMonths>('/api/portfolio/futures/months');
+  }
+
+  getFuturesDetail(month: string): Observable<FuturesDetail> {
+    return this.http.get<FuturesDetail>('/api/portfolio/futures/detail', { params: new HttpParams().set('month', month) });
   }
 
   getCachedHolding(key: HoldingKey | HoldingIdentity): StockHolding | undefined {

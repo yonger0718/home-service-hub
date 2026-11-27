@@ -111,8 +111,11 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     return parts.join(' · ');
   });
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
-  /** Phones: 匯入 CSV leaves the header row for the ⋯ menu. */
-  readonly phoneMenu: PageMenuItem[] = [{ label: '匯入 CSV', icon: 'pi-upload', routerLink: '/portfolio/import' }];
+  /** Phones: 匯入 CSV and 期貨明細 leave the header row for the ⋯ menu. */
+  readonly phoneMenu: PageMenuItem[] = [
+    { label: '匯入 CSV', icon: 'pi-upload', routerLink: '/portfolio/import' },
+    { label: '期貨明細', icon: 'pi-chart-line', routerLink: '/portfolio/futures' },
+  ];
   protected readonly feeShareLabel = feeShareLabel;
   readonly sortOptions = SORT_OPTIONS;
   readonly sideFilterOptions: SegToggleOption[] = [

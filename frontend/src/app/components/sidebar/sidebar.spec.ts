@@ -137,7 +137,7 @@ describe('SidebarComponent', () => {
     expect(host.querySelector('.side-logo img')!.getAttribute('src')).toBe('assets/app-icon.svg');
 
     const items = Array.from(host.querySelectorAll<HTMLAnchorElement>('a.side-item:not(.side-notif)'));
-    expect(items.length).toBe(11);
+    expect(items.length).toBe(12);
     for (const item of items) {
       const navItem = NAV_ITEMS.find(candidate => item.getAttribute('href') === candidate.path)!;
       const tip = item.querySelector('.side-tip');
@@ -149,6 +149,9 @@ describe('SidebarComponent', () => {
     expect(label('/accounting')).toBe('記帳記錄，有待確認的匯入紀錄');
     expect(label('/portfolio/import')).toBe('匯入，最近一次匯入失敗');
     expect(label('/portfolio/transactions')).toBe('交易紀錄');
+    const hrefs = items.map(item => item.getAttribute('href'));
+    expect(hrefs[hrefs.indexOf('/portfolio/transactions') + 1]).toBe('/portfolio/futures');
+    expect(label('/portfolio/futures')).toBe('期貨明細');
     expect(items.find(item => item.getAttribute('href') === '/accounting')!.querySelector('.item-dot')).not.toBeNull();
     expect(host.querySelector('.item-count')).toBeNull();
     expect(items.find(item => item.getAttribute('href') === '/portfolio/import')!.querySelector('.item-dot')).not.toBeNull();

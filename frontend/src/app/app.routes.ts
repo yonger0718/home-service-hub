@@ -118,6 +118,7 @@ export const routes: Routes = [
   { path: 'portfolio/transactions', loadComponent: () => import('./components/portfolio/transaction-list/transaction-list').then(m => m.PortfolioTransactionListComponent) },
   { path: 'portfolio/dividends', loadComponent: () => import('./components/portfolio/dividend-list/dividend-list').then(m => m.PortfolioDividendListComponent) },
   { path: 'portfolio/realized-pnl', loadComponent: () => import('./components/portfolio/realized-pnl/realized-pnl').then(m => m.PortfolioRealizedPnlComponent) },
+  { path: 'portfolio/futures', loadComponent: () => import('./components/portfolio/futures-detail/futures-detail').then(m => m.PortfolioFuturesDetailComponent) },
   { matcher: portfolioAccountsMatcher, loadComponent: () => import('./components/portfolio/accounts/accounts-page').then(m => m.PortfolioAccountsPageComponent) },
   { path: 'portfolio/import', loadComponent: () => import('./components/portfolio/import/import').then(m => m.PortfolioImportComponent) },
   // 券商對帳單 is a type of the unified import page; old links land on it.

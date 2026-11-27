@@ -1,5 +1,7 @@
 import { ChangeDetectionStrategy, Component, OnChanges, OnInit, SimpleChanges, inject, input, signal } from '@angular/core';
 
+import { RouterLink } from '@angular/router';
+
 import { FuturesSummary } from '../../../../models/portfolio.model';
 import { PortfolioService } from '../../../../services/portfolio.service';
 import { BentoComponent } from '../../../ui/bento/bento';
@@ -14,7 +16,7 @@ type LoadState = 'loading' | 'ready' | 'error';
  */
 @Component({
   selector: 'app-futures-card',
-  imports: [BentoComponent],
+  imports: [BentoComponent, RouterLink],
   templateUrl: './futures-card.html',
   styleUrl: './futures-card.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

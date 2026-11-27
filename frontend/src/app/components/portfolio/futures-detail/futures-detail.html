@@ -1,0 +1,214 @@
+<app-page-header title="期貨明細"></app-page-header>
+
+@if (state() === 'no-months') {
+  <p class="fd-note" data-testid="fd-empty">尚無期貨對帳單</p>
+} @else if (state() === 'error' && monthsFailed()) {
+  <p class="fd-note" role="alert" data-testid="fd-error">期貨資料載入失敗</p>
+} @else {
+  <div class="fd-picker">
+    <label for="fd-month">月份</label>
+    <select
+      id="fd-month"
+      class="fd-select"
+      data-testid="month-picker"
+      [value]="selected()"
+      (change)="pick($any($event.target).value)"
+    >
+      @if (selected() && !months().includes(selected()!)) {
+        <option [value]="selected()" selected>{{ monthLabel(selected()!) }}</option>
+      }
+      @for (m of months(); track m) {
+        <option [value]="m" [selected]="m === selected()">{{ monthLabel(m) }}</option>
+      }
+    </select>
+  </div>
+
+  @if (state() === 'loading') {
+    <p class="fd-note">載入中…</p>
+  } @else if (state() === 'error') {
+    <p class="fd-note" role="alert" data-testid="fd-error">期貨資料載入失敗</p>
+  } @else if (state() === 'not-found') {
+    <p class="fd-note" data-testid="fd-not-found">這個月份沒有期貨對帳單</p>
+  } @else if (detail(); as d) {
+    <app-bento class="fd-card" title="本月摘要">
+      <div class="fd-summary">
+        @for (row of summaryRows(); track row.label) {
+          <div class="fd-summary-row">
+            <span class="fd-label">{{ row.label }}</span>
+            <b class="fd-value" [attr.data-testid]="'summary-' + row.key" [class.up]="row.sign > 0" [class.down]="row.sign < 0">{{ row.value }}</b>
+          </div>
+        }
+      </div>
+      @if (d.summary.source === 'daily_sum') {
+        <p class="fd-meta">
+          日對帳單加總
+          @if (!d.summary.complete && d.summary.reason === 'findings') {
+            <span class="fd-warn">可能不完整</span>
+          }
+        </p>
+      }
+      @if (d.summary.missing_days > 0) {
+        <p class="fd-meta fd-warn">缺 {{ d.summary.missing_days }} 天日對帳單，明細不完整；摘要以月對帳單為準</p>
+      }
+    </app-bento>
+
+    @for (day of d.days; track day.date) {
+      <app-bento class="fd-card" [title]="md(day.date)">
+        @if (day.no_trade) {
+          <p class="fd-meta">當日無交易</p>
+        }
+        @if (day.fills.length > 0) {
+          @if (isPhone()) {
+            @for (fill of day.fills; track $index) {
+              @let key = fillKey(day, $index);
+              <div class="fd-fill-card" data-testid="fill-card">
+                <div class="fd-fill-head">
+                  <b>{{ fill.product }}</b>
+                  <span>{{ fill.month }}</span>
+                  @if (fill.kind === 'option') {
+                    <span>{{ strikeText(fill) }} {{ rightText(fill) }}</span>
+                  }
+                  <span class="fd-action">{{ fill.action }}</span>
+                </div>
+                <div class="fd-fill-line"><span>口數</span><span>{{ fill.qty }}</span></div>
+                <div class="fd-fill-line"><span>成交價</span><span>{{ fill.price }}</span></div>
+                <div class="fd-fill-line"><span>期交稅</span><span>{{ money(fill.tax) }}</span></div>
+                <div class="fd-fill-line"><span>手續費</span><span>{{ money(fill.fee) }}</span></div>
+                <div class="fd-fill-line">
+                  @if (isFuturesOpening(fill)) {
+                    <span>損益</span>
+                    <b data-testid="fill-pnl">—</b>
+                  } @else {
+                    <span>{{ pnlLabel(fill) }}</span>
+                    <b data-testid="fill-pnl" [class.up]="sign(fill.pnl) > 0" [class.down]="sign(fill.pnl) < 0">{{ money(fill.pnl, true) }}</b>
+                  }
+                </div>
+                @if (fill.closes.length > 0) {
+                  <button type="button" class="fd-toggle" data-testid="close-toggle" [attr.aria-expanded]="isOpen(key)" (click)="toggle(key)">
+                    {{ isOpen(key) ? '▾ 收合' : '▸ 平倉明細' }}
+                  </button>
+                  @if (isOpen(key)) {
+                    @for (c of fill.closes; track $index) {
+                      <p class="fd-close">平倉 → {{ md(c.date) }} {{ c.qty }} 口 @ {{ c.price }}</p>
+                    }
+                  }
+                }
+              </div>
+            }
+          } @else {
+            <div class="fd-scroll">
+              <table class="fd-table">
+                <thead>
+                  <tr>
+                    <th>商品</th><th>月份</th><th>履約價</th><th>權別</th><th>動作</th>
+                    <th class="num">口數</th><th class="num">成交價</th><th class="num">期交稅</th><th class="num">手續費</th>
+                    <th class="num">損益</th><th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (fill of day.fills; track $index) {
+                    @let key = fillKey(day, $index);
+                    <tr data-testid="fill-row">
+                      <td>{{ fill.product }}</td>
+                      <td>{{ fill.month }}</td>
+                      <td>{{ strikeText(fill) }}</td>
+                      <td>{{ rightText(fill) }}</td>
+                      <td>{{ fill.action }}</td>
+                      <td class="num">{{ fill.qty }}</td>
+                      <td class="num">{{ fill.price }}</td>
+                      <td class="num">{{ money(fill.tax) }}</td>
+                      <td class="num">{{ money(fill.fee) }}</td>
+                      <td class="num">
+                        @if (isFuturesOpening(fill)) {
+                          <b data-testid="fill-pnl">—</b>
+                        } @else {
+                          <span class="fd-pnl-label">{{ pnlLabel(fill) }}</span>
+                          <b data-testid="fill-pnl" [class.up]="sign(fill.pnl) > 0" [class.down]="sign(fill.pnl) < 0">{{ money(fill.pnl, true) }}</b>
+                        }
+                      </td>
+                      <td>
+                        @if (fill.closes.length > 0) {
+                          <button type="button" class="fd-toggle" data-testid="close-toggle" [attr.aria-expanded]="isOpen(key)" (click)="toggle(key)">
+                            {{ isOpen(key) ? '▾ 收合' : '▸ 平倉明細' }}
+                          </button>
+                        }
+                      </td>
+                    </tr>
+                    @if (isOpen(key)) {
+                      <tr class="fd-close-row">
+                        <td colspan="11">
+                          @for (c of fill.closes; track $index) {
+                            <p class="fd-close">平倉 → {{ md(c.date) }} {{ c.qty }} 口 @ {{ c.price }}</p>
+                          }
+                        </td>
+                      </tr>
+                    }
+                  }
+                </tbody>
+                @if (day.fills_total; as t) {
+                  <tfoot>
+                    <tr>
+                      <td colspan="7">合計</td>
+                      <td class="num">{{ money(t.tax) }}</td>
+                      <td class="num">{{ money(t.fee) }}</td>
+                      <td class="num"><b [class.up]="sign(t.pnl) > 0" [class.down]="sign(t.pnl) < 0">{{ money(t.pnl, true) }}</b></td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                }
+              </table>
+            </div>
+          }
+          @if (isPhone() && day.fills_total; as t) {
+            <p class="fd-meta">
+              合計 期交稅 {{ money(t.tax) }} · 手續費 {{ money(t.fee) }} ·
+              <b [class.up]="sign(t.pnl) > 0" [class.down]="sign(t.pnl) < 0">{{ money(t.pnl, true) }}</b>
+            </p>
+          }
+        }
+        @for (dep of day.deposits; track $index) {
+          <p class="fd-deposit">
+            <span>{{ depositLabel(dep) }}</span>
+            <b>{{ money(dep.amount) }}</b>
+          </p>
+        }
+      </app-bento>
+    }
+
+    @if (d.positions; as p) {
+      <app-bento class="fd-card" data-testid="positions-card" [title]="'持倉：' + md(p.date) + ' 日對帳單'">
+        @if (p.month_end_may_differ) {
+          <p class="fd-meta fd-warn">月底持倉可能不同</p>
+        }
+        @if (p.items.length === 0) {
+          <p class="fd-meta">無持倉</p>
+        }
+        <div class="fd-scroll">
+          <table class="fd-table">
+            @if (p.items.length > 0) {
+              <thead>
+                <tr>
+                  <th>商品</th><th>買／賣</th><th class="num">口數</th><th class="num">進場價</th><th class="num">行情價</th><th class="num">權利金市值</th><th class="num">未沖銷損益</th>
+                </tr>
+              </thead>
+            }
+            <tbody>
+              @for (pos of p.items; track $index) {
+                @let isOption = pos.strike !== null;
+                <tr>
+                  <td>{{ pos.product }} {{ pos.month }}@if (isOption) { {{ pos.strike }} {{ pos.right }}}</td>
+                  <td>{{ pos.side }}</td>
+                  <td class="num">{{ pos.qty }}</td>
+                  <td class="num">{{ pos.entry_price }}</td>
+                  <td class="num">{{ pos.mark_price }}</td>
+                  <td class="num" data-testid="pos-premium">{{ isOption ? money(pos.premium_value, true) : '—' }}</td>
+                  <td class="num" data-testid="pos-unrealized" [class.up]="sign(pos.unrealized) > 0" [class.down]="sign(pos.unrealized) < 0">{{ money(pos.unrealized, true) }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      </app-bento>
+    }
+  }
+}
