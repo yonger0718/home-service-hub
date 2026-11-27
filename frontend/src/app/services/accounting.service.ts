@@ -89,6 +89,7 @@ export class AccountingService {
   private readonly changeCount = signal(0);
   private readonly accountChangeCount = signal(0);
   private readonly preferenceChangeCount = signal(0);
+  private readonly invoiceCreated = signal<{ readonly number: string; readonly seq: number } | null>(null);
   private preference$: Observable<Preference> | null = null;
 
   /** Bumped after every successful write that adds, changes or removes entries; list pages reload on it. */
@@ -99,6 +100,12 @@ export class AccountingService {
 
   /** Bumped after every successful preference save; mounted pages re-read `getPreference()` on it. */
   readonly preferenceChanged = this.preferenceChangeCount.asReadonly();
+
+  /**
+   * The invoice number of the last entry created with one, and a sequence that grows with each such create. The
+   * e-invoice flow's 記成新的一筆 counts its own save by this (not by `entriesChanged`, which every write bumps).
+   */
+  readonly lastInvoiceCreated = this.invoiceCreated.asReadonly();
 
   /** Bumps `entriesChanged` after a write made through another service (the reconciliation inbox), so list pages reload. */
   markEntriesChanged(): void {
@@ -234,7 +241,12 @@ export class AccountingService {
   }
 
   createEntry(input: EntryInput): Observable<EntryDetail> {
-    return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries`, input));
+    return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries`, input)).pipe(
+      tap(() => {
+        const number = input.invoice_number;
+        if (number) this.invoiceCreated.update((last) => ({ number, seq: (last?.seq ?? 0) + 1 }));
+      }),
+    );
   }
 
   /**

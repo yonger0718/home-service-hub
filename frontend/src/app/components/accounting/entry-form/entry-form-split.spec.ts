@@ -620,6 +620,21 @@ describe('split form integration', () => {
     }
   });
 
+  it('the e-invoice prefill (?amount= &name= &invoice=) never touches a copy or an edit', async () => {
+    entries.set(7, makeEntryDetail({ id: 7, name: '測試原名' }));
+    const prefill = 'amount=999&name=%E6%B8%AC%E8%A9%A6%E8%A6%86%E5%AF%AB&invoice=ZZ12345678';
+    await open(`/accounting/entry?copy=7&${prefill}`);
+    expect(form.name()).toBe('測試原名');
+    expect(form.invoiceNumber()).not.toBe('ZZ12345678');
+    expect(form.amountExpr()).not.toBe('999');
+    form = await harness.navigateByUrl(`/accounting/entries/7/edit?${prefill}`, EntryFormComponent);
+    settle();
+    expect(form.entryId()).toBe(7);
+    expect(form.name()).toBe('測試原名');
+    expect(form.invoiceNumber()).not.toBe('ZZ12345678');
+    expect(form.amountExpr()).not.toBe('999');
+  });
+
   it('an untouched copy whose rule is out of window stays clean; an edit still dirties it', async () => {
     const expired = makeRule({ id: 5, ends_on: '2020-01-31' });
     entries.set(7, makeEntryDetail({ id: 7, rules: [expired] }));

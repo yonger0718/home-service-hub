@@ -46,13 +46,15 @@ export function startFlow(invoices: readonly InboxEinvoice[]): EinvoiceFlowState
  * A later read: invoices no longer listed and not answered here left elsewhere (another tab, the inbox panel) and
  * drop out of the flow; open ones take the new data; new invoices are not added (they show on the next open). An
  * invoice listed as `unmatched` (an answer undone here: the API puts it back to unmatched until the next matcher run)
- * stays open with the data the flow already has.
+ * stays open with the data the flow already has. `complete` false (the read's page was cut: fewer listed than the
+ * count) proves nothing about an absent invoice: it stays, with the data the flow has.
  */
-export function afterRead(state: EinvoiceFlowState, invoices: readonly InboxEinvoice[]): EinvoiceFlowState {
+export function afterRead(state: EinvoiceFlowState, invoices: readonly InboxEinvoice[], complete = true): EinvoiceFlowState {
   const listed = new Map(invoices.map((invoice) => [invoice.id, invoice]));
-  const order = state.order.filter((id) => state.outcome.has(id) || listed.has(id));
+  const order = state.order.filter((id) => state.outcome.has(id) || listed.has(id) || !complete);
   const data = (id: number): InboxEinvoice => {
-    const fresh = listed.get(id)!;
+    const fresh = listed.get(id);
+    if (!fresh) return state.open.get(id)!;
     return fresh.state === 'unmatched' ? (state.open.get(id) ?? fresh) : fresh;
   };
   const open = new Map(order.filter((id) => !state.outcome.has(id)).map((id) => [id, data(id)]));
@@ -115,13 +117,14 @@ const FLOW_PATH = `/notifications/${EINVOICE_FLOW_SEGMENT}`;
 
 /**
  * The flow's state across the 記成新的一筆 round trip: the entry form is another route, so the flow (and the page)
- * unmount and mount again on the way back. `pendingRecord` is the invoice sent to the form with the
- * `entriesChanged` count at that moment; a navigation anywhere but the form or the flow drops it.
+ * unmount and mount again on the way back. `pendingRecord` is the invoice sent to the form (id and number) with
+ * the `AccountingService.lastInvoiceCreated` sequence at that moment; a navigation anywhere but the form or the flow
+ * drops it.
  */
 @Injectable({ providedIn: 'root' })
 export class EinvoiceFlowSession {
   readonly state = signal<EinvoiceFlowState | null>(null);
-  readonly pendingRecord = signal<{ id: number; mark: number } | null>(null);
+  readonly pendingRecord = signal<{ id: number; number: string; mark: number } | null>(null);
 
   constructor() {
     inject(Router).events.pipe(filter((event) => event instanceof NavigationEnd)).subscribe((event) => {
@@ -132,7 +135,7 @@ export class EinvoiceFlowSession {
     });
   }
 
-  awaitRecord(id: number, mark: number): void {
-    this.pendingRecord.set({ id, mark });
+  awaitRecord(id: number, number: string, mark: number): void {
+    this.pendingRecord.set({ id, number, mark });
   }
 }

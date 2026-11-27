@@ -80,7 +80,9 @@ const EINVOICE_META_SELLERS = 3;
 /**
  * Every ambiguous / near invoice as ONE 要你確認 task (D10), counting 1. N is `counts.einvoice_ask` (the whole set,
  * not the listed page); the meta names up to three sellers and `when` the newest date of the listed ones. A snoozed
- * task wakes when a listed invoice is new (members), not when one is answered.
+ * task wakes when an invoice is new (members), not when one is answered. The count rides along: a snooze saved
+ * before members existed (`{count}` only) still wakes on growth. When the page cut the list (fewer listed than N),
+ * members are left out: an invoice moving into the page is not new.
  */
 export function einvoiceTask(inbox: Pick<InboxOut, 'counts' | 'einvoices'>): NotifTask | null {
   const n = inbox.counts.einvoice_ask ?? 0;
@@ -102,7 +104,7 @@ export function einvoiceTask(inbox: Pick<InboxOut, 'counts' | 'einvoices'>): Not
     primary: { label: '確認', route: EINVOICE_FLOW_ROUTE },
     secondary: [],
     sortKey: '9999-12-31',
-    wake: { members: asking.map((invoice) => String(invoice.id)) },
+    wake: asking.length >= n ? { count: n, members: asking.map((invoice) => String(invoice.id)) } : { count: n },
   };
 }
 

@@ -169,12 +169,18 @@ export class EinvoiceFlowComponent {
     this.inbox.get({ limit: INBOX_READ_LIMIT }).subscribe({
       next: (out) => {
         const list = out.einvoices ?? [];
+        // A cut page (more to confirm than listed) proves nothing about an invoice it does not list.
+        const complete = list.filter((invoice) => invoice.state !== 'unmatched').length >= (out.counts.einvoice_ask ?? 0);
         const current = this.state();
-        let next: EinvoiceFlowState = current ? afterRead(current, list) : startFlow(list);
+        let next: EinvoiceFlowState = current ? afterRead(current, list, complete) : startFlow(list);
         const pending = this.session.pendingRecord();
         if (pending) {
           this.session.pendingRecord.set(null);
-          if (this.accounting.entriesChanged() > pending.mark && next.open.has(pending.id)) {
+          // Counted only when an entry carrying this invoice's number was created since: not any write (a schedule
+          // definition, another page's edit), not a cancel; several saves (連續記帳) count once.
+          const made = this.accounting.lastInvoiceCreated();
+          const saved = made !== null && made.seq > pending.mark && made.number === pending.number;
+          if (saved && next.open.has(pending.id)) {
             next = answer(next, pending.id, 'recorded');
           } else if (next.open.has(pending.id)) {
             next = { ...next, cursor: pending.id };
@@ -213,7 +219,7 @@ export class EinvoiceFlowComponent {
   record(): void {
     const invoice = this.invoice();
     if (!invoice || this.busy()) return;
-    this.session.awaitRecord(invoice.id, this.accounting.entriesChanged());
+    this.session.awaitRecord(invoice.id, invoice.number, this.accounting.lastInvoiceCreated()?.seq ?? 0);
     void this.router.navigate(ENTRY_FORM, {
       queryParams: {
         kind: 'expense',

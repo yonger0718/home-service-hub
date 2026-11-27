@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountingService } from '../../../services/accounting.service';
 import { ToastService } from '../../../services/toast.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
+import { EntryInput } from '../../../models/accounting.model';
 import { InboxEinvoice } from '../../accounting/inbox/einvoice.model';
 import { makeEinvoice, makeEinvoiceTarget, makeInbox, text } from '../../accounting/inbox/testing';
 import { EinvoiceFlowComponent } from './einvoice-flow';
@@ -213,26 +214,55 @@ describe('EinvoiceFlowComponent', () => {
     expect(navigate).toHaveBeenCalledWith(['/accounting/entry'], {
       queryParams: { kind: 'expense', date: '2026-10-22', amount: '85', name: '測試品項', merchant: '測試咖啡', invoice: 'AB00000001' },
     });
-    expect(TestBed.inject(EinvoiceFlowSession).pendingRecord()).toEqual({ id: 1, mark: TestBed.inject(AccountingService).entriesChanged() });
+    expect(TestBed.inject(EinvoiceFlowSession).pendingRecord()).toEqual({ id: 1, number: 'AB00000001', mark: 0 });
   });
 
-  it('back from the form after a save: counted as 記成新的一筆 and the next invoice shows', () => {
+  /** The entry form's create, as AccountingService sends it. */
+  function created(invoiceNumber: string | null): void {
+    TestBed.inject(AccountingService)
+      .createEntry({ invoice_number: invoiceNumber } as unknown as EntryInput)
+      .subscribe();
+    http.expectOne((r) => r.method === 'POST' && r.url === '/api/accounting/entries').flush({ id: 900 });
+  }
+
+  function sentToForm(id: number): EinvoiceFlowSession {
     const session = TestBed.inject(EinvoiceFlowSession);
-    const accounting = TestBed.inject(AccountingService);
-    session.state.set(startFlow(THREE));
-    session.awaitRecord(1, accounting.entriesChanged());
-    accounting.markEntriesChanged(); // the form saved
+    session.state.set({ ...startFlow(THREE), cursor: id });
+    session.awaitRecord(id, `AB0000000${id}`, TestBed.inject(AccountingService).lastInvoiceCreated()?.seq ?? 0);
+    return session;
+  }
+
+  it('back from the form after a save: counted as 記成新的一筆 and the next invoice shows', () => {
+    const session = sentToForm(1);
+    created('AB00000001'); // the form saved an entry with this invoice's number
     open(THREE); // invoice 1 is still listed: it links at the next matcher run
     expect(shownNumber()).toContain('AB00000002');
     expect(progressText()).toBe('第 2 / 3 張');
     expect(session.pendingRecord()).toBeNull();
   });
 
+  it('連續記帳: two saves count the invoice once', () => {
+    sentToForm(1);
+    created('AB00000001');
+    created('AB00000001');
+    open(THREE);
+    key('S');
+    key('S');
+    expect(text(el.querySelector('.flow-end-text'))).toContain('記成新的一筆 1 張');
+  });
+
+  it('back after another write (another page, a schedule definition) or an entry without this number: not counted', () => {
+    sentToForm(1);
+    TestBed.inject(AccountingService).markEntriesChanged(); // a write that created no entry with this invoice
+    created(null); // an entry without an invoice number
+    created('AB00000009'); // the number was changed in the form
+    open(THREE);
+    expect(shownNumber()).toContain('AB00000001');
+    expect(progressText()).toBe('第 1 / 3 張');
+  });
+
   it('back from the form without a save: the same invoice again', () => {
-    const session = TestBed.inject(EinvoiceFlowSession);
-    session.state.set(startFlow(THREE));
-    session.state.update((s) => ({ ...s!, cursor: 2 }));
-    session.awaitRecord(2, TestBed.inject(AccountingService).entriesChanged());
+    sentToForm(2);
     open(THREE);
     expect(shownNumber()).toContain('AB00000002');
     expect(progressText()).toBe('第 2 / 3 張');
@@ -253,6 +283,87 @@ describe('EinvoiceFlowComponent', () => {
     expect(progressText()).toBe('第 1 / 2 張');
     key('ArrowRight');
     expect(shownNumber()).toContain('AB00000003');
+  });
+
+  it('a cut read (fewer listed than the count) keeps an absent invoice: absence proves nothing', () => {
+    open();
+    TestBed.inject(AccountingService).markEntriesChanged();
+    detect();
+    read().flush({ ...makeInbox([], { einvoice_ask: 3 }), einvoices: [coffee(1), coffee(3)] });
+    detect();
+    expect(progressText()).toBe('第 1 / 3 張');
+    key('ArrowRight');
+    expect(shownNumber()).toContain('AB00000002');
+  });
+
+  it('the invoice card: seller, total, date · number · tax id, items with subtotals', () => {
+    open([coffee(1, { items: [{ name: '測試拿鐵', subtotal: '60' }, { name: '測試蛋糕', subtotal: '25' }] })]);
+    expect(text(el.querySelector('.einv-seller'))).toBe('測試咖啡');
+    expect(text(el.querySelector('.einv-total'))).toBe('$85');
+    expect(shownNumber()).toMatch(/^2026\/10\/22 · AB00000001 · /);
+    expect(Array.from(el.querySelectorAll('.einv-items li')).map((li) => text(li))).toEqual(['測試拿鐵$60', '測試蛋糕$25']);
+  });
+
+  it('a held digit or S (repeat) answers nothing; held arrows still move', () => {
+    open();
+    key('1', document, { repeat: true });
+    key('S', document, { repeat: true });
+    http.expectNone((r) => r.method === 'POST');
+    expect(progressText()).toBe('第 1 / 3 張');
+    key('ArrowRight', document, { repeat: true });
+    expect(shownNumber()).toContain('AB00000002');
+  });
+
+  it('no answer while a write is in flight, an open dialog, or an event already handled', () => {
+    open();
+    key('1');
+    const first = post('1/link');
+    key('2'); // busy
+    http.expectNone((r) => r.method === 'POST' && (r.body as { entry_id?: number } | null)?.entry_id === 12);
+    first.flush({ id: 1, state: 'linked' });
+    flushRead([coffee(2), coffee(3)]);
+    const dialog = document.createElement('div');
+    dialog.className = 'spec-extra';
+    dialog.setAttribute('role', 'dialog');
+    document.body.appendChild(dialog);
+    key('1');
+    dialog.remove();
+    const handled = new KeyboardEvent('keydown', { key: '1', bubbles: true, cancelable: true });
+    handled.preventDefault();
+    document.dispatchEvent(handled);
+    detect();
+    http.expectNone((r) => r.method === 'POST');
+  });
+
+  it('key 9 is 都不是 with eight candidates and the ninth candidate with nine', () => {
+    const targets = (n: number) => Array.from({ length: n }, (_, i) => makeEinvoiceTarget({ id: 100 + i, amount: '-85', date: '2026-10-22' }));
+    open([coffee(1, { candidates: targets(8) }), coffee(2, { candidates: targets(9) })]);
+    key('9');
+    post('1/dismiss').flush({ id: 1, state: 'dismissed' });
+    flushRead([coffee(2, { candidates: targets(9) })]);
+    key('9');
+    const link = post('2/link');
+    expect(link.request.body).toEqual({ entry_id: 108 });
+    link.flush({ id: 2, state: 'linked' });
+    flushRead([]);
+  });
+
+  it('crossing 1024 px mid-flow keeps the place, the answers and the skips', () => {
+    open();
+    key('1');
+    post('1/link').flush({ id: 1, state: 'linked' });
+    flushRead([coffee(2), coffee(3)]);
+    key('S');
+    const component = fixture.componentInstance;
+    TestBed.inject(LayoutModeService).set('phone');
+    detect();
+    expect(fixture.componentInstance).toBe(component);
+    expect(shownNumber()).toContain('AB00000003');
+    expect(progressText()).toBe('3 / 3');
+    TestBed.inject(LayoutModeService).set('panes');
+    detect();
+    expect(progressText()).toBe('第 3 / 3 張');
+    expect(el.querySelector('kbd')).not.toBeNull();
   });
 
   it('ten candidates: keys 1–9 on the first nine, none on the tenth or 都不是', () => {

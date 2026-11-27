@@ -89,10 +89,10 @@ describe('EinvoiceFlowSession', () => {
     const session = TestBed.inject(EinvoiceFlowSession);
     const router = TestBed.inject(Router);
     session.state.set(startFlow([inv(1)]));
-    session.awaitRecord(1, 4);
+    session.awaitRecord(1, 'AB00000001', 4);
     await router.navigateByUrl('/accounting/entry?kind=expense');
     await router.navigateByUrl('/notifications/einvoices');
-    expect(session.pendingRecord()).toEqual({ id: 1, mark: 4 });
+    expect(session.pendingRecord()).toEqual({ id: 1, number: 'AB00000001', mark: 4 });
     await router.navigateByUrl('/accounting/entry');
     await router.navigateByUrl('/portfolio');
     expect(session.pendingRecord()).toBeNull();

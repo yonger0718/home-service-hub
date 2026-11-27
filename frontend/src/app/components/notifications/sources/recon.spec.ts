@@ -4,6 +4,7 @@ import { makeEinvoice, makeInbox, makeInboxAccount, makeItem } from '../../accou
 import { InboxEinvoice } from '../../accounting/inbox/einvoice.model';
 import { InboxCounts, InboxItem, InboxOut, InboxQuestion } from '../../accounting/inbox/inbox.model';
 import { sortTasks, summarize } from '../notif-task';
+import { snoozeEntry, wakes } from '../snooze';
 import {
   INBOX_READ_LIMIT,
   askAccountIds,
@@ -106,7 +107,7 @@ describe('einvoiceTask', () => {
   const withEinvoices = (einvoices: InboxEinvoice[], einvoice_ask: number) =>
     ({ ...inboxWith([], { einvoice_ask }), einvoices });
 
-  it('three to decide give one task: count, up to three sellers, the newest date, the flow route, wake by members', () => {
+  it('three to decide give one task: count, up to three sellers, the newest date, the flow route, wake by count + members', () => {
     expect(einvoiceTask(withEinvoices(asking, 3))).toEqual({
       id: 'einvoice',
       source: 'ledger',
@@ -121,8 +122,35 @@ describe('einvoiceTask', () => {
       primary: { label: '確認', route: '/notifications/einvoices' },
       secondary: [],
       sortKey: '9999-12-31',
-      wake: { members: ['1', '2', '3'] },
+      wake: { count: 3, members: ['1', '2', '3'] },
     });
+  });
+
+  it('snooze: a new invoice wakes; one answered (and another moving up) does not', () => {
+    const now = new Date('2026-10-24T02:00:00Z');
+    const entry = snoozeEntry(einvoiceTask(withEinvoices(asking, 3))!, new Date('2026-10-26T01:00:00Z'));
+    const fresh = makeEinvoice({ id: 4, seller_name: '測試書店', issue_date: '2026-10-23' });
+    expect(wakes(entry, einvoiceTask(withEinvoices([...asking, fresh], 4))!, now)).toBe(true);
+    expect(wakes(entry, einvoiceTask(withEinvoices(asking.slice(1), 2))!, now)).toBe(false);
+    // the same count with one invoice swapped for a new one still wakes (members)
+    expect(wakes(entry, einvoiceTask(withEinvoices([asking[0], asking[1], fresh], 3))!, now)).toBe(true);
+  });
+
+  it('snooze saved before members (count only) still wakes when invoices are added', () => {
+    const now = new Date('2026-10-24T02:00:00Z');
+    const legacy = { until: '2026-10-26T01:00:00.000Z', tier: 'confirm' as const, from: 'recon' as const, wake: { count: 3 } };
+    const fresh = makeEinvoice({ id: 4, seller_name: '測試書店' });
+    expect(wakes(legacy, einvoiceTask(withEinvoices([...asking, fresh], 4))!, now)).toBe(true);
+    expect(wakes(legacy, einvoiceTask(withEinvoices(asking, 3))!, now)).toBe(false);
+  });
+
+  it('a cut page (fewer listed than the count) wakes by count only: an invoice moving into the page is not new', () => {
+    const now = new Date('2026-10-24T02:00:00Z');
+    const entry = snoozeEntry(einvoiceTask(withEinvoices(asking.slice(0, 2), 5))!, new Date('2026-10-26T01:00:00Z'));
+    expect(entry.wake).toEqual({ count: 5 });
+    // invoice 1 answered: 3 moves into the page, the count drops to 4 → no wake
+    expect(wakes(entry, einvoiceTask(withEinvoices([asking[1], asking[2]], 4))!, now)).toBe(false);
+    expect(wakes(entry, einvoiceTask(withEinvoices(asking.slice(0, 2), 6))!, now)).toBe(true);
   });
 
   it('counts 1 in the notification count (3 invoices + 6 other counted tasks → 7)', () => {
@@ -141,12 +169,13 @@ describe('einvoiceTask', () => {
     expect(t.title).toBe('電子發票 · 5 張要確認');
     expect(t.meta).toBe('測試咖啡');
     expect(t.when).toBe('最新 10/22');
-    expect(t.wake).toEqual({ members: ['1'] });
+    expect(t.wake).toEqual({ count: 5 }); // cut page: count only
   });
 
   it('none listed (an older API or a truncated page) still gives the task, with no meta and no date', () => {
     const t = einvoiceTask(inboxWith([], { einvoice_ask: 2 }))!;
-    expect(t).toMatchObject({ title: '電子發票 · 2 張要確認', meta: null, when: '', wake: { members: [] } });
+    expect(t).toMatchObject({ title: '電子發票 · 2 張要確認', meta: null, when: '' });
+    expect(t.wake).toEqual({ count: 2 });
   });
 
   it('0 or absent gives null, even with unmatched invoices listed', () => {
