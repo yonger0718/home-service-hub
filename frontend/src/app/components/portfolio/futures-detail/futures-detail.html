@@ -33,7 +33,7 @@
         @for (row of summaryRows(); track row.label) {
           <div class="fd-summary-row">
             <span class="fd-label">{{ row.label }}</span>
-            <b class="fd-value" [class.up]="row.sign > 0" [class.down]="row.sign < 0">{{ row.value }}</b>
+            <b class="fd-value" [attr.data-testid]="'summary-' + row.key" [class.up]="row.sign > 0" [class.down]="row.sign < 0">{{ row.value }}</b>
           </div>
         }
       </div>

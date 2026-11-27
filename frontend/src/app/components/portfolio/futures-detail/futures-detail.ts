@@ -14,7 +14,9 @@ type LoadState = 'loading' | 'ready' | 'no-months' | 'not-found' | 'error';
 
 interface SummaryRow {
   label: string;
+  key: string;
   value: string;
+  /** Trend sign for the up/down colour; 0 for rows that are not profit or loss. */
   sign: -1 | 0 | 1;
 }
 
@@ -47,12 +49,13 @@ export class PortfolioFuturesDetailComponent implements OnInit, OnDestroy {
   protected readonly summaryRows = computed<SummaryRow[]>(() => {
     const s = this.detail()?.summary;
     if (!s) return [];
-    const row = (label: string, value: string): SummaryRow => ({ label, value: this.money(value, true), sign: this.sign(value) });
+    // 手續費＋期交稅 is a cost (unsigned) and 存提淨額 is cash moved: neither takes the gain/loss colour.
+    const pnl = (label: string, key: string, value: string): SummaryRow => ({ label, key, value: this.money(value, true), sign: this.sign(value) });
     return [
-      row('本月期貨平倉損益', s.futures_realized),
-      row('權利金收支', s.premium_net),
-      row('手續費＋期交稅', s.fees_and_tax),
-      row('存提淨額', s.deposits_net),
+      pnl('本月期貨平倉損益', 'realized', s.futures_realized),
+      pnl('權利金收支', 'premium', s.premium_net),
+      { label: '手續費＋期交稅', key: 'fees', value: this.money(s.fees_and_tax), sign: 0 },
+      { label: '存提淨額', key: 'deposits', value: this.money(s.deposits_net, true), sign: 0 },
     ];
   });
 

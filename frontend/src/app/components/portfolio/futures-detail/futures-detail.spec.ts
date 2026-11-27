@@ -109,7 +109,13 @@ describe('PortfolioFuturesDetailComponent', () => {
   });
 
   it('renders monthly summary with missing-days note', () => {
-    const { text } = loaded(detail({ summary: summary({ missing_days: 2 }) }));
+    const { text, el } = loaded(detail({ summary: summary({ missing_days: 2 }) }));
+    const cell = (k: string) => el.querySelector(`[data-testid="summary-${k}"]`)!;
+    expect(cell('realized').classList.contains('up')).toBe(true);
+    expect(cell('fees').textContent).not.toContain('+');
+    expect(cell('fees').classList.contains('up') || cell('fees').classList.contains('down')).toBe(false);
+    expect(cell('deposits').textContent).toContain('+');
+    expect(cell('deposits').classList.contains('up') || cell('deposits').classList.contains('down')).toBe(false);
     expect(text()).toContain('本月期貨平倉損益');
     expect(text()).toContain('權利金收支');
     expect(text()).toContain('手續費＋期交稅');
