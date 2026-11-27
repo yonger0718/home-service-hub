@@ -228,7 +228,7 @@ describe('EinvoiceFlowComponent', () => {
   function sentToForm(id: number): EinvoiceFlowSession {
     const session = TestBed.inject(EinvoiceFlowSession);
     session.state.set({ ...startFlow(THREE), cursor: id });
-    session.awaitRecord(id, `AB0000000${id}`, TestBed.inject(AccountingService).lastInvoiceCreated()?.seq ?? 0);
+    session.awaitRecord(id, `AB0000000${id}`, TestBed.inject(AccountingService).invoiceCreateMark());
     return session;
   }
 
@@ -249,6 +249,41 @@ describe('EinvoiceFlowComponent', () => {
     key('S');
     key('S');
     expect(text(el.querySelector('.flow-end-text'))).toContain('記成新的一筆 1 張');
+  });
+
+  it('連續記帳 A then B: A still counts (not only the last number)', () => {
+    sentToForm(1);
+    created('AB00000001');
+    created('AB00000009');
+    open(THREE);
+    expect(shownNumber()).toContain('AB00000002');
+    expect(progressText()).toBe('第 2 / 3 張');
+  });
+
+  it('a read still loading when the owner leaves for the form is cancelled and does not use up the pending record', () => {
+    open();
+    TestBed.inject(AccountingService).markEntriesChanged();
+    detect();
+    const late = read(); // a refresh in flight
+    vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    (Array.from(el.querySelectorAll<HTMLButtonElement>('.einv-link')).find((b) => text(b) === '記成新的一筆'))!.click();
+    fixture.destroy(); // the route change unmounts the flow
+    expect(late.cancelled).toBe(true);
+    expect(TestBed.inject(EinvoiceFlowSession).pendingRecord()).toEqual({ id: 1, number: 'AB00000001', mark: 0 });
+  });
+
+  it('an older read answering after a newer one is dropped', () => {
+    open();
+    TestBed.inject(AccountingService).markEntriesChanged();
+    detect();
+    TestBed.inject(AccountingService).markEntriesChanged();
+    detect();
+    const [older, newer] = http.match((r) => r.method === 'GET' && r.url === INBOX_URL);
+    newer.flush({ ...makeInbox([]), einvoices: THREE });
+    older.flush({ ...makeInbox([]), einvoices: [coffee(2), coffee(3)] }); // stale: invoice 1 still there
+    detect();
+    expect(shownNumber()).toContain('AB00000001');
+    expect(progressText()).toBe('第 1 / 3 張');
   });
 
   it('back after another write (another page, a schedule definition) or an entry without this number: not counted', () => {
@@ -396,6 +431,24 @@ describe('EinvoiceFlowComponent', () => {
       expect(answers().length).toBe(2);
       expect(progressText()).toBe('第 1 / 3 張');
       expect(toast()).toMatchObject({ kind: 'done', text: '已復原：測試咖啡 $85' });
+    });
+
+    it('復原 with 有發票沒有帳 reminders off: the restored invoice stays although the read no longer lists it', () => {
+      open();
+      key('1');
+      post('1/link').flush({ id: 1, state: 'linked' });
+      flushRead([coffee(2), coffee(3)]);
+      toast()!.action!.run();
+      detect();
+      post('1/unlink').flush({ id: 1, state: 'dismissed' });
+      post('1/undismiss').flush({ id: 1, state: 'unmatched' });
+      flushRead([coffee(2), coffee(3)]); // remind_unmatched off: unmatched invoices are not listed
+      expect(shownNumber()).toContain('AB00000001');
+      expect(progressText()).toBe('第 1 / 3 張');
+      key('2'); // answered again
+      post('1/link').flush({ id: 1, state: 'linked' });
+      flushRead([coffee(2), coffee(3)]);
+      expect(shownNumber()).toContain('AB00000002');
     });
 
     it('a 都不是 says so; 復原 is one undismiss', () => {

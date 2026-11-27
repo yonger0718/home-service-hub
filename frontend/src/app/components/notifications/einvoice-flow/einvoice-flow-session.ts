@@ -10,13 +10,15 @@ export type EinvoiceOutcome = 'linked' | 'dismissed' | 'recorded';
 
 /**
  * The flow's order (the ambiguous / near invoices at the first read), the invoices still to decide (their latest
- * data), the answers given here, the skipped ones and the invoice shown (`cursor`, null = the end state).
+ * data), the answers given here, the skipped ones, the ones whose answer was undone here (`restored`: open until
+ * answered again, whatever a read lists) and the invoice shown (`cursor`, null = the end state).
  */
 export interface EinvoiceFlowState {
   readonly order: readonly number[];
   readonly open: ReadonlyMap<number, InboxEinvoice>;
   readonly outcome: ReadonlyMap<number, EinvoiceOutcome>;
   readonly skipped: ReadonlySet<number>;
+  readonly restored: ReadonlySet<number>;
   readonly cursor: number | null;
 }
 
@@ -37,6 +39,7 @@ export function startFlow(invoices: readonly InboxEinvoice[]): EinvoiceFlowState
     open: new Map(list.map((invoice) => [invoice.id, invoice])),
     outcome: new Map(),
     skipped: new Set(),
+    restored: new Set(),
     cursor: null,
   };
   return { ...state, cursor: nextFrom(state, null) };
@@ -47,11 +50,14 @@ export function startFlow(invoices: readonly InboxEinvoice[]): EinvoiceFlowState
  * drop out of the flow; open ones take the new data; new invoices are not added (they show on the next open). An
  * invoice listed as `unmatched` (an answer undone here: the API puts it back to unmatched until the next matcher run)
  * stays open with the data the flow already has. `complete` false (the read's page was cut: fewer listed than the
- * count) proves nothing about an absent invoice: it stays, with the data the flow has.
+ * count) proves nothing about an absent invoice: it stays, with the data the flow has. Nor does a restored one's
+ * absence (the API leaves it `unmatched`, which it does not list when 有發票沒有帳 reminders are off): it stays.
  */
 export function afterRead(state: EinvoiceFlowState, invoices: readonly InboxEinvoice[], complete = true): EinvoiceFlowState {
   const listed = new Map(invoices.map((invoice) => [invoice.id, invoice]));
-  const order = state.order.filter((id) => state.outcome.has(id) || listed.has(id) || !complete);
+  const order = state.order.filter(
+    (id) => state.outcome.has(id) || listed.has(id) || !complete || state.restored.has(id),
+  );
   const data = (id: number): InboxEinvoice => {
     const fresh = listed.get(id);
     if (!fresh) return state.open.get(id)!;
@@ -71,7 +77,9 @@ export function afterRead(state: EinvoiceFlowState, invoices: readonly InboxEinv
 export function answer(state: EinvoiceFlowState, id: number, outcome: EinvoiceOutcome): EinvoiceFlowState {
   const open = new Map(state.open);
   open.delete(id);
-  const next: EinvoiceFlowState = { ...state, open, outcome: new Map(state.outcome).set(id, outcome) };
+  const restored = new Set(state.restored);
+  restored.delete(id);
+  const next: EinvoiceFlowState = { ...state, open, restored, outcome: new Map(state.outcome).set(id, outcome) };
   return { ...next, cursor: nextFrom(next, id) ?? nextFrom(next, null) };
 }
 
@@ -80,7 +88,13 @@ export function restore(state: EinvoiceFlowState, invoice: InboxEinvoice): Einvo
   if (!state.order.includes(invoice.id)) return state;
   const outcome = new Map(state.outcome);
   outcome.delete(invoice.id);
-  return { ...state, outcome, open: new Map(state.open).set(invoice.id, invoice), cursor: invoice.id };
+  return {
+    ...state,
+    outcome,
+    open: new Map(state.open).set(invoice.id, invoice),
+    restored: new Set(state.restored).add(invoice.id),
+    cursor: invoice.id,
+  };
 }
 
 export function skip(state: EinvoiceFlowState): EinvoiceFlowState {
@@ -118,7 +132,7 @@ const FLOW_PATH = `/notifications/${EINVOICE_FLOW_SEGMENT}`;
 /**
  * The flow's state across the 記成新的一筆 round trip: the entry form is another route, so the flow (and the page)
  * unmount and mount again on the way back. `pendingRecord` is the invoice sent to the form (id and number) with
- * the `AccountingService.lastInvoiceCreated` sequence at that moment; a navigation anywhere but the form or the flow
+ * the `AccountingService.invoiceCreateMark()` at that moment; a navigation anywhere but the form or the flow
  * drops it.
  */
 @Injectable({ providedIn: 'root' })

@@ -2,6 +2,7 @@ import { DOCUMENT } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ElementRef,
   Injector,
   afterNextRender,
@@ -12,6 +13,7 @@ import {
   signal,
   untracked,
 } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
 import { switchMap } from 'rxjs';
 
@@ -78,6 +80,9 @@ export class EinvoiceFlowComponent {
   private readonly injector = inject(Injector);
   private readonly document = inject(DOCUMENT);
   private readonly toasts = injectToasts();
+  private readonly destroyRef = inject(DestroyRef);
+  /** The newest read: an older read's answer (an earlier write's refresh landing late) is dropped. */
+  private readSeq = 0;
 
   readonly closed = output<void>();
 
@@ -166,8 +171,12 @@ export class EinvoiceFlowComponent {
 
   private read(): void {
     if (!this.state()) this.load.set('loading');
-    this.inbox.get({ limit: INBOX_READ_LIMIT }).subscribe({
+    const seq = ++this.readSeq;
+    // Cancelled with the flow: a read landing after the flow closed (on the way to the entry form) must not consume
+    // the pending 記成新的一筆.
+    this.inbox.get({ limit: INBOX_READ_LIMIT }).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: (out) => {
+        if (seq !== this.readSeq) return;
         const list = out.einvoices ?? [];
         // A cut page (more to confirm than listed) proves nothing about an invoice it does not list.
         const complete = list.filter((invoice) => invoice.state !== 'unmatched').length >= (out.counts.einvoice_ask ?? 0);
@@ -178,8 +187,7 @@ export class EinvoiceFlowComponent {
           this.session.pendingRecord.set(null);
           // Counted only when an entry carrying this invoice's number was created since: not any write (a schedule
           // definition, another page's edit), not a cancel; several saves (連續記帳) count once.
-          const made = this.accounting.lastInvoiceCreated();
-          const saved = made !== null && made.seq > pending.mark && made.number === pending.number;
+          const saved = this.accounting.invoiceCreatedSince(pending.number, pending.mark);
           if (saved && next.open.has(pending.id)) {
             next = answer(next, pending.id, 'recorded');
           } else if (next.open.has(pending.id)) {
@@ -190,6 +198,7 @@ export class EinvoiceFlowComponent {
         this.load.set('ready');
       },
       error: () => {
+        if (seq !== this.readSeq) return;
         if (!this.state()) this.load.set('failed');
       },
     });
@@ -219,7 +228,7 @@ export class EinvoiceFlowComponent {
   record(): void {
     const invoice = this.invoice();
     if (!invoice || this.busy()) return;
-    this.session.awaitRecord(invoice.id, invoice.number, this.accounting.lastInvoiceCreated()?.seq ?? 0);
+    this.session.awaitRecord(invoice.id, invoice.number, this.accounting.invoiceCreateMark());
     void this.router.navigate(ENTRY_FORM, {
       queryParams: {
         kind: 'expense',

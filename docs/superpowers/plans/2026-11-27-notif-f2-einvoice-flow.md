@@ -106,3 +106,9 @@
 3. **Card and key guards not in acceptance (P2).** Already implemented (card with items and subtotals; repeat / handled / modifier / typing / busy / dialog guards, arrows repeat). Tests added: card DOM, held digit and S answer nothing while held arrows move, busy / open dialog / handled event, key 9 with eight vs nine candidates, crossing 1024 px keeps the place and answers.
 
 Also from the review: the e-invoice prefill never touches a copy or an edit (`entry-form-split.spec.ts`); the flow reads the inbox itself (no access to the private `NotificationCenterService.inboxData`); the FAB hiding on `/notifications/einvoices` is covered in `shell.spec.ts`; a group target links by `group_id` (`einvoice-flow.spec.ts`).
+
+## Code review resolution (AGENT-626, CHANGES @ 45919269; resolved 2026-11-27)
+
+1. **連續記帳 A then B lost A (P2).** `AccountingService` now keeps every invoice number created with an entry (`invoiceCreateMark()` / `invoiceCreatedSince(number, mark)`); the flow counts the pending invoice when its number was created at any point since the mark. Test: A → B → back counts A.
+2. **Read lifecycle and order (P2).** Each read carries a sequence; only the newest read's answer (or error) applies, and reads are cancelled when the flow is destroyed (`takeUntilDestroyed`), so a refresh landing after the owner left for the form never consumes `pendingRecord`. Tests: an in-flight read is cancelled on leaving and the pending record survives; an older read answering after a newer one is dropped.
+3. **Restored invoice dropped when unmatched is not listed (P2).** The session keeps `restored` ids: an invoice undone here stays open whatever a read lists, until it is answered again. Tests: session (`afterRead` keeps it, `answer` clears it) and flow (復原 with `remind_unmatched` off, then answer again).

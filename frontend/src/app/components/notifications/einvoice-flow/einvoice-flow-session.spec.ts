@@ -10,6 +10,7 @@ import {
   answer,
   move,
   progress,
+  restore,
   resume,
   skip,
   startFlow,
@@ -82,6 +83,18 @@ describe('e-invoice flow state', () => {
 class Blank {}
 
 describe('EinvoiceFlowSession', () => {
+  it('a restored invoice stays open whatever a complete read lists, until it is answered again', () => {
+    let s1 = answer(startFlow([inv(1), inv(2)]), 1, 'linked');
+    s1 = restore(s1, inv(1));
+    expect(s1.cursor).toBe(1);
+    const s2 = afterRead(s1, [inv(2)]); // the API holds it unmatched and does not list it
+    expect(s2.open.has(1)).toBe(true);
+    expect(s2.order).toEqual([1, 2]);
+    const s3 = afterRead(answer(s2, 1, 'dismissed'), [inv(2)]);
+    expect(s3.outcome.get(1)).toBe('dismissed');
+    expect(s3.restored.has(1)).toBe(false);
+  });
+
   it('a pending 記成新的一筆 survives the entry form round trip and is dropped by any other navigation', async () => {
     TestBed.configureTestingModule({
       providers: [provideRouter([{ path: '**', component: Blank }])],
