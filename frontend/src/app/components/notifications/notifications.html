@@ -113,6 +113,8 @@
     <div class="notif-pane" [class.notif-pane--card]="panes()">
       @if (open.kind === 'recon') {
         <app-recon-flow [statementId]="open.id" (closed)="closeFlow()" />
+      } @else if (open.kind === 'unmatched') {
+        <app-einvoice-unmatched (closed)="closeFlow()" />
       } @else {
         <app-einvoice-flow (closed)="closeFlow()" />
       }

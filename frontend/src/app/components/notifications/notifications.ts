@@ -15,7 +15,7 @@ import { DOCUMENT } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, ParamMap, Router, RouterLink } from '@angular/router';
-import { map } from 'rxjs';
+import { combineLatest, map } from 'rxjs';
 
 import { AccountingService } from '../../services/accounting.service';
 import { LayoutModeService } from '../../services/layout-mode.service';
@@ -45,6 +45,7 @@ import {
 } from './notif-task';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
 import { EinvoiceFlowComponent } from './einvoice-flow/einvoice-flow';
+import { EinvoiceUnmatchedComponent } from './einvoice-unmatched/einvoice-unmatched';
 import { ReconFlowComponent } from './recon-flow/recon-flow';
 import { EINVOICE_FLOW_SEGMENT } from './review-flow-url';
 import { SnoozeOption, untilText } from './snooze';
@@ -87,16 +88,17 @@ function statementIdOf(raw: string | null): number | null {
 }
 
 /** The flow open beside (or instead of) the list: a statement's review flow or the e-invoice flow. */
-export type NotifFlow = { kind: 'recon'; id: number } | { kind: 'einvoice' };
+export type NotifFlow = { kind: 'recon'; id: number } | { kind: 'einvoice' } | { kind: 'unmatched' };
 
-/** The flow's task id, which is also the id of its row (`recon:<id>`, `einvoice`). */
+/** The flow's task id, which is also the id of its row (`recon:<id>`, `einvoice`; `einvoices` is the 追蹤中 row's). */
 function flowTaskId(flow: NotifFlow | null): string | null {
-  return flow === null ? null : flow.kind === 'recon' ? `recon:${flow.id}` : 'einvoice';
+  if (flow === null) return null;
+  return flow.kind === 'recon' ? `recon:${flow.id}` : flow.kind === 'unmatched' ? 'einvoices' : 'einvoice';
 }
 
-function flowOf(params: ParamMap): NotifFlow | null {
+function flowOf([params, query]: [ParamMap, ParamMap]): NotifFlow | null {
   if (params.get('flow') === EINVOICE_FLOW_SEGMENT) {
-    return { kind: 'einvoice' };
+    return query.get('state') === 'unmatched' ? { kind: 'unmatched' } : { kind: 'einvoice' };
   }
   const id = statementIdOf(params.get('statementId'));
   return id === null ? null : { kind: 'recon', id };
@@ -111,7 +113,7 @@ function flowOf(params: ParamMap): NotifFlow | null {
  */
 @Component({
   selector: 'app-notifications',
-  imports: [BannerComponent, EinvoiceFlowComponent, NotifRowComponent, PageHeaderComponent, ReconFlowComponent, RouterLink],
+  imports: [BannerComponent, EinvoiceFlowComponent, EinvoiceUnmatchedComponent, NotifRowComponent, PageHeaderComponent, ReconFlowComponent, RouterLink],
   templateUrl: './notifications.html',
   styleUrl: './notifications.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -127,7 +129,10 @@ export class NotificationsComponent {
   private readonly router = inject(Router);
   private readonly document = inject(DOCUMENT);
 
-  private readonly routeFlow = toSignal(inject(ActivatedRoute).paramMap.pipe(map(flowOf)), { initialValue: null });
+  private readonly route = inject(ActivatedRoute);
+  private readonly routeFlow = toSignal(combineLatest([this.route.paramMap, this.route.queryParamMap]).pipe(map(flowOf)), {
+    initialValue: null,
+  });
   /** The open flow (the route's `statementId` or `flow`), or null on `/notifications`; equal while its task id is. */
   protected readonly flow = computed(() => this.routeFlow(), { equal: (a, b) => flowTaskId(a) === flowTaskId(b) });
   protected readonly panes = computed(() => this.layout.mode() === 'panes');

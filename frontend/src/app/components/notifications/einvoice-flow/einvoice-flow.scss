@@ -132,3 +132,14 @@
     opacity: 0.55;
   }
 }
+
+.einv-unmatched-link {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  text-decoration: none;
+
+  span {
+    margin-left: 4px;
+  }
+}
+

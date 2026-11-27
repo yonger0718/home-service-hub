@@ -121,6 +121,9 @@
           }
           <button type="button" (click)="closed.emit()">回到通知</button>
         </div>
+        @if (unmatched() > 0) {
+          <a class="einv-unmatched-link" [routerLink]="unmatchedLink.route" [queryParams]="unmatchedLink.queryParams">有發票沒有帳 {{ unmatched() }} 張<span aria-hidden="true">›</span></a>
+        }
       </section>
     }
   }

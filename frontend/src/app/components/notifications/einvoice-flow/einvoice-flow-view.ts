@@ -81,3 +81,22 @@ export function answerKeys(candidates: number): { candidates: (number | null)[];
     dismiss: candidates + 1 <= MAX_DIGIT ? candidates + 1 : null,
   };
 }
+
+/** The new-entry form 記成新的一筆 / 記一筆 opens for an invoice. */
+export const ENTRY_FORM = ['/accounting/entry'];
+
+/**
+ * The entry form's prefill for an invoice: date, amount, merchant = seller and the number (the 發票號碼 field). One item
+ * names the purchase; several (or none) take the seller's name (owner, 2026-11-27).
+ */
+export function invoiceEntryParams(invoice: InboxEinvoice): Record<string, string> {
+  return {
+    kind: 'expense',
+    date: invoice.issue_date,
+    amount: invoice.total_amount,
+    name: invoice.items.length === 1 ? invoice.items[0].name : invoice.seller_name,
+    merchant: invoice.seller_name,
+    invoice: invoice.number,
+  };
+}
+

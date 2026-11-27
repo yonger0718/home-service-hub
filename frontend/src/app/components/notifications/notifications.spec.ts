@@ -19,6 +19,7 @@ import { NotificationCenterService } from '../../services/notification-center.se
 import { PortfolioService } from '../../services/portfolio.service';
 import { notificationsMatcher } from '../../app.routes';
 import { LayoutMode, LayoutModeService, MATCH_MEDIA, PHONE_QUERY } from '../../services/layout-mode.service';
+import { EinvoiceService } from '../accounting/inbox/einvoice.service';
 import { InboxService } from '../accounting/inbox/inbox.service';
 import { NotifSourceKey, NotifSummary, NotifTask, NotifTier, NotifTrackingRow, summarize } from './notif-task';
 import { futuresTasks } from './sources/sinopac-futures';
@@ -2244,6 +2245,7 @@ describe('NotificationsComponent', () => {
           { provide: AccountingService, useValue: accounting },
           { provide: PortfolioService, useValue: portfolio },
           { provide: InboxService, useValue: inbox },
+          { provide: EinvoiceService, useValue: { preferences: vi.fn(() => NEVER) } },
         ],
       });
       TestBed.inject(LayoutModeService).set(mode);
@@ -2269,6 +2271,23 @@ describe('NotificationsComponent', () => {
       expect(rowControl('einvoice')!.getAttribute('aria-current')).toBe('true');
       expect(text(rowControl('recon:12'))).toBe('對帳');
       await vi.waitFor(() => expect(document.activeElement).toBe(flow()));
+    });
+
+    it('?state=unmatched opens 有發票沒有帳 in the pane instead of the flow; no task row is selected (D11)', async () => {
+      await openAt('panes', '/notifications/einvoices?state=unmatched');
+      expect(q('.notif-split > .notif-pane app-einvoice-unmatched')).not.toBeNull();
+      expect(flow()).toBeNull();
+      expect(root().querySelectorAll('app-notif-row.notif-row--selected')).toHaveLength(0);
+      await router.navigateByUrl('/notifications/einvoices');
+      await settleFlow();
+      expect(q('app-einvoice-unmatched')).toBeNull();
+      expect(flow()).not.toBeNull();
+    });
+
+    it('?state=unmatched below panes: the page alone', async () => {
+      await openAt('phone', '/notifications/einvoices?state=unmatched');
+      expect(q('app-einvoice-unmatched')).not.toBeNull();
+      expect(q('.notif-page')).toBeNull();
     });
 
     it('below panes only the flow renders', async () => {
