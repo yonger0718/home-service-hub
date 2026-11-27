@@ -146,6 +146,7 @@ class InboxCounts(BaseModel):
     dividend: int
     other: int
     einvoice_ask: int = 0  # ambiguous + near invoices; separate from `ask` (spec §9)
+    einvoice_unmatched: int = 0  # every unmatched invoice; 0 while reminders are off (D11); never counted
 
 
 class InboxOut(BaseModel):

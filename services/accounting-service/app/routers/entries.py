@@ -11,7 +11,7 @@ from ..schemas.writes import (
     EntryIn, EntryUpdateIn, EntryWriteOut, RefundIn, RewardRepriceIn, RewardRepriceOut, RewardRulesIn, SettleIn, SplitIn,
     SplitOut,
 )
-from ..services import entry_write_service, ledger_service, reward_reprice, settlement_service, split_service
+from ..services import einvoice_matcher, entry_write_service, ledger_service, reward_reprice, settlement_service, split_service
 from .errors import service_errors
 
 router = APIRouter(prefix="/entries", tags=["Entries"], dependencies=[Depends(method_scope())])
@@ -84,6 +84,8 @@ def _written(db: Session, entry_id: int) -> dict:
 def post_entry(payload: EntryIn, db: Session = Depends(get_db)):
     with service_errors():
         entry_id = entry_write_service.create_entry(db, payload)
+        if payload.invoice_number:
+            einvoice_matcher.link_saved_number(db, payload.invoice_number)
     db.commit()
     return _written(db, entry_id)
 

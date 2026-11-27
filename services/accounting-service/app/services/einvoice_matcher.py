@@ -1,13 +1,14 @@
 """E-invoice matcher (spec §7): eligible targets, candidate rules, one-pass decision and the auto-link writes.
 Never log invoice payloads (privacy)."""
+import logging
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import and_, exists, func, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from ..models import Account, Einvoice, EinvoiceLink, EinvoiceSellerMute, EntryGroup, LedgerEntry
@@ -15,6 +16,8 @@ from .einvoice_rules import TargetKey, decide, is_integral, near_tolerance, peri
 from .einvoice_service import lock, stamp
 from .ledger_service import main_currency
 from .settings_service import read_einvoice_settings
+
+_log = logging.getLogger(__name__)
 
 NET_CHILD_KINDS = ("fee", "discount")
 GROUP_NET_KINDS = ("expense", "receivable")
@@ -217,19 +220,19 @@ def _insert_link(db: Session, invoice: Einvoice, key: TargetKey) -> None:
     db.flush()
 
 
-def run_matcher(db: Session) -> dict:
+def run_matcher(db: Session, *, numbers: Collection[str] | None = None) -> dict:
+    """One matcher pass over the open invoices; `numbers` limits it to the invoices carrying those numbers (an
+    entry saved with an invoice number, owner decision 2026-11-27). Same states, rules and decisions either way."""
     settings = read_einvoice_settings(db)
     if not settings["enabled"]:
         return _zero(False)
     lock(db)  # re-entrant within the transaction: the import handler may already hold it
     db.flush()
-    invoices = db.execute(
-        select(Einvoice)
-        .where(or_(Einvoice.state.in_(PROCESSED_STATES),
-                   and_(Einvoice.state == "dismissed", Einvoice.dismiss_reason == "seller_muted")))
-        .order_by(Einvoice.id)
-        .with_for_update()
-    ).scalars().all()
+    query = select(Einvoice).where(or_(Einvoice.state.in_(PROCESSED_STATES),
+                                       and_(Einvoice.state == "dismissed", Einvoice.dismiss_reason == "seller_muted")))
+    if numbers is not None:
+        query = query.where(Einvoice.number.in_(list(numbers)))
+    invoices = db.execute(query.order_by(Einvoice.id).with_for_update()).scalars().all()
     counts = _zero(True)
     counts["processed"] = len(invoices)
     if not invoices:
@@ -278,3 +281,13 @@ def run_matcher(db: Session) -> dict:
         counts["unchanged" if (inv.state, inv.dismiss_reason) == before else bucket] += 1
     db.flush()
     return counts
+
+
+def link_saved_number(db: Session, number: str) -> None:
+    """After an entry is created with `number`: link the open invoice carrying it now instead of at the next daily
+    pass. Runs in a savepoint; a lock conflict leaves the invoice for the daily pass and never fails the save."""
+    try:
+        with db.begin_nested():
+            run_matcher(db, numbers={number})
+    except (IntegrityError, OperationalError) as exc:  # the message carries SQL parameters: log the type only
+        _log.warning("einvoice link at save skipped (%s); the daily pass will retry", type(exc.orig).__name__)

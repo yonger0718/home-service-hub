@@ -204,3 +204,51 @@ def test_targets_leave_out_entries_stamped_with_another_number(client, db_sessio
     # what the list offers, the link takes
     res = client.post(f"/einvoices/{inv_id}/link", json={"entry_id": own.id})
     assert res.status_code == 200, res.text
+
+
+def test_seller_dismissed_counts_owner_dismissals_of_that_seller(client, db_session, seed):
+    enable(client)
+    import_(client, *(invoice(number=f"AB0000001{i}", issue_date="2026-09-01") for i in (1, 2, 3)),
+            invoice(number="AB00000020", issue_date="2026-09-02"),
+            invoice(number="AB00000021", issue_date="2026-09-02", seller_tax_id="00000002"),
+            invoice(number="AB00000030", issue_date="2026-09-03", seller_tax_id=""))
+    for i in (1, 2):
+        res = client.post(f"/einvoices/{_row(db_session, f'AB0000001{i}').id}/dismiss")
+        assert res.status_code == 200, res.text
+    row = _row(db_session, "AB00000013")
+    row.state, row.dismiss_reason = "dismissed", "runbook"  # not the owner's: never counted
+    db_session.commit()
+    cards = {c["number"]: c for c in _inbox(client)["einvoices"]}
+    assert cards["AB00000020"]["seller_dismissed"] == 2
+    assert cards["AB00000021"]["seller_dismissed"] == 0
+    assert cards["AB00000030"]["seller_dismissed"] == 0
+
+
+def test_seller_dismissed_is_zero_on_questions(client, db_session, seed):
+    _seed_three(client, db_session, seed)
+    res = client.post(f"/einvoices/{_row(db_session, 'AB00000003').id}/dismiss")
+    assert res.status_code == 200, res.text
+    import_(client, invoice(number="AB00000004", issue_date="2026-10-21", total="104", seller_tax_id="00000002",
+                            seller_name="近似店有限公司", items=(("近似品", "104"),)))
+    assert {c["state"]: c["seller_dismissed"] for c in _inbox(client)["einvoices"]}["near"] == 0
+
+
+def test_unmatched_count_is_the_whole_set(client, db_session, seed):
+    _seed_three(client, db_session, seed)
+    import_(client, invoice(number="AB00000005", issue_date="2026-09-02", total="66", items=(("孤兒二", "66"),)))
+    full, small = _inbox(client), _inbox(client, limit=1)
+    assert full["counts"]["einvoice_unmatched"] == small["counts"]["einvoice_unmatched"] == 2
+    assert [c["state"] for c in small["einvoices"]] == ["ambiguous"]
+
+
+def test_unmatched_count_zero_when_reminders_off_or_disabled(client, db_session, seed):
+    _seed_three(client, db_session, seed)
+    assert client.patch("/einvoices/preferences", json={"remind_unmatched": False}).status_code == 200
+    assert _inbox(client)["counts"]["einvoice_unmatched"] == 0
+    assert client.patch("/einvoices/preferences", json={"remind_unmatched": True}).status_code == 200
+    assert _inbox(client)["counts"]["einvoice_unmatched"] == 1
+    account_id = seed.account("B").id
+    db_session.commit()
+    assert _inbox(client, account_id=account_id)["counts"]["einvoice_unmatched"] == 0
+    enable(client, enabled=False)
+    assert _inbox(client)["counts"]["einvoice_unmatched"] == 0
