@@ -24,6 +24,7 @@ import { NotifSourceKey, NotifSummary, NotifTask, NotifTier, NotifTrackingRow, s
 import { futuresTasks } from './sources/sinopac-futures';
 import { NOTIF_PRIMARY_CONTROL, NotifRowComponent } from './notif-row/notif-row';
 import { ReconFlowComponent } from './recon-flow/recon-flow';
+import { EinvoiceFlowComponent } from './einvoice-flow/einvoice-flow';
 import { NotificationsComponent } from './notifications';
 
 function task(id: string, tier: NotifTier, over: Partial<NotifTask> = {}): NotifTask {
@@ -2205,6 +2206,116 @@ describe('NotificationsComponent', () => {
       });
       expect(flow()).toBe(before);
       expect(q('.notif-page')).toBe(page);
+      expect(text(rowControl('recon:12'))).toBe('對帳');
+    });
+  });
+
+  describe('the e-invoice flow (/notifications/einvoices)', () => {
+    const EINVOICE = task('einvoice', 'confirm', {
+      from: 'recon',
+      title: '電子發票 · 2 張要確認',
+      primary: { label: '確認', route: '/notifications/einvoices' },
+    });
+    const RECON = task('recon:12', 'confirm', {
+      from: 'recon',
+      title: '對帳 · 測試銀行卡（至 10/05）',
+      primary: { label: '對帳', route: '/notifications/recon/12' },
+    });
+    const inbox = { get: vi.fn(() => NEVER), apply: vi.fn(() => NEVER) };
+
+    let harness: RouterTestingHarness;
+    let router: Router;
+    const root = () => harness.fixture.nativeElement as HTMLElement;
+    const q = (sel: string) => root().querySelector<HTMLElement>(sel);
+    const flow = () => q('app-einvoice-flow');
+    const rowControl = (id: string) => rowPrimary(root(), id);
+    const settleFlow = async () => {
+      await harness.fixture.whenStable();
+      harness.detectChanges();
+      await harness.fixture.whenStable();
+    };
+
+    async function openAt(mode: LayoutMode, url: string): Promise<void> {
+      TestBed.configureTestingModule({
+        providers: [
+          provideRouter([{ matcher: notificationsMatcher, component: NotificationsComponent }]),
+          { provide: NotificationCenterService, useValue: stub },
+          { provide: AccountingService, useValue: accounting },
+          { provide: PortfolioService, useValue: portfolio },
+          { provide: InboxService, useValue: inbox },
+        ],
+      });
+      TestBed.inject(LayoutModeService).set(mode);
+      tasks.set([...TASKS, EINVOICE, RECON]);
+      router = TestBed.inject(Router);
+      harness = await RouterTestingHarness.create();
+      await harness.navigateByUrl(url);
+      await settleFlow();
+    }
+
+    afterEach(() => harness?.fixture.destroy());
+
+    it('at panes width: the list beside the e-invoice flow in the pane; its row is selected and reads 確認中', async () => {
+      await openAt('panes', '/notifications/einvoices');
+      const split = q('.notif-split')!;
+      expect(split.classList.contains('notif-split--open')).toBe(true);
+      expect(split.querySelector(':scope > .notif-page')).not.toBeNull();
+      expect(split.querySelector(':scope > .notif-pane app-einvoice-flow')).not.toBeNull();
+      expect(q('app-recon-flow')).toBeNull();
+      const selected = Array.from(root().querySelectorAll('app-notif-row.notif-row--selected')).map(r => r.getAttribute('data-task-id'));
+      expect(selected).toEqual(['einvoice']);
+      expect(text(rowControl('einvoice'))).toBe('確認中');
+      expect(rowControl('einvoice')!.getAttribute('aria-current')).toBe('true');
+      expect(text(rowControl('recon:12'))).toBe('對帳');
+      await vi.waitFor(() => expect(document.activeElement).toBe(flow()));
+    });
+
+    it('below panes only the flow renders', async () => {
+      await openAt('phone', '/notifications/einvoices');
+      expect(flow()).not.toBeNull();
+      expect(q('.notif-page')).toBeNull();
+      expect(root().querySelectorAll('app-notif-row').length).toBe(0);
+      expect(q('.notif-pane')!.classList.contains('notif-pane--card')).toBe(false);
+    });
+
+    it('crossing 1024 px keeps the same e-invoice flow instance', async () => {
+      await openAt('panes', '/notifications/einvoices');
+      const instance = harness.fixture.debugElement.query(By.directive(EinvoiceFlowComponent)).componentInstance;
+      TestBed.inject(LayoutModeService).set('sheet');
+      await settleFlow();
+      expect(harness.fixture.debugElement.query(By.directive(EinvoiceFlowComponent)).componentInstance).toBe(instance);
+      expect(q('.notif-page')).toBeNull();
+    });
+
+    it('closing (✕ at panes, ‹ below) goes to /notifications with replaceUrl and focuses the 電子發票 row', async () => {
+      for (const [mode, button] of [['panes', 'button.flow-close'], ['phone', 'button.flow-back']] as const) {
+        TestBed.resetTestingModule();
+        await openAt(mode, '/notifications/einvoices');
+        const navigate = vi.spyOn(router, 'navigate');
+        (flow()!.querySelector(button) as HTMLButtonElement).click();
+        await vi.waitFor(async () => {
+          await settleFlow();
+          expect(router.url).toBe('/notifications');
+          expect(flow()).toBeNull();
+          expect(document.activeElement).toBe(rowControl('einvoice'));
+        });
+        expect(navigate).toHaveBeenCalledWith(['/notifications'], { replaceUrl: true });
+        expect(text(rowControl('einvoice'))).toBe('確認');
+        harness.fixture.destroy();
+      }
+    });
+
+    it('opening the e-invoice task from an open review flow swaps the pane to the e-invoice flow', async () => {
+      await openAt('panes', '/notifications/recon/12');
+      expect(q('app-recon-flow')).not.toBeNull();
+      rowControl('einvoice')!.click();
+      await vi.waitFor(async () => {
+        await settleFlow();
+        expect(router.url).toBe('/notifications/einvoices');
+        expect(q('app-recon-flow')).toBeNull();
+        expect(flow()).not.toBeNull();
+        expect(document.activeElement).toBe(flow());
+      });
       expect(text(rowControl('recon:12'))).toBe('對帳');
     });
   });

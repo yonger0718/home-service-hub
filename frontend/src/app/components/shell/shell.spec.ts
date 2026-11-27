@@ -243,6 +243,9 @@ describe('ShellComponent', () => {
       [820, '/notifications/recon/12', false],
       [1100, '/notifications/recon/12', false],
       [1440, '/notifications/recon/12', false],
+      [390, '/notifications/einvoices', false],
+      [1440, '/notifications/einvoices', false],
+      [1440, '/notifications/einvoices?state=unmatched', false],
       [820, '/notifications', true],
       [1440, '/notifications', true],
       [1440, '/accounting/reports', false],
@@ -250,6 +253,8 @@ describe('ShellComponent', () => {
       [820, '/notifications/recon/0', true],
       [820, '/notifications/recon/012', true],
       [820, '/notifications/recon/abc', true],
+      [820, '/notifications/einvoices/2', true],
+      [820, '/notifications/einvoicesx', true],
     ];
     for (const [width, url, shown] of cases) {
       TestBed.resetTestingModule();

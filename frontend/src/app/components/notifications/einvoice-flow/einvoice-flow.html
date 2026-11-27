@@ -1,0 +1,20 @@
+<header class="flow-head">
+  @if (!panes()) {
+    <button type="button" class="flow-back" aria-label="返回通知" (click)="closed.emit()">
+      <i class="pi pi-arrow-left" aria-hidden="true"></i>
+    </button>
+  }
+  <div class="flow-titles">
+    <p class="flow-kicker">電子發票</p>
+    @if (!panes()) {
+      <h1 class="flow-title">確認發票</h1>
+    } @else {
+      <p class="flow-title">確認發票</p>
+    }
+  </div>
+  @if (panes()) {
+    <button type="button" class="flow-close" aria-label="關閉發票確認" (click)="closed.emit()">
+      <i class="pi pi-times" aria-hidden="true"></i>
+    </button>
+  }
+</header>

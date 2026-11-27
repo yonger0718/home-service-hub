@@ -75,9 +75,9 @@ export class NotifRowComponent {
     return isCommand(primary) ? null : primary;
   });
 
-  /** The primary's visible label: 對帳中 while the row is selected. */
+  /** The primary's visible label: 對帳中 (確認中 for the e-invoice task) while the row is selected. */
   protected primaryLabel(label: string): string {
-    return this.selected() ? '對帳中' : label;
+    return this.selected() ? (this.task().id === 'einvoice' ? '確認中' : '對帳中') : label;
   }
 
   protected onSnooze(value: string): void {
