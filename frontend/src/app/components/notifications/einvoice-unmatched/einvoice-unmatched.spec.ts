@@ -269,6 +269,7 @@ describe('EinvoiceUnmatchedComponent', () => {
   it('reminders off (direct URL): says so instead of 都整理好了', () => {
     open([], { einvoice_unmatched: 0 }, false);
     expect(text(el.querySelector('.unm-empty-title'))).toBe('提醒已關閉');
+    expect(el.querySelector('.unm-settings')).toBeNull(); // no 「可以關掉提醒」 when they are off
   });
 
   it('a failed first read shows the retry banner', () => {
