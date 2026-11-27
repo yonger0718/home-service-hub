@@ -16,13 +16,15 @@ NOW = datetime(2026, 4, 1, tzinfo=timezone.utc)
 FILL_KEYS = set(FillOut.model_fields)
 
 
-def _day(db, d, *, deposits_net="0", realized="0", premium="0", fees="0", findings=None, ack=None,
+def _day(db, d, *, deposits_net="0", realized="0", premium="0", fees="0", findings=None, acked=False,
          fills=None, fills_total=None, deposits=None, positions=None, open_positions=0):
     row = FuturesStatementDay(
         statement_date=d, accepted_sha256="a" * 64, accepted_at=NOW, open_positions=open_positions,
-        findings=findings, ack_status=ack, fills=fills, fills_total=fills_total, deposits=deposits,
+        findings=findings, fills=fills, fills_total=fills_total, deposits=deposits,
         positions=positions, **{k: Decimal("0") for k in DAY_AMOUNTS},
     )
+    if acked:  # a findings ack is stored as ack_findings_sha == findings_sha
+        row.findings_sha = row.ack_findings_sha = "c" * 64
     row.deposits_net = Decimal(deposits_net)
     row.futures_realized = Decimal(realized)
     row.premium_net = Decimal(premium)
@@ -83,10 +85,10 @@ def test_detail_monthly_only_no_daily(client, db_session):
     assert body["summary"]["missing_days"] == len(dates)
 
 
-def _two_days(db, findings=None, ack=None):
+def _two_days(db, findings=None, acked=False):
     _day(db, date(2026, 3, 5), realized="30", premium="-5", fees="4", deposits_net="200")
     _day(db, date(2026, 3, 9), realized="20", premium="0", fees="2", deposits_net="0",
-         findings=findings, ack=ack)
+         findings=findings, acked=acked)
 
 
 def test_detail_daily_sum_complete(client, db_session):
@@ -98,7 +100,7 @@ def test_detail_daily_sum_complete(client, db_session):
 
 
 def test_detail_daily_sum_prev_finding_incomplete(client, db_session):
-    _two_days(db_session, findings=[{"code": "prev", "dates": ["2026-03-05"], "letters": []}], ack="imported")
+    _two_days(db_session, findings=[{"code": "prev", "dates": ["2026-03-05"], "letters": []}], acked=True)
     summary = _detail(client)["summary"]
     assert summary["complete"] is False
     assert summary["reason"] == "findings"
