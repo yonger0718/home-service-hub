@@ -23,7 +23,7 @@
 1. Foreign-currency entry linked by original amount: the chip compares the original amount, never the TWD amount.
 2. Mixed-currency group: no match chip (`recorded_amount` null), the card still renders.
 3. 換一張發票 when the picker then finds nothing or fails: the entry is left unlinked and the card says so; the old invoice is in 已標成不用記帳 with 復原.
-4. Stepper bounds and rapid taps: never PATCH outside 0–7 / 1–10; one PATCH in flight per field, the last value wins; a failed PATCH reverts to the server value.
+4. Stepper bounds and rapid taps: never PATCH outside 0–7 / 1–10; one PATCH in flight per field, the last value wins; a response merges only the field it sent (plus the read-only status and the higher `version`), so answers arriving out of order across fields never undo each other; a failed PATCH reverts that field only.
 5. Removing the inbox section must not change the 提醒中心 counts other than dropping `einvoice_ask` from the 要你決定 sum.
 
 ---
@@ -38,10 +38,12 @@
 - Spec: `specs/accounting-einvoices/spec.md` new requirement 「Entry invoice recorded amount」.
 
 **Interfaces:**
-- Produces: `linked_recorded_amount(db, *, entry_id: int | None, group_id: int | None) -> Decimal | None`. Entry: `abs(original_amount)` when the entry has an `original_currency`, else `-(amount + child sums)` (the matcher's `net`, sign flipped to invoice terms). Group: `-(sum over GROUP_NET_KINDS members of amount + child sums)` when they share one currency, else `None`. Unlike `entry_target` / `group_target` it does not filter out linked targets.
+- Produces: `linked_recorded_amount(db, *, entry_id: int | None, group_id: int | None) -> Decimal | None`. Entry: `abs(original_amount)` when `original_currency` is set and not the main currency (matcher :172), else `-(amount + fee/discount children)` (the matcher's `net`, sign flipped to invoice terms). Group: `-(sum over top-level GROUP_NET_KINDS members of amount + fee/discount children)` when those members share one currency, else `None`; other kinds count toward neither the net nor the currency check. Unlike `entry_target` / `group_target` it does not filter out linked targets.
+- Boundary: the chip states numeric equality only, not matcher eligibility. An exact-number link (§7.3) may differ in amount (自動連結 + 差 $N is legal); a whole-number foreign original amount may equal an invoice the integral rule would not take. A mixed-currency group is a display fallback for data `group_target` already refuses (a later edit made it mixed).
 - `EntryEinvoiceOut.recorded_amount` (JSON string, as other Decimals).
 
-- [ ] Tests (fictional): plain entry −1,286 with 1,286 invoice → `"1286"`; entry −2,000 with a +40 discount child → `"1960"`; foreign entry original USD 12.50 → `"12.50"`; split group 2,460 net → `"2460"`; mixed-currency group → `null`; the entry read of a group member returns the group's amount. Run, see them fail.
+- [x] Tests (fictional): plain entry; fee + discount children counted, a reward child not; foreign original amount; split group net with a fee child on every member's read; mixed-currency group → `null`; `original_currency` = main uses the net; a group member outside the net kinds (USD transfer) changes neither the net nor the mixed check. Run, see them fail (the last two are regression pins added after review).
+- Existing F1 coverage kept as regression (not re-written): preferences read / partial update / out-of-range 422 and link status (`tests/integration/test_einvoice_actions.py:398`, `:420`, `:434–446`, `:449`).
 - [ ] Implement with `_child_sums` and `GROUP_NET_KINDS` (reuse, no copy of the rule).
 - [ ] Run the e-invoice tests, then the full accounting suite (scratchpad runner; never two at once).
 - [ ] Commit `feat(accounting): recorded_amount on the entry's e-invoice (D12 match chip)`.
@@ -56,11 +58,13 @@
 **Behaviour:**
 - Header: title 發票 (entry) / 發票 · 整組 (group); match chip ✓ 金額相符 (success) when `recorded_amount` equals `total_amount`, 差 $N (warning ink, N = |difference|, `invoiceAmount` format) otherwise, none when `recorded_amount` is null/absent; source chip 自動連結 / 手動連結; ⋯ button (`aria-label="發票動作"`, `aria-haspopup="menu"`) opening a menu with 換一張發票 and 解除連結 (sub line 「之後不會再自動連回」). Esc and outside click close it; focus returns to ⋯.
 - Entry body: 「seller · M/D · number」; items: the first three rows, then 「… 另外 N 項」 with the sum of the rest; total row 合計 N 項 $total.
-- Group body: 「seller · M/D · N 項 · $total（這組記了 $recorded）」 (the parenthesis only when they differ and recorded is known); 看 N 項明細 › toggles the same item list as the entry body.
-- 解除連結: `unlink` as today (the card reloads to the unlinked row). 換一張發票: `unlink`, then, once the reloaded detail has no invoice, opens the picker automatically (a `reopenPicker` flag that survives the detail key change). A failed unlink shows the existing inline error and opens nothing.
+- Group body: 「seller · M/D · N 項 · $total（這組記了 $recorded）」 (the parenthesis only when they differ and recorded is known); 看 N 項明細 › toggles the full item list (all N rows, then 合計; no 「另外」 summary).
+- 解除連結: `unlink` as today (the card reloads to the unlinked row). 換一張發票: `unlink`, then, once the reloaded detail has no invoice, opens the picker automatically. The pending step is `{ entryId, reopen }`, set by the menu item for the current entry and consumed by the next detail change: only when that change is the same entry with no invoice does it act; any other entry, or a destroy, drops it. A failed unlink shows the existing inline error, opens nothing and returns focus to ⋯.
+- Focus: the menu opens with focus on its first item; ↑/↓ move between items; Esc closes it, is marked handled (`preventDefault` + `stopPropagation`, so the drawer / sheet Esc does not also fire) and returns focus to ⋯; an outside click closes it without moving focus. After a successful menu unlink ⋯ is gone: focus goes to the first picker choice (換一張) or to 連結發票… (解除連結, or a failed picker read).
+- 換一張 is not an atomic swap: unlink dismisses the old invoice (owner); the picker excludes only void / linked invoices, so the old one may be listed again and can be picked back. Leaving the picker (or an empty / failed one) leaves the entry unlinked; the old invoice is in 已標成不用記帳 with 復原. A detail reload that fails clears the detail (entry-detail), so the card is gone and nothing resumes.
 - Unlinked: unchanged (the dashed drawer row with the ±7 day hint; the plain 連結發票… button on the full page).
 
-- [ ] Tests: auto entry match (✓ 金額相符, 自動連結, 3 items, 「… 另外 4 項 $701」, 合計 7 項 $1,286); group off by $3 (發票 · 整組, 差 $3, 手動連結, 「（這組記了 $2,460）」, 看 12 項明細 toggles 12 rows); null recorded → no chip; ≤ 3 items → no 另外 row; menu opens/closes (Esc, outside, focus back); 解除連結 posts unlink; 換一張發票 posts unlink then opens the picker after the reload; failed unlink → error, no picker; unlinked row unchanged (existing tests stay green).
+- [ ] Tests: auto entry match (✓ 金額相符, 自動連結, 3 items, 「… 另外 4 項 $701」, 合計 7 項 $1,286); group off by $3 (發票 · 整組, 差 $3, 手動連結, 「（這組記了 $2,460）」, 看 12 項明細 toggles 12 rows); null recorded → no chip; ≤ 3 items → no 另外 row; menu opens/closes (Esc, outside, focus back); ↑/↓; Esc not seen by a document listener; 解除連結 posts unlink and focuses 連結發票…; 換一張發票 posts unlink then opens the picker after the reload and focuses its first choice; empty picker / failed picker (focus 連結發票…); 換一張 then another entry opens no picker; failed unlink → error, no picker, focus ⋯; unlinked row unchanged (existing tests stay green).
 - [ ] Implement; tokens only (`--app-success` for ✓, `--app-banner-warn` ink for 差 $N, `--app-text-muted`).
 - [ ] Commit `feat(accounting): entry invoice card — match/source chips, ⋯ menu, item summary (D12)`.
 
@@ -79,7 +83,7 @@
 - 已標成不用記帳 · N (N = rows returned, up to the API's 100): the newest three, then 看全部 N 張 › expanding the list in place; each row 「seller · $amount」, meta 「M/D · first item[、second] · 你標的 | 規則自動標記」, 復原 (`undismiss`, row leaves, toast 「已復原：seller $amount」).
 - The section anchor id `einvoice-settings` so 有發票沒有帳 can deep-link.
 
-- [ ] Tests: status line both ways; switch PATCH payload; stepper PATCH `date_window_days: 5` from 3 (spec scenario) and `mute_prompt_after`; bounds (− disabled at 0 / 1, + at 7 / 10); in-flight coalescing (two quick + taps → two PATCHes at most, the last with the final value); a failed PATCH reverts; mute 移除; dismissed top three + 看全部 + 復原; 規則自動標記 label; read failure line.
+- [x] Tests: status line both ways; switch PATCH payload; stepper PATCH `date_window_days: 5` from 3 (spec scenario) and `mute_prompt_after`; bounds (− disabled at 0 / 1, + at 7 / 10); in-flight coalescing (two quick + taps → two PATCHes at most, the last with the final value; the first answer leaves the pending draft shown); cross-field answers in reverse order; one field failing while the other saves; a failed PATCH reverts; mute 移除; dismissed top three + 看全部 + 復原; 規則自動標記 label; read failure line.
 - [ ] Implement; commit `feat(accounting): 記帳設定 › 發票 — status, steppers, mutes, dismissed list (D12)`.
 
 ### Task 4: 有發票沒有帳 footer on
@@ -93,8 +97,8 @@
 
 **Files:**
 - Delete: `frontend/src/app/components/accounting/inbox/einvoice-section/einvoice-section.{ts,html,scss,spec.ts}`; move `einvoiceErrorText` to `inbox/einvoice-format.ts` and update its four importers.
-- Modify: `inbox/inbox-panel/inbox-panel.{ts,html}` (no `app-einvoice-section`, no `einvoiceAsk`, the preview overflow without e-invoices, 要你決定 = `counts.ask`); `reminders/reminders.ts` (`inboxBellCount` call sites → `counts.ask`); delete `inboxBellCount` from `inbox-view.ts`; `inbox.model.ts` doc comment.
-- Tests: inbox-panel / reminders specs updated (e-invoices no longer counted or listed there); a test that the panel renders no e-invoice card even when `einvoices` has ask items.
+- Modify: `inbox/inbox-panel/inbox-panel.{ts,html}` (no `app-einvoice-section`, no `einvoiceAsk`, the preview overflow without e-invoices, 要你決定 = `counts.ask`); `reminders/reminders.ts` (`inboxBellCount` call sites → `counts.ask`, and the 待處理 empty-state sum drops `einvoices.length` and its comment); delete `inboxBellCount` from `inbox-view.ts` and its test + import in `inbox-view.spec.ts`; `inbox.model.ts` doc comment. Keep the 通知 consumers of `counts.einvoice_ask` (`sources/recon.ts`, `einvoice-flow.ts`, `einvoice-unmatched.ts`) and the calendar's `einvoices` read.
+- Tests: inbox-panel / reminders specs updated (e-invoices no longer counted or listed there); the panel renders no e-invoice card even when `einvoices` has ask items; 待處理 with only e-invoice questions, or only unmatched reminders, shows the empty state; proposed-only stays non-empty.
 
 - [ ] Commit `refactor(accounting): 通知 owns e-invoice questions — drop the inbox section and bell sums (6.6)`.
 
@@ -103,3 +107,13 @@
 - [ ] Tick 6.5 / 6.6 / 6.7 with notes; add the `recorded_amount` requirement; `openspec validate add-notification-center --strict`.
 - [ ] Frontend suite + production build; accounting suite.
 - [ ] Playwright stub screenshots (fictional): card auto/group/no-chip, menu open, settings section (1440 / 390, light / dark), stepper error, dismissed expanded, inbox panel before/after, 有發票沒有帳 footer.
+
+## Plan review AGENT-635 (CHANGES) — resolutions
+
+1. P2 cross-field PATCH order → Task 3 behaviour + tests above (merge only the sent field; per-field draft / in-flight; failure reverts that field; a same-field queued value is re-sent).
+2. P2 reminders 待處理 empty state → Task 5 drops `einvoices.length`; tests assert the empty state.
+3. P2 換一張 lifecycle / focus → Task 2 `{ entryId, reopen }`, focus contract, handled Esc, non-atomic swap note, tests.
+4. P3 `inboxBellCount` test cleanup → Task 5 file list.
+- recorded_amount boundary written into Task 1 (numeric equality, not eligibility); extra tests; F1 regression refs.
+- Group expand: all rows (Task 2).
+

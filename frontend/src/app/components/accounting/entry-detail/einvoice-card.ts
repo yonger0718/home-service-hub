@@ -106,8 +106,14 @@ export class AppEntryEinvoiceCardComponent {
   readonly itemsOpen = signal(false);
   /** 換一張發票 is offered only where the unlinked entry keeps the card (it may be a target). */
   readonly canReplace = computed(() => this.maybeTarget());
-  /** Set by 換一張發票: once the reloaded detail has no invoice, the picker opens. */
-  private reopenPicker = false;
+  /**
+   * Set by a menu unlink, for that entry only: once its reloaded detail has no invoice, focus lands in the card
+   * (the ⋯ button is gone) and, for 換一張發票, the picker opens. Any other detail change drops it.
+   */
+  private afterUnlink: { entryId: number; reopen: boolean } | null = null;
+  /** The picker opened by 換一張發票: focus its first choice (or 連結發票… when it fails) once it settles. */
+  private focusOnSettle = false;
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   readonly pickerState = signal<PickerState>({ status: 'idle' });
   readonly scope = signal<'entry' | 'group' | null>(null);
@@ -162,8 +168,10 @@ export class AppEntryEinvoiceCardComponent {
       key();
       const compact = this.compact();
       untracked(() => {
-        const reopen = this.reopenPicker;
-        this.reopenPicker = false;
+        const detail = this.detail();
+        const after = this.afterUnlink?.entryId === detail.id && !detail.einvoice ? this.afterUnlink : null;
+        this.afterUnlink = null;
+        this.focusOnSettle = false;
         this.menuOpen.set(false);
         this.itemsOpen.set(false);
         this.pickerSub?.unsubscribe();
@@ -173,10 +181,16 @@ export class AppEntryEinvoiceCardComponent {
         this.scope.set(null);
         this.busy.set(false);
         this.error.set(null);
-        if (reopen && !this.detail().einvoice && this.maybeTarget()) {
+        if (after?.reopen && this.maybeTarget()) {
+          this.focusOnSettle = true;
           this.openPicker();
-        } else if (compact && !this.detail().einvoice && this.maybeTarget()) {
+          return;
+        }
+        if (compact && !detail.einvoice && this.maybeTarget()) {
           this.prefetch();
+        }
+        if (after) {
+          this.focusCard();
         }
       });
     });
@@ -212,7 +226,9 @@ export class AppEntryEinvoiceCardComponent {
 
   menuKey(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
+      // Handled (defaultPrevented): the drawer / sheet Esc leaves it alone, so only the menu closes.
       event.preventDefault();
+      event.stopPropagation();
       this.closeMenu(true);
       return;
     }
@@ -237,7 +253,7 @@ export class AppEntryEinvoiceCardComponent {
       return;
     }
     this.closeMenu(false);
-    this.reopenPicker = true;
+    this.afterUnlink = { entryId: this.detail().id, reopen: true };
     this.unlink(id);
   }
 
@@ -246,6 +262,7 @@ export class AppEntryEinvoiceCardComponent {
       return;
     }
     this.closeMenu(false);
+    this.afterUnlink = { entryId: this.detail().id, reopen: false };
     this.unlink(id);
   }
 
@@ -268,13 +285,32 @@ export class AppEntryEinvoiceCardComponent {
     this.pickerSub?.unsubscribe();
     this.pickerSub = this.service.picker(this.detail().id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: (picker) => this.show(picker),
-      error: () => this.pickerState.set({ status: 'failed' }),
+      error: () => {
+        this.pickerState.set({ status: 'failed' });
+        this.settleFocus();
+      },
     });
   }
 
   private show(picker: EinvoicePicker): void {
     this.scope.set(picker.entry_eligible && picker.group_eligible ? null : picker.group_eligible ? 'group' : 'entry');
     this.pickerState.set({ status: 'ready', picker });
+    this.settleFocus();
+  }
+
+  private settleFocus(): void {
+    if (this.focusOnSettle) {
+      this.focusOnSettle = false;
+      this.focusCard();
+    }
+  }
+
+  /** After the ⋯ button leaves: the first pick / choice, else 連結發票…. Nothing focusable (card hidden): no move. */
+  private focusCard(): void {
+    afterNextRender(
+      () => this.host.nativeElement.querySelector<HTMLElement>('.einvoice-pick, .einvoice-actions button, .einvoice-open')?.focus(),
+      { injector: this.injector },
+    );
   }
 
   choose(scope: 'entry' | 'group'): void {
@@ -311,7 +347,11 @@ export class AppEntryEinvoiceCardComponent {
       },
       error: (err: unknown) => {
         this.busy.set(false);
-        this.reopenPicker = false;
+        if (this.afterUnlink) {
+          // The menu item that had focus is gone; ⋯ is back once busy clears.
+          afterNextRender(() => this.moreButton()?.nativeElement.focus(), { injector: this.injector });
+        }
+        this.afterUnlink = null;
         this.error.set(einvoiceErrorText(err));
       },
     });

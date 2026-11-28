@@ -152,8 +152,10 @@ def group_target(db: Session, group_id: int) -> Target | None:
 def linked_recorded_amount(db: Session, *, entry_id: int | None, group_id: int | None) -> Decimal | None:
     """What the linked entry or group records, in the invoice's terms (positive), by the rules the matcher compares
     with: a foreign entry its original amount, else the net (amount plus fee / discount children, sign flipped); a group
-    the net of its expense / receivable members when they share one currency, else None. Unlike `entry_target` /
-    `group_target` it reads linked targets too (D12 match chip)."""
+    the net of its top-level expense / receivable members when they share one currency (other kinds count toward
+    neither the net nor the currency check), else None. Unlike `entry_target` / `group_target` it reads linked targets
+    too (D12 match chip). The chip compares numbers only: it is not a re-run of `rule_candidates` (an exact-number
+    link may differ in amount; a foreign whole-number amount may equal an invoice the integral rule would not take)."""
     if entry_id is not None:
         entry = db.get(LedgerEntry, entry_id)
         if entry is None:

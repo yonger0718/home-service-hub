@@ -839,6 +839,36 @@ describe('AccountingSettingsComponent', () => {
       expect(el.querySelector('.pref-prompt .val')!.textContent?.trim()).toBe('2 次');
     });
 
+    it('answers arriving out of order across fields keep each field\'s own saved value', () => {
+      el.querySelector<HTMLButtonElement>('.pref-window .inc')!.click();
+      fixture.detectChanges();
+      el.querySelector<HTMLButtonElement>('.pref-prompt .dec')!.click();
+      fixture.detectChanges();
+      const [window, prompt] = http.match(r => r.method === 'PATCH' && r.url === `${EINVOICE_URL}/preferences`);
+      expect(window.request.body).toEqual({ date_window_days: 4 });
+      expect(prompt.request.body).toEqual({ mute_prompt_after: 2 });
+      prompt.flush({ ...EINVOICE_PREFS, date_window_days: 4, mute_prompt_after: 2, version: 5 });
+      window.flush({ ...EINVOICE_PREFS, date_window_days: 4, mute_prompt_after: 3, version: 4 }); // older snapshot, later
+      fixture.detectChanges();
+      http.expectNone(r => r.method === 'PATCH');
+      expect(el.querySelector('.pref-window .val')!.textContent?.trim()).toBe('±4 天');
+      expect(el.querySelector('.pref-prompt .val')!.textContent?.trim()).toBe('2 次');
+    });
+
+    it('one field failing reverts that field only; the other keeps its saved value', () => {
+      el.querySelector<HTMLButtonElement>('.pref-window .inc')!.click();
+      fixture.detectChanges();
+      el.querySelector<HTMLButtonElement>('.pref-prompt .dec')!.click();
+      fixture.detectChanges();
+      const [window, prompt] = http.match(r => r.method === 'PATCH' && r.url === `${EINVOICE_URL}/preferences`);
+      prompt.flush({ ...EINVOICE_PREFS, mute_prompt_after: 2, version: 4 });
+      window.flush({ detail: 'x' }, { status: 500, statusText: 'err' });
+      fixture.detectChanges();
+      expect(el.querySelector('.pref-window .val')!.textContent?.trim()).toBe('±3 天');
+      expect(el.querySelector('.pref-prompt .val')!.textContent?.trim()).toBe('2 次');
+      expect(el.querySelector('.einvoice-message')!.textContent).toContain('沒成功');
+    });
+
     it('a failed PATCH reverts the stepper and says why', () => {
       el.querySelector<HTMLButtonElement>('.pref-window .inc')!.click();
       fixture.detectChanges();

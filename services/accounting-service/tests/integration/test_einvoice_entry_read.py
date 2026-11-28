@@ -240,3 +240,21 @@ def test_recorded_amount_null_for_mixed_currency_group(client, db_session, seed)
     _link(db_session, "AB00000001", group=g, by="owner")
     out = _detail(client, m1.id)["einvoice"]
     assert out["linked_to"] == "group" and out["recorded_amount"] is None
+
+
+def test_recorded_amount_original_in_main_currency_uses_net(client, db_session, seed):
+    entry = seed.entry(seed.account("A"), "-120", day=D, original_currency="TWD", original_amount=Decimal("-999"))
+    db_session.commit()
+    import_(client, invoice())
+    _link(db_session, "AB00000001", entry=entry, by="owner")
+    assert Decimal(_detail(client, entry.id)["einvoice"]["recorded_amount"]) == Decimal("120")
+
+
+def test_recorded_amount_group_ignores_members_outside_the_net_kinds(client, db_session, seed):
+    g = seed.group()
+    m1 = seed.entry(seed.account("A"), "-120", day=D, group_id=g.id)
+    seed.entry(seed.account("B", currency="USD"), "-5", kind="transfer_out", day=D, group_id=g.id)
+    db_session.commit()
+    import_(client, invoice())
+    _link(db_session, "AB00000001", group=g, by="owner")
+    assert Decimal(_detail(client, m1.id)["einvoice"]["recorded_amount"]) == Decimal("120")

@@ -1,7 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail } from '../../../models/accounting.model';
 import { EntryEinvoice, EinvoiceSummary } from '../inbox/einvoice.model';
@@ -514,6 +514,102 @@ describe('AppEntryEinvoiceCardComponent', () => {
       fixture.detectChanges();
       http.expectNone('/api/accounting/einvoices/picker?entry_id=42');
       expect(button(root, '連結發票…')).toBeTruthy();
+    });
+
+    describe('after a menu unlink (focus, entry changes, picker outcomes)', () => {
+      let root: HTMLElement;
+      beforeEach(() => {
+        root = render({ einvoice: SEVEN });
+        document.body.appendChild(root);
+      });
+      afterEach(() => root.remove());
+      const reload = (fields: Record<string, unknown> = {}) => {
+        fixture.componentRef.setInput('detail', { ...PLAIN, id: 42, ...fields } as unknown as EntryDetail);
+        fixture.detectChanges();
+      };
+      const pickerUrl = '/api/accounting/einvoices/picker?entry_id=42';
+
+      it('解除連結 moves focus to 連結發票… once the reloaded detail renders', async () => {
+        menuItem(root, '解除連結').click();
+        http.expectOne('/api/accounting/einvoices/9/unlink').flush({ id: 9, state: 'dismissed' });
+        reload();
+        await fixture.whenStable();
+        expect(document.activeElement).toBe(button(root, '連結發票…'));
+      });
+
+      it('換一張發票 focuses the first invoice of the opened picker', async () => {
+        menuItem(root, '換一張發票').click();
+        http.expectOne('/api/accounting/einvoices/9/unlink').flush({ id: 9, state: 'dismissed' });
+        reload();
+        http.expectOne(pickerUrl).flush({ entry_eligible: true, group_id: null, group_eligible: false, invoices: [invoice(1, '測試甲店'), invoice(2, '測試乙店')] });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(document.activeElement).toBe(root.querySelector('.einvoice-pick'));
+      });
+
+      it('換一張發票 whose picker is empty says so and leaves the entry unlinked', () => {
+        menuItem(root, '換一張發票').click();
+        http.expectOne('/api/accounting/einvoices/9/unlink').flush({ id: 9, state: 'dismissed' });
+        reload();
+        http.expectOne(pickerUrl).flush({ entry_eligible: true, group_id: null, group_eligible: false, invoices: [] });
+        fixture.detectChanges();
+        expect(root.textContent).toContain('沒有可連結的發票');
+        expect(root.querySelector('.einv-card')).toBeNull();
+      });
+
+      it('換一張發票 whose picker fails shows 讀取失敗 and focuses 連結發票… to retry', async () => {
+        menuItem(root, '換一張發票').click();
+        http.expectOne('/api/accounting/einvoices/9/unlink').flush({ id: 9, state: 'dismissed' });
+        reload();
+        http.expectOne(pickerUrl).flush({ detail: 'x' }, { status: 500, statusText: 'err' });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(root.textContent).toContain('讀取失敗');
+        expect(document.activeElement).toBe(button(root, '連結發票…'));
+      });
+
+      it('換一張發票 then a different entry: that entry opens no picker', () => {
+        menuItem(root, '換一張發票').click();
+        http.expectOne('/api/accounting/einvoices/9/unlink').flush({ id: 9, state: 'dismissed' });
+        fixture.componentRef.setInput('detail', { ...PLAIN, id: 43 } as unknown as EntryDetail);
+        fixture.detectChanges();
+        http.expectNone('/api/accounting/einvoices/picker?entry_id=43');
+        reload(); // back on 42 later: the request was dropped, not held
+        http.expectNone(pickerUrl);
+        expect(button(root, '連結發票…')).toBeTruthy();
+      });
+
+      it('a failed unlink from the menu returns focus to ⋯', async () => {
+        menuItem(root, '解除連結').click();
+        http.expectOne('/api/accounting/einvoices/9/unlink').flush({ detail: 'x' }, { status: 500, statusText: 'err' });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(document.activeElement).toBe(root.querySelector('.einv-more'));
+      });
+
+      it('Esc in the menu is handled there: the drawer never sees it', () => {
+        const outer = vi.fn();
+        document.addEventListener('keydown', outer);
+        menuItem(root, '換一張發票');
+        const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+        root.querySelector('.einv-menu')!.dispatchEvent(esc);
+        document.removeEventListener('keydown', outer);
+        expect(esc.defaultPrevented).toBe(true);
+        expect(outer).not.toHaveBeenCalled();
+      });
+
+      it('ArrowDown / ArrowUp move between the menu items', () => {
+        const first = menuItem(root, '換一張發票');
+        fixture.detectChanges();
+        first.focus();
+        const key = (k: string) => root.querySelector('.einv-menu')!.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+        key('ArrowDown');
+        expect(document.activeElement?.textContent).toContain('解除連結');
+        key('ArrowDown');
+        expect(document.activeElement).toBe(first);
+        key('ArrowUp');
+        expect(document.activeElement?.textContent).toContain('解除連結');
+      });
     });
   });
 });
