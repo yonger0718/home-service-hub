@@ -53,6 +53,17 @@ describe('AppEntryEinvoiceCardComponent', () => {
     return found as HTMLButtonElement;
   }
 
+  /** Opens the ⋯ menu (if closed) and returns its item. */
+  function menuItem(root: HTMLElement, text: string): HTMLButtonElement {
+    if (!root.querySelector('.einv-menu')) {
+      (root.querySelector('.einv-more') as HTMLButtonElement).click();
+      fixture.detectChanges();
+    }
+    const found = [...root.querySelectorAll('.einv-menu button')].find((b) => b.textContent?.includes(text));
+    if (!found) throw new Error(`no menu item ${text}`);
+    return found as HTMLButtonElement;
+  }
+
   function open(root: HTMLElement, picker: Record<string, unknown>): void {
     button(root, '連結發票…').click();
     http.expectOne('/api/accounting/einvoices/picker?entry_id=42').flush(picker);
@@ -67,7 +78,7 @@ describe('AppEntryEinvoiceCardComponent', () => {
     expect(root.textContent).toContain('牛奶');
     expect(root.textContent).toContain('自動連結');
     expect(root.textContent).not.toContain('整組');
-    button(root, '解除連結').click();
+    menuItem(root, '解除連結').click();
     http.expectOne('/api/accounting/einvoices/7/unlink').flush({ id: 7, state: 'unmatched' });
     expect(changed).toBe(1);
   });
@@ -84,7 +95,7 @@ describe('AppEntryEinvoiceCardComponent', () => {
 
   it('shows an unlink error', () => {
     const root = render({ einvoice: LINKED });
-    button(root, '解除連結').click();
+    menuItem(root, '解除連結').click();
     http.expectOne('/api/accounting/einvoices/7/unlink').flush({ detail: 'x' }, { status: 500, statusText: 'err' });
     fixture.detectChanges();
     expect(root.textContent).toContain('沒成功');
@@ -183,7 +194,7 @@ describe('AppEntryEinvoiceCardComponent', () => {
 
   it('after an unlink the reloaded detail shows the idle button', () => {
     const root = render({ einvoice: LINKED });
-    button(root, '解除連結').click();
+    menuItem(root, '解除連結').click();
     http.expectOne('/api/accounting/einvoices/7/unlink').flush({ id: 7, state: 'unmatched' });
     fixture.componentRef.setInput('detail', { ...PLAIN, id: 42 } as unknown as EntryDetail);
     fixture.detectChanges();
@@ -212,11 +223,13 @@ describe('AppEntryEinvoiceCardComponent', () => {
 
   it('a double tap on 解除連結 sends one request', () => {
     const root = render({ einvoice: LINKED });
-    const unlink = button(root, '解除連結');
+    const unlink = menuItem(root, '解除連結');
     unlink.click();
     unlink.click();
+    fixture.detectChanges();
     http.expectOne('/api/accounting/einvoices/7/unlink').flush({ id: 7, state: 'unmatched' });
-    unlink.click();
+    fixture.detectChanges();
+    expect((root.querySelector('.einv-more') as HTMLButtonElement).disabled).toBe(true);
     http.expectNone('/api/accounting/einvoices/7/unlink');
     expect(changed).toBe(1);
   });
@@ -361,6 +374,146 @@ describe('AppEntryEinvoiceCardComponent', () => {
       const root = render({});
       expect(root.querySelector('.einvoice-hint')).toBeNull();
       expect(root.querySelector('.einvoice-row')).toBeNull();
+    });
+  });
+
+  describe('linked card (D12)', () => {
+    const SEVEN: EntryEinvoice = {
+      id: 9, number: 'AB00000009', issue_date: '2026-10-21', seller_name: '測試超市 一號店', total_amount: '1286.0000',
+      linked_by: 'auto', linked_to: 'entry', recorded_amount: '1286.0000',
+      items: [
+        { name: '測試鮮奶', subtotal: '95' }, { name: '測試吐司', subtotal: '65' }, { name: '測試雞蛋', subtotal: '425' },
+        { name: '測試米', subtotal: '200' }, { name: '測試麵', subtotal: '150' }, { name: '測試油', subtotal: '251' },
+        { name: '測試鹽', subtotal: '100' },
+      ],
+    };
+    const TWELVE: EntryEinvoice = {
+      id: 10, number: 'AB00000010', issue_date: '2026-10-19', seller_name: '測試量販 二號店', total_amount: '2463.0000',
+      linked_by: 'owner', linked_to: 'group', recorded_amount: '2460.0000',
+      items: [...Array.from({ length: 11 }, (_, i) => ({ name: `測試品項${i + 1}`, subtotal: '200' })), { name: '測試品項12', subtotal: '263' }],
+    };
+    const text = (root: HTMLElement, sel: string) => root.querySelector(sel)?.textContent?.replace(/\s+/g, ' ').trim();
+    const parts = (el: Element) => [...el.children].map((c) => c.textContent?.trim()).join(' ');
+    const rows = (root: HTMLElement) => [...root.querySelectorAll('.einv-item')].map(parts);
+
+    it('entry match: 發票, ✓ 金額相符, 自動連結, three items, the rest summed, 合計', () => {
+      const root = render({ einvoice: SEVEN });
+      expect(text(root, '.einv-title')).toBe('發票');
+      const chips = [...root.querySelectorAll('.einv-chip')].map((c) => c.textContent?.trim());
+      expect(chips).toEqual(['✓ 金額相符', '自動連結']);
+      expect(root.querySelector('.einv-chip[data-tone="ok"]')).not.toBeNull();
+      expect(text(root, '.einv-meta')).toBe('測試超市 一號店 · 10/21 · AB00000009');
+      expect(rows(root)).toEqual(['測試鮮奶 $95', '測試吐司 $65', '測試雞蛋 $425', '… 另外 4 項 $701', '合計 7 項 $1,286']);
+    });
+
+    it('group off by $3: 發票 · 整組, 差 $3, 手動連結, 這組記了, items behind 看 12 項明細', () => {
+      const root = render({ einvoice: TWELVE, group: { id: 5, kind: 'split' } });
+      expect(text(root, '.einv-title')).toBe('發票 · 整組');
+      const chips = [...root.querySelectorAll('.einv-chip')].map((c) => c.textContent?.trim());
+      expect(chips).toEqual(['差 $3', '手動連結']);
+      expect(root.querySelector('.einv-chip[data-tone="warn"]')).not.toBeNull();
+      expect(text(root, '.einv-meta')).toBe('測試量販 二號店 · 10/19 · 12 項 · $2,463（這組記了 $2,460）');
+      expect(rows(root)).toEqual([]);
+      const toggle = root.querySelector('.einv-toggle') as HTMLButtonElement;
+      expect(toggle.textContent?.replace(/\s+/g, ' ').trim()).toBe('看 12 項明細 ›');
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      toggle.click();
+      fixture.detectChanges();
+      expect(rows(root).length).toBe(13);
+      expect(rows(root)[12]).toBe('合計 12 項 $2,463');
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      toggle.click();
+      fixture.detectChanges();
+      expect(rows(root)).toEqual([]);
+    });
+
+    it('group that matches has no 這組記了 note', () => {
+      const root = render({ einvoice: { ...TWELVE, recorded_amount: '2463' }, group: { id: 5, kind: 'split' } });
+      expect(text(root, '.einv-meta')).toBe('測試量販 二號店 · 10/19 · 12 項 · $2,463');
+      expect(text(root, '.einv-chip[data-tone="ok"]')).toBe('✓ 金額相符');
+    });
+
+    it('no match chip when recorded_amount is null or absent; the card still shows', () => {
+      for (const recorded of [null, undefined]) {
+        const root = render({ einvoice: { ...SEVEN, recorded_amount: recorded } });
+        expect([...root.querySelectorAll('.einv-chip')].map((c) => c.textContent?.trim())).toEqual(['自動連結']);
+        expect(text(root, '.einv-meta')).toContain('AB00000009');
+      }
+    });
+
+    it('foreign amounts compare and show without the TWD symbol', () => {
+      const root = render({ einvoice: { ...SEVEN, total_amount: '20.99', recorded_amount: '20.49', items: [{ name: 'Plan', subtotal: '20.99' }] } });
+      expect(text(root, '.einv-chip[data-tone="warn"]')).toBe('差 0.50');
+      expect(rows(root)).toEqual(['Plan 20.99', '合計 1 項 20.99']);
+    });
+
+    it('three items or fewer: no 另外 row', () => {
+      const root = render({ einvoice: { ...SEVEN, items: SEVEN.items.slice(0, 3), total_amount: '585', recorded_amount: '585' } });
+      expect(rows(root)).toEqual(['測試鮮奶 $95', '測試吐司 $65', '測試雞蛋 $425', '合計 3 項 $585']);
+    });
+
+    it('⋯ menu: opens, Esc closes and returns focus, outside click closes', () => {
+      const root = render({ einvoice: SEVEN });
+      document.body.appendChild(root);
+      const more = root.querySelector('.einv-more') as HTMLButtonElement;
+      expect(more.getAttribute('aria-label')).toBe('發票動作');
+      expect(more.getAttribute('aria-haspopup')).toBe('menu');
+      more.click();
+      fixture.detectChanges();
+      expect(more.getAttribute('aria-expanded')).toBe('true');
+      const items = [...root.querySelectorAll('.einv-menu [role="menuitem"]')].map((b) => (b.children.length ? parts(b) : b.textContent?.trim()));
+      expect(items).toEqual(['換一張發票', '解除連結 之後不會再自動連回']);
+      expect(document.activeElement?.textContent).toContain('換一張發票');
+      root.querySelector('.einv-menu')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      fixture.detectChanges();
+      expect(root.querySelector('.einv-menu')).toBeNull();
+      expect(document.activeElement).toBe(more);
+      more.click();
+      fixture.detectChanges();
+      document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      fixture.detectChanges();
+      expect(root.querySelector('.einv-menu')).toBeNull();
+      root.remove();
+    });
+
+    it('換一張發票 is not offered where an unlinked entry could not be a target', () => {
+      const root = render({ kind: 'income', einvoice: SEVEN });
+      (root.querySelector('.einv-more') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      expect([...root.querySelectorAll('.einv-menu button')].map((b) => b.textContent?.trim())).toEqual([expect.stringContaining('解除連結')]);
+    });
+
+    it('換一張發票 unlinks, then opens the picker once the reloaded detail has no invoice', () => {
+      const root = render({ einvoice: SEVEN });
+      menuItem(root, '換一張發票').click();
+      http.expectOne('/api/accounting/einvoices/9/unlink').flush({ id: 9, state: 'dismissed' });
+      expect(changed).toBe(1);
+      fixture.componentRef.setInput('detail', { ...PLAIN, id: 42 } as unknown as EntryDetail);
+      fixture.detectChanges();
+      http.expectOne('/api/accounting/einvoices/picker?entry_id=42')
+        .flush({ entry_eligible: true, group_id: null, group_eligible: false, invoices: [invoice(1, '測試甲店')] });
+      fixture.detectChanges();
+      expect(root.querySelectorAll('.einvoice-pick').length).toBe(1);
+    });
+
+    it('換一張發票 with a failed unlink shows the error and opens nothing', () => {
+      const root = render({ einvoice: SEVEN });
+      menuItem(root, '換一張發票').click();
+      http.expectOne('/api/accounting/einvoices/9/unlink').flush({ detail: 'x' }, { status: 500, statusText: 'err' });
+      fixture.detectChanges();
+      expect(root.textContent).toContain('沒成功');
+      expect(changed).toBe(0);
+      http.expectNone('/api/accounting/einvoices/picker?entry_id=42');
+    });
+
+    it('a plain 解除連結 does not open the picker after the reload', () => {
+      const root = render({ einvoice: SEVEN });
+      menuItem(root, '解除連結').click();
+      http.expectOne('/api/accounting/einvoices/9/unlink').flush({ id: 9, state: 'dismissed' });
+      fixture.componentRef.setInput('detail', { ...PLAIN, id: 42 } as unknown as EntryDetail);
+      fixture.detectChanges();
+      http.expectNone('/api/accounting/einvoices/picker?entry_id=42');
+      expect(button(root, '連結發票…')).toBeTruthy();
     });
   });
 });

@@ -1,33 +1,85 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
+import {
+  ChangeDetectionStrategy, Component, DestroyRef, ElementRef, Injector, afterNextRender, computed, effect, inject, input, output, signal,
+  untracked, viewChild,
+} from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Observable, Subscription } from 'rxjs';
 
 import { EntryDetail } from '../../../models/accounting.model';
-import { slashDate } from '../dates';
-import { EinvoiceLinkTarget, EinvoicePicker } from '../inbox/einvoice.model';
+import { shortDate, slashDate } from '../dates';
+import { EinvoiceLinkTarget, EinvoicePicker, EntryEinvoice } from '../inbox/einvoice.model';
 import { invoiceAmount } from '../inbox/einvoice-format';
 import { einvoiceErrorText } from '../inbox/einvoice-section/einvoice-section';
 import { EinvoiceService } from '../inbox/einvoice.service';
 
+/** One line in the item box: an item, the 「… 另外 N 項」 sum of the rest, or the 合計 row. */
+export interface EinvoiceCardRow {
+  kind: 'item' | 'rest' | 'total';
+  name: string;
+  amount: string;
+}
+
+/** The linked card's derived text (D12). */
+export interface EinvoiceCardView {
+  title: string;
+  match: { tone: 'ok' | 'warn'; text: string } | null;
+  source: string;
+  meta: string;
+  /** Group only: 「看 N 項明細」, toggling the item box; null for an entry (its box always shows) or an empty invoice. */
+  toggle: string | null;
+  rows: EinvoiceCardRow[];
+}
+
+const SHOWN_ITEMS = 3;
+
+const cents = (value: string): number => Math.round(Number(value) * 100);
+const fromCents = (value: number): string => String(value / 100);
+
+/** The linked invoice's card text: match / source chips, the meta line and the item rows (all items for a group). */
+export function einvoiceCardView(inv: EntryEinvoice): EinvoiceCardView {
+  const group = inv.linked_to === 'group';
+  const amount = invoiceAmount;
+  const recorded = inv.recorded_amount ?? null;
+  const diff = recorded === null ? null : Math.abs(cents(inv.total_amount) - cents(recorded));
+  const match = diff === null ? null : diff === 0 ? { tone: 'ok' as const, text: '✓ 金額相符' } : { tone: 'warn' as const, text: `差 ${amount(fromCents(diff))}` };
+  const count = inv.items.length;
+  const total: EinvoiceCardRow = { kind: 'total', name: `合計 ${count} 項`, amount: amount(inv.total_amount) };
+  const item = (i: { name: string; subtotal: string }): EinvoiceCardRow => ({ kind: 'item', name: i.name, amount: amount(i.subtotal) });
+  let rows: EinvoiceCardRow[] = [];
+  if (count > 0) {
+    if (group || count <= SHOWN_ITEMS) {
+      rows = [...inv.items.map(item), total];
+    } else {
+      const rest = inv.items.slice(SHOWN_ITEMS);
+      const restSum = rest.reduce((sum, i) => sum + cents(i.subtotal), 0);
+      rows = [...inv.items.slice(0, SHOWN_ITEMS).map(item), { kind: 'rest', name: `… 另外 ${rest.length} 項`, amount: amount(fromCents(restSum)) }, total];
+    }
+  }
+  const head = `${inv.seller_name} · ${shortDate(inv.issue_date)}`;
+  const note = group && recorded !== null && diff !== 0 ? `（這組記了 ${amount(recorded)}）` : '';
+  return {
+    title: group ? '發票 · 整組' : '發票',
+    match,
+    source: inv.linked_by === 'auto' ? '自動連結' : '手動連結',
+    meta: group ? `${head} · ${count} 項 · ${amount(inv.total_amount)}${note}` : `${head} · ${inv.number}`,
+    toggle: group && count > 0 ? `看 ${count} 項明細` : null,
+    rows,
+  };
+}
+
 type PickerState = { status: 'idle' } | { status: 'loading' } | { status: 'failed' } | { status: 'ready'; picker: EinvoicePicker };
 
-/** 發票 card on the entry detail: the linked invoice with 解除連結, or a picker to link one (spec §10). */
+/**
+ * 發票 card on the entry detail (spec §10, D12): the linked invoice with match / source chips, its items and a ⋯ menu
+ * (換一張發票, 解除連結), or a picker to link one.
+ */
 @Component({
   selector: 'app-entry-einvoice-card',
   standalone: true,
   templateUrl: './einvoice-card.html',
-  styles: `
-    .einvoice-pick { align-items: flex-start; background: none; border: 0; border-bottom: 1px solid var(--app-border); color: inherit; display: flex; flex-direction: column; font: inherit; font-size: 0.88rem; gap: 2px; min-height: 44px; padding: 8px 0; text-align: left; width: 100%; }
-    .einvoice-sub { color: var(--app-text-muted); font-size: 0.8rem; }
-    .einvoice-error { color: var(--app-danger); font-size: 0.85rem; margin: 4px 0 0; }
-    .einvoice-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-    .einvoice-actions button { min-height: 44px; }
-    .einvoice-row { align-items: center; background: transparent; border: 1px dashed var(--app-border); border-radius: 12px; color: var(--app-text); cursor: pointer; display: flex; font: inherit; font-size: 0.88rem; font-weight: 600; gap: 10px; min-height: 46px; padding: 0 12px; text-align: left; width: 100%; }
-    .einvoice-row svg { color: var(--app-text-muted); flex: none; }
-    .einvoice-row span { flex: 1; }
-    .einvoice-hint { color: var(--app-text-muted); font-size: 0.75rem; font-weight: 400; }
-  `,
+  styleUrl: './einvoice-card.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '(document:click)': 'outsideClick($event)' },
 })
 export class AppEntryEinvoiceCardComponent {
   private readonly service = inject(EinvoiceService);
@@ -40,6 +92,23 @@ export class AppEntryEinvoiceCardComponent {
 
   readonly slashDate = slashDate;
   readonly amount = invoiceAmount;
+
+  private readonly injector = inject(Injector);
+  private readonly moreButton = viewChild<ElementRef<HTMLButtonElement>>('more');
+  private readonly menuWrap = viewChild<ElementRef<HTMLElement>>('menuWrap');
+  private readonly menu = viewChild<ElementRef<HTMLElement>>('menu');
+
+  readonly card = computed(() => {
+    const inv = this.detail().einvoice;
+    return inv ? einvoiceCardView(inv) : null;
+  });
+  readonly menuOpen = signal(false);
+  /** Group card: the item box behind 看 N 項明細. */
+  readonly itemsOpen = signal(false);
+  /** 換一張發票 is offered only where the unlinked entry keeps the card (it may be a target). */
+  readonly canReplace = computed(() => this.maybeTarget());
+  /** Set by 換一張發票: once the reloaded detail has no invoice, the picker opens. */
+  private reopenPicker = false;
 
   readonly pickerState = signal<PickerState>({ status: 'idle' });
   readonly scope = signal<'entry' | 'group' | null>(null);
@@ -94,6 +163,10 @@ export class AppEntryEinvoiceCardComponent {
       key();
       const compact = this.compact();
       untracked(() => {
+        const reopen = this.reopenPicker;
+        this.reopenPicker = false;
+        this.menuOpen.set(false);
+        this.itemsOpen.set(false);
         this.pickerSub?.unsubscribe();
         this.hintSub?.unsubscribe();
         this.pickerState.set({ status: 'idle' });
@@ -101,7 +174,9 @@ export class AppEntryEinvoiceCardComponent {
         this.scope.set(null);
         this.busy.set(false);
         this.error.set(null);
-        if (compact && !this.detail().einvoice && this.maybeTarget()) {
+        if (reopen && !this.detail().einvoice && this.maybeTarget()) {
+          this.openPicker();
+        } else if (compact && !this.detail().einvoice && this.maybeTarget()) {
           this.prefetch();
         }
       });
@@ -118,6 +193,65 @@ export class AppEntryEinvoiceCardComponent {
 
   unlink(id: number): void {
     this.write(this.service.unlink(id));
+  }
+
+  toggleMenu(): void {
+    if (this.menuOpen()) {
+      this.closeMenu(true);
+      return;
+    }
+    this.menuOpen.set(true);
+    afterNextRender(() => this.menuItems()[0]?.focus(), { injector: this.injector });
+  }
+
+  closeMenu(refocus: boolean): void {
+    this.menuOpen.set(false);
+    if (refocus) {
+      this.moreButton()?.nativeElement.focus();
+    }
+  }
+
+  menuKey(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.closeMenu(true);
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const items = this.menuItems();
+      const at = items.indexOf(document.activeElement as HTMLButtonElement);
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      items[(at + step + items.length) % items.length]?.focus();
+    }
+  }
+
+  outsideClick(event: MouseEvent): void {
+    if (this.menuOpen() && !this.menuWrap()?.nativeElement.contains(event.target as Node)) {
+      this.closeMenu(false);
+    }
+  }
+
+  /** 換一張發票: unlink (the old one goes to 已標成不用記帳), then the reloaded detail opens the picker. */
+  replace(id: number): void {
+    if (this.busy()) {
+      return;
+    }
+    this.closeMenu(false);
+    this.reopenPicker = true;
+    this.unlink(id);
+  }
+
+  unlinkFromMenu(id: number): void {
+    if (this.busy()) {
+      return;
+    }
+    this.closeMenu(false);
+    this.unlink(id);
+  }
+
+  private menuItems(): HTMLButtonElement[] {
+    return [...(this.menu()?.nativeElement.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])];
   }
 
   openPicker(): void {
@@ -178,6 +312,7 @@ export class AppEntryEinvoiceCardComponent {
       },
       error: (err: unknown) => {
         this.busy.set(false);
+        this.reopenPicker = false;
         this.error.set(einvoiceErrorText(err));
       },
     });

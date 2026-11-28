@@ -1,0 +1,39 @@
+:host { display: block; }
+
+/* Linked: one card whose head carries the title (D12). */
+.einv-card { border: 1px solid var(--app-border); border-radius: 14px; display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding: 12px 14px; }
+.einv-head { align-items: center; display: flex; flex-wrap: wrap; gap: 6px 8px; min-height: 32px; }
+.einv-head > svg { color: var(--app-text-muted); flex: none; }
+.einv-title { flex: 1; font-size: 0.95rem; font-weight: 800; min-width: 0; }
+.einv-chip { border-radius: 999px; font-size: 0.72rem; font-weight: 700; padding: 2px 8px; white-space: nowrap; }
+.einv-chip[data-tone='ok'] { background: var(--c-green-soft); color: var(--c-green-pill-ink); }
+.einv-chip[data-tone='warn'] { background: var(--app-banner-warn-soft); color: var(--app-banner-warn); }
+.einv-chip[data-tone='neutral'] { background: var(--app-surface-soft); color: var(--app-text-muted); }
+.einv-menu-wrap { position: relative; }
+.einv-more { align-items: center; background: transparent; border: 0; border-radius: 9px; color: var(--app-text-muted); cursor: pointer; display: flex; height: 36px; justify-content: center; width: 36px; }
+.einv-more:hover:not(:disabled) { background: var(--app-surface-soft); }
+.einv-more:focus-visible, .einv-menu button:focus-visible, .einv-toggle:focus-visible { outline: 2px solid var(--app-primary); outline-offset: 2px; }
+.einv-menu { background: var(--app-surface); border: 1px solid var(--app-border); border-radius: 12px; box-shadow: var(--app-card-shadow); display: flex; flex-direction: column; min-width: 210px; padding: 4px; position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; }
+.einv-menu button { align-items: flex-start; background: transparent; border: 0; border-radius: 8px; color: var(--app-text); cursor: pointer; display: flex; flex-direction: column; font: inherit; font-size: 0.88rem; font-weight: 600; gap: 2px; justify-content: center; min-height: 44px; padding: 6px 10px; text-align: left; }
+.einv-menu button:hover { background: var(--app-surface-soft); }
+.einv-menu small { color: var(--app-text-muted); font-size: 0.75rem; font-weight: 400; }
+.einv-meta { color: var(--app-text-muted); font-size: 0.82rem; overflow-wrap: anywhere; }
+.einv-items { background: var(--app-surface-soft); border-radius: 10px; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; }
+.einv-item { display: flex; font-size: 0.82rem; gap: 12px; justify-content: space-between; }
+.einv-item > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.einv-item > span:last-child { color: var(--app-text-muted); flex: none; font-variant-numeric: tabular-nums; }
+.einv-rest > span:first-child { color: var(--app-text-muted); }
+.einv-total { border-top: 1px solid var(--app-border); font-weight: 800; padding-top: 6px; }
+.einv-total > span:last-child { color: var(--app-text); }
+.einv-toggle { align-self: flex-start; background: none; border: 0; color: var(--app-primary); cursor: pointer; font: inherit; font-size: 0.82rem; font-weight: 700; min-height: 32px; padding: 0; }
+
+/* Unlinked (unchanged since #408). */
+.einvoice-pick { align-items: flex-start; background: none; border: 0; border-bottom: 1px solid var(--app-border); color: inherit; display: flex; flex-direction: column; font: inherit; font-size: 0.88rem; gap: 2px; min-height: 44px; padding: 8px 0; text-align: left; width: 100%; }
+.einvoice-sub { color: var(--app-text-muted); font-size: 0.8rem; }
+.einvoice-error { color: var(--app-danger); font-size: 0.85rem; margin: 4px 0 0; }
+.einvoice-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.einvoice-actions button { min-height: 44px; }
+.einvoice-row { align-items: center; background: transparent; border: 1px dashed var(--app-border); border-radius: 12px; color: var(--app-text); cursor: pointer; display: flex; font: inherit; font-size: 0.88rem; font-weight: 600; gap: 10px; min-height: 46px; padding: 0 12px; text-align: left; width: 100%; }
+.einvoice-row svg { color: var(--app-text-muted); flex: none; }
+.einvoice-row span { flex: 1; }
+.einvoice-hint { color: var(--app-text-muted); font-size: 0.75rem; font-weight: 400; }

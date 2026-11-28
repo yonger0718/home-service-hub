@@ -1,23 +1,49 @@
 @if (visible()) {
-<div class="dsec">發票</div>
 @if (detail().einvoice; as inv) {
-  <div class="dline">
-    <span>{{ inv.number }} · {{ slashDate(inv.issue_date) }} · {{ inv.seller_name }}</span>
-    <span>{{ amount(inv.total_amount) }}</span>
-  </div>
-  <div class="einvoice-sub">
-    {{ inv.linked_by === 'auto' ? '自動連結' : '手動連結' }}@if (inv.linked_to === 'group') { · 整組 }
-  </div>
-  @for (item of inv.items; track $index) {
-    <div class="dline">
-      <span>{{ item.name }}</span>
-      <span>{{ amount(item.subtotal) }}</span>
-    </div>
+  @if (card(); as c) {
+    <article class="einv-card" aria-labelledby="einv-title">
+      <div class="einv-head">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3z M9 8h6 M9 12h6"></path></svg>
+        <b class="einv-title" id="einv-title">{{ c.title }}</b>
+        @if (c.match; as m) {
+          <span class="einv-chip" [attr.data-tone]="m.tone">{{ m.text }}</span>
+        }
+        <span class="einv-chip" data-tone="neutral">{{ c.source }}</span>
+        <span class="einv-menu-wrap" #menuWrap>
+          <button #more type="button" class="einv-more" aria-label="發票動作" aria-haspopup="menu" [attr.aria-expanded]="menuOpen()" [disabled]="busy()" (click)="toggleMenu()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg>
+          </button>
+          @if (menuOpen()) {
+            <div #menu class="einv-menu" role="menu" aria-label="發票動作" (keydown)="menuKey($event)">
+              @if (canReplace()) {
+                <button type="button" role="menuitem" (click)="replace(inv.id)">換一張發票</button>
+              }
+              <button type="button" role="menuitem" (click)="unlinkFromMenu(inv.id)">
+                <span>解除連結</span>
+                <small>之後不會再自動連回</small>
+              </button>
+            </div>
+          }
+        </span>
+      </div>
+      <span class="einv-meta">{{ c.meta }}</span>
+      @if (c.toggle; as label) {
+        <button type="button" class="einv-toggle" [attr.aria-expanded]="itemsOpen()" (click)="itemsOpen.set(!itemsOpen())">{{ label }}&ngsp;<span aria-hidden="true">›</span></button>
+      }
+      @if (c.rows.length && (!c.toggle || itemsOpen())) {
+        <div class="einv-items">
+          @for (row of c.rows; track $index) {
+            <div class="einv-item" [class.einv-rest]="row.kind === 'rest'" [class.einv-total]="row.kind === 'total'">
+              <span>{{ row.name }}</span>
+              <span>{{ row.amount }}</span>
+            </div>
+          }
+        </div>
+      }
+    </article>
   }
-  <div class="einvoice-actions">
-    <button type="button" class="einvoice-unlink" [disabled]="busy()" (click)="unlink(inv.id)">解除連結</button>
-  </div>
 } @else {
+  <div class="dsec">發票</div>
   @switch (pickerState().status) {
     @case ('idle') {
       @if (compact()) {

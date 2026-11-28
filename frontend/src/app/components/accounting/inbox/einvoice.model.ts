@@ -53,6 +53,8 @@ export interface EntryEinvoice {
   total_amount: string;
   linked_by: 'auto' | 'owner';
   linked_to: 'entry' | 'group';
+  /** What the linked entry or group records in the invoice's terms (D12 match chip); null for a mixed-currency group. */
+  recorded_amount?: string | null;
   items: EinvoiceItem[];
 }
 

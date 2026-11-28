@@ -1114,7 +1114,9 @@ describe('EntryDetailComponent', () => {
       linked_by: 'auto', linked_to: 'entry', items: [],
     } }));
     expect(el(fixture).querySelector('app-entry-einvoice-card')).not.toBeNull();
-    const unlink = [...el(fixture).querySelectorAll('app-entry-einvoice-card button')].find((b) => b.textContent?.includes('解除連結')) as HTMLButtonElement;
+    (el(fixture).querySelector('app-entry-einvoice-card .einv-more') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    const unlink = [...el(fixture).querySelectorAll('app-entry-einvoice-card .einv-menu button')].find((b) => b.textContent?.includes('解除連結')) as HTMLButtonElement;
     unlink.click();
     http.expectOne('/api/accounting/einvoices/7/unlink').flush({ id: 7, state: 'unmatched' });
     http.expectOne((r) => r.url === '/api/accounting/entries/42').flush(detail({ id: 42 }));
