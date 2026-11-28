@@ -256,6 +256,14 @@ When `remind_unmatched` is on, `unmatched` invoices SHALL form one 追蹤中 row
 - **GIVEN** `remind_unmatched` is false
 - **THEN** no 有發票沒有帳 row SHALL appear, and the e-invoice task for invoices to decide SHALL still appear
 
+#### Scenario: Recorded from the page
+- **WHEN** the owner taps 記一筆 on an invoice and saves the prefilled entry
+- **THEN** the invoice SHALL be linked by the save and SHALL leave the page on the next read
+
+#### Scenario: Questions fill the read
+- **GIVEN** `counts.einvoice_unmatched` is 3 and the read lists no unmatched invoice
+- **THEN** the page SHALL ask to confirm the e-invoice questions first, link to the e-invoice flow, and SHALL NOT read 都整理好了
+
 ### Requirement: Unmatched invoice bulk dismiss, seller mute and undo
 
 On the page for invoices without an entry:
@@ -272,3 +280,13 @@ On the page for invoices without an entry:
 #### Scenario: No tax id
 - **GIVEN** 麥當勞 南京店 has no tax id
 - **THEN** its group SHALL offer no mute and SHALL read 「沒有統編的商家無法設定不提醒」
+
+#### Scenario: Undo a mute
+- **GIVEN** the owner muted a seller from its group
+- **WHEN** the owner taps 復原
+- **THEN** `DELETE /einvoices/mutes/{tax_id}` SHALL be sent first and then `undismiss` for the invoice dismissed with the mute, and the group SHALL come back
+
+#### Scenario: Bulk dismiss fails midway
+- **GIVEN** a group of two invoices
+- **WHEN** 這 2 張都不用記帳 dismisses the first and the second fails
+- **THEN** the first SHALL stay dismissed, the toast SHALL say one was marked and the second failed, and its 復原 SHALL undismiss only the first

@@ -9,6 +9,7 @@ import { ToastService } from '../../../services/toast.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { EntryInput } from '../../../models/accounting.model';
 import { InboxEinvoice } from '../../accounting/inbox/einvoice.model';
+import { InboxCounts } from '../../accounting/inbox/inbox.model';
 import { makeEinvoice, makeEinvoiceTarget, makeInbox, text } from '../../accounting/inbox/testing';
 import { EinvoiceFlowComponent } from './einvoice-flow';
 import { EinvoiceFlowSession, startFlow } from './einvoice-flow-session';
@@ -73,15 +74,15 @@ describe('EinvoiceFlowComponent', () => {
     return http.expectOne((r) => r.method === 'GET' && r.url === INBOX_URL && r.params.get('limit') === '1000');
   }
 
-  function flushRead(invoices: InboxEinvoice[]): void {
+  function flushRead(invoices: InboxEinvoice[], counts: Partial<InboxCounts> = {}): void {
     detect(); // a write's entriesChanged bump runs the re-read effect
-    read().flush({ ...makeInbox([]), einvoices: invoices });
+    read().flush({ ...makeInbox([], counts), einvoices: invoices });
     detect();
   }
 
-  function open(invoices: InboxEinvoice[] = THREE, mode: LayoutMode = 'panes'): void {
+  function open(invoices: InboxEinvoice[] = THREE, mode: LayoutMode = 'panes', counts: Partial<InboxCounts> = {}): void {
     render(mode);
-    flushRead(invoices);
+    flushRead(invoices, counts);
   }
 
   function key(k: string, target: EventTarget = document, init: KeyboardEventInit = {}): KeyboardEvent {
@@ -239,6 +240,42 @@ describe('EinvoiceFlowComponent', () => {
     expect(shownNumber()).toContain('AB00000002');
     expect(progressText()).toBe('第 2 / 3 張');
     expect(session.pendingRecord()).toBeNull();
+  });
+
+  it('back from the form after a save that linked the invoice (no longer listed): still counted once', () => {
+    const session = sentToForm(1);
+    created('AB00000001');
+    open(THREE.slice(1)); // linked at save (F3a): the read no longer lists invoice 1
+    expect(shownNumber()).toContain('AB00000002');
+    expect(progressText()).toBe('第 2 / 3 張');
+    expect(session.pendingRecord()).toBeNull();
+    key('S');
+    key('S');
+    expect(text(el.querySelector('.flow-end-text'))).toContain('記成新的一筆 1 張');
+  });
+
+  it('back from the form without a save while the invoice left the list: not counted', () => {
+    sentToForm(1);
+    created('AB00000009'); // another number: not this invoice's record
+    open(THREE.slice(1));
+    key('S');
+    key('S');
+    expect(text(el.querySelector('.flow-end-text'))).not.toContain('記成新的一筆');
+  });
+
+  it('end state links to the invoices without an entry when there are any (D10)', () => {
+    open([coffee(1)], 'panes', { einvoice_unmatched: 4 });
+    key('S');
+    const link = el.querySelector<HTMLAnchorElement>('.einv-unmatched-link');
+    expect(text(link)).toBe('有發票沒有帳 4 張 ›');
+    expect(link?.getAttribute('href')).toBe('/notifications/einvoices?state=unmatched');
+  });
+
+  it('end state: no link when nothing is unmatched', () => {
+    open([coffee(1)], 'panes', { einvoice_unmatched: 0 });
+    key('S');
+    expect(el.querySelector('.flow-end')).not.toBeNull();
+    expect(el.querySelector('.einv-unmatched-link')).toBeNull();
   });
 
   it('連續記帳: two saves count the invoice once', () => {

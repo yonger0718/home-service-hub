@@ -14,7 +14,7 @@ import {
   untracked,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { switchMap } from 'rxjs';
 
 import { AccountingService } from '../../../services/accounting.service';
@@ -29,7 +29,7 @@ import { AppEinvoiceTargetSheetComponent, targetBody } from '../../accounting/in
 import { InboxService } from '../../accounting/inbox/inbox.service';
 import { BannerComponent } from '../../ui/banner/banner';
 import { OPEN_DIALOG, keyHint, typing } from '../flow-keys';
-import { INBOX_READ_LIMIT } from '../sources/recon';
+import { EINVOICE_UNMATCHED_LINK, INBOX_READ_LIMIT } from '../sources/recon';
 import {
   EinvoiceFlowSession,
   EinvoiceFlowState,
@@ -43,10 +43,7 @@ import {
   skip,
   startFlow,
 } from './einvoice-flow-session';
-import { answerKeys, einvoiceStep } from './einvoice-flow-view';
-
-/** The new-entry form 記成新的一筆 opens. */
-const ENTRY_FORM = ['/accounting/entry'];
+import { ENTRY_FORM, answerKeys, einvoiceStep, invoiceEntryParams } from './einvoice-flow-view';
 
 /**
  * The e-invoice flow (D10) at `/notifications/einvoices`: the ambiguous / near invoices one at a time, beside the list
@@ -57,7 +54,7 @@ const ENTRY_FORM = ['/accounting/entry'];
 @Component({
   selector: 'app-einvoice-flow',
   standalone: true,
-  imports: [BannerComponent, AppEinvoiceTargetSheetComponent],
+  imports: [BannerComponent, AppEinvoiceTargetSheetComponent, RouterLink],
   templateUrl: './einvoice-flow.html',
   styleUrls: ['../recon-flow/recon-flow.scss', './einvoice-flow.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -92,6 +89,9 @@ export class EinvoiceFlowComponent {
   readonly busy = signal(false);
   /** The failed write's text, shown under the answers of the invoice it was for. */
   readonly error = signal<{ id: number; text: string } | null>(null);
+  /** `counts.einvoice_unmatched` of the last read: the end state links to those invoices (D10). */
+  readonly unmatched = signal(0);
+  readonly unmatchedLink = EINVOICE_UNMATCHED_LINK;
   /** 選其他帳… is open for this invoice. */
   readonly picking = signal<InboxEinvoice | null>(null);
 
@@ -178,21 +178,24 @@ export class EinvoiceFlowComponent {
       next: (out) => {
         if (seq !== this.readSeq) return;
         const list = out.einvoices ?? [];
+        this.unmatched.set(out.counts.einvoice_unmatched ?? 0);
         // A cut page (more to confirm than listed) proves nothing about an invoice it does not list.
         const complete = list.filter((invoice) => invoice.state !== 'unmatched').length >= (out.counts.einvoice_ask ?? 0);
-        const current = this.state();
-        let next: EinvoiceFlowState = current ? afterRead(current, list, complete) : startFlow(list);
+        let current = this.state();
         const pending = this.session.pendingRecord();
+        // Counted only when an entry carrying this invoice's number was created since: not any write (a schedule
+        // definition, another page's edit), not a cancel; several saves (連續記帳) count once. Answered before the
+        // read is applied: the save links the invoice (F3a), so the read no longer lists it and would drop it.
+        const saved = !!pending && this.accounting.invoiceCreatedSince(pending.number, pending.mark);
         if (pending) {
           this.session.pendingRecord.set(null);
-          // Counted only when an entry carrying this invoice's number was created since: not any write (a schedule
-          // definition, another page's edit), not a cancel; several saves (連續記帳) count once.
-          const saved = this.accounting.invoiceCreatedSince(pending.number, pending.mark);
-          if (saved && next.open.has(pending.id)) {
-            next = answer(next, pending.id, 'recorded');
-          } else if (next.open.has(pending.id)) {
-            next = { ...next, cursor: pending.id };
+          if (saved && current?.open.has(pending.id)) {
+            current = answer(current, pending.id, 'recorded');
           }
+        }
+        let next: EinvoiceFlowState = current ? afterRead(current, list, complete) : startFlow(list);
+        if (pending && next.open.has(pending.id)) {
+          next = saved ? answer(next, pending.id, 'recorded') : { ...next, cursor: pending.id };
         }
         this.state.set(next);
         this.load.set('ready');
@@ -229,17 +232,7 @@ export class EinvoiceFlowComponent {
     const invoice = this.invoice();
     if (!invoice || this.busy()) return;
     this.session.awaitRecord(invoice.id, invoice.number, this.accounting.invoiceCreateMark());
-    void this.router.navigate(ENTRY_FORM, {
-      queryParams: {
-        kind: 'expense',
-        date: invoice.issue_date,
-        amount: invoice.total_amount,
-        // One item names the purchase; several (or none) take the seller's name (owner, 2026-11-27).
-        name: invoice.items.length === 1 ? invoice.items[0].name : invoice.seller_name,
-        merchant: invoice.seller_name,
-        invoice: invoice.number,
-      },
-    });
+    void this.router.navigate(ENTRY_FORM, { queryParams: invoiceEntryParams(invoice) });
   }
 
   skipStep(): boolean {

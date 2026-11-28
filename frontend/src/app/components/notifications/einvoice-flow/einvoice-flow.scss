@@ -132,3 +132,27 @@
     opacity: 0.55;
   }
 }
+
+/* Primary with a trailing ›, as the notification list's foot links (notifications.scss .notif-foot-link). */
+.einv-unmatched-link {
+  align-items: center;
+  align-self: center;
+  color: var(--app-primary);
+  display: inline-flex;
+  font-size: 0.8rem;
+  font-weight: 700;
+  gap: 4px;
+  padding: 6px;
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
+
+  &:focus-visible {
+    border-radius: 6px;
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 2px;
+  }
+}
+

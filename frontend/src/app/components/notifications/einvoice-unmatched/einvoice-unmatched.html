@@ -1,0 +1,116 @@
+<header class="flow-head">
+  @if (!panes()) {
+    <button type="button" class="flow-back" aria-label="返回通知" (click)="closed.emit()">
+      <i class="pi pi-arrow-left" aria-hidden="true"></i>
+    </button>
+  }
+  <div class="flow-titles">
+    @if (!panes()) {
+      <h1 class="flow-title">有發票沒有帳</h1>
+    } @else {
+      <h2 class="flow-title">有發票沒有帳</h2>
+    }
+    @if (view() === 'list') {
+      <p class="flow-kicker unm-headline">{{ headline() }}</p>
+    }
+  </div>
+  @if (panes()) {
+    <button type="button" class="flow-close" aria-label="關閉有發票沒有帳" (click)="closed.emit()">
+      <i class="pi pi-times" aria-hidden="true"></i>
+    </button>
+  }
+</header>
+
+@switch (load()) {
+  @case ('loading') {
+    <p class="flow-loading" role="status">讀取中…</p>
+  }
+  @case ('failed') {
+    <app-banner tone="error" heading="發票資料讀取失敗" actionLabel="重試" (action)="retryLoad()" />
+  }
+  @default {
+    @switch (view()) {
+      @case ('list') {
+        <p class="unm-intro">這些發票找不到對應的帳。記一筆、選一筆連上，或標成不用記帳；同一家常常不用記的話，可以以後都不提醒。</p>
+        <div class="unm-groups" [attr.aria-busy]="busy()">
+          @for (g of groups(); track g.key) {
+            <section class="unm-group" [attr.aria-label]="g.seller">
+              <div class="unm-group-head">
+                <span class="unm-icon" aria-hidden="true"><i class="pi pi-receipt"></i></span>
+                <span class="unm-seller-wrap">
+                  <b class="unm-seller">{{ g.seller }}</b>
+                  <small class="unm-meta">{{ g.meta }}</small>
+                </span>
+                <b class="unm-total">{{ g.total }}</b>
+              </div>
+              @for (r of g.rows; track r.invoice.id) {
+                <div class="unm-row" [attr.data-einvoice-id]="r.invoice.id">
+                  <span class="unm-row-line">
+                    <b class="unm-date">{{ r.date }}</b>
+                    <small class="unm-items">{{ r.items }}</small>
+                    <b class="unm-amount">{{ r.amount }}</b>
+                  </span>
+                  <span class="unm-actions">
+                    <button type="button" class="unm-btn unm-btn--primary unm-record" [disabled]="busy()" (click)="record(r.invoice)">記一筆</button>
+                    <button type="button" class="unm-btn unm-pick" [disabled]="busy()" (click)="pick(r.invoice, g)">選帳…</button>
+                    <button type="button" class="unm-btn unm-dismiss" [disabled]="busy()" (click)="dismiss(r.invoice, g)">不用記帳</button>
+                  </span>
+                </div>
+              }
+              @if (g.rows.length > 1 || g.canMute || !g.taxId || errorFor(g.key)) {
+                <div class="unm-group-foot">
+                  @if (g.rows.length > 1 || g.canMute) {
+                    <span class="unm-foot-btns">
+                      @if (g.rows.length > 1) {
+                        <button type="button" class="unm-btn unm-dismiss-all" [disabled]="busy()" (click)="dismissAll(g)">這 {{ g.rows.length }} 張都不用記帳</button>
+                      }
+                      @if (g.canMute) {
+                        <button type="button" class="unm-btn unm-mute" [disabled]="busy()" (click)="mute(g)">這家以後都不提醒</button>
+                      }
+                    </span>
+                  }
+                  @if (!g.taxId) {
+                    <small class="unm-note">沒有統編的商家無法設定不提醒</small>
+                  }
+                  @if (errorFor(g.key); as message) {
+                    <p class="unm-error" role="alert">{{ message }}</p>
+                  }
+                </div>
+              }
+            </section>
+          }
+        </div>
+        @if (missing() > 0) {
+          <p class="unm-more" role="note">還有 {{ missing() }} 張未列出，處理完上面的會接著顯示</p>
+        }
+      }
+      @case ('blocked') {
+        <div class="unm-empty">
+          <p class="unm-empty-title">先確認 {{ asking() }} 張要確認的發票，這裡才會列出</p>
+          <a class="unm-btn unm-btn--primary unm-to-flow" [routerLink]="flowRoute">去確認發票</a>
+        </div>
+      }
+      @case ('pending') {
+        <p class="flow-loading" role="status">讀取中…</p>
+      }
+      @case ('off') {
+        <div class="unm-empty">
+          <p class="unm-empty-title">提醒已關閉</p>
+          <p class="unm-empty-sub">到 記帳設定 › 發票 打開「有發票沒有帳」提醒，這裡才會列出。</p>
+        </div>
+      }
+      @default {
+        <div class="unm-empty">
+          <p class="unm-empty-title">都整理好了</p>
+        </div>
+      }
+    }
+    @if (settingsLink && view() !== 'off') {
+      <a class="unm-settings" routerLink="/accounting/settings">不想看到這頁？記帳設定 › 發票 可以關掉提醒&ngsp;<span aria-hidden="true">›</span></a>
+    }
+  }
+}
+
+@if (picking(); as p) {
+  <app-einvoice-target-sheet [invoice]="p.invoice" (picked)="picked(p.invoice, $event, p.key)" (closed)="picking.set(null)" />
+}

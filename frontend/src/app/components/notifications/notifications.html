@@ -79,7 +79,7 @@
       @if (trackingRows().length > 0) {
         <details class="notif-tracking">
           <summary>
-            <span class="tracking-head">追蹤中&ngsp;<span class="tracking-note">· 不計入數字</span></span>&ngsp;<span class="tracking-sum">{{ trackingSum() }}</span>
+            <span class="tracking-head">追蹤中&ngsp;<span class="tracking-note">· 不計入數字</span></span>&ngsp;<span class="tracking-sum">@for (part of trackingSum(); track $index) {@if (!$first) {&ngsp;·&ngsp;}<span class="tracking-part">{{ part }}</span>}</span>
           </summary>
           @for (row of trackingRows(); track row.id) {
             <div class="tracking-row">
@@ -113,6 +113,8 @@
     <div class="notif-pane" [class.notif-pane--card]="panes()">
       @if (open.kind === 'recon') {
         <app-recon-flow [statementId]="open.id" (closed)="closeFlow()" />
+      } @else if (open.kind === 'unmatched') {
+        <app-einvoice-unmatched (closed)="closeFlow()" />
       } @else {
         <app-einvoice-flow (closed)="closeFlow()" />
       }

@@ -9,6 +9,7 @@ import {
   INBOX_READ_LIMIT,
   askAccountIds,
   einvoiceTask,
+  einvoiceUnmatchedRow,
   inboxMissing,
   reconOverflowTask,
   reconTaskRoute,
@@ -295,3 +296,41 @@ describe('reconOverflowTask', () => {
     expect(tasks.some((t) => t.id === 'recon:more')).toBe(false);
   });
 });
+
+describe('einvoiceUnmatchedRow', () => {
+  const unmatched = (id: number, seller: string, total = '100') =>
+    makeEinvoice({ id, state: 'unmatched', seller_name: seller, seller_tax_id: '', total_amount: total });
+  const inbox = (einvoices: InboxEinvoice[], einvoice_unmatched?: number) =>
+    ({ ...makeInbox([], einvoice_unmatched === undefined ? {} : { einvoice_unmatched }), einvoices });
+
+  it('one uncounted row: the whole count, the top sellers by listed count, the unmatched page', () => {
+    const list = [
+      unmatched(1, '測試書店'), unmatched(2, '測試超商'), unmatched(3, '測試書店'), unmatched(4, '測試油站'),
+      unmatched(5, '測試書店'), unmatched(6, '測試超商'), unmatched(7, '測試咖啡'),
+      makeEinvoice({ id: 8, state: 'near', seller_name: '測試問題' }),
+    ];
+    expect(einvoiceUnmatchedRow(inbox(list, 9))).toEqual({
+      id: 'einvoices',
+      source: 'ledger',
+      title: '有發票沒有帳 · 9 張',
+      meta: '測試書店、測試超商、測試油站 等 4 家',
+      count: 9,
+      link: { label: '查看', route: '/notifications/einvoices', queryParams: { state: 'unmatched' } },
+    });
+  });
+
+  it('three sellers or fewer: no 等 tail; equal counts keep the larger total first', () => {
+    const row = einvoiceUnmatchedRow(inbox([unmatched(1, '測試甲', '50'), unmatched(2, '測試乙', '300')], 2));
+    expect(row?.meta).toBe('測試乙、測試甲');
+  });
+
+  it('none listed (cut page) still gives the row with an empty meta', () => {
+    expect(einvoiceUnmatchedRow(inbox([], 4))).toMatchObject({ title: '有發票沒有帳 · 4 張', meta: '' });
+  });
+
+  it('no row at 0, or when the API has no count (reminders off, older API)', () => {
+    expect(einvoiceUnmatchedRow(inbox([], 0))).toBeNull();
+    expect(einvoiceUnmatchedRow(inbox([unmatched(1, '測試甲')]))).toBeNull();
+  });
+});
+

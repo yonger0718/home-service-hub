@@ -147,6 +147,8 @@ export interface InboxCounts {
   other: number;
   /** Ambiguous + near e-invoices; separate from `ask` (the bell adds them with `inboxBellCount`). */
   einvoice_ask?: number;
+  /** Every unmatched e-invoice (D11, never counted); 0 while reminders are off. Absent on an older API. */
+  einvoice_unmatched?: number;
 }
 
 export interface InboxOut {

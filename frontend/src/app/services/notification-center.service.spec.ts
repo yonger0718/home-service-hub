@@ -854,6 +854,26 @@ describe('NotificationCenterService', () => {
     expect(svc.trackingRows().map(row => row.id)).toEqual(['debts']);
   });
 
+  it('invoices without an entry: one 追蹤中 row after the debts, never counted (D11)', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, {
+      inbox: inboxWith(0, { einvoice_ask: 1, einvoice_unmatched: 5 }),
+      counterparties: [person(1, '甲')],
+    });
+    expect(svc.trackingRows().map(row => row.id)).toEqual(['debts', 'einvoices']);
+    expect(svc.trackingRows()[1]).toMatchObject({ title: '有發票沒有帳 · 5 張', count: 5 });
+    expect(svc.summary().total).toBe(1); // the e-invoice question only
+  });
+
+  it('reminders off (count 0): no 有發票沒有帳 row, the e-invoice question still shows', async () => {
+    const svc = service();
+    svc.start();
+    await answer(0, { inbox: inboxWith(0, { einvoice_ask: 1, einvoice_unmatched: 0 }) });
+    expect(svc.trackingRows()).toEqual([]);
+    expect(svc.tasks().map(task => task.id)).toContain('einvoice');
+  });
+
   it('reads every source once per round', async () => {
     const svc = service();
     svc.start();

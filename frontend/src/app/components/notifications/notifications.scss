@@ -78,6 +78,20 @@
     min-height: 44px;
   }
 
+  /* 追蹤中 stays on one line; once open, the rows below carry what the summary says, so it steps aside. */
+  .tracking-head {
+    white-space: nowrap;
+  }
+
+  .tracking-sum {
+    min-width: 0;
+    text-align: right;
+  }
+
+  .notif-tracking[open] .tracking-sum {
+    display: none;
+  }
+
   /* Focus lands here after the review flow closes when the row has gone: scrolled into view, it stays clear of the
      fixed tab bar and its raised + button (tokens shared with mobile-nav and the toast outlet), plus 12 px of air. */
   app-page-header ::ng-deep h1 {
@@ -230,6 +244,10 @@
   color: var(--app-text-muted);
   font-size: 0.75rem;
   font-weight: 600;
+}
+
+.tracking-part {
+  white-space: nowrap;
 }
 
 .tracking-row {
