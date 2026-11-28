@@ -44,36 +44,48 @@ export function futuresItemName(key: string, status: FuturesPendingStatus): stri
   return status === 'conflict' ? `${base} · 不同版本` : base;
 }
 
-/** One findings code in plain words; null when it is not a whole code (unknown, or cut by the server). */
-function codeText(code: string): string | null {
-  if (code === 'carry') return '月初餘額接不上';
-  const [name, value] = [code.slice(0, code.indexOf(':')), code.slice(code.indexOf(':') + 1)];
-  if (!code.includes(':') || value === '') return null;
-  if (name === 'prev') {
-    if (SHORT_DATE.test(value)) return `前日餘額接不上（${value}）`;
-    if (ISO_DATE.test(value)) return `前日餘額接不上（${shortDate(value)}）`;
-    return null;
+/** A findings reason the app cannot put in plain words (an unknown code): shown once, never as sent. */
+const UNKNOWN_REASON = '對帳單有待確認的差異';
+/** At most this many reasons are written out; the rest is ` 等 N 項` (N: the reasons in all, as the e-invoice card). */
+export const FUTURES_REASONS_SHOWN = 2;
+/** `diff` letters against the sums of the month's daily rows (spec §6.4); `M` is against the last daily balance. */
+const DIFF_SUM_LABELS: Readonly<Record<string, string>> = { B: '出入金', G: '權利金', H: '手續費與稅', K: '期貨平倉損益' };
+
+/** One whole findings code in plain words: one reason, or two for a `diff` with both summed letters and `M`. */
+function codeReasons(code: string): string[] {
+  if (code === 'carry') return ['月初餘額接不上'];
+  const at = code.indexOf(':');
+  const [name, value] = at < 0 ? [code, ''] : [code.slice(0, at), code.slice(at + 1)];
+  if (name === 'prev' && SHORT_DATE.test(value)) return [`前日餘額接不上（${value}）`];
+  if (name === 'prev' && ISO_DATE.test(value)) return [`前日餘額接不上（${shortDate(value)}）`];
+  if (name === 'gap' && /^\d+$/.test(value)) return [`缺 ${Number(value)} 份日對帳單`];
+  if (name === 'diff' && /^[A-Z]+$/.test(value)) {
+    const letters = value.split('');
+    const sums = letters.filter(l => l in DIFF_SUM_LABELS).map(l => DIFF_SUM_LABELS[l]);
+    const out: string[] = [];
+    if (sums.length > 0) out.push(`${sums.join('、')}與日對帳單加總不符`);
+    if (letters.includes('M')) out.push('月底餘額與最後一份日對帳單不符');
+    if (letters.some(l => l !== 'M' && !(l in DIFF_SUM_LABELS))) out.push(UNKNOWN_REASON);
+    return out;
   }
-  if (name === 'gap' && /^\d+$/.test(value)) return `缺 ${Number(value)} 份日對帳單`;
-  if (name === 'diff' && /^[A-Z]+$/.test(value)) return `與日對帳單不符：${value.split('').join(' ')}`;
-  return null;
+  return [UNKNOWN_REASON];
 }
 
 /**
- * Line 2 of a pending item. A conflict: 收到內容不同的同日 / 同月對帳單. Findings: each code in plain words, joined by
- * `；`; a code the app does not know shows as sent. A reason at the server's 40-character cap may end inside a code:
- * that last code shows raw, and the line ends with `…`.
+ * Line 2 of a pending item. A conflict: 收到內容不同的同日 / 同月對帳單. Findings: each reason in plain words (never a
+ * code), the first two joined by `；`, then ` 等 N 項` when there are more (N: all of them). A reason at the server's
+ * 40-character cap may end inside a code: that code is not shown and counts as one more reason.
  */
 export function futuresReasonText(item: Pick<FuturesPendingItem, 'kind' | 'status' | 'reason'>): string {
   if (item.status === 'conflict') return item.kind === 'month' ? '收到內容不同的同月對帳單' : '收到內容不同的同日對帳單';
   const reason = item.reason ?? '';
-  const cut = reason.length >= FUTURES_REASON_CHARS;
   const codes = reason.split(',');
-  const tail = cut ? codes.pop() ?? '' : '';
-  const parts = codes.filter(code => code !== '').map(code => codeText(code) ?? code);
-  if (tail !== '') parts.push(tail);
-  if (parts.length === 0) return '對帳單有待確認的差異';
-  return `${parts.join('；')}${cut ? '…' : ''}`;
+  const tail = reason.length >= FUTURES_REASON_CHARS ? codes.pop() ?? '' : '';
+  const reasons = [...new Set(codes.filter(code => code !== '').flatMap(codeReasons))];
+  const total = reasons.length + (tail !== '' ? 1 : 0);
+  if (reasons.length === 0) return UNKNOWN_REASON;
+  const shown = reasons.slice(0, FUTURES_REASONS_SHOWN).join('；');
+  return total > FUTURES_REASONS_SHOWN || total > reasons.length ? `${shown} 等 ${total} 項` : shown;
 }
 
 /**

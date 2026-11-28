@@ -12,6 +12,42 @@
   margin: 1rem 0;
 }
 
+.fd-banner {
+  display: block;
+  margin: 1rem 0;
+}
+
+/* No statement yet: what the page will show, and the way to the import page's 永豐期貨對帳單 card. */
+.fd-empty {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: start;
+  margin: 1rem 0;
+
+  b {
+    font-size: 0.9375rem;
+  }
+
+  p {
+    color: var(--app-text-muted);
+    margin: 0;
+  }
+
+  a {
+    color: var(--app-primary);
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--app-primary);
+      outline-offset: 2px;
+    }
+  }
+}
+
 .fd-picker {
   align-items: center;
   display: flex;

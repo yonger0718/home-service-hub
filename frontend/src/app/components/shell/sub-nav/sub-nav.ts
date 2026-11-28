@@ -16,7 +16,7 @@ export class SubNavComponent {
   protected readonly nav = inject(NavigationStateService);
 
   protected readonly group = computed(() => this.nav.activeGroup());
-  protected readonly items = computed(() => this.group().items.filter(item => !item.sidebarOnly));
+  protected readonly items = computed(() => this.group().items);
   protected readonly show = computed(() => this.items().length > 1);
   protected readonly chips = computed(() => this.group().id === 'portfolio');
 

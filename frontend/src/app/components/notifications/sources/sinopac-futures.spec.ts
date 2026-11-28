@@ -34,7 +34,7 @@ describe('sinopac futures pending items', () => {
       icon: 'pi-file',
       title: '永豐期貨對帳單 10/27',
       when: '前日餘額接不上（10/23）',
-      meta: '自 10/28 起',
+      meta: '10/28 起待處理',
       amount: null,
       progress: null,
       primary: { label: '已處理', command: { kind: 'ackFutures', key: '2026-10-27', status: 'findings', name: '永豐期貨對帳單 10/27' } },
@@ -133,23 +133,36 @@ describe('sinopac futures pending items', () => {
     [{ reason: 'prev:2026-03-06' }, '前日餘額接不上（03/06）'],
     [{ reason: 'gap:3' }, '缺 3 份日對帳單'],
     [{ reason: 'carry' }, '月初餘額接不上'],
-    [{ reason: 'diff:BK' }, '與日對帳單不符：B K'],
-    [{ reason: 'gap:1,carry,diff:BGHKM' }, '缺 1 份日對帳單；月初餘額接不上；與日對帳單不符：B G H K M'],
+    // diff letters (spec §6.4): B G H K against the sums of the month's daily rows, M against the last daily balance.
+    [{ reason: 'diff:BK' }, '出入金、期貨平倉損益與日對帳單加總不符'],
+    [{ reason: 'diff:GH' }, '權利金、手續費與稅與日對帳單加總不符'],
+    [{ reason: 'diff:M' }, '月底餘額與最後一份日對帳單不符'],
+    [{ reason: 'diff:BM' }, '出入金與日對帳單加總不符；月底餘額與最後一份日對帳單不符'],
+    [{ reason: 'diff:XY' }, '對帳單有待確認的差異'],
+    [{ reason: 'diff:BX' }, '出入金與日對帳單加總不符；對帳單有待確認的差異'],
+    // At most two reasons; then 等 N 項 with N the number of reasons in all.
+    [{ reason: 'carry,gap:1' }, '月初餘額接不上；缺 1 份日對帳單'],
+    [{ reason: 'carry,diff:BKM' }, '月初餘額接不上；出入金、期貨平倉損益與日對帳單加總不符 等 3 項'],
     [{ reason: null }, '對帳單有待確認的差異'],
     [{ reason: '' }, '對帳單有待確認的差異'],
-    [{ reason: 'odd' }, 'odd'],
+    // A code the app does not know never shows as sent; two unknown codes are one reason.
+    [{ reason: 'odd' }, '對帳單有待確認的差異'],
+    [{ reason: 'odd,prev:x,gap:' }, '對帳單有待確認的差異'],
+    [{ reason: 'gap:2,odd,weird' }, '缺 2 份日對帳單；對帳單有待確認的差異'],
   ] as const)('futuresReasonText %o → %s', (o, text) => {
     expect(futuresReasonText(item(o as Partial<FuturesPendingItem>))).toBe(text);
   });
 
-  it('a reason cut at 40 characters mid-token shows the raw tail with …', () => {
+  it('a reason cut at 40 characters: the cut code counts as one more reason and never shows raw', () => {
     // 40 characters: the last code was cut inside its date.
-    const cut = 'prev:10/23,gap:12,carry,diff:BGHKM,prev:1';
-    const reason = cut.slice(0, 40);
+    const reason = 'prev:10/23,gap:12,carry,diff:BGHKM,prev:1'.slice(0, 40);
     expect(reason.length).toBe(40);
-    expect(futuresReasonText(item({ reason }))).toBe('前日餘額接不上（10/23）；缺 12 份日對帳單；月初餘額接不上；與日對帳單不符：B G H K M；prev:…');
-    // Cut right after a separator: nothing raw to show, still marked as cut.
-    expect(futuresReasonText(item({ reason: 'gap:12,'.padEnd(40, ',').slice(0, 40) }))).toBe('缺 12 份日對帳單…');
+    // prev, gap, carry, diff (B G H K), diff (M), the cut code: 6 reasons.
+    expect(futuresReasonText(item({ reason }))).toBe('前日餘額接不上（10/23）；缺 12 份日對帳單 等 6 項');
+    // Cut right after a separator: nothing was cut inside a code.
+    expect(futuresReasonText(item({ reason: 'gap:12,'.padEnd(40, ',').slice(0, 40) }))).toBe('缺 12 份日對帳單');
+    // A cut code alone.
+    expect(futuresReasonText(item({ reason: 'carry,' + 'x'.repeat(34) }))).toBe('月初餘額接不上 等 2 項');
   });
 
   it('futuresItemLabel: a date → MM/DD; a month → YYYY/MM 月對帳單', () => {

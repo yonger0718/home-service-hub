@@ -219,8 +219,8 @@ describe('PortfolioFuturesDetailComponent', () => {
 
     it('positions carried from earlier month', () => {
       const { text } = loaded(detail({ positions: positions() }));
-      expect(text()).toContain('持倉：01/28 日對帳單');
-      expect(text()).toContain('月底持倉可能不同');
+      expect(text()).toContain('留倉：01/28 日對帳單');
+      expect(text()).toContain('月底留倉可能不同');
       expect(text()).toContain('未沖銷損益');
       expect(text()).toContain('權利金市值');
     });
@@ -245,7 +245,7 @@ describe('PortfolioFuturesDetailComponent', () => {
 
     it('hides the card when positions is null', () => {
       const { text, el } = loaded(detail({ positions: null }));
-      expect(text()).not.toContain('持倉：');
+      expect(text()).not.toContain('留倉：');
       expect(el.querySelector('[data-testid="positions-card"]')).toBeNull();
     });
   });
@@ -285,13 +285,22 @@ describe('PortfolioFuturesDetailComponent', () => {
       expect(s.el.querySelector('[data-testid="month-picker"]')).not.toBeNull();
     });
 
-    it('500 shows the load-failed copy', () => {
+    it('500: a red banner 期貨資料載入失敗 with 重試; 重試 asks for the same month again', () => {
       const s = setup();
       s.months(['2026-03']);
       s.detailReq('2026-03').flush('boom', { status: 500, statusText: 'Server Error' });
       s.fixture.detectChanges();
-      expect(s.text()).toContain('期貨資料載入失敗');
+      const banner = s.el.querySelector('app-banner .banner--error');
+      expect(banner?.querySelector('.banner-title')?.textContent?.trim()).toBe('期貨資料載入失敗');
       expect(s.el.querySelector('[data-testid="month-picker"]')).not.toBeNull();
+      const retry = banner!.querySelector<HTMLButtonElement>('.banner-action')!;
+      expect(retry.textContent!.trim()).toBe('重試');
+      retry.click();
+      s.fixture.detectChanges();
+      s.detailReq('2026-03').flush(detail());
+      s.fixture.detectChanges();
+      expect(s.el.querySelector('app-banner')).toBeNull();
+      expect(s.text()).toContain('本月摘要');
     });
 
     it('malformed month param falls back to the newest month', () => {
@@ -302,18 +311,33 @@ describe('PortfolioFuturesDetailComponent', () => {
       expect(s.el.querySelector('[data-testid="fd-error"]')).toBeNull();
     });
 
-    it('no months shows 尚無期貨對帳單 and makes no detail request', () => {
+    it('no months: 尚無期貨對帳單, one line on what will show, a link 到匯入頁 › to the 永豐期貨 card; no detail request', () => {
       const s = setup();
       s.months([]);
-      expect(s.text()).toContain('尚無期貨對帳單');
+      const empty = s.el.querySelector('[data-testid="fd-empty"]')!;
+      expect(empty.querySelector('b')?.textContent?.trim()).toBe('尚無期貨對帳單');
+      expect(empty.querySelector('p')?.textContent?.trim()).toBe('永豐期貨對帳單匯入後，這裡會按月份列出每天的成交、出入金和留倉。');
+      const link = empty.querySelector<HTMLAnchorElement>('a')!;
+      expect(link.textContent!.replace(/\s+/g, ' ').trim()).toBe('到匯入頁 ›');
+      expect(link.querySelector('[aria-hidden="true"]')?.textContent).toBe('›');
+      expect(link.getAttribute('href')).toBe('/portfolio/import#sinopac-futures');
       s.http.expectNone(r => r.url === '/api/portfolio/futures/detail');
     });
 
-    it('months request failure shows the load-failed copy', () => {
+    it('months request failure: the red banner with 重試; 重試 asks for the months again, then the newest month', () => {
       const s = setup();
       s.http.expectOne('/api/portfolio/futures/months').flush('boom', { status: 500, statusText: 'Server Error' });
       s.fixture.detectChanges();
-      expect(s.text()).toContain('期貨資料載入失敗');
+      const banner = s.el.querySelector('app-banner .banner--error')!;
+      expect(banner.querySelector('.banner-title')?.textContent?.trim()).toBe('期貨資料載入失敗');
+      expect(s.el.querySelector('[data-testid="month-picker"]')).toBeNull();
+      banner.querySelector<HTMLButtonElement>('.banner-action')!.click();
+      s.fixture.detectChanges();
+      s.months(['2026-03']);
+      s.detailReq('2026-03').flush(detail());
+      s.fixture.detectChanges();
+      expect(s.el.querySelector('app-banner')).toBeNull();
+      expect(s.el.querySelector('[data-testid="month-picker"]')).not.toBeNull();
     });
   });
 });

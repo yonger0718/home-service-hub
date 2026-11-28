@@ -42,12 +42,20 @@ describe('SubNavComponent', () => {
     expect(el.querySelector('.seg-control')).not.toBeNull();
   });
 
-  it('phone portfolio sub-tabs do not include 期貨明細', async () => {
+  it('phone portfolio sub-tabs include 期貨 (期貨明細), after 交易', async () => {
     const el = await render('/portfolio');
 
     const links = Array.from(el.querySelectorAll('a'));
-    expect(links.map(a => a.textContent?.trim())).toEqual(['概覽', '交易', '股利', '已實現', '現金', '匯入']);
-    expect(links.some(a => a.getAttribute('href') === '/portfolio/futures')).toBe(false);
+    expect(links.map(a => a.textContent?.trim())).toEqual(['概覽', '交易', '期貨', '股利', '已實現', '現金', '匯入']);
+    expect(links[2].getAttribute('href')).toBe('/portfolio/futures');
+  });
+
+  it('marks 期貨 active on /portfolio/futures', async () => {
+    const el = await render('/portfolio/futures?month=2026-10');
+
+    const links = Array.from(el.querySelectorAll('a'));
+    expect(links[2].getAttribute('aria-current')).toBe('page');
+    expect(links[0].getAttribute('aria-current')).toBeNull();
   });
 
   it('marks 報表 active on /accounting/reports', async () => {
@@ -82,9 +90,9 @@ describe('SubNavComponent', () => {
     const el = await render('/portfolio', { import: { dot: true, label: '最近一次匯入失敗' } });
 
     const chips = Array.from(el.querySelectorAll('a'));
-    expect(chips.map(a => a.textContent?.trim())).toEqual(['概覽', '交易', '股利', '已實現', '現金', '匯入']);
+    expect(chips.map(a => a.textContent?.trim())).toEqual(['概覽', '交易', '期貨', '股利', '已實現', '現金', '匯入']);
     expect(el.querySelector('.chips')).not.toBeNull();
-    const imp = chips[5];
+    const imp = chips[6];
     expect(imp.querySelector('.sub-dot')).not.toBeNull();
     expect(imp.getAttribute('aria-label')).toBe('匯入，最近一次匯入失敗');
   });
@@ -97,7 +105,7 @@ describe('SubNavComponent', () => {
     );
 
     expect(el.querySelector('.sub-dot, .sub-count')).toBeNull();
-    expect(el.querySelectorAll('a')[5].getAttribute('aria-label')).toBe('匯入');
+    expect(el.querySelectorAll('a')[6].getAttribute('aria-label')).toBe('匯入');
   });
 
   it('still shows the sub-nav of a hidden group route', async () => {

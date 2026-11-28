@@ -4,6 +4,19 @@
   display: block;
   /* Opened with #cathay: leave a gap above the card, as the reward-rule cards do. */
   scroll-margin-top: 12px;
+  /* The arrival outline (import.ts adds `.card-arrived` for a few seconds): the primary colour on the card's own
+     corners, in place of the browser's focus outline, then it fades. The card is focused only by script (tabindex -1). */
+  border-radius: var(--radius-xl);
+  outline: none;
+  transition: box-shadow 0.6s ease;
+
+  @media (prefers-reduced-motion: reduce) {
+    transition: none;
+  }
+}
+
+:host(.card-arrived) {
+  box-shadow: 0 0 0 2px var(--app-primary);
 }
 
 b {

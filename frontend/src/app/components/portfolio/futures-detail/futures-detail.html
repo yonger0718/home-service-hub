@@ -1,9 +1,13 @@
 <app-page-header title="期貨明細"></app-page-header>
 
 @if (state() === 'no-months') {
-  <p class="fd-note" data-testid="fd-empty">尚無期貨對帳單</p>
+  <div class="fd-empty" data-testid="fd-empty">
+    <b>尚無期貨對帳單</b>
+    <p>永豐期貨對帳單匯入後，這裡會按月份列出每天的成交、出入金和留倉。</p>
+    <a routerLink="/portfolio/import" [fragment]="importCard">到匯入頁&ngsp;<span aria-hidden="true">›</span></a>
+  </div>
 } @else if (state() === 'error' && monthsFailed()) {
-  <p class="fd-note" role="alert" data-testid="fd-error">期貨資料載入失敗</p>
+  <app-banner class="fd-banner" data-testid="fd-error" tone="error" heading="期貨資料載入失敗" actionLabel="重試" (action)="retryMonths()" />
 } @else {
   <div class="fd-picker">
     <label for="fd-month">月份</label>
@@ -26,7 +30,7 @@
   @if (state() === 'loading') {
     <p class="fd-note">載入中…</p>
   } @else if (state() === 'error') {
-    <p class="fd-note" role="alert" data-testid="fd-error">期貨資料載入失敗</p>
+    <app-banner class="fd-banner" data-testid="fd-error" tone="error" heading="期貨資料載入失敗" actionLabel="重試" (action)="retryDetail()" />
   } @else if (state() === 'not-found') {
     <p class="fd-note" data-testid="fd-not-found">這個月份沒有期貨對帳單</p>
   } @else if (detail(); as d) {
@@ -176,12 +180,12 @@
     }
 
     @if (d.positions; as p) {
-      <app-bento class="fd-card" data-testid="positions-card" [title]="'持倉：' + md(p.date) + ' 日對帳單'">
+      <app-bento class="fd-card" data-testid="positions-card" [title]="'留倉：' + md(p.date) + ' 日對帳單'">
         @if (p.month_end_may_differ) {
-          <p class="fd-meta fd-warn">月底持倉可能不同</p>
+          <p class="fd-meta fd-warn">月底留倉可能不同</p>
         }
         @if (p.items.length === 0) {
-          <p class="fd-meta">無持倉</p>
+          <p class="fd-meta">無留倉</p>
         }
         <div class="fd-scroll">
           <table class="fd-table">
