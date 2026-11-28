@@ -18,11 +18,10 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { AutoPaySwitch, AutoPaySwitchChange } from '../billing/auto-pay';
 import { InboxService } from '../inbox/inbox.service';
-import { EINVOICE_SETTINGS_FRAGMENT, invoiceAmount } from '../inbox/einvoice-format';
+import { EINVOICE_SETTINGS_FRAGMENT, einvoiceErrorText, invoiceAmount } from '../inbox/einvoice-format';
 import { EinvoiceDismissed, EinvoiceMute, EinvoicePreferences } from '../inbox/einvoice.model';
 import { StepperComponent } from '../../ui/stepper/stepper';
 import { EinvoiceService } from '../inbox/einvoice.service';
-import { einvoiceErrorText } from '../inbox/einvoice-section/einvoice-section';
 import { OwnerRule } from '../inbox/inbox.model';
 import { isHandledKey } from '../accounting-ui';
 import { shortDate, slashDate, todayIso } from '../dates';

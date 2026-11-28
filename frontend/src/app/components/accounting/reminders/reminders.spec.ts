@@ -1168,21 +1168,19 @@ describe('AccountingRemindersComponent', () => {
       expect(el.querySelector('.empty')).toBeNull();
     });
 
-    it('an inbox whose only questions are e-invoices still shows 待處理 on 全部 and is not empty', () => {
+    it('e-invoice questions alone do not open 待處理 on 全部 (通知 owns them, 6.6)', () => {
       const { el } = render([], [], [], [], [], { ...inboxOut(), counts: { ...inboxOut().counts, einvoice_ask: 1 } });
-      expect(sections(el)).toEqual(['待處理']);
-      expect(el.querySelector('.empty')).toBeNull();
+      expect(sections(el)).toEqual([]);
     });
 
-    it('on 待處理 an inbox with only e-invoice questions counts them and is not empty', async () => {
+    it('on 待處理 e-invoice questions alone leave the tab empty', async () => {
       await TestBed.inject(Router).navigateByUrl('/?tab=todo');
       const { el } = render([], [], [], [], [], { ...inboxOut(), counts: { ...inboxOut().counts, einvoice_ask: 1 } });
       http.expectOne(r => r.url === '/api/accounting/reconciliation/actions').flush([]);
-      expect(text(el.querySelector('app-inbox-panel .inbox-head'))).toBe('要你決定 1 · 其他 0');
-      expect(el.querySelector('.empty')).toBeNull();
+      expect(el.querySelector('.empty')).not.toBeNull();
     });
 
-    it('on 待處理 an inbox whose only cards are unmatched e-invoice reminders is not empty', async () => {
+    it('on 待處理 unmatched e-invoice reminders alone leave the tab empty', async () => {
       await TestBed.inject(Router).navigateByUrl('/?tab=todo');
       const reminder = {
         id: 7, number: 'AB00000001', issue_date: '2026-09-03', seller_name: '範例超商', seller_tax_id: '00000001',
@@ -1192,8 +1190,8 @@ describe('AccountingRemindersComponent', () => {
         ...inboxOut(), counts: { ...inboxOut().counts, ask: 0, einvoice_ask: 0 }, einvoices: [reminder],
       });
       http.expectOne(r => r.url === '/api/accounting/reconciliation/actions').flush([]);
-      expect(el.querySelector('app-einvoice-section')).not.toBeNull();
-      expect(el.querySelector('.empty')).toBeNull();
+      expect(el.querySelector('app-einvoice-section')).toBeNull();
+      expect(el.querySelector('.empty')).not.toBeNull();
     });
 
     it('on 全部 unmatched e-invoice reminders alone do not open 待處理 (they never ring the bell)', () => {

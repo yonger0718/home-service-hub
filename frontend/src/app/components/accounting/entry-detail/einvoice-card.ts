@@ -8,8 +8,7 @@ import { Observable, Subscription } from 'rxjs';
 import { EntryDetail } from '../../../models/accounting.model';
 import { shortDate, slashDate } from '../dates';
 import { EinvoiceLinkTarget, EinvoicePicker, EntryEinvoice } from '../inbox/einvoice.model';
-import { invoiceAmount } from '../inbox/einvoice-format';
-import { einvoiceErrorText } from '../inbox/einvoice-section/einvoice-section';
+import { einvoiceErrorText, invoiceAmount } from '../inbox/einvoice-format';
 import { EinvoiceService } from '../inbox/einvoice.service';
 
 /** One line in the item box: an item, the 「… 另外 N 項」 sum of the rest, or the 合計 row. */

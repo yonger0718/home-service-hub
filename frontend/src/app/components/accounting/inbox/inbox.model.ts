@@ -145,7 +145,7 @@ export interface InboxCounts {
   settlement: number;
   dividend: number;
   other: number;
-  /** Ambiguous + near e-invoices; separate from `ask` (the bell adds them with `inboxBellCount`). */
+  /** Ambiguous + near e-invoices; separate from `ask`. 通知 counts them as one 要你確認 task (D10); the inbox does not. */
   einvoice_ask?: number;
   /** Every unmatched e-invoice (D11, never counted); 0 while reminders are off. Absent on an older API. */
   einvoice_unmatched?: number;

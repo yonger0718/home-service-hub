@@ -1,4 +1,6 @@
 import { formatMoney } from '../format';
+import { apiErrorText, splitApiCode } from '../statements/statement-view';
+import { INBOX_GENERIC_ERROR } from './inbox-view';
 
 const TWO_DECIMALS = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -13,3 +15,18 @@ export function invoiceAmount(value: string): string {
 
 /** The anchor of 記帳設定 › 發票, for links that land on that section. */
 export const EINVOICE_SETTINGS_FRAGMENT = 'einvoice-settings';
+
+const EINVOICE_ERRORS: Record<string, string> = {
+  einvoice_void: '發票已作廢',
+  target_ineligible: '這筆帳不能連結',
+  not_linked: '已解除連結',
+  seller_muted: '這家已設為不提醒',
+  retry: '請再試一次',
+};
+
+/** `沒成功：…` for a mapped 409 code (`detail` is `<code>` or `<code>: <detail>`), else the generic inbox text. */
+export function einvoiceErrorText(err: unknown): string {
+  const text = apiErrorText(err);
+  const known = text ? EINVOICE_ERRORS[splitApiCode(text).code] : undefined;
+  return known ? `沒成功：${known}` : INBOX_GENERIC_ERROR;
+}

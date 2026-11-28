@@ -29,7 +29,6 @@ import { AccountIconComponent } from '../account-icon/account-icon';
 import { BillState, BillingService } from '../billing/billing.service';
 import { AppInboxHandledListComponent } from '../inbox/handled-list/handled-list';
 import { AppInboxPanelComponent } from '../inbox/inbox-panel/inbox-panel';
-import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxOut } from '../inbox/inbox.model';
 import { InboxService } from '../inbox/inbox.service';
 import { StatementSummary } from '../statements/statement.model';
@@ -398,16 +397,14 @@ export class AccountingRemindersComponent {
     const cards = this.showCards() ? this.cardRows().length : 0;
     const debts = this.showDebts() ? this.debtCounterparties().length : 0;
     const queue = this.tab() === 'pending' ? groups.due.length + groups.upcoming.length : this.tab() === 'all' ? groups.due.length : 0;
-    // 待處理 lists the folded sections and every 發票待對帳 card (unmatched reminders too, which never ring the
-    // bell); 全部 previews the ask cards only.
+    // 待處理 lists the folded sections; 全部 previews the ask cards only. E-invoices live in 通知 (6.6).
     const counts = this.inbox()?.counts;
     const inbox = !counts
       ? 0
       : this.tab() === 'todo'
-        ? inboxBellCount(counts) + counts.proposed + counts.balance_gap + counts.settlement + counts.dividend + counts.other +
-          (this.inbox()?.einvoices?.length ?? 0)
+        ? counts.ask + counts.proposed + counts.balance_gap + counts.settlement + counts.dividend + counts.other
         : this.tab() === 'all'
-          ? inboxBellCount(counts)
+          ? counts.ask
           : 0;
     const failed =
       (this.showCards() && this.billsFailed()) || (this.showQueue() && this.queueFailed()) || (this.tab() === 'todo' && this.inboxFailed());
@@ -665,9 +662,9 @@ export class AccountingRemindersComponent {
     }
   }
 
-  /** 全部's 待處理 preview gate: ask cards plus e-invoice questions. */
+  /** 全部's 待處理 preview gate: the ask cards. */
   protected bellCount(data: InboxOut): number {
-    return inboxBellCount(data.counts);
+    return data.counts.ask;
   }
 
   setTab(tab: ReminderTab): void {
