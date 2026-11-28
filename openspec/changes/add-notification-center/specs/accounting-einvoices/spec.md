@@ -81,3 +81,20 @@ The reconciliation inbox SHALL return, for each listed invoice, `seller_dismisse
 - **GIVEN** one `ambiguous` and two `unmatched` invoices
 - **WHEN** the inbox is read with `limit=1`
 - **THEN** only the `ambiguous` invoice SHALL be listed and `counts.einvoice_unmatched` SHALL be 2
+
+### Requirement: Entry invoice recorded amount
+
+The entry detail's `einvoice` SHALL carry `recorded_amount`: what the linked entry or group records in the invoice's terms, by the rules the matcher compares with. For an entry linked by its foreign original amount it SHALL be that amount; otherwise the entry's amount plus its fee and discount children, as a positive figure. For a group it SHALL be the net of its expense and receivable members when they share one currency, and null otherwise.
+
+#### Scenario: Discount on the entry
+- **GIVEN** an entry of −130 with a fee child of −10 and a discount child of +20, linked to an invoice of 125
+- **THEN** `recorded_amount` SHALL be 120
+
+#### Scenario: Group in one currency
+- **GIVEN** a split group of −2,000 and −460 with a −3 fee on the second, linked to an invoice of 2,466
+- **WHEN** either member's detail is read
+- **THEN** `recorded_amount` SHALL be 2,463
+
+#### Scenario: Mixed-currency group
+- **GIVEN** a group with a TWD member and a USD member
+- **THEN** `recorded_amount` SHALL be null

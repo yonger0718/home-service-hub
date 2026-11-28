@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from ..models import Category, Einvoice, EinvoiceItem, EinvoiceLink, EinvoiceSellerMute, LedgerEntry
 from .einvoice_matcher import (
-    Target, _candidates, _span, eligible_targets, entry_target, group_target, order_by_closeness,
+    Target, _candidates, _span, eligible_targets, entry_target, group_target, linked_recorded_amount,
+    order_by_closeness,
 )
 from .errors import CodedConflictError, NotFoundError
 from .ledger_service import main_currency
@@ -147,6 +148,7 @@ def entry_einvoice(db: Session, entry: LedgerEntry) -> dict | None:
     inv = db.get(Einvoice, link.invoice_id)
     return {"id": inv.id, "number": inv.number, "issue_date": inv.issue_date, "seller_name": inv.seller_name,
             "total_amount": inv.total_amount, "linked_by": link.linked_by, "linked_to": linked_to,
+            "recorded_amount": linked_recorded_amount(db, entry_id=link.entry_id, group_id=link.group_id),
             "items": _items_by_invoice(db, [inv.id]).get(inv.id, [])}
 
 

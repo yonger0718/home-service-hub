@@ -1,5 +1,6 @@
 """E-invoice on entry detail, the manual-link picker and linked-item search (spec §7.6, §10). Synthetic data only."""
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
@@ -188,3 +189,54 @@ def test_picker_of_stamped_entry_offers_only_that_number(client, db_session, see
     assert [i["number"] for i in _picker(client, plain.id)["invoices"]] == ["AB00000001", "AB00000002"]
     res = client.post(f"/einvoices/{out['invoices'][0]['id']}/link", json={"entry_id": stamped.id})
     assert res.status_code == 200, res.text
+
+
+# --- recorded_amount (D12 match chip): the linked target's amount in the invoice's terms, by the matcher's net rule --
+
+def test_recorded_amount_plain_entry(client, db_session, seed):
+    entry = _linked_entry(client, db_session, seed, (("測試品項", "120"),))
+    assert _detail(client, entry.id)["einvoice"]["recorded_amount"] == "120.0000"
+
+
+def test_recorded_amount_counts_fee_and_discount_children_only(client, db_session, seed):
+    a = seed.account("A")
+    parent = seed.entry(a, "-130", day=D)
+    seed.entry(a, "-10", kind="fee", day=D, parent_entry_id=parent.id)
+    seed.entry(a, "20", kind="discount", day=D, parent_entry_id=parent.id)
+    seed.entry(a, "-7", kind="reward", day=D, parent_entry_id=parent.id)  # not a net kind
+    db_session.commit()
+    import_(client, invoice(total="125", items=(("測試品項", "125"),)))
+    _link(db_session, "AB00000001", entry=parent, by="owner")
+    assert Decimal(_detail(client, parent.id)["einvoice"]["recorded_amount"]) == Decimal("120")
+
+
+def test_recorded_amount_foreign_entry_uses_original_amount(client, db_session, seed):
+    entry = seed.entry(seed.account("A"), "-660", day=D, original_currency="USD", original_amount=Decimal("-20.99"))
+    db_session.commit()
+    import_(client, invoice(total="20.99", seller_name="Example SaaS Inc.", items=(("Plan", "20.99"),)))
+    _link(db_session, "AB00000001", entry=entry)
+    assert Decimal(_detail(client, entry.id)["einvoice"]["recorded_amount"]) == Decimal("20.99")
+
+
+def test_recorded_amount_group_net_on_every_member(client, db_session, seed):
+    a = seed.account("A")
+    g = seed.group()
+    m1 = seed.entry(a, "-2000", day=D, group_id=g.id)
+    m2 = seed.entry(a, "-460", day=D, group_id=g.id)
+    seed.entry(a, "-3", kind="fee", day=D, parent_entry_id=m2.id)
+    db_session.commit()
+    import_(client, invoice(total="2466", items=(("測試品項", "2466"),)))
+    _link(db_session, "AB00000001", group=g, by="owner")
+    for m in (m1, m2):
+        assert Decimal(_detail(client, m.id)["einvoice"]["recorded_amount"]) == Decimal("2463")
+
+
+def test_recorded_amount_null_for_mixed_currency_group(client, db_session, seed):
+    g = seed.group()
+    m1 = seed.entry(seed.account("A"), "-100", day=D, group_id=g.id)
+    seed.entry(seed.account("B", currency="USD"), "-5", day=D, group_id=g.id)
+    db_session.commit()
+    import_(client, invoice())
+    _link(db_session, "AB00000001", group=g, by="owner")
+    out = _detail(client, m1.id)["einvoice"]
+    assert out["linked_to"] == "group" and out["recorded_amount"] is None

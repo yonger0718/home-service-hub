@@ -149,6 +149,28 @@ def group_target(db: Session, group_id: int) -> Target | None:
     return found[0] if found else None
 
 
+def linked_recorded_amount(db: Session, *, entry_id: int | None, group_id: int | None) -> Decimal | None:
+    """What the linked entry or group records, in the invoice's terms (positive), by the rules the matcher compares
+    with: a foreign entry its original amount, else the net (amount plus fee / discount children, sign flipped); a group
+    the net of its expense / receivable members when they share one currency, else None. Unlike `entry_target` /
+    `group_target` it reads linked targets too (D12 match chip)."""
+    if entry_id is not None:
+        entry = db.get(LedgerEntry, entry_id)
+        if entry is None:
+            return None
+        if entry.original_currency not in (None, main_currency(db)) and entry.original_amount is not None:
+            return abs(Decimal(entry.original_amount))
+        return -(Decimal(entry.amount) + _child_sums(db, [entry.id]).get(entry.id, Decimal(0)))
+    if group_id is None:
+        return None
+    counted = list(db.scalars(select(LedgerEntry).where(
+        LedgerEntry.group_id == group_id, LedgerEntry.parent_entry_id.is_(None), LedgerEntry.kind.in_(GROUP_NET_KINDS))))
+    if not counted or len({e.currency for e in counted}) != 1:
+        return None
+    nets = _child_sums(db, [e.id for e in counted])
+    return -sum((Decimal(e.amount) + nets.get(e.id, Decimal(0)) for e in counted), Decimal(0))
+
+
 # --- candidate rules (§7.3, §7.4) ----------------------------------------------------------------------------------
 
 def _in_window(t: Target, day: date, window_days: int) -> bool:
