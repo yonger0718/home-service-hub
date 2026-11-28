@@ -87,7 +87,7 @@ The switch and the steppers SHALL save through `PATCH /einvoices/preferences`.
 
 ### Requirement: E-invoice settings feedback
 
-A failed stepper save in 記帳設定 › 發票 SHALL say 「沒存到，已改回 <value>」 right under its row, with 重試. 恢復提醒 and 放回 SHALL each confirm with a toast whose 復原 undoes it.
+A failed stepper save in 記帳設定 › 發票 SHALL say 「沒存到，已改回 <value>」 right under its row, with 重試. 恢復提醒 and 放回 SHALL each confirm with a toast whose 復原 undoes it. Every 復原 on the card and in settings SHALL refuse, with 「復原沒成功：這張發票已經變動」, once the invoice changed since the toast. While the 換一張發票 list loads, focus SHALL be on its 取消, so Esc cancels it.
 
 #### Scenario: Undo 放回
 - **WHEN** the owner taps 放回 on a 不用記帳 invoice and then the toast's 復原

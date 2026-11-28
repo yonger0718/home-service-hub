@@ -424,6 +424,61 @@ def test_replace_refusals_change_nothing(client, db_session, seed):
     unchanged()
 
 
+# --- 復原 preconditions (AGENT-638): an undo whose state moved on refuses and changes nothing ---------------------
+
+def test_replace_undo_refuses_once_the_invoice_sits_on_another_target(client, db_session, seed):
+    entry = _auto_linked(client, db_session, seed)
+    _second(client)
+    other = seed.entry(seed.account("B"), "-125", day=D)
+    db_session.commit()
+    _replace(client, db_session, "AB00000001", "AB00000002")
+    _post(client, "AB00000002", "link", {"entry_id": other.id}, db=db_session)  # another client moved it on
+    res = client.post(f"/einvoices/{_row(db_session, 'AB00000002').id}/replace",
+                      json={"with_invoice_id": _row(db_session).id, "entry_id": entry.id})
+    _conflict(res, "einvoice_changed")
+    assert _link(db_session, "AB00000002").entry_id == other.id and _stamp(db_session, other.id) == "AB00000002"
+    assert _state(db_session) == ("unmatched", None) and _stamp(db_session, entry.id) is None
+    ok = client.post(f"/einvoices/{_row(db_session, 'AB00000002').id}/replace",
+                     json={"with_invoice_id": _row(db_session).id, "entry_id": other.id})
+    assert ok.status_code == 200, ok.text  # the precondition holds: the same call goes through
+
+
+def test_replace_precondition_names_one_target(client, db_session):
+    res = client.post("/einvoices/1/replace", json={"with_invoice_id": 2, "entry_id": 1, "group_id": 1})
+    assert res.status_code == 422, res.text
+
+
+def test_link_if_unlinked_refuses_once_the_invoice_is_linked_elsewhere(client, db_session, seed):
+    entry = _auto_linked(client, db_session, seed)
+    other = seed.entry(seed.account("B"), "-120", day=D)
+    db_session.commit()
+    _post(client, "AB00000001", "unlink", db=db_session)
+    _post(client, "AB00000001", "link", {"entry_id": other.id}, db=db_session)  # linked elsewhere meanwhile
+    res = client.post(f"/einvoices/{_row(db_session).id}/link", json={"entry_id": entry.id, "if_unlinked": True})
+    _conflict(res, "einvoice_changed")
+    assert _link(db_session).entry_id == other.id and _stamp(db_session, entry.id) is None
+    _post(client, "AB00000001", "unlink", db=db_session)
+    out = _post(client, "AB00000001", "link", {"entry_id": entry.id, "if_unlinked": True}, db=db_session)
+    assert (out["state"], out["entry_id"]) == ("linked", entry.id)
+
+
+def test_dismiss_if_unmatched_refuses_once_the_invoice_moved_on(client, db_session, seed):
+    import_(client, invoice())
+    _post(client, "AB00000001", "dismiss", db=db_session)
+    _post(client, "AB00000001", "undismiss", db=db_session)  # 放回
+    entry = seed.entry(seed.account("A"), "-120", day=D)
+    db_session.commit()
+    enable(client)
+    assert _match(client)["linked"] == 1  # the next run linked it before the 復原
+    res = client.post(f"/einvoices/{_row(db_session).id}/dismiss", json={"if_unmatched": True})
+    _conflict(res, "einvoice_changed")
+    assert _link(db_session).entry_id == entry.id and _stamp(db_session, entry.id) == "AB00000001"
+    _post(client, "AB00000001", "unlink", db=db_session)
+    _post(client, "AB00000001", "undismiss", db=db_session)
+    out = _post(client, "AB00000001", "dismiss", {"if_unmatched": True}, db=db_session)
+    assert (out["state"], out["dismiss_reason"]) == ("dismissed", "owner")
+
+
 # --- mutes ----------------------------------------------------------------------------------------------------
 
 def _keeps_questions_and_links(db, linked_entry_id):

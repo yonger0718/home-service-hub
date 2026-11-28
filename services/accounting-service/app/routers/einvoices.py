@@ -119,7 +119,8 @@ def targets(invoice_id: int, days: int = Query(14, ge=1, le=60), db: Session = D
 @router.post("/{invoice_id}/link", response_model=EinvoiceStateOut, dependencies=WRITE)
 def link(invoice_id: int, body: EinvoiceLinkIn, db: Session = Depends(get_db)):
     with _writes():
-        out = einvoice_service.link(db, invoice_id, entry_id=body.entry_id, group_id=body.group_id)
+        out = einvoice_service.link(db, invoice_id, entry_id=body.entry_id, group_id=body.group_id,
+                                     if_unlinked=body.if_unlinked)
         db.commit()
     return out
 
@@ -135,7 +136,8 @@ def unlink(invoice_id: int, db: Session = Depends(get_db)):
 @router.post("/{invoice_id}/replace", response_model=EinvoiceReplaceOut, dependencies=WRITE)
 def replace(invoice_id: int, body: EinvoiceReplaceIn, db: Session = Depends(get_db)):
     with _writes():
-        out = einvoice_service.replace(db, invoice_id, with_invoice_id=body.with_invoice_id)
+        out = einvoice_service.replace(db, invoice_id, with_invoice_id=body.with_invoice_id,
+                                       expect_entry_id=body.entry_id, expect_group_id=body.group_id)
         db.commit()
     return out
 
@@ -143,7 +145,8 @@ def replace(invoice_id: int, body: EinvoiceReplaceIn, db: Session = Depends(get_
 @router.post("/{invoice_id}/dismiss", response_model=EinvoiceStateOut, dependencies=WRITE)
 def dismiss(invoice_id: int, body: EinvoiceDismissIn | None = None, db: Session = Depends(get_db)):
     with _writes():
-        out = einvoice_service.dismiss(db, invoice_id, mute_seller=body.mute_seller if body else False)
+        out = einvoice_service.dismiss(db, invoice_id, mute_seller=body.mute_seller if body else False,
+                                       if_unmatched=body.if_unmatched if body else False)
         db.commit()
     return out
 

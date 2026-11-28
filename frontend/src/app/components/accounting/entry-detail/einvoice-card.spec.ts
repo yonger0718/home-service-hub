@@ -561,6 +561,23 @@ describe('AppEntryEinvoiceCardComponent', () => {
         expect(document.activeElement).toBe(root.querySelector('.einv-more'));
       });
 
+      it('while the list loads, focus is on 取消 and Esc cancels there: the drawer never sees it', async () => {
+        menuItem(root, '換一張發票').click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        const req = http.expectOne(swapUrl); // still pending
+        expect(document.activeElement).toBe(root.querySelector('.swap-cancel'));
+        const outer = vi.fn();
+        document.addEventListener('keydown', outer);
+        const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+        document.activeElement!.dispatchEvent(esc);
+        document.removeEventListener('keydown', outer);
+        fixture.detectChanges();
+        expect(outer).not.toHaveBeenCalled();
+        expect(root.querySelector('.swap')).toBeNull();
+        expect(req.cancelled).toBe(true);
+      });
+
       it('Esc in the list cancels it there: the drawer never sees it', () => {
         openSwap();
         const outer = vi.fn();
@@ -584,7 +601,7 @@ describe('AppEntryEinvoiceCardComponent', () => {
         expect(toast()).toMatchObject({ kind: 'done', text: '已換成 AB00000312', action: { label: '復原' } });
         toast()!.action!.run();
         const back = http.expectOne('/api/accounting/einvoices/312/replace');
-        expect(back.request.body).toEqual({ with_invoice_id: 9 });
+        expect(back.request.body).toEqual({ with_invoice_id: 9, entry_id: 42 }); // only while 312 is still on this entry
         back.flush({ previous: { id: 312, state: 'unmatched' }, current: { id: 9, state: 'linked' } });
         expect(changed).toBe(2);
         expect(toast()).toMatchObject({ kind: 'done', text: '已換回 AB00000009' });
@@ -646,7 +663,7 @@ describe('AppEntryEinvoiceCardComponent', () => {
         expect(toast()).toMatchObject({ kind: 'done', text: '已解除連結 AB00000009', action: { label: '復原' } });
         toast()!.action!.run();
         const relink = http.expectOne('/api/accounting/einvoices/9/link');
-        expect(relink.request.body).toEqual({ entry_id: 42 });
+        expect(relink.request.body).toEqual({ entry_id: 42, if_unlinked: true }); // never moves it off a later link
         relink.flush({ id: 9, state: 'linked' });
         expect(changed).toBe(2);
         expect(toast()).toMatchObject({ kind: 'done', text: '已連回 AB00000009' });
@@ -657,7 +674,9 @@ describe('AppEntryEinvoiceCardComponent', () => {
         menuItem(fixture.nativeElement, '解除連結').click();
         http.expectOne('/api/accounting/einvoices/10/unlink').flush({ id: 10, state: 'dismissed' });
         toast()!.action!.run();
-        http.expectOne('/api/accounting/einvoices/10/link').flush({ id: 10, state: 'linked' });
+        const relink = http.expectOne('/api/accounting/einvoices/10/link');
+        expect(relink.request.body).toEqual({ group_id: 77, if_unlinked: true });
+        relink.flush({ id: 10, state: 'linked' });
         expect(toast()?.text).toBe('已連回 AB00000010');
       });
 
@@ -668,6 +687,16 @@ describe('AppEntryEinvoiceCardComponent', () => {
         toast()!.action!.run();
         http.expectOne('/api/accounting/einvoices/9/link').flush({ message: 'target_ineligible' }, { status: 409, statusText: 'c' });
         expect(toast()).toMatchObject({ kind: 'error', text: '復原沒成功：這筆帳不能連結' });
+      });
+
+      it('a stale 復原 (the invoice moved on since) says so and changes nothing', () => {
+        render({ einvoice: SEVEN });
+        menuItem(fixture.nativeElement, '解除連結').click();
+        http.expectOne('/api/accounting/einvoices/9/unlink').flush({ id: 9, state: 'dismissed' });
+        toast()!.action!.run();
+        http.expectOne('/api/accounting/einvoices/9/link').flush({ message: 'einvoice_changed' }, { status: 409, statusText: 'c' });
+        expect(toast()).toMatchObject({ kind: 'error', text: '復原沒成功：這張發票已經變動' });
+        expect(changed).toBe(1);
       });
     });
 

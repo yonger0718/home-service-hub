@@ -295,6 +295,7 @@ export class AppEntryEinvoiceCardComponent {
   loadSwap(): void {
     this.error.set(null);
     this.swapState.set({ status: 'loading' });
+    this.focusIn('.swap-cancel'); // the menu item is gone: keys (Esc) stay in the list while it loads
     this.pickerSub?.unsubscribe();
     const detail = this.detail();
     const recorded = detail.einvoice?.recorded_amount ?? null;
@@ -336,10 +337,11 @@ export class AppEntryEinvoiceCardComponent {
     }
     this.busy.set(true);
     this.error.set(null);
+    const target = this.linkTarget(old);
     this.service.replace(old.id, row.id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: () => {
         this.afterSwap = { entryId: this.detail().id };
-        this.toasts.done(`已換成 ${row.number}`, { undo: () => this.undoSwap(old, row) });
+        this.toasts.done(`已換成 ${row.number}`, { undo: () => this.undoSwap(old, row, target) });
         this.changed.emit(); // busy stays on until the reloaded detail resets the card
       },
       error: (err: unknown) => {
@@ -349,8 +351,9 @@ export class AppEntryEinvoiceCardComponent {
     });
   }
 
-  private undoSwap(old: EntryEinvoice, row: EinvoiceSwapRow): void {
-    this.service.replace(row.id, old.id).subscribe({
+  /** Only while the new invoice still sits on the same target; otherwise `einvoice_changed` and nothing moves. */
+  private undoSwap(old: EntryEinvoice, row: EinvoiceSwapRow, target: EinvoiceLinkTarget): void {
+    this.service.replace(row.id, old.id, target).subscribe({
       next: () => {
         this.toasts.done(`已換回 ${old.number}`);
         this.emitChanged();
@@ -365,24 +368,30 @@ export class AppEntryEinvoiceCardComponent {
       return;
     }
     this.closeMenu(false);
-    const detail = this.detail();
-    const groupId = detail.group?.id ?? null;
-    const target: EinvoiceLinkTarget = inv.linked_to === 'group' && groupId !== null ? { group_id: groupId } : { entry_id: detail.id };
-    this.afterUnlink = { entryId: detail.id };
+    const target = this.linkTarget(inv);
+    this.afterUnlink = { entryId: this.detail().id };
     this.write(this.service.unlink(id), () =>
       this.toasts.done(`已解除連結 ${inv.number}`, { undo: () => this.relink(inv, target) }),
     );
   }
 
-  /** 解除連結's 復原: the same invoice back on the same entry or group (now an owner link). */
+  /** 解除連結's 復原: the same invoice back on the same entry or group (now an owner link), only while it is still
+   *  unlinked; once linked again it refuses with `einvoice_changed` and nothing moves. */
   private relink(inv: EntryEinvoice, target: EinvoiceLinkTarget): void {
-    this.service.link(inv.id, target).subscribe({
+    this.service.link(inv.id, target, { ifUnlinked: true }).subscribe({
       next: () => {
         this.toasts.done(`已連回 ${inv.number}`);
         this.emitChanged();
       },
       error: (err: unknown) => this.toasts.error(`復原沒成功：${this.why(err)}`),
     });
+  }
+
+  /** The entry or the split group the invoice is linked to now. */
+  private linkTarget(inv: EntryEinvoice): EinvoiceLinkTarget {
+    const detail = this.detail();
+    const groupId = detail.group?.id ?? null;
+    return inv.linked_to === 'group' && groupId !== null ? { group_id: groupId } : { entry_id: detail.id };
   }
 
   private why(err: unknown): string {

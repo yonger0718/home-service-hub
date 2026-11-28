@@ -962,7 +962,7 @@ describe('AccountingSettingsComponent', () => {
       expect(toast()).toMatchObject({ kind: 'done', text: '已放回：測試書店 $350', action: { label: '復原' } });
       toast()!.action!.run();
       const again = http.expectOne(r => r.method === 'POST' && r.url === `${EINVOICE_URL}/71/dismiss`);
-      expect(again.request.body).toEqual({ mute_seller: false });
+      expect(again.request.body).toEqual({ mute_seller: false, if_unmatched: true }); // never undoes a link made since
       again.flush({ id: 71, state: 'dismissed', dismiss_reason: 'owner', linked_by: null });
       answer(http, `${EINVOICE_URL}/dismissed`, DISMISSED);
       fixture.detectChanges();
@@ -1185,4 +1185,3 @@ describe('AccountingSettingsComponent 專案 › 不計入報表', () => {
   });
 
 });
-

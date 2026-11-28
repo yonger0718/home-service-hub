@@ -112,6 +112,20 @@ The entry detail's `einvoice` SHALL carry `recorded_amount`: what the linked ent
 - **WHEN** the new invoice is linked to another entry
 - **THEN** the call SHALL be refused with 409 `einvoice_linked` and nothing SHALL change
 
+### Requirement: Undo preconditions
+
+An undo SHALL never overwrite work done since its toast. `replace` MAY name the target the link must still be on (`entry_id` or `group_id`), `link` MAY carry `if_unlinked`, and `dismiss` MAY carry `if_unmatched`. When the precondition no longer holds, the call SHALL be refused with 409 `einvoice_changed` and nothing SHALL change.
+
+#### Scenario: 放回's 復原 after the next run linked the invoice
+- **GIVEN** a 放回 invoice that the next run linked to an entry
+- **WHEN** `dismiss` is called with `if_unmatched`
+- **THEN** the call SHALL be refused with 409 `einvoice_changed` and the link and stamp SHALL stay
+
+#### Scenario: Swap undo after the invoice moved on
+- **GIVEN** invoice B, swapped onto entry X, was since linked to entry Y
+- **WHEN** B is replaced with A naming entry X
+- **THEN** the call SHALL be refused with 409 `einvoice_changed` and B SHALL stay on Y
+
 ### Requirement: Re-create a seller mute
 
 `POST /einvoices/mutes/{tax_id}` (write scope) SHALL create the mute idempotently, as the dismiss with `mute_seller` does, so the settings page can undo 恢復提醒.

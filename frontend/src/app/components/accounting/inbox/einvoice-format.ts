@@ -21,6 +21,7 @@ const EINVOICE_ERRORS: Record<string, string> = {
   target_ineligible: '這筆帳不能連結',
   not_linked: '已解除連結',
   einvoice_linked: '這張已連到別筆帳',
+  einvoice_changed: '這張發票已經變動',
   seller_muted: '這家已設為不提醒',
   retry: '請再試一次',
 };

@@ -22,22 +22,27 @@ export class EinvoiceService {
   private readonly accounting = inject(AccountingService);
   private readonly apiUrl = '/api/accounting/einvoices';
 
-  link(id: number, target: EinvoiceLinkTarget): Observable<EinvoiceStateOut> {
-    return this.http.post<EinvoiceStateOut>(`${this.apiUrl}/${id}/link`, target).pipe(this.changed());
+  /** `ifUnlinked` (the 復原 of 解除連結): 409 `einvoice_changed` once the invoice is linked again, never moving it. */
+  link(id: number, target: EinvoiceLinkTarget, opts: { ifUnlinked?: boolean } = {}): Observable<EinvoiceStateOut> {
+    const body = opts.ifUnlinked ? { ...target, if_unlinked: true } : target;
+    return this.http.post<EinvoiceStateOut>(`${this.apiUrl}/${id}/link`, body).pipe(this.changed());
   }
 
   unlink(id: number): Observable<EinvoiceStateOut> {
     return this.http.post<EinvoiceStateOut>(`${this.apiUrl}/${id}/unlink`, {}).pipe(this.changed());
   }
 
-  dismiss(id: number, muteSeller = false): Observable<EinvoiceStateOut> {
-    return this.http.post<EinvoiceStateOut>(`${this.apiUrl}/${id}/dismiss`, { mute_seller: muteSeller }).pipe(this.changed());
+  /** `ifUnmatched` (the 復原 of 放回): 409 `einvoice_changed` once the invoice left 沒對到, never removing a newer link. */
+  dismiss(id: number, muteSeller = false, opts: { ifUnmatched?: boolean } = {}): Observable<EinvoiceStateOut> {
+    const body = opts.ifUnmatched ? { mute_seller: muteSeller, if_unmatched: true } : { mute_seller: muteSeller };
+    return this.http.post<EinvoiceStateOut>(`${this.apiUrl}/${id}/dismiss`, body).pipe(this.changed());
   }
 
-  /** 換一張發票: the link moves from `id` to `withId`; `id` goes back to 沒對到. 復原 is the same call reversed. */
-  replace(id: number, withId: number): Observable<EinvoiceReplaceOut> {
+  /** 換一張發票: the link moves from `id` to `withId`; `id` goes back to 沒對到. 復原 is the same call reversed and
+   *  names the target (`expect`): 409 `einvoice_changed` once `id` moved elsewhere, so it never undoes newer work. */
+  replace(id: number, withId: number, expect?: EinvoiceLinkTarget): Observable<EinvoiceReplaceOut> {
     return this.http
-      .post<EinvoiceReplaceOut>(`${this.apiUrl}/${id}/replace`, { with_invoice_id: withId })
+      .post<EinvoiceReplaceOut>(`${this.apiUrl}/${id}/replace`, { with_invoice_id: withId, ...expect })
       .pipe(this.changed());
   }
 

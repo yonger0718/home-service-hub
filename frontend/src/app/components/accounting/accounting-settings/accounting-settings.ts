@@ -487,7 +487,7 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
     this.einvoice.undismiss(invoice.id).subscribe({
       next: () => {
         this.loadDismissed();
-        this.toasts.done(`已放回：${what}`, { undo: () => this.undo(this.einvoice.dismiss(invoice.id), `已復原：${what}`, () => this.loadDismissed()) });
+        this.toasts.done(`已放回：${what}`, { undo: () => this.undo(this.einvoice.dismiss(invoice.id, false, { ifUnmatched: true }), `已復原：${what}`, () => this.loadDismissed()) });
       },
       error: err => this.einvoiceMessage.set(einvoiceErrorText(err)),
     });

@@ -14,6 +14,8 @@ from ..schemas.einvoices import EinvoiceImportIn, EinvoiceIn, RunbookRefIn
 from .einvoice_rules import period_of
 from .errors import RETRY, CodedConflictError, NotFoundError, ValidationError
 
+CHANGED = "einvoice_changed"  # a 復原 whose state moved on since the toast (AGENT-638); nothing changes
+
 EINVOICE_LOCK_KEY = 0x45494E56
 KNOWN_STATUSES = ("開立", "作廢", "折讓")
 VOID_STATUS = "作廢"
@@ -159,14 +161,18 @@ def _eligible(db: Session, invoice: Einvoice, entry_id: int | None, group_id: in
     return group_target(db, group_id) is not None
 
 
-def link(db: Session, invoice_id: int, *, entry_id: int | None, group_id: int | None) -> dict:
+def link(db: Session, invoice_id: int, *, entry_id: int | None, group_id: int | None,
+         if_unlinked: bool = False) -> dict:
     """Owner link / re-link (§7.5). Eligibility is checked under the lock, so a racing link of the same target
-    gets `target_ineligible`. A re-link updates the link row in place and never deletes it (§5)."""
+    gets `target_ineligible`. A re-link updates the link row in place and never deletes it (§5). `if_unlinked`
+    (the 復原 of 解除連結) refuses with `einvoice_changed` once the invoice is linked again."""
     lock(db)
     invoice = _invoice(db, invoice_id)
     if invoice.state == "void":
         raise CodedConflictError("einvoice_void")
     current = _current_link(db, invoice.id)
+    if if_unlinked and current is not None:
+        raise CodedConflictError(CHANGED)
     own = current is not None and (current.entry_id, current.group_id) == (entry_id, group_id)
     if not own and not _eligible(db, invoice, entry_id, group_id):
         raise CodedConflictError("target_ineligible")
@@ -203,7 +209,8 @@ def unlink(db: Session, invoice_id: int) -> dict:
     return _state_out(db, invoice)
 
 
-def replace(db: Session, invoice_id: int, *, with_invoice_id: int) -> dict:
+def replace(db: Session, invoice_id: int, *, with_invoice_id: int, expect_entry_id: int | None = None,
+            expect_group_id: int | None = None) -> dict:
     """換一張發票 (D12): the link moves from `invoice_id` to `with_invoice_id` on the same target in one write. The old
     invoice goes back to `unmatched` (dismissed(seller_muted) while its seller is muted), unlike `unlink`, so it is
     offered again; the new one is linked by the owner. Its 復原 is the same call the other way round. Every refusal
@@ -215,6 +222,11 @@ def replace(db: Session, invoice_id: int, *, with_invoice_id: int) -> dict:
     current = _current_link(db, old.id)
     if current is None:
         raise CodedConflictError("not_linked")
+    # 復原 names the target it undoes; once the link moved elsewhere the undo is stale (AGENT-638).
+    if expect_entry_id is not None and current.entry_id != expect_entry_id:
+        raise CodedConflictError(CHANGED)
+    if expect_group_id is not None and current.group_id != expect_group_id:
+        raise CodedConflictError(CHANGED)
     new = _invoice(db, with_invoice_id)
     if new.state == "void":
         raise CodedConflictError("einvoice_void")
@@ -241,11 +253,16 @@ def replace(db: Session, invoice_id: int, *, with_invoice_id: int) -> dict:
     return {"previous": _state_out(db, old), "current": _state_out(db, new)}
 
 
-def dismiss(db: Session, invoice_id: int, *, reason: str = "owner", mute_seller: bool = False) -> dict:
+def dismiss(db: Session, invoice_id: int, *, reason: str = "owner", mute_seller: bool = False,
+            if_unmatched: bool = False) -> dict:
+    """`if_unmatched` (the 復原 of 放回) refuses with `einvoice_changed` once the invoice left `unmatched`, so it never
+    removes a link made since (AGENT-638)."""
     lock(db)
     invoice = _invoice(db, invoice_id)
     if invoice.state == "void":
         raise CodedConflictError("einvoice_void")
+    if if_unmatched and invoice.state != "unmatched":
+        raise CodedConflictError(CHANGED)
     if mute_seller and not invoice.seller_tax_id:
         raise ValidationError("mute_seller", "the invoice has no seller tax id")
     invoice.state, invoice.dismiss_reason = "dismissed", reason

@@ -61,6 +61,12 @@ describe('EinvoiceService', () => {
     expect(swap.request.method).toBe('POST');
     expect(swap.request.body).toEqual({ with_invoice_id: 9 });
     swap.flush({ previous: STATE, current: STATE });
+    service.replace(7, 9, { group_id: 4 }).subscribe(); // 復原: only while 7 is still on that target
+    expect(http.expectOne(`${BASE}/7/replace`).request.body).toEqual({ with_invoice_id: 9, group_id: 4 });
+    service.link(7, { entry_id: 3 }, { ifUnlinked: true }).subscribe();
+    expect(http.expectOne(`${BASE}/7/link`).request.body).toEqual({ entry_id: 3, if_unlinked: true });
+    service.dismiss(7, false, { ifUnmatched: true }).subscribe();
+    expect(http.expectOne(`${BASE}/7/dismiss`).request.body).toEqual({ mute_seller: false, if_unmatched: true });
     service.picker(3, { replace: true }).subscribe();
     http.expectOne(`${BASE}/picker?entry_id=3&replace=true`).flush({});
     service.createMute('a/b').subscribe();
