@@ -18,7 +18,7 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { AutoPaySwitch, AutoPaySwitchChange } from '../billing/auto-pay';
 import { InboxService } from '../inbox/inbox.service';
-import { invoiceAmount } from '../inbox/einvoice-format';
+import { EINVOICE_SETTINGS_FRAGMENT, invoiceAmount } from '../inbox/einvoice-format';
 import { EinvoiceDismissed, EinvoiceMute, EinvoicePreferences } from '../inbox/einvoice.model';
 import { StepperComponent } from '../../ui/stepper/stepper';
 import { EinvoiceService } from '../inbox/einvoice.service';
@@ -118,6 +118,7 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   readonly formatMoney = formatMoney;
   readonly slashDate = slashDate;
   readonly invoiceAmount = invoiceAmount;
+  readonly einvoiceAnchor = EINVOICE_SETTINGS_FRAGMENT;
 
   /** 對帳 › 自動扣繳: the stored switch and start date; null until read (and when reconciliation is off: 404). */
   readonly autoPay = signal<AutoPaySwitch | null>(null);
@@ -301,10 +302,21 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
         if (prefs.enabled) {
           this.loadMutes();
           this.loadDismissed();
+          this.scrollToEinvoice();
         }
       },
       // 404: the reconciliation feature flag is off, so there is no 發票 block (not a failed read).
       error: (err: unknown) => this.einvoiceError.set(!(err instanceof HttpErrorResponse && err.status === 404)),
+    });
+  }
+
+  /** A link to `#einvoice-settings` (有發票沒有帳's footer) lands on the section once it renders. */
+  private scrollToEinvoice(): void {
+    if (this.router.parseUrl(this.router.url).fragment !== EINVOICE_SETTINGS_FRAGMENT) {
+      return;
+    }
+    afterNextRender(() => this.host.nativeElement.querySelector(`#${EINVOICE_SETTINGS_FRAGMENT}`)?.scrollIntoView?.({ block: 'start' }), {
+      injector: this.injector,
     });
   }
 

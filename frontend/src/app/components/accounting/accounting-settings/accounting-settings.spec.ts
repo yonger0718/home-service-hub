@@ -78,6 +78,8 @@ const AUTO_PAY_URL = '/api/accounting/settings/reconciliation/auto-pay';
 /** What the reconciliation settings read answers at page start (the 對帳 block); reset after each test. */
 let autoPayInit: unknown = { auto_pay: { enabled: false, enabled_from: null } };
 const DEFAULT_AUTO_PAY_INIT = autoPayInit;
+/** The URL the page opens at (a fragment deep-links a section); reset after each test that sets it. */
+let openUrl: string | null = null;
 
 function answer(http: HttpTestingController, url: string, body: unknown): void {
   const req = http.expectOne(r => r.method === 'GET' && r.url === url);
@@ -101,6 +103,9 @@ describe('AccountingSettingsComponent', () => {
       providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
+    if (openUrl) {
+      await TestBed.inject(Router).navigateByUrl(openUrl);
+    }
     fixture = TestBed.createComponent(AccountingSettingsComponent);
     fixture.detectChanges();
     http.expectOne('/api/accounting/preference').flush(PREFERENCE);
@@ -912,6 +917,27 @@ describe('AccountingSettingsComponent', () => {
 
     it('says 還沒有匯入 before the first import', () => {
       expect(el.querySelector('.einvoice-status')!.textContent?.trim()).toBe('電子發票對帳已開啟 · 還沒有匯入');
+    });
+  });
+
+  describe('發票 deep link (#einvoice-settings)', () => {
+    const scroll = vi.fn();
+    let original: typeof Element.prototype.scrollIntoView;
+    beforeAll(() => {
+      einvoiceInit = { prefs: EINVOICE_PREFS, mutes: [], dismissed: [] };
+      openUrl = '/#einvoice-settings';
+      original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = scroll;
+    });
+    afterAll(() => {
+      einvoiceInit = DEFAULT_EINVOICE_INIT;
+      openUrl = null;
+      Element.prototype.scrollIntoView = original;
+    });
+
+    it('scrolls the 發票 section into view once it renders', () => {
+      const target = scroll.mock.contexts.find(ctx => (ctx as Element).id === 'einvoice-settings');
+      expect(target).toBeTruthy();
     });
   });
 

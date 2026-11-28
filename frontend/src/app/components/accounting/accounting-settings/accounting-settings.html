@@ -187,7 +187,7 @@
   }
 
   @if (einvoicePrefs()?.enabled || einvoiceError()) {
-    <div class="lbl" id="einvoice-settings">發票</div>
+    <div class="lbl" [id]="einvoiceAnchor">發票</div>
     @if (einvoiceError()) {
       <p class="einvoice-error muted" role="alert">發票設定讀取失敗</p>
     } @else if (einvoicePrefs(); as prefs) {

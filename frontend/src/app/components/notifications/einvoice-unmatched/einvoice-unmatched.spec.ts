@@ -313,10 +313,17 @@ describe('EinvoiceUnmatchedComponent', () => {
     expect(el.textContent).not.toContain('都整理好了');
   });
 
-  it('nothing left: 都整理好了; no settings footer until 記帳設定 › 發票 exists (F4)', () => {
+  it('nothing left: 都整理好了, with the footer to 記帳設定 › 發票', () => {
     open([], { einvoice_unmatched: 0 });
     expect(text(el.querySelector('.unm-empty-title'))).toBe('都整理好了');
-    expect(el.querySelector('.unm-settings')).toBeNull();
+    const link = el.querySelector('.unm-settings');
+    expect(text(link)).toBe('不想看到這頁？記帳設定 › 發票 可以關掉提醒 ›');
+    expect(link?.getAttribute('href')).toBe('/accounting/settings#einvoice-settings');
+  });
+
+  it('the list ends with the footer to 記帳設定 › 發票', () => {
+    open(LIST, { einvoice_unmatched: 4 });
+    expect(el.querySelector('.unm-settings')?.getAttribute('href')).toBe('/accounting/settings#einvoice-settings');
   });
 
   it('reminders off (direct URL): says so instead of 都整理好了', () => {

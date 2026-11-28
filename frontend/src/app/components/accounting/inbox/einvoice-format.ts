@@ -10,3 +10,6 @@ export function invoiceAmount(value: string): string {
   const amount = Number(value);
   return Number.isInteger(amount) ? formatMoney(value, 'TWD') : TWO_DECIMALS.format(amount);
 }
+
+/** The anchor of 記帳設定 › 發票, for links that land on that section. */
+export const EINVOICE_SETTINGS_FRAGMENT = 'einvoice-settings';
