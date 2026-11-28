@@ -79,7 +79,7 @@
       @if (trackingRows().length > 0) {
         <details class="notif-tracking">
           <summary>
-            <span class="tracking-head">追蹤中&ngsp;<span class="tracking-note">· 不計入數字</span></span>&ngsp;<span class="tracking-sum">{{ trackingSum() }}</span>
+            <span class="tracking-head">追蹤中&ngsp;<span class="tracking-note">· 不計入數字</span></span>&ngsp;<span class="tracking-sum">@for (part of trackingSum(); track $index) {@if (!$first) {&ngsp;·&ngsp;}<span class="tracking-part">{{ part }}</span>}</span>
           </summary>
           @for (row of trackingRows(); track row.id) {
             <div class="tracking-row">

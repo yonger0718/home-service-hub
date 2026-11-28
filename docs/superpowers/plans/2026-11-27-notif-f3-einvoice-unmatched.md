@@ -137,3 +137,11 @@ PR F3b: full frontend suite + production build, review through lead-claude, owne
 - P2 cut read with none listed → Task 5 copy, link to the F2 flow, tests; 「都整理好了」 only at count 0.
 - Minor (Task 2 assertions for disabled / account_id / questions = 0) → done in `test_unmatched_count_zero_when_reminders_off_or_disabled` and `test_seller_dismissed_is_zero_on_questions`.
 - Re-check (AGENT-629 @ 45d597a9, CHANGES, one P2): the settings read sat outside the savepoint → moved inside; `test_failing_settings_read_keeps_the_entry` (RED before), `test_busy_invoice_row_skips_without_waiting` (SKIP LOCKED); the questions = 0 test now puts an owner dismissal, a reminder and both question states on one tax id.
+
+## Owner design review (2026-11-28, applied in F3b)
+
+1. 追蹤中 row meta lists seller names only: 「測試書店、測試超市 一號店、測試加油站 等 4 家」 (N = all sellers).
+2. Phone: an open 追蹤中 hides the summary; the title never wraps. (Also: each summary part 「發票 7 張」 wraps as a whole.)
+3. 這家以後都不提醒 is an outline button, as 這 N 張都不用記帳.
+4. The flow end link 「有發票沒有帳 N 張 ›」 and the page footer link use the primary colour with a trailing ›, as the list's foot links (PR B).
+5. The 記帳設定 › 發票 footer is hidden until F4 (`settingsLink = false`; F4 turns it on and tests it).

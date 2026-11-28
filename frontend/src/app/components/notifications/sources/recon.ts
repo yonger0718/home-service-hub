@@ -130,7 +130,7 @@ export function einvoiceUnmatchedRow(inbox: Pick<InboxOut, 'counts' | 'einvoices
     sellers.set(key, { ...seller, count: seller.count + 1, total: seller.total + Number(invoice.total_amount) });
   }
   const ranked = [...sellers.values()].sort((a, b) => b.count - a.count || b.total - a.total);
-  const parts = ranked.slice(0, EINVOICE_META_SELLERS).map((s) => `${s.name} ${s.count}`);
+  const parts = ranked.slice(0, EINVOICE_META_SELLERS).map((s) => s.name);
   const tail = ranked.length > EINVOICE_META_SELLERS ? ` 等 ${ranked.length} 家` : '';
   return {
     id: 'einvoices',

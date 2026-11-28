@@ -108,7 +108,7 @@ describe('EinvoiceUnmatchedComponent', () => {
     open();
     const [books, mart, noTax] = groups();
     expect(text(books.querySelector('.unm-dismiss-all'))).toBe('這 2 張都不用記帳');
-    expect(books.querySelector('.unm-mute')).not.toBeNull();
+    expect(books.querySelector('.unm-mute')?.className).not.toContain('unm-btn--primary'); // outline, as dismiss-all
     expect(mart.querySelector('.unm-group-foot')).toBeNull();
     expect(noTax.querySelector('.unm-mute')).toBeNull();
     expect(text(noTax.querySelector('.unm-note'))).toBe('沒有統編的商家無法設定不提醒');
@@ -260,10 +260,10 @@ describe('EinvoiceUnmatchedComponent', () => {
     expect(el.textContent).not.toContain('都整理好了');
   });
 
-  it('nothing left: 都整理好了 and the settings link', () => {
+  it('nothing left: 都整理好了; no settings footer until 記帳設定 › 發票 exists (F4)', () => {
     open([], { einvoice_unmatched: 0 });
     expect(text(el.querySelector('.unm-empty-title'))).toBe('都整理好了');
-    expect(el.querySelector('.unm-settings')?.getAttribute('href')).toBe('/accounting/settings');
+    expect(el.querySelector('.unm-settings')).toBeNull();
   });
 
   it('reminders off (direct URL): says so instead of 都整理好了', () => {

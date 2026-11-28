@@ -267,7 +267,7 @@ describe('EinvoiceFlowComponent', () => {
     open([coffee(1)], 'panes', { einvoice_unmatched: 4 });
     key('S');
     const link = el.querySelector<HTMLAnchorElement>('.einv-unmatched-link');
-    expect(text(link)).toBe('有發票沒有帳 4 張›');
+    expect(text(link)).toBe('有發票沒有帳 4 張 ›');
     expect(link?.getAttribute('href')).toBe('/notifications/einvoices?state=unmatched');
   });
 

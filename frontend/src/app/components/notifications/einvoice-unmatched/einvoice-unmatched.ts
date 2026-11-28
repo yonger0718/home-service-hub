@@ -75,6 +75,8 @@ export class EinvoiceUnmatchedComponent {
   readonly closed = output<void>();
 
   readonly flowRoute = EINVOICE_FLOW_ROUTE;
+  /** The 記帳設定 › 發票 footer: hidden until that section exists (owner, 2026-11-28); F4 turns it on. */
+  readonly settingsLink = false;
   readonly panes = computed(() => this.layout.mode() === 'panes');
   readonly load = signal<'loading' | 'failed' | 'ready'>('loading');
   /** From a press until its write (or 復原) answers: every action waits. */

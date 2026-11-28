@@ -313,7 +313,7 @@ describe('einvoiceUnmatchedRow', () => {
       id: 'einvoices',
       source: 'ledger',
       title: '有發票沒有帳 · 9 張',
-      meta: '測試書店 3、測試超商 2、測試油站 1 等 4 家',
+      meta: '測試書店、測試超商、測試油站 等 4 家',
       count: 9,
       link: { label: '查看', route: '/notifications/einvoices', queryParams: { state: 'unmatched' } },
     });
@@ -321,7 +321,7 @@ describe('einvoiceUnmatchedRow', () => {
 
   it('three sellers or fewer: no 等 tail; equal counts keep the larger total first', () => {
     const row = einvoiceUnmatchedRow(inbox([unmatched(1, '測試甲', '50'), unmatched(2, '測試乙', '300')], 2));
-    expect(row?.meta).toBe('測試乙 1、測試甲 1');
+    expect(row?.meta).toBe('測試乙、測試甲');
   });
 
   it('none listed (cut page) still gives the row with an empty meta', () => {

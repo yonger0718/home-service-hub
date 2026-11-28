@@ -255,10 +255,9 @@ export class NotificationsComponent {
     const chip = this.chip();
     return this.center.trackingRows().filter(row => chip === 'all' || row.source === chip);
   });
+  /** The 追蹤中 summary, one part per row (「發票 7 張」); each part wraps as a whole on phones. */
   protected readonly trackingSum = computed(() =>
-    this.trackingRows()
-      .map((row) => `${TRACKING_UNIT[row.id].name} ${row.count} ${TRACKING_UNIT[row.id].unit}`)
-      .join(' · '),
+    this.trackingRows().map((row) => `${TRACKING_UNIT[row.id].name} ${row.count} ${TRACKING_UNIT[row.id].unit}`),
   );
 
   /**
