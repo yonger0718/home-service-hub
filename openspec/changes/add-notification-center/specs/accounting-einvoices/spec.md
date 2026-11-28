@@ -114,7 +114,7 @@ The entry detail's `einvoice` SHALL carry `recorded_amount`: what the linked ent
 
 ### Requirement: Undo preconditions
 
-An undo SHALL never overwrite work done since its toast. `replace` MAY name the target the link must still be on (`entry_id` or `group_id`), `link` MAY carry `if_unlinked`, and `dismiss` MAY carry `if_unmatched`. When the precondition no longer holds, the call SHALL be refused with 409 `einvoice_changed` and nothing SHALL change.
+An undo SHALL check the invoice's current state, not a revision. `replace` MAY name the target the link must still be on (`entry_id` or `group_id`), `link` MAY carry `if_unlinked` (the invoice has no link), and `dismiss` MAY carry `if_unmatched` (the invoice is `unmatched`). When that precondition no longer holds, the call SHALL be refused with 409 `einvoice_changed` and nothing SHALL change. A change that has been reverted to the same state since the toast is not detected.
 
 #### Scenario: 放回's 復原 after the next run linked the invoice
 - **GIVEN** a 放回 invoice that the next run linked to an entry
