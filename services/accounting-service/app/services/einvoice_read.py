@@ -61,18 +61,21 @@ def _summary(inv: Einvoice, items: dict[int, list[dict]]) -> dict:
             "state": inv.state, "items": items.get(inv.id, [])}
 
 
-def inbox_section(db: Session, *, limit: int) -> tuple[list[dict], int]:
+def inbox_section(db: Session, *, limit: int) -> tuple[list[dict], int, int]:
+    """(the page of cards, ambiguous + near count, unmatched count): both counts over the whole set; unmatched is
+    0 while reminders are off (spec §9; D11)."""
     settings = read_einvoice_settings(db)
     if not settings["enabled"]:
-        return [], 0
+        return [], 0, 0
     states = ["ambiguous", "near"] + (["unmatched"] if settings["remind_unmatched"] else [])
     invoices = list(db.scalars(select(Einvoice).where(Einvoice.state.in_(states))))
     invoices.sort(key=lambda i: (STATE_ORDER[i.state], -i.issue_date.toordinal(), i.id))
     # the bell counts questions only, over the whole set (reminders never light it)
     ask = sum(1 for i in invoices if i.state != "unmatched")
+    unmatched = len(invoices) - ask
     page = invoices[:limit]
     if not page:
-        return [], ask
+        return [], ask, unmatched
 
     window_days, main = settings["date_window_days"], main_currency(db)
     asking = [i for i in page if i.state != "unmatched"]
@@ -101,10 +104,11 @@ def inbox_section(db: Session, *, limit: int) -> tuple[list[dict], int]:
     out = []
     for inv in page:
         cards = [_target_dict(t, names) for t in candidates.get(inv.id, [])]
-        offer = (inv.state == "unmatched" and bool(inv.seller_tax_id) and inv.seller_tax_id not in muted
-                 and dismissed_count.get(inv.seller_tax_id, 0) >= settings["mute_prompt_after"])
-        out.append({**_summary(inv, items), "candidates": cards, "offer_mute": offer})
-    return out, ask
+        reminder = inv.state == "unmatched" and bool(inv.seller_tax_id)
+        dismissed = dismissed_count.get(inv.seller_tax_id, 0) if reminder else 0
+        offer = reminder and inv.seller_tax_id not in muted and dismissed >= settings["mute_prompt_after"]
+        out.append({**_summary(inv, items), "candidates": cards, "offer_mute": offer, "seller_dismissed": dismissed})
+    return out, ask, unmatched
 
 
 def invoice_targets(db: Session, invoice_id: int, *, days: int) -> list[dict]:

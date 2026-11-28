@@ -498,7 +498,8 @@ def build_inbox(db: Session, *, statuses: tuple[str, ...] = ("open", "proposed")
             accounts.append({"id": account.id, "name": account.name, "currency": account.currency,
                              "is_credit": bool(account.is_credit), "items": []})
         accounts[-1]["items"].append(item)
-    einvoices, counts["einvoice_ask"] = einvoice_read.inbox_section(db, limit=limit) if account_id is None else ([], 0)
+    einvoices, counts["einvoice_ask"], counts["einvoice_unmatched"] = (
+        einvoice_read.inbox_section(db, limit=limit) if account_id is None else ([], 0, 0))
     return {"generated_at": datetime.now(timezone.utc), "counts": counts, "accounts": accounts,
             "einvoices": einvoices}
 

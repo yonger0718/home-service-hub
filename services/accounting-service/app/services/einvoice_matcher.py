@@ -1,20 +1,23 @@
 """E-invoice matcher (spec §7): eligible targets, candidate rules, one-pass decision and the auto-link writes.
 Never log invoice payloads (privacy)."""
+import logging
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import and_, exists, func, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import ColumnElement, and_, exists, func, or_, select, text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from ..models import Account, Einvoice, EinvoiceLink, EinvoiceSellerMute, EntryGroup, LedgerEntry
 from .einvoice_rules import TargetKey, decide, is_integral, near_tolerance, period_bounds, shares_token
-from .einvoice_service import lock, stamp
+from .einvoice_service import EINVOICE_LOCK_KEY, lock, stamp
 from .ledger_service import main_currency
 from .settings_service import read_einvoice_settings
+
+_log = logging.getLogger(__name__)
 
 NET_CHILD_KINDS = ("fee", "discount")
 GROUP_NET_KINDS = ("expense", "receivable")
@@ -217,6 +220,12 @@ def _insert_link(db: Session, invoice: Einvoice, key: TargetKey) -> None:
     db.flush()
 
 
+def _open_invoice() -> ColumnElement[bool]:
+    """The states a matcher pass reconsiders."""
+    return or_(Einvoice.state.in_(PROCESSED_STATES),
+               and_(Einvoice.state == "dismissed", Einvoice.dismiss_reason == "seller_muted"))
+
+
 def run_matcher(db: Session) -> dict:
     settings = read_einvoice_settings(db)
     if not settings["enabled"]:
@@ -225,8 +234,7 @@ def run_matcher(db: Session) -> dict:
     db.flush()
     invoices = db.execute(
         select(Einvoice)
-        .where(or_(Einvoice.state.in_(PROCESSED_STATES),
-                   and_(Einvoice.state == "dismissed", Einvoice.dismiss_reason == "seller_muted")))
+        .where(_open_invoice())
         .order_by(Einvoice.id)
         .with_for_update()
     ).scalars().all()
@@ -278,3 +286,38 @@ def run_matcher(db: Session) -> dict:
         counts["unchanged" if (inv.state, inv.dismiss_reason) == before else bucket] += 1
     db.flush()
     return counts
+
+
+# --- link at save (owner decision 2026-11-27) --------------------------------------------------------------------
+
+def link_saved_entry(db: Session, entry_id: int, number: str) -> None:
+    """After `POST /entries` with `number`: link the open invoice carrying it to that entry now, by the exact rule
+    only (§7.3: the one eligible entry stamped with the number inside the invoice's period). No amount / date
+    fallback and no other invoice is touched; anything less certain (no such invoice, the entry outside the period or
+    in a group, two entries with the number) waits for the daily pass. Never blocks on the matcher lock and never
+    fails the save: a busy lock or a conflict leaves the invoice for the daily pass."""
+    try:
+        with db.begin_nested():
+            if not read_einvoice_settings(db)["enabled"]:
+                return
+            if not db.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": EINVOICE_LOCK_KEY}):
+                _log.info("einvoice link at save skipped (matcher busy); the daily pass will link")
+                return
+            entry = db.get(LedgerEntry, entry_id)
+            if entry is None or entry.group_id is not None:
+                return
+            found = [inv for inv in db.scalars(select(Einvoice).where(Einvoice.number == number, _open_invoice())
+                                               .with_for_update(skip_locked=True))  # an owner action holds it: skip
+                     if period_bounds(inv.period)[0] <= entry.entry_date <= period_bounds(inv.period)[1]]
+            if len(found) != 1:
+                return
+            invoice = found[0]
+            start, end = period_bounds(invoice.period)
+            exact = _entry_rows(db, LedgerEntry.invoice_number == number, LedgerEntry.entry_date.between(start, end))
+            if [e.id for e, _ in exact] != [entry_id]:
+                return
+            _insert_link(db, invoice, ("entry", entry_id))
+            invoice.state, invoice.dismiss_reason = "linked", None
+            db.flush()
+    except (IntegrityError, OperationalError) as exc:  # the message carries SQL parameters: log the type only
+        _log.warning("einvoice link at save skipped (%s); the daily pass will retry", type(exc.orig).__name__)

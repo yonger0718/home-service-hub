@@ -185,6 +185,7 @@ class InboxEinvoice(EinvoiceSummaryOut):
     state: Literal["ambiguous", "near", "unmatched"]
     candidates: list[EinvoiceTargetOut]
     offer_mute: bool
+    seller_dismissed: int  # the owner's 不用記帳 of this seller (tax id); 0 without one and on questions (D11)
 
 
 class EinvoicePickerOut(BaseModel):
