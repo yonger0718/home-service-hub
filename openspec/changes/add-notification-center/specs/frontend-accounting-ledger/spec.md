@@ -47,9 +47,17 @@ The body of the entry invoice card SHALL show the seller, date, number, and the 
 - **WHEN** its detail opens
 - **THEN** the card SHALL show ✓ 金額相符, 自動連結, three items, 「… 另外 4 項」 and 合計 $1,286
 
+### Requirement: Entry detail invoice link row
+
+An entry without an invoice that may be a link target SHALL show, on the full entry page as in the drawer, the dashed 連結發票… row at the invoice card's width and corner radius, not a plain button. The ±7-day hint SHALL stay in the drawer only.
+
+#### Scenario: Full page after 解除連結
+- **WHEN** the owner unlinks the invoice on the full entry page
+- **THEN** the card's place SHALL show the dashed 連結發票… row
+
 ### Requirement: Replace an entry's invoice
 
-換一張發票 SHALL first list the invoices that could take the linked one's place, laid out as the 選帳 sheet (seller, date · items, the total without a sign, 金額差 $N / 日期差 N 天 against this entry), and change nothing until one is picked. A pick SHALL swap in one call; the old invoice SHALL return to 沒對到, not 不用記帳. A toast 「已換成 <number>」 SHALL offer 復原, which swaps back.
+換一張發票 SHALL first list the invoices that could take the linked one's place (never the linked one itself; 「等 N 項」 counts all its items), laid out as the 選帳 sheet (seller, date · items, the total without a sign, 金額差 $N / 日期差 N 天 against this entry), and change nothing until one is picked. A pick SHALL swap in one call; the old invoice SHALL return to 沒對到, not 不用記帳. A toast 「已換成 <number>」 SHALL offer 復原, which swaps back.
 
 #### Scenario: Cancel changes nothing
 - **WHEN** the owner opens 換一張發票 and taps 取消

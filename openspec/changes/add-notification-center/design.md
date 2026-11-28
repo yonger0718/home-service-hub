@@ -118,7 +118,7 @@ The row opens `/notifications/einvoices?state=unmatched`, a page grouped by sell
   - Match chip: ✓ 金額相符 (success), or 差 $N (warning ink) when the linked total differs from the entry or group net.
   - Source chip: 自動連結 or 手動連結.
 - **Body:** seller, date, number; then the items (the first three, then 「… 另外 N 項」) with a total row. For a group invoice the title reads 發票 · 整組, with 看 N 項明細.
-- **Without an invoice:** unchanged. The row #408 shipped stays as the main spec's `Calendar entry drawer invoice link` defines it (dashed row with the ±7-day hint in the drawer, hidden when not eligible; a plain 連結發票… button on the full page). ±7 days is the picker's window, not `date_window_days`.
+- **Without an invoice:** the dashed 連結發票… row #408 shipped for the drawer (main spec `Calendar entry drawer invoice link`), now on the full page too, at the card's width and radius (owner design review 2026-11-28; it replaces the plain button). The ±7-day hint stays drawer-only. ±7 days is the picker's window, not `date_window_days`.
 - **解除連結** says what it does: 「之後不會再自動連回」, because unlink dismisses. A toast 「已解除連結 <number>」 offers 復原 (link it back).
 - **換一張發票** (owner design review, 2026-11-28): pick first, then swap. The list uses the 選帳 sheet's rows (seller, date · items, the total without a sign, 金額差 / 日期差 against this entry); 取消 changes nothing. A pick calls `POST /einvoices/{id}/replace`, which moves the link in one transaction and returns the old invoice to `unmatched` (not dismissed). Toast 「已換成 <number>」 with 復原 (the same call reversed).
 

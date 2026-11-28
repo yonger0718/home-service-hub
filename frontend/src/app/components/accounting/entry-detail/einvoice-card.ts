@@ -2,6 +2,7 @@ import {
   ChangeDetectionStrategy, Component, DestroyRef, ElementRef, Injector, afterNextRender, computed, effect, inject, input, output, signal,
   untracked, viewChild,
 } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Observable, Subscription } from 'rxjs';
 
@@ -107,6 +108,7 @@ type SwapState = { status: 'loading' } | { status: 'failed' } | { status: 'ready
 @Component({
   selector: 'app-entry-einvoice-card',
   standalone: true,
+  imports: [NgTemplateOutlet],
   templateUrl: './einvoice-card.html',
   styleUrl: './einvoice-card.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -298,7 +300,9 @@ export class AppEntryEinvoiceCardComponent {
     const recorded = detail.einvoice?.recorded_amount ?? null;
     this.pickerSub = this.service.picker(detail.id, { replace: true }).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: (picker) => {
-        this.swapState.set({ status: 'ready', rows: picker.invoices.map((inv) => einvoiceSwapRow(inv, detail.entry_date, recorded)) });
+        // The API never lists a linked invoice; the guard keeps the current one out whatever it answers.
+        const others = picker.invoices.filter((inv) => inv.id !== detail.einvoice?.id);
+        this.swapState.set({ status: 'ready', rows: others.map((inv) => einvoiceSwapRow(inv, detail.entry_date, recorded)) });
         this.focusIn('.swap .target-row, .swap-empty');
       },
       error: () => {

@@ -103,6 +103,18 @@ describe('AppEntryEinvoiceCardComponent', () => {
     expect(changed).toBe(0);
   });
 
+  it('without an invoice the full page shows the dashed 連結發票… row, not a plain button', () => {
+    const root = render({});
+    const row = root.querySelector('.einvoice-row') as HTMLButtonElement;
+    expect(row?.textContent?.trim()).toBe('連結發票…');
+    expect(root.querySelector('.einvoice-actions .einvoice-open')).toBeNull();
+    row.click();
+    http.expectOne('/api/accounting/einvoices/picker?entry_id=42').flush({ detail: 'x' }, { status: 500, statusText: 'err' });
+    fixture.detectChanges();
+    expect(root.textContent).toContain('讀取失敗');
+    expect(root.querySelector('.einvoice-row')?.textContent).toContain('連結發票…');
+  });
+
   it('picker for a plain entry', () => {
     const root = render({});
     button(root, '連結發票…').click();
@@ -371,10 +383,11 @@ describe('AppEntryEinvoiceCardComponent', () => {
       renderCompact({ einvoice: LINKED });
     });
 
-    it('does not read before the click when compact is off', () => {
+    it('does not read before the click when compact is off: the same dashed row, without a hint', () => {
       const root = render({});
+      http.expectNone('/api/accounting/einvoices/picker?entry_id=42');
       expect(root.querySelector('.einvoice-hint')).toBeNull();
-      expect(root.querySelector('.einvoice-row')).toBeNull();
+      expect(root.querySelector('.einvoice-row')).not.toBeNull();
     });
   });
 
@@ -530,6 +543,12 @@ describe('AppEntryEinvoiceCardComponent', () => {
         ]);
         await fixture.whenStable();
         expect(document.activeElement).toBe(root.querySelector('.swap .target-row'));
+      });
+
+      it('the list never offers the invoice linked now; 等 N 項 counts every item', () => {
+        const seven = pick(500, '1286.0000', '2026-10-21', ['甲', '乙', '丙', '丁', '戊', '己', '庚']);
+        openSwap({ ...PICKS, invoices: [{ ...pick(9, '1286.0000', '2026-10-21', ['測試鮮奶']), number: 'AB00000009' }, seven] });
+        expect(swapRows()).toEqual([['測試超市 一號店', '10/21 · 甲、乙、丙 等 7 項', '$1,286']]);
       });
 
       it('取消 closes the list, sends nothing and returns focus to ⋯', async () => {

@@ -38,13 +38,13 @@
 .swap .target-row:focus-visible, .swap-actions button:focus-visible, .swap-empty:focus-visible { outline: 2px solid var(--app-primary); outline-offset: 2px; }
 .swap .target-row:disabled { cursor: default; opacity: 0.6; }
 
-/* Unlinked (unchanged since #408). */
+/* Unlinked: the dashed row (#408) on every surface, at the linked card's width and radius. */
 .einvoice-pick { align-items: flex-start; background: none; border: 0; border-bottom: 1px solid var(--app-border); color: inherit; display: flex; flex-direction: column; font: inherit; font-size: 0.88rem; gap: 2px; min-height: 44px; padding: 8px 0; text-align: left; width: 100%; }
 .einvoice-sub { color: var(--app-text-muted); font-size: 0.8rem; }
 .einvoice-error { color: var(--app-danger); font-size: 0.85rem; margin: 4px 0 0; }
 .einvoice-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .einvoice-actions button { min-height: 44px; }
-.einvoice-row { align-items: center; background: transparent; border: 1px dashed var(--app-border); border-radius: 12px; color: var(--app-text); cursor: pointer; display: flex; font: inherit; font-size: 0.88rem; font-weight: 600; gap: 10px; min-height: 46px; padding: 0 12px; text-align: left; width: 100%; }
+.einvoice-row { align-items: center; background: transparent; border: 1px dashed var(--app-border); border-radius: 14px; color: var(--app-text); cursor: pointer; display: flex; font: inherit; font-size: 0.88rem; font-weight: 600; gap: 10px; min-height: 46px; padding: 0 12px; text-align: left; width: 100%; }
 .einvoice-row svg { color: var(--app-text-muted); flex: none; }
 .einvoice-row span { flex: 1; }
 .einvoice-hint { color: var(--app-text-muted); font-size: 0.75rem; font-weight: 400; }
