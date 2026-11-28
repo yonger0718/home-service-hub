@@ -52,7 +52,10 @@ const RULES: OwnerRule[] = [
 ];
 
 const EINVOICE_URL = '/api/accounting/einvoices';
-const EINVOICE_PREFS = { enabled: true, remind_unmatched: true, version: 3 };
+const EINVOICE_PREFS = {
+  enabled: true, remind_unmatched: true, date_window_days: 3, mute_prompt_after: 3, last_import_at: '2026-11-06T04:10:00Z',
+  auto_linked_count: 42, version: 3,
+};
 const MUTES = [
   { seller_tax_id: '00000001', seller_name: '測試超市', created_at: '2026-11-01T00:00:00Z' },
   { seller_tax_id: '00000002', seller_name: null, created_at: '2026-11-02T00:00:00Z' },
@@ -773,7 +776,8 @@ describe('AccountingSettingsComponent', () => {
       const toggle = el.querySelector<HTMLButtonElement>('.pref-remind-unmatched')!;
       expect(toggle.getAttribute('role')).toBe('switch');
       expect(toggle.getAttribute('aria-checked')).toBe('true');
-      expect(el.textContent).toContain('沒有帳的發票提醒');
+      expect(el.textContent).toContain('提醒沒有帳的發票');
+      expect(el.textContent).toContain('關掉後「有發票沒有帳」不再出現；對不太上的發票照樣會問');
       toggle.click();
       const req = http.expectOne(r => r.method === 'PATCH' && r.url === `${EINVOICE_URL}/preferences`);
       expect(req.request.body).toEqual({ remind_unmatched: false });
@@ -783,8 +787,60 @@ describe('AccountingSettingsComponent', () => {
     });
 
     it('lists muted sellers by name, else by tax id', () => {
-      expect(el.textContent).toContain('不提醒的商家');
+      expect(texts('.einvoice-head')).toContain('不提醒的商家 · 2');
       expect(texts('.mute-row .mute-name')).toEqual(['測試超市', '00000002']);
+      expect(texts('.mute-row .mute-meta')[0]).toMatch(/^統編 00000001 · 11\/0[12] 起不提醒$/);
+      expect(texts('.mute-row .mute-meta')[1]).toMatch(/^11\/0[23] 起不提醒$/);
+    });
+
+    it('shows the link status line with the last import and the auto-linked count', () => {
+      expect(texts('.einvoice-status')).toEqual(['電子發票對帳已開啟 · 最近匯入 11/06（自動連結 42）']);
+      expect(el.querySelector('#einvoice-settings')!.textContent).toContain('發票');
+    });
+
+    it('steppers show ±N 天 and N 次 with their bounds and hints', () => {
+      expect(el.querySelector('.pref-window .val')!.textContent?.trim()).toBe('±3 天');
+      expect(el.querySelector('.pref-prompt .val')!.textContent?.trim()).toBe('3 次');
+      expect(el.textContent).toContain('發票日期前後幾天內的帳都算候選（0–7）');
+      expect(el.textContent).toContain('標「不用記帳」到這個次數，下次就會出現「這家以後都不提醒」（1–10）');
+    });
+
+    it('widening 對帳日期範圍 from ±3 to ±5 sends date_window_days: 5 (spec scenario), one PATCH in flight', () => {
+      const inc = () => el.querySelector<HTMLButtonElement>('.pref-window .inc')!;
+      inc().click();
+      fixture.detectChanges();
+      const first = http.expectOne(r => r.method === 'PATCH' && r.url === `${EINVOICE_URL}/preferences`);
+      expect(first.request.body).toEqual({ date_window_days: 4 });
+      inc().click();
+      fixture.detectChanges();
+      expect(el.querySelector('.pref-window .val')!.textContent?.trim()).toBe('±5 天');
+      http.expectNone(r => r.method === 'PATCH');
+      first.flush({ ...EINVOICE_PREFS, date_window_days: 4, version: 4 });
+      const second = http.expectOne(r => r.method === 'PATCH' && r.url === `${EINVOICE_URL}/preferences`);
+      expect(second.request.body).toEqual({ date_window_days: 5 });
+      second.flush({ ...EINVOICE_PREFS, date_window_days: 5, version: 5 });
+      fixture.detectChanges();
+      http.expectNone(r => r.method === 'PATCH');
+      expect(el.querySelector('.pref-window .val')!.textContent?.trim()).toBe('±5 天');
+    });
+
+    it('同一家標幾次 sends mute_prompt_after', () => {
+      el.querySelector<HTMLButtonElement>('.pref-prompt .dec')!.click();
+      fixture.detectChanges();
+      const req = http.expectOne(r => r.method === 'PATCH' && r.url === `${EINVOICE_URL}/preferences`);
+      expect(req.request.body).toEqual({ mute_prompt_after: 2 });
+      req.flush({ ...EINVOICE_PREFS, mute_prompt_after: 2, version: 4 });
+      fixture.detectChanges();
+      expect(el.querySelector('.pref-prompt .val')!.textContent?.trim()).toBe('2 次');
+    });
+
+    it('a failed PATCH reverts the stepper and says why', () => {
+      el.querySelector<HTMLButtonElement>('.pref-window .inc')!.click();
+      fixture.detectChanges();
+      http.expectOne(r => r.method === 'PATCH').flush({ detail: 'x' }, { status: 500, statusText: 'err' });
+      fixture.detectChanges();
+      expect(el.querySelector('.pref-window .val')!.textContent?.trim()).toBe('±3 天');
+      expect(el.querySelector('.einvoice-message')!.textContent).toContain('沒成功');
     });
 
     it('removes a mute after confirm', () => {
@@ -801,14 +857,10 @@ describe('AccountingSettingsComponent', () => {
     });
 
     it('lists dismissed invoices and restores one', () => {
-      expect(el.textContent).toContain('已忽略的發票');
-      const rows = texts('.dismissed-row');
-      expect(rows[0]).toContain('測試書店');
-      expect(rows[0]).toContain('2026/11/03');
-      expect(rows[0]).toContain('$350');
-      expect(rows[0]).toContain('筆記本、原子筆');
-      expect(rows[1]).toContain('12.50');
-      expect(rows[1]).not.toContain('$');
+      expect(texts('.einvoice-head')).toContain('已標成不用記帳 · 2');
+      expect(texts('.dismissed-row .dismissed-name')).toEqual(['測試書店 · $350', '測試咖啡 · 12.50']);
+      expect(texts('.dismissed-row .dismissed-meta')).toEqual(['11/03 · 筆記本、原子筆 · 你標的', '11/04 · 規則自動標記']);
+      expect(el.querySelector('.dismissed-all')).toBeNull();
       const restore = el.querySelector<HTMLButtonElement>('.dismissed-row .restore')!;
       expect(restore.textContent).toContain('復原');
       restore.click();
@@ -828,6 +880,41 @@ describe('AccountingSettingsComponent', () => {
     });
   });
 
+  describe('發票 with many dismissed, at the stepper bounds, never imported', () => {
+    const many = Array.from({ length: 5 }, (_, i) => ({
+      ...DISMISSED[0], id: 80 + i, seller_name: `測試店${i + 1}`, issue_date: `2026-11-0${9 - i}`,
+    }));
+    beforeAll(() => {
+      einvoiceInit = {
+        prefs: { ...EINVOICE_PREFS, date_window_days: 7, mute_prompt_after: 1, last_import_at: null, auto_linked_count: 0 },
+        mutes: [], dismissed: many,
+      };
+    });
+    afterAll(() => {
+      einvoiceInit = DEFAULT_EINVOICE_INIT;
+    });
+    const names = () => Array.from(el.querySelectorAll('.dismissed-row .dismissed-name')).map(n => n.textContent?.trim());
+
+    it('shows the newest three, then 看全部 N 張 expands in place', () => {
+      expect(names()).toEqual(['測試店1 · $350', '測試店2 · $350', '測試店3 · $350']);
+      const all = el.querySelector<HTMLButtonElement>('.dismissed-all')!;
+      expect(all.textContent?.replace(/\s+/g, ' ').trim()).toBe('看全部 5 張 ›');
+      all.click();
+      fixture.detectChanges();
+      expect(names().length).toBe(5);
+      expect(el.querySelector('.dismissed-all')).toBeNull();
+    });
+
+    it('disables + at the top bound and − at the bottom bound', () => {
+      expect(el.querySelector<HTMLButtonElement>('.pref-window .inc')!.disabled).toBe(true);
+      expect(el.querySelector<HTMLButtonElement>('.pref-prompt .dec')!.disabled).toBe(true);
+    });
+
+    it('says 還沒有匯入 before the first import', () => {
+      expect(el.querySelector('.einvoice-status')!.textContent?.trim()).toBe('電子發票對帳已開啟 · 還沒有匯入');
+    });
+  });
+
   describe('發票 without data', () => {
     beforeAll(() => {
       einvoiceInit = { prefs: EINVOICE_PREFS, mutes: [], dismissed: [] };
@@ -836,8 +923,8 @@ describe('AccountingSettingsComponent', () => {
       einvoiceInit = DEFAULT_EINVOICE_INIT;
     });
 
-    it('says 沒有已忽略的發票 for an empty list', () => {
-      expect(el.querySelector('.dismissed-empty')!.textContent).toContain('沒有已忽略的發票');
+    it('says so for an empty dismissed list', () => {
+      expect(el.querySelector('.dismissed-empty')!.textContent).toContain('還沒有標成不用記帳的發票');
       expect(el.querySelectorAll('.dismissed-row').length).toBe(0);
     });
   });

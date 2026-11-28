@@ -187,47 +187,63 @@
   }
 
   @if (einvoicePrefs()?.enabled || einvoiceError()) {
-    <div class="lbl">發票</div>
+    <div class="lbl" id="einvoice-settings">發票</div>
     @if (einvoiceError()) {
       <p class="einvoice-error muted" role="alert">發票設定讀取失敗</p>
     } @else if (einvoicePrefs(); as prefs) {
       <div class="einvoice-section">
-        <div class="srow">
-          <span><i class="pi pi-bell" aria-hidden="true"></i></span><span class="t">沒有帳的發票提醒</span>
-          <button type="button" class="tog pref-remind-unmatched" role="switch" aria-label="沒有帳的發票提醒" [attr.aria-checked]="prefs.remind_unmatched" [class.on]="prefs.remind_unmatched" (click)="toggleRemindUnmatched(prefs)"></button>
+        <p class="einvoice-status muted">{{ einvoiceStatus() }}</p>
+        <div class="srow einvoice-pref">
+          <span><i class="pi pi-bell" aria-hidden="true"></i></span>
+          <span class="t">提醒沒有帳的發票<small class="einvoice-hint muted">關掉後「有發票沒有帳」不再出現；對不太上的發票照樣會問</small></span>
+          <button type="button" class="tog pref-remind-unmatched" role="switch" aria-label="提醒沒有帳的發票" [attr.aria-checked]="prefs.remind_unmatched" [class.on]="prefs.remind_unmatched" (click)="toggleRemindUnmatched(prefs)"></button>
+        </div>
+        <div class="srow einvoice-pref">
+          <span><i class="pi pi-calendar" aria-hidden="true"></i></span>
+          <span class="t">對帳日期範圍<small class="einvoice-hint muted">發票日期前後幾天內的帳都算候選（0–7）</small></span>
+          <app-stepper class="pref-window" ariaLabel="對帳日期範圍" prefix="±" suffix="天" [min]="0" [max]="7" decLabel="少一天" incLabel="多一天" [value]="prefValue(prefs, 'date_window_days')" (valueChange)="setPref('date_window_days', $event)" />
+        </div>
+        <div class="srow einvoice-pref">
+          <span><i class="pi pi-replay" aria-hidden="true"></i></span>
+          <span class="t">同一家標幾次後問要不要不提醒<small class="einvoice-hint muted">標「不用記帳」到這個次數，下次就會出現「這家以後都不提醒」（1–10）</small></span>
+          <app-stepper class="pref-prompt" ariaLabel="同一家標幾次後問要不要不提醒" suffix="次" [min]="1" [max]="10" decLabel="少一次" incLabel="多一次" [value]="prefValue(prefs, 'mute_prompt_after')" (valueChange)="setPref('mute_prompt_after', $event)" />
         </div>
         @if (einvoiceMessage(); as message) {
           <p class="einvoice-message muted" role="alert">{{ message }}</p>
         }
-        <div class="srow"><span><i class="pi pi-volume-off" aria-hidden="true"></i></span><span class="t">不提醒的商家</span></div>
+        <div class="srow einvoice-head"><span><i class="pi pi-volume-off" aria-hidden="true"></i></span><span class="t">{{ countLabel('不提醒的商家', mutes()) }}</span></div>
         @if (mutesError()) {
           <p class="mutes-error muted" role="alert">發票設定讀取失敗</p>
         }
         @for (mute of mutes() ?? []; track mute.seller_tax_id) {
           <div class="data-row mute-row">
-            <span class="row-name mute-name">{{ mute.seller_name || mute.seller_tax_id }}</span>
+            <span class="row-name einvoice-text">
+              <span class="mute-name">{{ mute.seller_name || mute.seller_tax_id }}</span>
+              <small class="muted mute-meta">{{ muteMeta(mute) }}</small>
+            </span>
             <button type="button" class="row-delete" [class.danger]="confirming() === 'mute:' + mute.seller_tax_id" [attr.aria-label]="confirming() === 'mute:' + mute.seller_tax_id ? '確定移除' : '移除'" (blur)="confirming() === 'mute:' + mute.seller_tax_id && confirming.set(null)" (click)="confirmTap('mute:' + mute.seller_tax_id) && removeMute(mute.seller_tax_id)">{{ confirming() === 'mute:' + mute.seller_tax_id ? '確定移除' : '移除' }}</button>
             @if (confirming() === 'mute:' + mute.seller_tax_id) {
               <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
             }
           </div>
         }
-        <div class="srow"><span><i class="pi pi-ban" aria-hidden="true"></i></span><span class="t">已忽略的發票</span></div>
+        <div class="srow einvoice-head"><span><i class="pi pi-ban" aria-hidden="true"></i></span><span class="t">{{ countLabel('已標成不用記帳', dismissed()) }}</span></div>
         @if (dismissedError()) {
           <p class="dismissed-error muted" role="alert">發票設定讀取失敗</p>
         } @else if (dismissed()?.length === 0) {
-          <p class="dismissed-empty muted">沒有已忽略的發票</p>
+          <p class="dismissed-empty muted">還沒有標成不用記帳的發票</p>
         }
-        @for (invoice of dismissed() ?? []; track invoice.id) {
+        @for (invoice of shownDismissed(); track invoice.id) {
           <div class="data-row dismissed-row">
-            <span class="row-name dismissed-text">
-              {{ invoice.seller_name }} · {{ slashDate(invoice.issue_date) }} · {{ invoiceAmount(invoice.total_amount) }}
-              @if (itemNames(invoice)) {
-                <small class="muted dismissed-items">{{ itemNames(invoice) }}</small>
-              }
+            <span class="row-name einvoice-text">
+              <span class="dismissed-name">{{ invoice.seller_name }} · {{ invoiceAmount(invoice.total_amount) }}</span>
+              <small class="muted dismissed-meta">{{ dismissedMeta(invoice) }}</small>
             </span>
             <button type="button" class="restore" (click)="restoreInvoice(invoice.id)">復原</button>
           </div>
+        }
+        @if (!dismissedAll() && (dismissed()?.length ?? 0) > shownDismissed().length) {
+          <button type="button" class="dismissed-all" (click)="dismissedAll.set(true)">看全部 {{ dismissed()?.length }} 張&ngsp;<span aria-hidden="true">›</span></button>
         }
       </div>
     }

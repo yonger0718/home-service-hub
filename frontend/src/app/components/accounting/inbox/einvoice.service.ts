@@ -9,6 +9,7 @@ import {
   EinvoiceMute,
   EinvoicePicker,
   EinvoicePreferences,
+  EinvoicePreferencesChange,
   EinvoiceStateOut,
   EinvoiceTarget,
 } from './einvoice.model';
@@ -60,8 +61,8 @@ export class EinvoiceService {
     return this.http.get<EinvoicePreferences>(`${this.apiUrl}/preferences`);
   }
 
-  setRemindUnmatched(on: boolean): Observable<EinvoicePreferences> {
-    return this.http.patch<EinvoicePreferences>(`${this.apiUrl}/preferences`, { remind_unmatched: on }).pipe(this.changed());
+  patchPreferences(change: EinvoicePreferencesChange): Observable<EinvoicePreferences> {
+    return this.http.patch<EinvoicePreferences>(`${this.apiUrl}/preferences`, change).pipe(this.changed());
   }
 
   private changed<T>() {

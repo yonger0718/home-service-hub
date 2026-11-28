@@ -74,8 +74,19 @@ export interface EinvoiceMute {
 export interface EinvoicePreferences {
   enabled: boolean;
   remind_unmatched: boolean;
+  /** 對帳日期範圍: ± days around the invoice date (0–7). */
+  date_window_days: number;
+  /** 不用記帳 marks of one seller before 這家以後都不提醒 is offered (1–10). */
+  mute_prompt_after: number;
+  /** Read only: the newest invoice's first sighting; null before the first import. */
+  last_import_at: string | null;
+  /** Read only: invoices the matcher linked on its own. */
+  auto_linked_count: number;
   version: number;
 }
+
+/** The fields `PATCH /einvoices/preferences` accepts (any subset; the server merges and bumps `version`). */
+export type EinvoicePreferencesChange = Partial<Pick<EinvoicePreferences, 'remind_unmatched' | 'date_window_days' | 'mute_prompt_after'>>;
 
 export interface EinvoiceStateOut {
   id: number;

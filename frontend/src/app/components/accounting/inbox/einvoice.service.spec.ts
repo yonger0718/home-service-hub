@@ -79,11 +79,15 @@ describe('EinvoiceService', () => {
     del.flush(null);
     service.deleteMute('a/b c').subscribe();
     http.expectOne(`${BASE}/mutes/a%2Fb%20c`).flush(null);
-    service.setRemindUnmatched(true).subscribe();
+    service.patchPreferences({ remind_unmatched: true }).subscribe();
     const patch = http.expectOne(`${BASE}/preferences`);
     expect(patch.request.method).toBe('PATCH');
     expect(patch.request.body).toEqual({ remind_unmatched: true });
     patch.flush({});
+    service.patchPreferences({ date_window_days: 5 }).subscribe();
+    const window = http.expectOne(`${BASE}/preferences`);
+    expect(window.request.body).toEqual({ date_window_days: 5 });
+    window.flush({});
   });
 
   it('every write bumps entriesChanged; a read does not', () => {
@@ -109,7 +113,7 @@ describe('EinvoiceService', () => {
     }
     service.deleteMute('1').subscribe();
     http.expectOne(`${BASE}/mutes/1`).flush(null);
-    service.setRemindUnmatched(false).subscribe();
+    service.patchPreferences({ mute_prompt_after: 4 }).subscribe();
     http.expectOne(`${BASE}/preferences`).flush({});
     expect(accounting.entriesChanged()).toBe(expected + 2);
   });

@@ -20,11 +20,12 @@ import { AutoPaySwitch, AutoPaySwitchChange } from '../billing/auto-pay';
 import { InboxService } from '../inbox/inbox.service';
 import { invoiceAmount } from '../inbox/einvoice-format';
 import { EinvoiceDismissed, EinvoiceMute, EinvoicePreferences } from '../inbox/einvoice.model';
+import { StepperComponent } from '../../ui/stepper/stepper';
 import { EinvoiceService } from '../inbox/einvoice.service';
 import { einvoiceErrorText } from '../inbox/einvoice-section/einvoice-section';
 import { OwnerRule } from '../inbox/inbox.model';
 import { isHandledKey } from '../accounting-ui';
-import { slashDate } from '../dates';
+import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
 import { writeErrorMessage } from '../http-errors';
 import { ReportView, summarizeReport } from './import-report';
@@ -53,10 +54,21 @@ function swap<T>(list: T[], index: number, delta: number): T[] | null {
   return copy;
 }
 
+type EinvoicePrefField = 'date_window_days' | 'mute_prompt_after';
+
+/** The API's bounds (`EinvoicePreferencesIn`). */
+const PREF_BOUNDS: Record<EinvoicePrefField, [number, number]> = { date_window_days: [0, 7], mute_prompt_after: [1, 10] };
+const DISMISSED_SHOWN = 3;
+
+/** A server timestamp's local calendar day as `MM/DD`. */
+function localDay(iso: string): string {
+  return shortDate(todayIso(new Date(iso)));
+}
+
 @Component({
   selector: 'app-accounting-settings',
   standalone: true,
-  imports: [PageHeaderComponent, RouterLink, SwitchComponent, DatePipe, DecimalPipe],
+  imports: [PageHeaderComponent, RouterLink, SwitchComponent, StepperComponent, DatePipe, DecimalPipe],
   templateUrl: './accounting-settings.html',
   styleUrl: './accounting-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -127,6 +139,25 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   readonly dismissed = signal<EinvoiceDismissed[] | null>(null);
   readonly dismissedError = signal(false);
   readonly einvoiceMessage = signal<string | null>(null);
+  /** Stepper values shown while their PATCH is pending (D12); cleared once the server answers with the last one. */
+  readonly prefDraft = signal<Partial<Record<EinvoicePrefField, number>>>({});
+  private readonly prefInFlight = new Set<EinvoicePrefField>();
+  /** 已標成不用記帳: newest three until 看全部 is tapped. */
+  readonly dismissedAll = signal(false);
+  readonly shownDismissed = computed(() => {
+    const list = this.dismissed() ?? [];
+    return this.dismissedAll() ? list : list.slice(0, DISMISSED_SHOWN);
+  });
+  readonly einvoiceStatus = computed(() => {
+    const prefs = this.einvoicePrefs();
+    if (!prefs) {
+      return '';
+    }
+    const last = prefs.last_import_at;
+    return last
+      ? `電子發票對帳已開啟 · 最近匯入 ${localDay(last)}（自動連結 ${prefs.auto_linked_count}）`
+      : '電子發票對帳已開啟 · 還沒有匯入';
+  });
 
   readonly visibleCounterparties = computed(() => {
     const filter = this.cpFilter().trim().toLowerCase();
@@ -299,10 +330,88 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
 
   toggleRemindUnmatched(prefs: EinvoicePreferences): void {
     this.einvoiceMessage.set(null);
-    this.einvoice.setRemindUnmatched(!prefs.remind_unmatched).subscribe({
-      next: saved => this.einvoicePrefs.set(saved),
-      error: err => this.einvoiceMessage.set(einvoiceErrorText(err)),
+    this.einvoice.patchPreferences({ remind_unmatched: !prefs.remind_unmatched }).subscribe({
+      next: (saved: EinvoicePreferences) => this.mergePrefs(saved, 'remind_unmatched'),
+      error: (err: unknown) => this.einvoiceMessage.set(einvoiceErrorText(err)),
     });
+  }
+
+  prefValue(prefs: EinvoicePreferences, field: EinvoicePrefField): number {
+    return this.prefDraft()[field] ?? prefs[field];
+  }
+
+  /** A stepper change: shown at once; one PATCH per field in flight, re-sent with the last value when it returns. */
+  setPref(field: EinvoicePrefField, value: number | null): void {
+    const [min, max] = PREF_BOUNDS[field];
+    if (value === null || !Number.isInteger(value) || value < min || value > max) {
+      return;
+    }
+    this.prefDraft.update(draft => ({ ...draft, [field]: value }));
+    if (!this.prefInFlight.has(field)) {
+      this.sendPref(field);
+    }
+  }
+
+  private sendPref(field: EinvoicePrefField): void {
+    const value = this.prefDraft()[field];
+    const prefs = this.einvoicePrefs();
+    if (value === undefined || !prefs) {
+      return;
+    }
+    if (value === prefs[field]) {
+      this.clearDraft(field);
+      return;
+    }
+    this.prefInFlight.add(field);
+    this.einvoiceMessage.set(null);
+    this.einvoice.patchPreferences({ [field]: value }).subscribe({
+      next: (saved: EinvoicePreferences) => {
+        this.prefInFlight.delete(field);
+        this.mergePrefs(saved, field);
+        if (this.prefDraft()[field] === saved[field]) {
+          this.clearDraft(field);
+        } else {
+          this.sendPref(field);
+        }
+      },
+      error: (err: unknown) => {
+        this.prefInFlight.delete(field);
+        this.clearDraft(field);
+        this.einvoiceMessage.set(einvoiceErrorText(err));
+      },
+    });
+  }
+
+  /** Takes the saved field (and the read-only status) only, so one field's late answer cannot undo another's. */
+  private mergePrefs(saved: EinvoicePreferences, field: EinvoicePrefField | 'remind_unmatched'): void {
+    this.einvoicePrefs.update(current => current && {
+      ...current, [field]: saved[field], last_import_at: saved.last_import_at, auto_linked_count: saved.auto_linked_count,
+      version: Math.max(current.version, saved.version),
+    });
+  }
+
+  private clearDraft(field: EinvoicePrefField): void {
+    this.prefDraft.update(draft => {
+      const next = { ...draft };
+      delete next[field];
+      return next;
+    });
+  }
+
+  /** `不提醒的商家 · 2`; the bare label while the list is loading or failed. */
+  countLabel(label: string, list: readonly unknown[] | null): string {
+    return list ? `${label} · ${list.length}` : label;
+  }
+
+  muteMeta(mute: EinvoiceMute): string {
+    const since = `${localDay(mute.created_at)} 起不提醒`;
+    return mute.seller_name ? `統編 ${mute.seller_tax_id} · ${since}` : since;
+  }
+
+  dismissedMeta(invoice: EinvoiceDismissed): string {
+    const items = invoice.items.slice(0, 2).map(item => item.name).join('、');
+    const who = invoice.dismiss_reason === 'runbook' ? '規則自動標記' : '你標的';
+    return [shortDate(invoice.issue_date), items, who].filter(Boolean).join(' · ');
   }
 
   removeMute(taxId: string): void {
@@ -320,11 +429,6 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
       next: () => this.loadDismissed(),
       error: err => this.einvoiceMessage.set(einvoiceErrorText(err)),
     });
-  }
-
-  /** Item names for a dismissed row, joined with 、 (the row's CSS truncates the line). */
-  itemNames(invoice: EinvoiceDismissed): string {
-    return invoice.items.map(item => item.name).join('、');
   }
 
   private loadGroups(): void {
