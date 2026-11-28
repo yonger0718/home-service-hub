@@ -73,6 +73,8 @@ export class StepperComponent {
   readonly nullable = input(false);
   readonly nullLabel = input('—');
   readonly suffix = input('');
+  /** Shown before the value, e.g. `±` for a symmetric range. */
+  readonly prefix = input('');
   readonly ariaLabel = input.required<string>();
   readonly decLabel = input('減一');
   readonly incLabel = input('加一');
@@ -92,7 +94,8 @@ export class StepperComponent {
   protected readonly display = computed(() => {
     const v = this.value();
     if (v === null) return this.nullLabel();
-    return this.suffix() ? `${v} ${this.suffix()}` : `${v}`;
+    const value = `${this.prefix()}${v}`;
+    return this.suffix() ? `${value} ${this.suffix()}` : value;
   });
 
   protected readonly decDisabled = computed(() => {

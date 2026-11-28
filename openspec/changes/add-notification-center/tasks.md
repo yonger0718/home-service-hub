@@ -63,9 +63,9 @@ PR F is split (2026-11-27): F1 = 6.1 (API); F2 = 6.2 task source + 6.3 flow (D10
   - 這 N 張都不用記帳
   - 這家以後都不提醒 via `dismiss {mute_seller: true}`
   - toast 復原
-- [ ] 6.5 Entry invoice card and 記帳設定 › 發票 section (D12); the row for an entry without an invoice stays as `Calendar entry drawer invoice link` specifies (#408)
-- [ ] 6.6 Remove the inbox panel's 發票待對帳 section and the `ask + einvoice_ask` sums at every `inboxBellCount` call site (`inbox-panel.ts`, `reminders.ts`; `nav-badge.service.ts` and `timeline.ts` no longer sum them after PR B)
-- [ ] 6.7 Tests
+- [x] 6.5 Entry invoice card and 記帳設定 › 發票 section (D12); the row for an entry without an invoice stays as `Calendar entry drawer invoice link` specifies (#408) (F4; API `recorded_amount` for the match chip; 有發票沒有帳's footer links to `#einvoice-settings`; owner design review 2026-11-28: 換一張發票 = pick then `POST /einvoices/{id}/replace`, toasts with 復原 for unlink / swap / 恢復提醒 / 放回, failed stepper line)
+- [x] 6.6 Remove the inbox panel's 發票待對帳 section and the `ask + einvoice_ask` sums at every `inboxBellCount` call site (`inbox-panel.ts`, `reminders.ts`; `nav-badge.service.ts` and `timeline.ts` no longer sum them after PR B) (F4; `inboxBellCount` deleted, 待處理's empty state no longer counts e-invoices)
+- [x] 6.7 Tests (each part shipped its own; F4: card, settings steppers and lists, inbox removal)
   - one task in the count for three invoices
   - link and dismiss calls
   - mute payload and undo

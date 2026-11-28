@@ -106,7 +106,7 @@
       }
     }
     @if (settingsLink && view() !== 'off') {
-      <a class="unm-settings" routerLink="/accounting/settings">不想看到這頁？記帳設定 › 發票 可以關掉提醒&ngsp;<span aria-hidden="true">›</span></a>
+      <a class="unm-settings" routerLink="/accounting/settings" [fragment]="settingsFragment">不想看到這頁？記帳設定 › 發票 可以關掉提醒&ngsp;<span aria-hidden="true">›</span></a>
     }
   }
 }

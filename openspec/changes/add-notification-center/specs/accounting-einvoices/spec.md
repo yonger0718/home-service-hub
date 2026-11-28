@@ -81,3 +81,56 @@ The reconciliation inbox SHALL return, for each listed invoice, `seller_dismisse
 - **GIVEN** one `ambiguous` and two `unmatched` invoices
 - **WHEN** the inbox is read with `limit=1`
 - **THEN** only the `ambiguous` invoice SHALL be listed and `counts.einvoice_unmatched` SHALL be 2
+
+### Requirement: Entry invoice recorded amount
+
+The entry detail's `einvoice` SHALL carry `recorded_amount`: what the linked entry or group records in the invoice's terms, by the rules the matcher compares with. For an entry linked by its foreign original amount it SHALL be that amount; otherwise the entry's amount plus its fee and discount children, as a positive figure. For a group it SHALL be the net of its expense and receivable members when they share one currency, and null otherwise.
+
+#### Scenario: Discount on the entry
+- **GIVEN** an entry of −130 with a fee child of −10 and a discount child of +20, linked to an invoice of 125
+- **THEN** `recorded_amount` SHALL be 120
+
+#### Scenario: Group in one currency
+- **GIVEN** a split group of −2,000 and −460 with a −3 fee on the second, linked to an invoice of 2,466
+- **WHEN** either member's detail is read
+- **THEN** `recorded_amount` SHALL be 2,463
+
+#### Scenario: Mixed-currency group
+- **GIVEN** a group with a TWD member and a USD member
+- **THEN** `recorded_amount` SHALL be null
+
+### Requirement: Replace a linked invoice
+
+`POST /einvoices/{id}/replace` with `with_invoice_id` (write scope) SHALL move the link of invoice `id` to the other invoice on the same entry or group in one transaction. The old invoice SHALL return to `unmatched` (`dismissed(seller_muted)` while its seller is muted); the new one SHALL be linked by the owner. Every refusal SHALL leave both invoices, the link and the entry's stamp unchanged. `GET /einvoices/picker?replace=true` SHALL list the invoices that could take the linked one's place.
+
+#### Scenario: Swap and swap back
+- **GIVEN** an entry auto-linked to invoice A and an unmatched invoice B
+- **WHEN** A is replaced with B, then B with A
+- **THEN** A SHALL end linked by the owner with the entry stamped with A's number, and B SHALL be `unmatched`
+
+#### Scenario: New invoice already linked
+- **WHEN** the new invoice is linked to another entry
+- **THEN** the call SHALL be refused with 409 `einvoice_linked` and nothing SHALL change
+
+### Requirement: Undo preconditions
+
+An undo SHALL check the invoice's current state, not a revision. `replace` MAY name the target the link must still be on (`entry_id` or `group_id`), `link` MAY carry `if_unlinked` (the invoice has no link), and `dismiss` MAY carry `if_unmatched` (the invoice is `unmatched`). When that precondition no longer holds, the call SHALL be refused with 409 `einvoice_changed` and nothing SHALL change. A change that has been reverted to the same state since the toast is not detected.
+
+#### Scenario: 放回's 復原 after the next run linked the invoice
+- **GIVEN** a 放回 invoice that the next run linked to an entry
+- **WHEN** `dismiss` is called with `if_unmatched`
+- **THEN** the call SHALL be refused with 409 `einvoice_changed` and the link and stamp SHALL stay
+
+#### Scenario: Swap undo after the invoice moved on
+- **GIVEN** invoice B, swapped onto entry X, was since linked to entry Y
+- **WHEN** B is replaced with A naming entry X
+- **THEN** the call SHALL be refused with 409 `einvoice_changed` and B SHALL stay on Y
+
+### Requirement: Re-create a seller mute
+
+`POST /einvoices/mutes/{tax_id}` (write scope) SHALL create the mute idempotently, as the dismiss with `mute_seller` does, so the settings page can undo 恢復提醒.
+
+#### Scenario: Undo 恢復提醒
+- **GIVEN** a mute was removed and its seller's invoices returned to `unmatched`
+- **WHEN** the mute is created again
+- **THEN** those invoices SHALL be `dismissed(seller_muted)` again

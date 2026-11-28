@@ -4,15 +4,15 @@ needs `write`, the rollout runbook dismiss `admin`. Static paths are declared be
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Path, Query, Response
 from sqlalchemy.orm import Session
 
 from ..auth import require, require_feature
 from ..database import get_db
 from ..schemas.einvoices import (
     EinvoiceDismissedOut, EinvoiceDismissIn, EinvoiceImportIn, EinvoiceImportOut, EinvoiceLinkIn, EinvoiceMatchOut, EinvoiceMuteOut,
-    EinvoicePickerOut, EinvoicePreferencesIn, EinvoicePreferencesOut, EinvoiceStateOut, EinvoiceTargetOut, RunbookDismissIn,
-    RunbookDismissOut,
+    EinvoicePickerOut, EinvoicePreferencesIn, EinvoicePreferencesOut, EinvoiceReplaceIn, EinvoiceReplaceOut,
+    EinvoiceStateOut, EinvoiceTargetOut, RunbookDismissIn, RunbookDismissOut,
 )
 from ..services import einvoice_matcher, einvoice_read, einvoice_service, settings_service
 from .errors import service_errors
@@ -61,6 +61,15 @@ def list_mutes(db: Session = Depends(get_db)):
     return einvoice_service.list_mutes(db)
 
 
+@router.post("/mutes/{tax_id}", status_code=204, dependencies=WRITE)
+def create_mute(tax_id: str = Path(max_length=16, pattern=r"^[0-9A-Za-z]+$"), db: Session = Depends(get_db)):
+    """Idempotent; the 復原 of a mute removal (settings 恢復提醒)."""
+    with _writes():
+        einvoice_service.create_mute(db, tax_id)
+        db.commit()
+    return Response(status_code=204)
+
+
 @router.delete("/mutes/{tax_id}", status_code=204, dependencies=WRITE)
 def delete_mute(tax_id: str, db: Session = Depends(get_db)):
     with _writes():
@@ -96,9 +105,9 @@ def dismissed(db: Session = Depends(get_db)):
 
 
 @router.get("/picker", response_model=EinvoicePickerOut, dependencies=READ)
-def picker(entry_id: int = Query(), db: Session = Depends(get_db)):
+def picker(entry_id: int = Query(), replace: bool = Query(False), db: Session = Depends(get_db)):
     with service_errors():
-        return einvoice_read.picker(db, entry_id)
+        return einvoice_read.picker(db, entry_id, replace=replace)
 
 
 @router.get("/{invoice_id}/targets", response_model=list[EinvoiceTargetOut], dependencies=READ)
@@ -110,7 +119,8 @@ def targets(invoice_id: int, days: int = Query(14, ge=1, le=60), db: Session = D
 @router.post("/{invoice_id}/link", response_model=EinvoiceStateOut, dependencies=WRITE)
 def link(invoice_id: int, body: EinvoiceLinkIn, db: Session = Depends(get_db)):
     with _writes():
-        out = einvoice_service.link(db, invoice_id, entry_id=body.entry_id, group_id=body.group_id)
+        out = einvoice_service.link(db, invoice_id, entry_id=body.entry_id, group_id=body.group_id,
+                                     if_unlinked=body.if_unlinked)
         db.commit()
     return out
 
@@ -123,10 +133,20 @@ def unlink(invoice_id: int, db: Session = Depends(get_db)):
     return out
 
 
+@router.post("/{invoice_id}/replace", response_model=EinvoiceReplaceOut, dependencies=WRITE)
+def replace(invoice_id: int, body: EinvoiceReplaceIn, db: Session = Depends(get_db)):
+    with _writes():
+        out = einvoice_service.replace(db, invoice_id, with_invoice_id=body.with_invoice_id,
+                                       expect_entry_id=body.entry_id, expect_group_id=body.group_id)
+        db.commit()
+    return out
+
+
 @router.post("/{invoice_id}/dismiss", response_model=EinvoiceStateOut, dependencies=WRITE)
 def dismiss(invoice_id: int, body: EinvoiceDismissIn | None = None, db: Session = Depends(get_db)):
     with _writes():
-        out = einvoice_service.dismiss(db, invoice_id, mute_seller=body.mute_seller if body else False)
+        out = einvoice_service.dismiss(db, invoice_id, mute_seller=body.mute_seller if body else False,
+                                       if_unmatched=body.if_unmatched if body else False)
         db.commit()
     return out
 

@@ -16,15 +16,16 @@ import {
   Project,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { injectToasts } from '../../../services/toast.service';
 import { AutoPaySwitch, AutoPaySwitchChange } from '../billing/auto-pay';
 import { InboxService } from '../inbox/inbox.service';
-import { invoiceAmount } from '../inbox/einvoice-format';
+import { EINVOICE_SETTINGS_FRAGMENT, einvoiceErrorText, invoiceAmount } from '../inbox/einvoice-format';
 import { EinvoiceDismissed, EinvoiceMute, EinvoicePreferences } from '../inbox/einvoice.model';
+import { StepperComponent } from '../../ui/stepper/stepper';
 import { EinvoiceService } from '../inbox/einvoice.service';
-import { einvoiceErrorText } from '../inbox/einvoice-section/einvoice-section';
 import { OwnerRule } from '../inbox/inbox.model';
 import { isHandledKey } from '../accounting-ui';
-import { slashDate } from '../dates';
+import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
 import { writeErrorMessage } from '../http-errors';
 import { ReportView, summarizeReport } from './import-report';
@@ -53,10 +54,22 @@ function swap<T>(list: T[], index: number, delta: number): T[] | null {
   return copy;
 }
 
+type EinvoicePrefField = 'date_window_days' | 'mute_prompt_after';
+
+/** The API's bounds (`EinvoicePreferencesIn`). */
+const PREF_BOUNDS: Record<EinvoicePrefField, [number, number]> = { date_window_days: [0, 7], mute_prompt_after: [1, 10] };
+const DISMISSED_CAP = 100;
+const DISMISSED_SHOWN = 3;
+
+/** A server timestamp's local calendar day as `MM/DD`. */
+function localDay(iso: string): string {
+  return shortDate(todayIso(new Date(iso)));
+}
+
 @Component({
   selector: 'app-accounting-settings',
   standalone: true,
-  imports: [PageHeaderComponent, RouterLink, SwitchComponent, DatePipe, DecimalPipe],
+  imports: [PageHeaderComponent, RouterLink, SwitchComponent, StepperComponent, DatePipe, DecimalPipe],
   templateUrl: './accounting-settings.html',
   styleUrl: './accounting-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -106,6 +119,7 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   readonly formatMoney = formatMoney;
   readonly slashDate = slashDate;
   readonly invoiceAmount = invoiceAmount;
+  readonly einvoiceAnchor = EINVOICE_SETTINGS_FRAGMENT;
 
   /** 對帳 › 自動扣繳: the stored switch and start date; null until read (and when reconciliation is off: 404). */
   readonly autoPay = signal<AutoPaySwitch | null>(null);
@@ -127,6 +141,28 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   readonly dismissed = signal<EinvoiceDismissed[] | null>(null);
   readonly dismissedError = signal(false);
   readonly einvoiceMessage = signal<string | null>(null);
+  /** Stepper values shown while their PATCH is pending (D12); cleared once the server answers with the last one. */
+  readonly prefDraft = signal<Partial<Record<EinvoicePrefField, number>>>({});
+  private readonly prefInFlight = new Set<EinvoicePrefField>();
+  /** A stepper whose PATCH failed: the value it tried, for 重試; shown right under that row. */
+  readonly prefFailed = signal<Partial<Record<EinvoicePrefField, number>>>({});
+  private readonly toasts = injectToasts();
+  /** The API lists the newest 100 dismissed invoices. */
+  readonly dismissedCap = DISMISSED_CAP;
+  /** 已標成不用記帳: newest three until 看全部 is tapped. */
+  readonly dismissedAll = signal(false);
+  readonly shownDismissed = computed(() => {
+    const list = this.dismissed() ?? [];
+    return this.dismissedAll() ? list : list.slice(0, DISMISSED_SHOWN);
+  });
+  readonly einvoiceStatus = computed(() => {
+    const prefs = this.einvoicePrefs();
+    if (!prefs) {
+      return '';
+    }
+    const last = prefs.last_import_at;
+    return last ? `最近匯入 ${localDay(last)} · 已自動連結 ${prefs.auto_linked_count} 張` : '還沒有匯入';
+  });
 
   readonly visibleCounterparties = computed(() => {
     const filter = this.cpFilter().trim().toLowerCase();
@@ -270,10 +306,21 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
         if (prefs.enabled) {
           this.loadMutes();
           this.loadDismissed();
+          this.scrollToEinvoice();
         }
       },
       // 404: the reconciliation feature flag is off, so there is no 發票 block (not a failed read).
       error: (err: unknown) => this.einvoiceError.set(!(err instanceof HttpErrorResponse && err.status === 404)),
+    });
+  }
+
+  /** A link to `#einvoice-settings` (有發票沒有帳's footer) lands on the section once it renders. */
+  private scrollToEinvoice(): void {
+    if (this.router.parseUrl(this.router.url).fragment !== EINVOICE_SETTINGS_FRAGMENT) {
+      return;
+    }
+    afterNextRender(() => this.host.nativeElement.querySelector(`#${EINVOICE_SETTINGS_FRAGMENT}`)?.scrollIntoView?.({ block: 'start' }), {
+      injector: this.injector,
     });
   }
 
@@ -299,32 +346,161 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
 
   toggleRemindUnmatched(prefs: EinvoicePreferences): void {
     this.einvoiceMessage.set(null);
-    this.einvoice.setRemindUnmatched(!prefs.remind_unmatched).subscribe({
-      next: saved => this.einvoicePrefs.set(saved),
-      error: err => this.einvoiceMessage.set(einvoiceErrorText(err)),
+    this.einvoice.patchPreferences({ remind_unmatched: !prefs.remind_unmatched }).subscribe({
+      next: (saved: EinvoicePreferences) => this.mergePrefs(saved, 'remind_unmatched'),
+      error: (err: unknown) => this.einvoiceMessage.set(einvoiceErrorText(err)),
     });
   }
 
-  removeMute(taxId: string): void {
+  prefValue(prefs: EinvoicePreferences, field: EinvoicePrefField): number {
+    return this.prefDraft()[field] ?? prefs[field];
+  }
+
+  /** A stepper change: shown at once; one PATCH per field in flight, re-sent with the last value when it returns. */
+  setPref(field: EinvoicePrefField, value: number | null): void {
+    const [min, max] = PREF_BOUNDS[field];
+    if (value === null || !Number.isInteger(value) || value < min || value > max) {
+      return;
+    }
+    this.prefDraft.update(draft => ({ ...draft, [field]: value }));
+    this.clearFailed(field);
+    if (!this.prefInFlight.has(field)) {
+      this.sendPref(field);
+    }
+  }
+
+  private sendPref(field: EinvoicePrefField): void {
+    const value = this.prefDraft()[field];
+    const prefs = this.einvoicePrefs();
+    if (value === undefined || !prefs) {
+      return;
+    }
+    if (value === prefs[field]) {
+      this.clearDraft(field);
+      return;
+    }
+    this.prefInFlight.add(field);
     this.einvoiceMessage.set(null);
-    this.einvoice.deleteMute(taxId).subscribe({
-      next: () => this.loadMutes(),
-      error: err => this.einvoiceMessage.set(einvoiceErrorText(err)),
+    this.einvoice.patchPreferences({ [field]: value }).subscribe({
+      next: (saved: EinvoicePreferences) => {
+        this.prefInFlight.delete(field);
+        this.mergePrefs(saved, field);
+        if (this.prefDraft()[field] === saved[field]) {
+          this.clearDraft(field);
+        } else {
+          this.sendPref(field);
+        }
+      },
+      error: () => {
+        // The shown value goes back to the server's; the row says so and 重試 sends the newest value it tried.
+        const tried = this.prefDraft()[field] ?? value;
+        this.prefInFlight.delete(field);
+        this.clearDraft(field);
+        this.prefFailed.update(failed => ({ ...failed, [field]: tried }));
+      },
     });
   }
 
-  /** One tap: 復原 is reversible. */
-  restoreInvoice(id: number): void {
+  /**
+   * Takes the saved field only, so one field's late answer cannot undo another's. The read-only import status is not
+   * versioned by `version`; it is taken from an answer no older than what is shown, so a late answer cannot roll it back.
+   */
+  private mergePrefs(saved: EinvoicePreferences, field: EinvoicePrefField | 'remind_unmatched'): void {
+    this.einvoicePrefs.update(current => {
+      if (!current) return current;
+      const newest = saved.version >= current.version;
+      return {
+        ...current,
+        [field]: saved[field],
+        ...(newest ? { last_import_at: saved.last_import_at, auto_linked_count: saved.auto_linked_count } : {}),
+        version: Math.max(current.version, saved.version),
+      };
+    });
+  }
+
+  /** `沒存到，已改回 ±3 天` / `沒存到，已改回 3 次`: the value now shown. */
+  prefFailedText(prefs: EinvoicePreferences, field: EinvoicePrefField): string {
+    return field === 'date_window_days' ? `沒存到，已改回 ±${prefs[field]} 天` : `沒存到，已改回 ${prefs[field]} 次`;
+  }
+
+  retryPref(field: EinvoicePrefField): void {
+    const tried = this.prefFailed()[field];
+    if (tried !== undefined) {
+      this.setPref(field, tried);
+    }
+  }
+
+  private clearFailed(field: EinvoicePrefField): void {
+    this.prefFailed.update(failed => {
+      const next = { ...failed };
+      delete next[field];
+      return next;
+    });
+  }
+
+  private clearDraft(field: EinvoicePrefField): void {
+    this.prefDraft.update(draft => {
+      const next = { ...draft };
+      delete next[field];
+      return next;
+    });
+  }
+
+  /** `不提醒的商家 · 2`; the bare label while the list is loading or failed. */
+  countLabel(label: string, list: readonly unknown[] | null): string {
+    return list ? `${label} · ${list.length}` : label;
+  }
+
+  muteMeta(mute: EinvoiceMute): string {
+    const since = `${localDay(mute.created_at)} 起不提醒`;
+    return mute.seller_name ? `統編 ${mute.seller_tax_id} · ${since}` : since;
+  }
+
+  dismissedMeta(invoice: EinvoiceDismissed): string {
+    const items = invoice.items.slice(0, 2).map(item => item.name).join('、');
+    const who = invoice.dismiss_reason === 'runbook' ? '規則自動標記' : '你標的';
+    return [shortDate(invoice.issue_date), items, who].filter(Boolean).join(' · ');
+  }
+
+  /** The mute row's title: the seller name, else `統編 X`. */
+  muteName(mute: EinvoiceMute): string {
+    return mute.seller_name || `統編 ${mute.seller_tax_id}`;
+  }
+
+  /** 恢復提醒: one tap; the toast's 復原 mutes the seller again (as F2/F3). */
+  unmute(mute: EinvoiceMute): void {
+    const name = this.muteName(mute);
     this.einvoiceMessage.set(null);
-    this.einvoice.undismiss(id).subscribe({
-      next: () => this.loadDismissed(),
+    this.einvoice.deleteMute(mute.seller_tax_id).subscribe({
+      next: () => {
+        this.loadMutes();
+        this.toasts.done(`已恢復提醒：${name}`, { undo: () => this.undo(this.einvoice.createMute(mute.seller_tax_id), `已復原：${name} 不提醒`, () => this.loadMutes()) });
+      },
       error: err => this.einvoiceMessage.set(einvoiceErrorText(err)),
     });
   }
 
-  /** Item names for a dismissed row, joined with 、 (the row's CSS truncates the line). */
-  itemNames(invoice: EinvoiceDismissed): string {
-    return invoice.items.map(item => item.name).join('、');
+  /** 放回: back to 沒對到 (one tap); the toast's 復原 marks it 不用記帳 again. */
+  restoreInvoice(invoice: EinvoiceDismissed): void {
+    const what = `${invoice.seller_name} ${invoiceAmount(invoice.total_amount)}`;
+    this.einvoiceMessage.set(null);
+    this.einvoice.undismiss(invoice.id).subscribe({
+      next: () => {
+        this.loadDismissed();
+        this.toasts.done(`已放回：${what}`, { undo: () => this.undo(this.einvoice.dismiss(invoice.id, false, { ifUnmatched: true }), `已復原：${what}`, () => this.loadDismissed()) });
+      },
+      error: err => this.einvoiceMessage.set(einvoiceErrorText(err)),
+    });
+  }
+
+  private undo(call: Observable<unknown>, done: string, reload: () => void): void {
+    call.subscribe({
+      next: () => {
+        reload();
+        this.toasts.done(done);
+      },
+      error: (err: unknown) => this.toasts.error(`復原沒成功：${einvoiceErrorText(err).replace(/^沒成功[：，]/, '')}`),
+    });
   }
 
   private loadGroups(): void {

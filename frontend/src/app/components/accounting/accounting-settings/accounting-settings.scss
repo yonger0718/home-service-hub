@@ -128,5 +128,25 @@ summary.srow::-webkit-details-marker { display: none; }
   }
 }
 
-.dismissed-text { overflow: hidden; white-space: normal; }
-.dismissed-items { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#einvoice-settings { scroll-margin-top: 16px; }
+.einvoice-status { margin: 4px 0 2px; }
+.einvoice-pref { cursor: default; }
+.einvoice-pref .t { display: flex; flex-direction: column; gap: 2px; }
+.einvoice-hint { font-weight: 400; line-height: 1.4; }
+.einvoice-head { cursor: default; }
+.einvoice-text { display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
+.mute-meta, .dismissed-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dismissed-cap { font-size: 0.8rem; margin: 6px 0 0; }
+/* Right under the stepper row whose save failed: what it shows now, and 重試. */
+.pref-failed {
+  align-items: center; color: var(--app-danger); display: flex; flex-wrap: wrap; font-size: 0.8rem; gap: 4px 10px; margin: 0 0 6px 34px;
+}
+.pref-retry {
+  background: none; border: 0; color: var(--app-primary); cursor: pointer; font: inherit; font-weight: 700; min-height: 32px; padding: 0;
+  &:focus-visible { outline: 2px solid var(--app-primary); outline-offset: 2px; }
+}
+.dismissed-all, .dismissed-fold {
+  align-self: flex-start; background: none; border: 0; color: var(--app-primary); cursor: pointer; font: inherit; font-size: 0.8rem;
+  font-weight: 700; margin-top: 6px; min-height: 36px; padding: 0;
+  &:focus-visible { outline: 2px solid var(--app-primary); outline-offset: 2px; }
+}

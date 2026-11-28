@@ -72,6 +72,8 @@ class EinvoiceLinkIn(BaseModel):
     model_config = Strict
     entry_id: Int32 | None = None
     group_id: Int32 | None = None
+    # 復原 of 解除連結: refuse with `einvoice_changed` once the invoice is linked again (AGENT-638).
+    if_unlinked: StrictBool = False
 
     @model_validator(mode="after")
     def _one_target(self) -> "EinvoiceLinkIn":
@@ -80,9 +82,26 @@ class EinvoiceLinkIn(BaseModel):
         return self
 
 
+class EinvoiceReplaceIn(BaseModel):
+    """`entry_id` / `group_id` (at most one) is a precondition for 復原: the link must still be on that target, else
+    `einvoice_changed` and nothing changes (AGENT-638)."""
+    model_config = Strict
+    with_invoice_id: Int32
+    entry_id: Int32 | None = None
+    group_id: Int32 | None = None
+
+    @model_validator(mode="after")
+    def _at_most_one_target(self) -> "EinvoiceReplaceIn":
+        if self.entry_id is not None and self.group_id is not None:
+            raise ValueError("target: give at most one of entry_id or group_id")
+        return self
+
+
 class EinvoiceDismissIn(BaseModel):
     model_config = Strict
     mute_seller: bool = False
+    # 復原 of 放回: refuse with `einvoice_changed` unless the invoice is still `unmatched` (AGENT-638).
+    if_unmatched: StrictBool = False
 
 
 class EinvoiceStateOut(BaseModel):
@@ -194,3 +213,10 @@ class EinvoicePickerOut(BaseModel):
     group_id: int | None
     group_eligible: bool
     invoices: list[EinvoiceSummaryOut]
+
+
+class EinvoiceReplaceOut(BaseModel):
+    """換一張發票: the invoice the link left (`previous`) and the one it moved to (`current`)."""
+    model_config = Strict
+    previous: EinvoiceStateOut
+    current: EinvoiceStateOut

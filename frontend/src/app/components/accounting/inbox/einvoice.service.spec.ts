@@ -55,6 +55,26 @@ describe('EinvoiceService', () => {
     undo.flush(STATE);
   });
 
+  it('replaces a linked invoice, reads the replace picker and re-creates a mute', () => {
+    service.replace(7, 9).subscribe();
+    const swap = http.expectOne(`${BASE}/7/replace`);
+    expect(swap.request.method).toBe('POST');
+    expect(swap.request.body).toEqual({ with_invoice_id: 9 });
+    swap.flush({ previous: STATE, current: STATE });
+    service.replace(7, 9, { group_id: 4 }).subscribe(); // 復原: only while 7 is still on that target
+    expect(http.expectOne(`${BASE}/7/replace`).request.body).toEqual({ with_invoice_id: 9, group_id: 4 });
+    service.link(7, { entry_id: 3 }, { ifUnlinked: true }).subscribe();
+    expect(http.expectOne(`${BASE}/7/link`).request.body).toEqual({ entry_id: 3, if_unlinked: true });
+    service.dismiss(7, false, { ifUnmatched: true }).subscribe();
+    expect(http.expectOne(`${BASE}/7/dismiss`).request.body).toEqual({ mute_seller: false, if_unmatched: true });
+    service.picker(3, { replace: true }).subscribe();
+    http.expectOne(`${BASE}/picker?entry_id=3&replace=true`).flush({});
+    service.createMute('a/b').subscribe();
+    const mute = http.expectOne(`${BASE}/mutes/a%2Fb`);
+    expect(mute.request.method).toBe('POST');
+    mute.flush(null);
+  });
+
   it('reads targets, the picker, the dismissed list, mutes and preferences', () => {
     service.targets(7).subscribe();
     const targets = http.expectOne(`${BASE}/7/targets?days=14`);
@@ -79,11 +99,15 @@ describe('EinvoiceService', () => {
     del.flush(null);
     service.deleteMute('a/b c').subscribe();
     http.expectOne(`${BASE}/mutes/a%2Fb%20c`).flush(null);
-    service.setRemindUnmatched(true).subscribe();
+    service.patchPreferences({ remind_unmatched: true }).subscribe();
     const patch = http.expectOne(`${BASE}/preferences`);
     expect(patch.request.method).toBe('PATCH');
     expect(patch.request.body).toEqual({ remind_unmatched: true });
     patch.flush({});
+    service.patchPreferences({ date_window_days: 5 }).subscribe();
+    const window = http.expectOne(`${BASE}/preferences`);
+    expect(window.request.body).toEqual({ date_window_days: 5 });
+    window.flush({});
   });
 
   it('every write bumps entriesChanged; a read does not', () => {
@@ -109,7 +133,7 @@ describe('EinvoiceService', () => {
     }
     service.deleteMute('1').subscribe();
     http.expectOne(`${BASE}/mutes/1`).flush(null);
-    service.setRemindUnmatched(false).subscribe();
+    service.patchPreferences({ mute_prompt_after: 4 }).subscribe();
     http.expectOne(`${BASE}/preferences`).flush({});
     expect(accounting.entriesChanged()).toBe(expected + 2);
   });

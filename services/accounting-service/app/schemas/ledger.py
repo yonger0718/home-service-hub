@@ -243,6 +243,8 @@ class EntryEinvoiceOut(BaseModel):
     total_amount: Decimal
     linked_by: Literal["auto", "owner"]
     linked_to: Literal["entry", "group"]
+    #: What the linked entry or group records in the invoice's terms (D12 match chip); null for a mixed-currency group.
+    recorded_amount: Decimal | None = None
     items: list[EinvoiceItemOut]
 
 

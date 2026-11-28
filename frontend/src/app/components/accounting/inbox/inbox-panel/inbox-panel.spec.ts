@@ -97,9 +97,9 @@ describe('AppInboxPanelComponent', () => {
     fixture.detectChanges();
   }
 
-  it('adds e-invoice questions to 要你決定', () => {
+  it('要你決定 leaves out the e-invoice questions (通知 counts them, 6.6)', () => {
     const { el } = render(makeInbox([], { ask: 1, einvoice_ask: 2 }));
-    expect(text(el.querySelector('.inbox-head'))).toBe('要你決定 3 · 其他 0');
+    expect(text(el.querySelector('.inbox-head'))).toBe('要你決定 1 · 其他 0');
   });
 
   it('renders one card per group_key with ×N and the question text', () => {
@@ -887,37 +887,24 @@ describe('AppInboxPanelComponent', () => {
         offer_mute: false,
       }) as NonNullable<InboxOut['einvoices']>[number];
 
-    it('renders the section when einvoices exist, not when missing or empty', () => {
-      const withOne = render({ ...makeInbox([]), einvoices: [einvoice('ambiguous')] });
-      expect(withOne.el.querySelector('app-einvoice-section')).not.toBeNull();
-      expect(render(makeInbox([])).el.querySelector('app-einvoice-section')).toBeNull();
-      expect(
-        render({ ...makeInbox([]), einvoices: [] }).el.querySelector('app-einvoice-section'),
-      ).toBeNull();
-    });
-
-    it('preview caps the invoice questions at INBOX_PREVIEW_CARDS and counts the rest in 還有 N 張', () => {
+    it('never lists e-invoices, in preview or full (通知 owns them, 6.6)', () => {
       const asks = [1, 2, 3, 4, 5].map((id) => ({ ...einvoice('ambiguous'), id, number: `AB0000000${id}` }));
-      const reminder = { ...einvoice('unmatched'), id: 6, number: 'AB00000006' };
-      const data = { ...makeInbox([], { einvoice_ask: 5 }), einvoices: [...asks, reminder] };
-      const preview = render(data, 'preview').el;
-      expect([...preview.querySelectorAll('[data-einvoice-id]')].map((n) => n.getAttribute('data-einvoice-id'))).toEqual(['1', '2', '3']);
-      expect(text(preview.querySelector('a.more'))).toBe('還有 2 張 →');
-      const full = render(data, 'full').el;
-      expect(full.querySelectorAll('[data-einvoice-id]').length).toBe(6);
-      expect(full.querySelector('a.more')).toBeNull();
+      const data = { ...makeInbox([], { einvoice_ask: 5 }), einvoices: [...asks, { ...einvoice('unmatched'), id: 6 }] };
+      for (const mode of ['preview', 'full'] as const) {
+        const { el } = render(data, mode);
+        expect(el.querySelector('app-einvoice-section')).toBeNull();
+        expect(el.querySelectorAll('[data-einvoice-id]').length).toBe(0);
+        expect(el.querySelector('a.more')).toBeNull();
+      }
     });
 
-    it('preview 還有 N 張 adds both overflows', () => {
+    it('要你決定 and 還有 N 張 count the ask cards only', () => {
       const asks = [1, 2, 3, 4].map((id) => ({ ...einvoice('ambiguous'), id, number: `AB0000000${id}` }));
       const items = [11, 12, 13, 14].map((id) => makeItem({ case_id: id }));
       const data = { ...makeInbox([makeInboxAccount({ items })], { ask: 4, ask_items: 4, einvoice_ask: 4 }), einvoices: asks };
-      expect(text(render(data, 'preview').el.querySelector('a.more'))).toBe('還有 2 張 →');
-    });
-
-    it('preview renders nothing when only unmatched reminders exist', () => {
-      const { el } = render({ ...makeInbox([]), einvoices: [einvoice('unmatched')] }, 'preview');
-      expect(el.querySelector('app-einvoice-section')).toBeNull();
+      const { el } = render(data, 'preview');
+      expect(text(el.querySelector('a.more'))).toBe('還有 1 張 →');
+      expect(text(render(data, 'full').el.querySelector('.inbox-head'))).toContain('要你決定 4 ·');
     });
   });
 });
