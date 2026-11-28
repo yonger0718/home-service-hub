@@ -14,7 +14,7 @@ import { NotificationCenterService } from '../../../services/notification-center
 import { NO_TASKS, NotifSourceKey } from '../../notifications/notif-task';
 import { CathayView, cathayView } from '../../notifications/sources/cathay';
 import { FuturesView, futuresView } from '../../notifications/sources/sinopac-futures';
-import { PortfolioImportComponent } from './import';
+import { CARD_ARRIVED_MS, PortfolioImportComponent } from './import';
 
 const preview: ImportResult = { parsed: 1, created: 1, skipped_duplicates: 0, dry_run: true, errors: [], created_ids: [], rows: [] };
 const brokerPreview: BrokerCsvImportResult = {
@@ -1837,6 +1837,31 @@ describe('Portfolio import controls', () => {
       fixture.nativeElement.remove();
     });
 
+    it('opened with #cathay: the 國泰 card is outlined on arrival too', async () => {
+      spyScroll();
+      center.cathay.set(ANSWER);
+      const fixture = setup({}, 'cathay');
+      await vi.waitFor(async () => {
+        await rendered(fixture);
+        expect(card(fixture)!.classList.contains('card-arrived')).toBe(true);
+      });
+      fixture.nativeElement.remove();
+    });
+
+    it('leaving the page before the outline fades: no timer outlives the page', async () => {
+      spyScroll();
+      center.cathay.set(ANSWER);
+      const fixture = setup({}, 'cathay');
+      await vi.waitFor(async () => {
+        await rendered(fixture);
+        expect(card(fixture)!.classList.contains('card-arrived')).toBe(true);
+      });
+      const clear = vi.spyOn(globalThis, 'clearTimeout');
+      fixture.destroy();
+      expect(clear).toHaveBeenCalled();
+      clear.mockRestore();
+    });
+
     it('#cathay before the 國泰 answer: nothing until it lands (or the source fails), then scroll and focus', async () => {
       const scroll = spyScroll();
       const fixture = setup({}, 'cathay');
@@ -1974,6 +1999,19 @@ describe('Portfolio import controls', () => {
       expect(host.getAttribute('tabindex')).toBe('-1');
       expect(host.getAttribute('role')).toBe('region');
       expect(host.getAttribute('aria-label')).toBe('永豐期貨對帳單');
+    });
+
+    it('opened with #sinopac-futures: the card is outlined in the primary colour on arrival, and the outline fades after a few seconds', async () => {
+      spyScroll();
+      center.futures.set(ANSWER);
+      const fixture = setup({}, 'sinopac-futures');
+      await vi.waitFor(async () => {
+        await rendered(fixture);
+        expect(card(fixture)!.classList.contains('card-arrived')).toBe(true);
+      });
+      expect(CARD_ARRIVED_MS).toBeGreaterThanOrEqual(2000);
+      await vi.waitFor(() => expect(card(fixture)!.classList.contains('card-arrived')).toBe(false), { timeout: CARD_ARRIVED_MS + 1500 });
+      fixture.nativeElement.remove();
     });
 
     it('opened with #sinopac-futures: nothing before the futures answer (the 國泰 one does not count), then scroll and focus once', async () => {

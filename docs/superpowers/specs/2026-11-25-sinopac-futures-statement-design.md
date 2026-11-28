@@ -341,7 +341,7 @@ statement there is no value: 0 in totals, and the ledger-feed valuation answers 
 `market_value` `"0"`, `priced_through` null, `complete` false. A source's value applies from its own date up to,
 not including, the next source's date. With it come `source_date` and `positions_open` (the source's
 `open_positions` > 0): a value with open positions and `source_date` < D is frozen, and every view that shows it says
-「持倉中，數字停在 <source_date>」.
+「留倉中，數字停在 <source_date>」.
 
 ### 6.4 Findings
 
@@ -458,7 +458,7 @@ is set when `findings_sha` changes. A day or month with findings is pending (§8
 - Card layout: the card's own width decides the columns (a container query, not the viewport): from about 600px of
   content width two columns that fill the card, one shared three-row grid so the rows line up — left 權益總值 (large;
   the first row takes its height), 本月損益, 本月期貨平倉損益; right 可動用(出金)保證金, 原始 / 維持保證金, 超額 / 追繳保證金.
-  Below the grid one date row aligned to the same columns: left 資料日 with the frozen note 「持倉中，數字停在 MM/DD」,
+  Below the grid one date row aligned to the same columns: left 資料日 with the frozen note 「留倉中，數字停在 MM/DD」,
   right 「保證金資料日 MM/DD」 (shown only when the margins come from an older daily statement than 資料日). Narrower cards
   use one column with no max width, in the same order, with 保證金資料日 directly under the margin rows, never above
   本月損益. On phones the warning tag and amount may wrap to a second line (accepted).

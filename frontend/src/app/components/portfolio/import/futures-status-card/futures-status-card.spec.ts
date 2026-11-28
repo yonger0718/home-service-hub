@@ -165,7 +165,7 @@ describe('FuturesStatusCardComponent', () => {
     expect(text(el.querySelector('.futures-items-title'))).toBe('需要你處理的對帳單');
     const rows = Array.from(el.querySelectorAll('li.futures-item'));
     expect(rows.map(r => [r.getAttribute('data-item'), text(r.querySelector('b')), text(r.querySelector('small'))])).toEqual([
-      ['2026-09:findings', '2026/09 月對帳單', '與日對帳單不符：B K'],
+      ['2026-09:findings', '2026/09 月對帳單', '出入金、期貨平倉損益與日對帳單加總不符'],
       ['2026-10-27:conflict', '10/27', '收到內容不同的同日對帳單'],
       ['2026-10-27:findings', '10/27', '前日餘額接不上（10/23）'],
     ]);
@@ -262,7 +262,7 @@ describe('FuturesStatusCardComponent', () => {
       summaryAnswer = of(summary({ source_date: '2026-10-23', positions_open: true, frozen: true }));
       const el = mount();
       expect(text(el.querySelector('.futures-source'))).toContain('資料日 10/23');
-      expect(text(el.querySelector('.futures-frozen'))).toBe('持倉中，數字停在 10/23');
+      expect(text(el.querySelector('.futures-frozen'))).toBe('留倉中，數字停在 10/23');
     });
 
     it.each([

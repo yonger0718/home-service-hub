@@ -3,7 +3,7 @@
   @let v = d.value!;
   @let daily = d.latest_daily;
   <app-bento class="futures-card" title="永豐期貨">
-    <a class="futures-detail-link" routerLink="/portfolio/futures">明細 →</a>
+    <a class="futures-detail-link" routerLink="/portfolio/futures">明細&ngsp;<span aria-hidden="true">›</span></a>
     <!-- One shared grid; the group wrappers are display: contents. DOM order = the one-column order. -->
     <div class="futures-body">
       <div class="futures-grid">
@@ -42,7 +42,7 @@
           <p class="futures-meta" data-cell="l4">
             資料日 {{ md(v.source_date) }}
             @if (v.frozen) {
-              <span class="futures-frozen">持倉中，數字停在 {{ md(v.source_date) }}</span>
+              <span class="futures-frozen">留倉中，數字停在 {{ md(v.source_date) }}</span>
             }
           </p>
         </div>

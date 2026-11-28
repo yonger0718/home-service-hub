@@ -1,12 +1,14 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
 
 import { FuturesDay, FuturesDeposit, FuturesDetail, FuturesFill } from '../../../models/portfolio.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { FUTURES_CARD_FRAGMENT } from '../../notifications/sources/sinopac-futures';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { BannerComponent } from '../../ui/banner/banner';
 import { BentoComponent } from '../../ui/bento/bento';
 import { Amount, displayedSign, formatMoney } from '../../ui/format';
 
@@ -28,7 +30,7 @@ interface SummaryRow {
  */
 @Component({
   selector: 'app-portfolio-futures-detail',
-  imports: [PageHeaderComponent, BentoComponent],
+  imports: [PageHeaderComponent, BentoComponent, BannerComponent, RouterLink],
   templateUrl: './futures-detail.html',
   styleUrl: './futures-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -42,6 +44,8 @@ export class PortfolioFuturesDetailComponent implements OnInit, OnDestroy {
   private detailSub?: Subscription;
 
   protected readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+  /** The import page's 永豐期貨對帳單 card (it scrolls into view and is outlined once). */
+  protected readonly importCard = FUTURES_CARD_FRAGMENT;
   protected readonly state = signal<LoadState>('loading');
   protected readonly monthsFailed = signal(false);
   protected readonly months = signal<string[]>([]);
@@ -63,6 +67,24 @@ export class PortfolioFuturesDetailComponent implements OnInit, OnDestroy {
   });
 
   ngOnInit(): void {
+    this.loadMonths();
+  }
+
+  /** 重試 on the months banner: the page starts over (months, then the wanted or newest month). */
+  protected retryMonths(): void {
+    this.monthsFailed.set(false);
+    this.state.set('loading');
+    this.loadMonths();
+  }
+
+  /** 重試 on a month's banner: the same month again. */
+  protected retryDetail(): void {
+    const month = this.selected();
+    if (month !== null) this.loadDetail(month);
+  }
+
+  private loadMonths(): void {
+    this.monthsSub?.unsubscribe();
     this.monthsSub = this.portfolio.getFuturesMonths().subscribe({
       next: ({ months }) => {
         this.months.set(months);

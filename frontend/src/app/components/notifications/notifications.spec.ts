@@ -1556,7 +1556,7 @@ describe('NotificationsComponent', () => {
       icon: 'pi-file',
       title: '國泰對帳單 10/28',
       when: '保留',
-      meta: '自 10/28 起',
+      meta: '10/28 起待處理',
       amount: null,
       primary: { label: '已處理', command: { kind: 'ackCathay', tradeDate: '2026-10-28', name: '國泰對帳單 10/28' } },
       secondary: [{ label: '查看', route: '/portfolio/import', fragment: 'cathay' }],

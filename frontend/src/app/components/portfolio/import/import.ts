@@ -90,6 +90,10 @@ interface UploadRequest {
   confirmed: string[];
 }
 
+/** A status card opened from 通知 (`#cathay`, `#sinopac-futures`) is outlined this long, then the outline fades. */
+export const CARD_ARRIVED_MS = 2500;
+const CARD_ARRIVED_CLASS = 'card-arrived';
+
 @Component({
   selector: 'app-portfolio-import',
   standalone: true,
@@ -168,6 +172,9 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   /** Listeners armed while a card fragment waits for its answer; `userMoved` is set by the first key, press or scroll. */
   private userMoveWatch: AbortController | null = null;
   private userMoved = false;
+  /** The status card outlined on arrival, until `CARD_ARRIVED_MS` has passed. */
+  private arrived: HTMLElement | null = null;
+  private arrivedTimer: ReturnType<typeof setTimeout> | null = null;
 
   readonly typeOptions: SegToggleOption[] = [
     { value: 'transactions', label: '交易' },
@@ -310,6 +317,20 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     }
     card.scrollIntoView?.({ block: 'start' });
     card.focus({ preventScroll: true });
+    // The arrival outline (the card's `.card-arrived` style), taken off after a few seconds so it fades.
+    this.clearArrival();
+    card.classList.add(CARD_ARRIVED_CLASS);
+    this.arrived = card;
+    this.arrivedTimer = setTimeout(() => this.clearArrival(), CARD_ARRIVED_MS);
+  }
+
+  private clearArrival(): void {
+    if (this.arrivedTimer !== null) {
+      clearTimeout(this.arrivedTimer);
+      this.arrivedTimer = null;
+    }
+    this.arrived?.classList.remove(CARD_ARRIVED_CLASS);
+    this.arrived = null;
   }
 
   /** While a card fragment waits for its answer: a key, a press or a scroll gesture anywhere cancels the jump. */
@@ -351,6 +372,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     this.destroyed = true;
     this.stopPolling();
     this.stopWatchingUserMove();
+    this.clearArrival();
   }
 
   /** From the 匯入類型 toggle: switch, then mirror the choice into ?type=. */

@@ -168,7 +168,7 @@
 /* In the card header, on the title's line: pinned to the bento's top-right corner (the bento is position: relative)
    so the title and the two-column grid below keep their layout. */
 .futures-detail-link {
-  color: var(--app-text-muted);
+  color: var(--app-primary);
   font-size: var(--fs-card-title);
   position: absolute;
   right: var(--bento-pad, var(--space-6));
@@ -177,6 +177,11 @@
   z-index: 1;
 
   &:hover {
-    color: var(--app-text);
+    text-decoration: underline;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 2px;
   }
 }

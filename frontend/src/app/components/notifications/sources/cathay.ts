@@ -75,12 +75,13 @@ export function runStamp(iso: string, now: Date): string {
 /** Line 2 of a pending date. */
 export function dayStatusText(day: Pick<CathayPendingDay, 'status' | 'reason'>): string {
   if (day.status === 'mismatch') return '對不上 CSV';
-  if (day.status === 'conflict') return '收到不同版本的對帳單';
+  if (day.status === 'conflict') return '收到內容不同的同日對帳單';
   const r = day.reason;
   if (!r) return '保留';
   if (r.startsWith('unresolved_symbol:')) return `保留：名稱對不到代號 ${r.slice('unresolved_symbol:'.length)}`;
   if (r === 'unsupported_category') return '保留：含融資融券交易';
-  return `保留：${r}`;
+  // Any other code is never shown as sent (the server has no other held reason today).
+  return '保留：需要確認';
 }
 
 /** `total − items.length` when `truncated` and positive, else 0. */
@@ -216,7 +217,7 @@ export function runStatusView(state: CathayRunState, runs: CathayRuns, now: Date
 export function sinceMeta(since: string | null): string | null {
   if (!since) return null;
   const t = taipei(new Date(since));
-  return `自 ${pad(t.getUTCMonth() + 1)}/${pad(t.getUTCDate())} 起`;
+  return `${pad(t.getUTCMonth() + 1)}/${pad(t.getUTCDate())} 起待處理`;
 }
 
 /** One task per pending date (sorted by trade_date), then `cathay:run` unless the state is 'ok'. */

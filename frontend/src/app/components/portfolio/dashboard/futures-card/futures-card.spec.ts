@@ -34,11 +34,13 @@ function render(result: FuturesSummary | Error) {
 }
 
 describe('FuturesCardComponent', () => {
-  const detailLink = (el: HTMLElement) => Array.from(el.querySelectorAll<HTMLAnchorElement>('a')).find(a => a.textContent?.includes('明細 →'));
+  const detailLink = (el: HTMLElement) => Array.from(el.querySelectorAll<HTMLAnchorElement>('a')).find(a => a.textContent?.includes('明細'));
 
-  it('shows detail link when data present', () => {
+  it('shows detail link when data present: 明細 › (the › is decoration)', () => {
     const link = detailLink(render(summary()).el);
     expect(link?.getAttribute('href')).toMatch(/\/portfolio\/futures$/);
+    expect(link?.textContent?.replace(/\s+/g, ' ').trim()).toBe('明細 ›');
+    expect(link?.querySelector('[aria-hidden="true"]')?.textContent).toBe('›');
   });
 
   it('hides detail link when no statements', () => {
@@ -98,14 +100,14 @@ describe('FuturesCardComponent', () => {
     expect(t).toContain('本月期貨平倉損益');
     expect(t).toContain('+$8,000');
     expect(t).toContain('11/23');
-    expect(t).not.toContain('持倉中');
+    expect(t).not.toContain('留倉中');
     expect(t).not.toContain('風險指標');
   });
 
   it('frozen note shows source date', () => {
     const base = summary();
     const { text } = render(summary({ value: { ...base.value!, frozen: true, source_date: '2026-10-31', source_kind: 'monthly' } }));
-    expect(text()).toContain('持倉中，數字停在 10/31');
+    expect(text()).toContain('留倉中，數字停在 10/31');
   });
 
   it('empty state is one compact line: title and text on one row, no full card title block', () => {
@@ -211,7 +213,7 @@ describe('FuturesCardComponent', () => {
     expect(mainText).toContain('本月損益');
     expect(mainText).toContain('本月期貨平倉損益');
     expect(mainText).toContain('資料日 11/30');
-    expect(mainText).toContain('持倉中，數字停在 11/30');
+    expect(mainText).toContain('留倉中，數字停在 11/30');
     expect(mainText).not.toContain('保證金');
     const marginText = margin.textContent!.replace(/\s+/g, ' ');
     expect(marginText).toContain('可動用(出金)保證金');

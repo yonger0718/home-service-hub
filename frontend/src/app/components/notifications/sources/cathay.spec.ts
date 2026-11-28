@@ -135,22 +135,22 @@ describe('cathay run rule', () => {
 describe('cathay pending dates', () => {
   it('a held date: 已處理 command, 查看 secondary (to the card: #cathay), text from the reason', () => {
     const [t] = cathayTasks({ items: [{ trade_date: '2026-10-28', status: 'held', reason: 'unresolved_symbol:測試股票', since: '2026-10-29T06:41:00+08:00', last_at: '2026-10-29T06:41:00+08:00' }], total: 1, truncated: false }, okRuns, now);
-    expect(t).toMatchObject({ id: 'cathay:2026-10-28', tier: 'system', source: 'portfolio', from: 'cathay', icon: 'pi-file', title: '國泰對帳單 10/28', when: '保留：名稱對不到代號 測試股票', meta: '自 10/29 起',
+    expect(t).toMatchObject({ id: 'cathay:2026-10-28', tier: 'system', source: 'portfolio', from: 'cathay', icon: 'pi-file', title: '國泰對帳單 10/28', when: '保留：名稱對不到代號 測試股票', meta: '10/29 起待處理',
       primary: { label: '已處理', command: { kind: 'ackCathay', tradeDate: '2026-10-28', name: '國泰對帳單 10/28' } },
       secondary: [{ label: '查看', route: '/portfolio/import', fragment: 'cathay' }], sortKey: '2026-10-28', wake: { key: 'held|unresolved_symbol:測試股票' }, amount: null, progress: null });
   });
 
   it('no since → no meta; since is read by the Taipei calendar', () => {
     expect(cathayTasks({ items: [day()], total: 1, truncated: false }, okRuns, now)[0].meta).toBeNull();
-    expect(cathayTasks({ items: [day({ since: '2026-10-28T16:30:00Z' })], total: 1, truncated: false }, okRuns, now)[0].meta).toBe('自 10/29 起');
+    expect(cathayTasks({ items: [day({ since: '2026-10-28T16:30:00Z' })], total: 1, truncated: false }, okRuns, now)[0].meta).toBe('10/29 起待處理');
   });
 
   it.each([
     [{ status: 'held', reason: null }, '保留'],
     [{ status: 'held', reason: 'unsupported_category' }, '保留：含融資融券交易'],
-    [{ status: 'held', reason: '其他原因' }, '保留：其他原因'],
+    [{ status: 'held', reason: '其他原因' }, '保留：需要確認'],
     [{ status: 'mismatch', reason: null }, '對不上 CSV'],
-    [{ status: 'conflict', reason: null }, '收到不同版本的對帳單'],
+    [{ status: 'conflict', reason: null }, '收到內容不同的同日對帳單'],
   ] as const)('dayStatusText %o → %s', (d, text) => {
     expect(dayStatusText(d)).toBe(text);
   });
@@ -224,7 +224,7 @@ describe('cathayView', () => {
 
   it('days: label, text and more', () => {
     const v = cathayView({ items: [day({ trade_date: '2026-10-28', status: 'conflict' })], total: 5, truncated: true }, okRuns, now);
-    expect(v.days).toEqual([{ tradeDate: '2026-10-28', label: '10/28', text: '收到不同版本的對帳單' }]);
+    expect(v.days).toEqual([{ tradeDate: '2026-10-28', label: '10/28', text: '收到內容不同的同日對帳單' }]);
     expect(v.more).toBe(4);
   });
 
