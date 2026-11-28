@@ -203,6 +203,44 @@ def unlink(db: Session, invoice_id: int) -> dict:
     return _state_out(db, invoice)
 
 
+def replace(db: Session, invoice_id: int, *, with_invoice_id: int) -> dict:
+    """換一張發票 (D12): the link moves from `invoice_id` to `with_invoice_id` on the same target in one write. The old
+    invoice goes back to `unmatched` (dismissed(seller_muted) while its seller is muted), unlike `unlink`, so it is
+    offered again; the new one is linked by the owner. Its 復原 is the same call the other way round. Every refusal
+    leaves both invoices, the link and the stamp as they were."""
+    if with_invoice_id == invoice_id:
+        raise ValidationError("with_invoice_id", "the invoice is already this one")
+    lock(db)
+    old = _invoice(db, invoice_id)
+    current = _current_link(db, old.id)
+    if current is None:
+        raise CodedConflictError("not_linked")
+    new = _invoice(db, with_invoice_id)
+    if new.state == "void":
+        raise CodedConflictError("einvoice_void")
+    if _current_link(db, new.id) is not None:
+        raise CodedConflictError("einvoice_linked")
+    entry_id, group_id = current.entry_id, current.group_id
+    muted = bool(old.seller_tax_id) and db.get(EinvoiceSellerMute, old.seller_tax_id) is not None
+    try:
+        with db.begin_nested():  # a refusal below rolls the old link back
+            old.state, old.dismiss_reason = ("dismissed", "seller_muted") if muted else ("unmatched", None)
+            db.flush()  # before the link delete, so the trigger sees a non-linked state
+            remove_link(db, old)
+            if not _eligible(db, new, entry_id, group_id):
+                raise CodedConflictError("target_ineligible")
+            db.add(EinvoiceLink(invoice_id=new.id, entry_id=entry_id, group_id=group_id, linked_by="owner"))
+            db.flush()
+            if entry_id is not None:
+                stamp(db, entry_id, new.number)
+            new.state, new.dismiss_reason = "linked", None
+            db.flush()
+    except IntegrityError as exc:  # a concurrent write took the target (R6)
+        raise CodedConflictError(RETRY, "the target was linked meanwhile") from exc
+    db.refresh(old)
+    return {"previous": _state_out(db, old), "current": _state_out(db, new)}
+
+
 def dismiss(db: Session, invoice_id: int, *, reason: str = "owner", mute_seller: bool = False) -> dict:
     lock(db)
     invoice = _invoice(db, invoice_id)

@@ -98,3 +98,25 @@ The entry detail's `einvoice` SHALL carry `recorded_amount`: what the linked ent
 #### Scenario: Mixed-currency group
 - **GIVEN** a group with a TWD member and a USD member
 - **THEN** `recorded_amount` SHALL be null
+
+### Requirement: Replace a linked invoice
+
+`POST /einvoices/{id}/replace` with `with_invoice_id` (write scope) SHALL move the link of invoice `id` to the other invoice on the same entry or group in one transaction. The old invoice SHALL return to `unmatched` (`dismissed(seller_muted)` while its seller is muted); the new one SHALL be linked by the owner. Every refusal SHALL leave both invoices, the link and the entry's stamp unchanged. `GET /einvoices/picker?replace=true` SHALL list the invoices that could take the linked one's place.
+
+#### Scenario: Swap and swap back
+- **GIVEN** an entry auto-linked to invoice A and an unmatched invoice B
+- **WHEN** A is replaced with B, then B with A
+- **THEN** A SHALL end linked by the owner with the entry stamped with A's number, and B SHALL be `unmatched`
+
+#### Scenario: New invoice already linked
+- **WHEN** the new invoice is linked to another entry
+- **THEN** the call SHALL be refused with 409 `einvoice_linked` and nothing SHALL change
+
+### Requirement: Re-create a seller mute
+
+`POST /einvoices/mutes/{tax_id}` (write scope) SHALL create the mute idempotently, as the dismiss with `mute_seller` does, so the settings page can undo 恢復提醒.
+
+#### Scenario: Undo 恢復提醒
+- **GIVEN** a mute was removed and its seller's invoices returned to `unmatched`
+- **WHEN** the mute is created again
+- **THEN** those invoices SHALL be `dismissed(seller_muted)` again

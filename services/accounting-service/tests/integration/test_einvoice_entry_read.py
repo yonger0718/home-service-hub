@@ -3,10 +3,10 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app import auth
-from app.models import Einvoice, EinvoiceLink
+from app.models import Einvoice, EinvoiceLink, LedgerEntry
 from app.services import report_rules
 from app.services.report_rules import ReportFilters
 from tests.integration.einvoice_fixtures import import_, invoice
@@ -189,6 +189,40 @@ def test_picker_of_stamped_entry_offers_only_that_number(client, db_session, see
     assert [i["number"] for i in _picker(client, plain.id)["invoices"]] == ["AB00000001", "AB00000002"]
     res = client.post(f"/einvoices/{out['invoices'][0]['id']}/link", json={"entry_id": stamped.id})
     assert res.status_code == 200, res.text
+
+
+def test_picker_replace_mode_offers_others_for_the_linked_target(client, db_session, seed):
+    a = seed.account("A")
+    entry = seed.entry(a, "-120", day=D)
+    db_session.commit()
+    import_(client, invoice(number="AB00000001"), invoice(number="AB00000002", total="118"),
+            invoice(number="AB00000003", total="300"))
+    _link(db_session, "AB00000001", entry=entry)
+    db_session.execute(update(LedgerEntry).where(LedgerEntry.id == entry.id).values(invoice_number="AB00000001"))
+    db_session.commit()
+    plain = _picker(client, entry.id)
+    assert plain["entry_eligible"] is False and [i["number"] for i in plain["invoices"]] == []
+    res = client.get("/einvoices/picker", params={"entry_id": entry.id, "replace": True})
+    assert res.status_code == 200, res.text
+    out = res.json()
+    assert (out["entry_eligible"], out["group_eligible"]) == (True, False)
+    assert [i["number"] for i in out["invoices"]] == ["AB00000002", "AB00000003"]
+
+
+def test_picker_replace_mode_of_group_link_and_unlinked_entry(client, db_session, seed):
+    a = seed.account("A")
+    g = seed.group()
+    m1 = seed.entry(a, "-100", day=D, group_id=g.id)
+    seed.entry(a, "-20", day=D, group_id=g.id)
+    lone = seed.entry(a, "-50", day=D)
+    db_session.commit()
+    import_(client, invoice(), invoice(number="AB00000002"))
+    _link(db_session, "AB00000001", group=g)
+    out = client.get("/einvoices/picker", params={"entry_id": m1.id, "replace": True}).json()
+    assert (out["entry_eligible"], out["group_eligible"], out["group_id"]) == (False, True, g.id)
+    assert [i["number"] for i in out["invoices"]] == ["AB00000002"]
+    res = client.get("/einvoices/picker", params={"entry_id": lone.id, "replace": True})
+    assert res.status_code == 409 and res.json()["message"] == "not_linked", res.text
 
 
 # --- recorded_amount (D12 match chip): the linked target's amount in the invoice's terms, by the matcher's net rule --

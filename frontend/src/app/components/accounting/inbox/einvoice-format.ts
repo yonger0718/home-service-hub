@@ -20,6 +20,7 @@ const EINVOICE_ERRORS: Record<string, string> = {
   einvoice_void: '發票已作廢',
   target_ineligible: '這筆帳不能連結',
   not_linked: '已解除連結',
+  einvoice_linked: '這張已連到別筆帳',
   seller_muted: '這家已設為不提醒',
   retry: '請再試一次',
 };

@@ -7,7 +7,9 @@ import { Observable, Subscription } from 'rxjs';
 
 import { EntryDetail } from '../../../models/accounting.model';
 import { shortDate, slashDate } from '../dates';
-import { EinvoiceLinkTarget, EinvoicePicker, EntryEinvoice } from '../inbox/einvoice.model';
+import { injectToasts } from '../../../services/toast.service';
+import { daysApart } from '../inbox/einvoice-answer';
+import { EinvoiceLinkTarget, EinvoicePicker, EinvoiceSummary, EntryEinvoice } from '../inbox/einvoice.model';
 import { einvoiceErrorText, invoiceAmount } from '../inbox/einvoice-format';
 import { EinvoiceService } from '../inbox/einvoice.service';
 
@@ -68,6 +70,36 @@ export function einvoiceCardView(inv: EntryEinvoice): EinvoiceCardView {
 
 type PickerState = { status: 'idle' } | { status: 'loading' } | { status: 'failed' } | { status: 'ready'; picker: EinvoicePicker };
 
+/** One invoice offered by 換一張發票, laid out as the 選帳 sheet's rows (F2/F3). */
+export interface EinvoiceSwapRow {
+  id: number;
+  number: string;
+  name: string;
+  /** `MM/DD · item、item、item`, then ` 等 N 項` past three. */
+  sub: string;
+  /** The total without a sign. */
+  amount: string;
+  /** 日期差 N 天 against the entry date, 金額差 $N against what the entry / group recorded (none when unknown). */
+  chips: string[];
+}
+
+export function einvoiceSwapRow(inv: EinvoiceSummary, entryDate: string, recorded: string | null): EinvoiceSwapRow {
+  const names = inv.items.map((i) => i.name);
+  const items = names.slice(0, SHOWN_ITEMS).join('、') + (names.length > SHOWN_ITEMS ? ` 等 ${names.length} 項` : '');
+  const days = daysApart(inv.issue_date, entryDate);
+  const gap = recorded === null ? 0 : Math.abs(Math.abs(cents(inv.total_amount)) - Math.abs(cents(recorded)));
+  return {
+    id: inv.id,
+    number: inv.number,
+    name: inv.seller_name,
+    sub: [shortDate(inv.issue_date), items].filter(Boolean).join(' · '),
+    amount: invoiceAmount(String(Math.abs(Number(inv.total_amount)))),
+    chips: [...(days > 0 ? [`日期差 ${days} 天`] : []), ...(gap > 0 ? [`金額差 ${invoiceAmount(fromCents(gap))}`] : [])],
+  };
+}
+
+type SwapState = { status: 'loading' } | { status: 'failed' } | { status: 'ready'; rows: EinvoiceSwapRow[] };
+
 /**
  * 發票 card on the entry detail (spec §10, D12): the linked invoice with match / source chips, its items and a ⋯ menu
  * (換一張發票, 解除連結), or a picker to link one.
@@ -83,6 +115,8 @@ type PickerState = { status: 'idle' } | { status: 'loading' } | { status: 'faile
 export class AppEntryEinvoiceCardComponent {
   private readonly service = inject(EinvoiceService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly toasts = injectToasts();
+  private destroyed = false;
 
   readonly detail = input.required<EntryDetail>();
   readonly changed = output<void>();
@@ -108,11 +142,13 @@ export class AppEntryEinvoiceCardComponent {
   readonly canReplace = computed(() => this.maybeTarget());
   /**
    * Set by a menu unlink, for that entry only: once its reloaded detail has no invoice, focus lands in the card
-   * (the ⋯ button is gone) and, for 換一張發票, the picker opens. Any other detail change drops it.
+   * (the ⋯ button is gone). Any other detail change drops it.
    */
-  private afterUnlink: { entryId: number; reopen: boolean } | null = null;
-  /** The picker opened by 換一張發票: focus its first choice (or 連結發票… when it fails) once it settles. */
-  private focusOnSettle = false;
+  private afterUnlink: { entryId: number } | null = null;
+  /** Set by a swap, for that entry only: once its reloaded detail shows the new invoice, focus goes to ⋯. */
+  private afterSwap: { entryId: number } | null = null;
+  /** 換一張發票's list (design review): nothing changes until a row is picked; null when closed. */
+  readonly swapState = signal<SwapState | null>(null);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   readonly pickerState = signal<PickerState>({ status: 'idle' });
@@ -163,6 +199,7 @@ export class AppEntryEinvoiceCardComponent {
   private hintSub?: Subscription;
 
   constructor() {
+    this.destroyRef.onDestroy(() => (this.destroyed = true));
     const key = computed(() => `${this.detail().id}:${this.detail().einvoice?.id ?? ''}`);
     effect(() => {
       key();
@@ -170,9 +207,11 @@ export class AppEntryEinvoiceCardComponent {
       untracked(() => {
         const detail = this.detail();
         const after = this.afterUnlink?.entryId === detail.id && !detail.einvoice ? this.afterUnlink : null;
+        const swapped = this.afterSwap?.entryId === detail.id && !!detail.einvoice;
         this.afterUnlink = null;
-        this.focusOnSettle = false;
+        this.afterSwap = null;
         this.menuOpen.set(false);
+        this.swapState.set(null);
         this.itemsOpen.set(false);
         this.pickerSub?.unsubscribe();
         this.hintSub?.unsubscribe();
@@ -181,10 +220,8 @@ export class AppEntryEinvoiceCardComponent {
         this.scope.set(null);
         this.busy.set(false);
         this.error.set(null);
-        if (after?.reopen && this.maybeTarget()) {
-          this.focusOnSettle = true;
-          this.openPicker();
-          return;
+        if (swapped) {
+          this.focusMore();
         }
         if (compact && !detail.einvoice && this.maybeTarget()) {
           this.prefetch();
@@ -204,9 +241,6 @@ export class AppEntryEinvoiceCardComponent {
     });
   }
 
-  unlink(id: number): void {
-    this.write(this.service.unlink(id));
-  }
 
   toggleMenu(): void {
     if (this.menuOpen()) {
@@ -247,23 +281,115 @@ export class AppEntryEinvoiceCardComponent {
     }
   }
 
-  /** 換一張發票: unlink (the old one goes to 已標成不用記帳), then the reloaded detail opens the picker. */
-  replace(id: number): void {
+  /** 換一張發票: the list of invoices that could take this one's place; nothing changes until a row is picked. */
+  replace(): void {
     if (this.busy()) {
       return;
     }
     this.closeMenu(false);
-    this.afterUnlink = { entryId: this.detail().id, reopen: true };
-    this.unlink(id);
+    this.loadSwap();
+  }
+
+  loadSwap(): void {
+    this.error.set(null);
+    this.swapState.set({ status: 'loading' });
+    this.pickerSub?.unsubscribe();
+    const detail = this.detail();
+    const recorded = detail.einvoice?.recorded_amount ?? null;
+    this.pickerSub = this.service.picker(detail.id, { replace: true }).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (picker) => {
+        this.swapState.set({ status: 'ready', rows: picker.invoices.map((inv) => einvoiceSwapRow(inv, detail.entry_date, recorded)) });
+        this.focusIn('.swap .target-row, .swap-empty');
+      },
+      error: () => {
+        this.swapState.set({ status: 'failed' });
+        this.focusIn('.swap-retry');
+      },
+    });
+  }
+
+  /** 取消 / Esc: the list closes, nothing was sent. */
+  cancelSwap(): void {
+    this.pickerSub?.unsubscribe();
+    this.swapState.set(null);
+    this.error.set(null);
+    this.focusMore();
+  }
+
+  swapKey(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      this.cancelSwap();
+    }
+  }
+
+  /** One call moves the link; the old invoice goes back to 沒對到. 復原 is the same call the other way round. */
+  swapTo(row: EinvoiceSwapRow): void {
+    const old = this.detail().einvoice;
+    if (!old || this.busy()) {
+      return;
+    }
+    this.busy.set(true);
+    this.error.set(null);
+    this.service.replace(old.id, row.id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: () => {
+        this.afterSwap = { entryId: this.detail().id };
+        this.toasts.done(`已換成 ${row.number}`, { undo: () => this.undoSwap(old, row) });
+        this.changed.emit(); // busy stays on until the reloaded detail resets the card
+      },
+      error: (err: unknown) => {
+        this.busy.set(false);
+        this.error.set(einvoiceErrorText(err));
+      },
+    });
+  }
+
+  private undoSwap(old: EntryEinvoice, row: EinvoiceSwapRow): void {
+    this.service.replace(row.id, old.id).subscribe({
+      next: () => {
+        this.toasts.done(`已換回 ${old.number}`);
+        this.emitChanged();
+      },
+      error: (err: unknown) => this.toasts.error(`復原沒成功：${this.why(err)}`),
+    });
   }
 
   unlinkFromMenu(id: number): void {
-    if (this.busy()) {
+    const inv = this.detail().einvoice;
+    if (this.busy() || !inv) {
       return;
     }
     this.closeMenu(false);
-    this.afterUnlink = { entryId: this.detail().id, reopen: false };
-    this.unlink(id);
+    const detail = this.detail();
+    const groupId = detail.group?.id ?? null;
+    const target: EinvoiceLinkTarget = inv.linked_to === 'group' && groupId !== null ? { group_id: groupId } : { entry_id: detail.id };
+    this.afterUnlink = { entryId: detail.id };
+    this.write(this.service.unlink(id), () =>
+      this.toasts.done(`已解除連結 ${inv.number}`, { undo: () => this.relink(inv, target) }),
+    );
+  }
+
+  /** 解除連結's 復原: the same invoice back on the same entry or group (now an owner link). */
+  private relink(inv: EntryEinvoice, target: EinvoiceLinkTarget): void {
+    this.service.link(inv.id, target).subscribe({
+      next: () => {
+        this.toasts.done(`已連回 ${inv.number}`);
+        this.emitChanged();
+      },
+      error: (err: unknown) => this.toasts.error(`復原沒成功：${this.why(err)}`),
+    });
+  }
+
+  private why(err: unknown): string {
+    return einvoiceErrorText(err).replace(/^沒成功[：，]/, '');
+  }
+
+  /** A 復原 may finish after the card is gone (the drawer closed): only a live card asks for a reload. */
+  private emitChanged(): void {
+    if (!this.destroyed) {
+      this.changed.emit();
+    }
   }
 
   private menuItems(): HTMLButtonElement[] {
@@ -285,38 +411,27 @@ export class AppEntryEinvoiceCardComponent {
     this.pickerSub?.unsubscribe();
     this.pickerSub = this.service.picker(this.detail().id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: (picker) => this.show(picker),
-      error: () => {
-        this.pickerState.set({ status: 'failed' });
-        this.settleFocus();
-      },
+      error: () => this.pickerState.set({ status: 'failed' }),
     });
   }
 
   private show(picker: EinvoicePicker): void {
     this.scope.set(picker.entry_eligible && picker.group_eligible ? null : picker.group_eligible ? 'group' : 'entry');
     this.pickerState.set({ status: 'ready', picker });
-    this.settleFocus();
   }
 
-  private settleFocus(): void {
-    if (this.focusOnSettle) {
-      this.focusOnSettle = false;
-      this.focusCard();
-    }
-  }
-
-  /**
-   * After the ⋯ button leaves: the first pick / choice, the empty-picker note, else 連結發票….
-   * Nothing focusable (card hidden): no move.
-   */
+  /** After a menu unlink the ⋯ button is gone: 連結發票…. Nothing focusable (card hidden): no move. */
   private focusCard(): void {
-    afterNextRender(
-      () =>
-        this.host.nativeElement
-          .querySelector<HTMLElement>('.einvoice-pick, .einvoice-actions button, .einvoice-empty, .einvoice-open')
-          ?.focus(),
-      { injector: this.injector },
-    );
+    this.focusIn('.einvoice-open');
+  }
+
+  private focusMore(): void {
+    afterNextRender(() => this.moreButton()?.nativeElement.focus(), { injector: this.injector });
+  }
+
+  /** The first match after the next render; nothing when none. */
+  private focusIn(selector: string): void {
+    afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>(selector)?.focus(), { injector: this.injector });
   }
 
   choose(scope: 'entry' | 'group'): void {
@@ -340,7 +455,7 @@ export class AppEntryEinvoiceCardComponent {
     return picker.entry_eligible && picker.group_eligible && this.scope() === null;
   }
 
-  private write(call: Observable<unknown>): void {
+  private write(call: Observable<unknown>, done?: () => void): void {
     if (this.busy()) {
       return;
     }
@@ -348,6 +463,7 @@ export class AppEntryEinvoiceCardComponent {
     this.error.set(null);
     call.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: () => {
+        done?.();
         // busy stays on until the reloaded detail resets the card, so a second tap cannot send another write.
         this.changed.emit();
       },

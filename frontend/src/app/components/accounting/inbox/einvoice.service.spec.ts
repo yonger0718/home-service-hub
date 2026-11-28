@@ -55,6 +55,20 @@ describe('EinvoiceService', () => {
     undo.flush(STATE);
   });
 
+  it('replaces a linked invoice, reads the replace picker and re-creates a mute', () => {
+    service.replace(7, 9).subscribe();
+    const swap = http.expectOne(`${BASE}/7/replace`);
+    expect(swap.request.method).toBe('POST');
+    expect(swap.request.body).toEqual({ with_invoice_id: 9 });
+    swap.flush({ previous: STATE, current: STATE });
+    service.picker(3, { replace: true }).subscribe();
+    http.expectOne(`${BASE}/picker?entry_id=3&replace=true`).flush({});
+    service.createMute('a/b').subscribe();
+    const mute = http.expectOne(`${BASE}/mutes/a%2Fb`);
+    expect(mute.request.method).toBe('POST');
+    mute.flush(null);
+  });
+
   it('reads targets, the picker, the dismissed list, mutes and preferences', () => {
     service.targets(7).subscribe();
     const targets = http.expectOne(`${BASE}/7/targets?days=14`);

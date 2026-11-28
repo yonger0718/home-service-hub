@@ -32,7 +32,7 @@ The entry detail SHALL show its invoice (the entry's own, else its group's) as a
 
 - a match chip: ✓ 金額相符, or 差 $N when the invoice total differs from the entry's or group's net;
 - 自動連結 or 手動連結;
-- a ⋯ menu with 換一張發票 and 解除連結, explained as 「之後不會再自動連回」.
+- a ⋯ menu with 換一張發票 and 解除連結, explained as 「之後不會再自動連回」. 解除連結 SHALL confirm with a toast 「已解除連結 <number>」 whose 復原 links the same invoice back to the same entry or group.
 
 #### Scenario: Group invoice off by a little
 - **GIVEN** a split group of 2,460 manually linked to a 2,463 invoice
@@ -47,19 +47,44 @@ The body of the entry invoice card SHALL show the seller, date, number, and the 
 - **WHEN** its detail opens
 - **THEN** the card SHALL show ✓ 金額相符, 自動連結, three items, 「… 另外 4 項」 and 合計 $1,286
 
+### Requirement: Replace an entry's invoice
+
+換一張發票 SHALL first list the invoices that could take the linked one's place, laid out as the 選帳 sheet (seller, date · items, the total without a sign, 金額差 $N / 日期差 N 天 against this entry), and change nothing until one is picked. A pick SHALL swap in one call; the old invoice SHALL return to 沒對到, not 不用記帳. A toast 「已換成 <number>」 SHALL offer 復原, which swaps back.
+
+#### Scenario: Cancel changes nothing
+- **WHEN** the owner opens 換一張發票 and taps 取消
+- **THEN** no write SHALL be sent and the card SHALL still show the old invoice
+
+#### Scenario: Pick another invoice
+- **GIVEN** an entry linked to AB00000301
+- **WHEN** the owner picks AB00000312 from the list
+- **THEN** the entry SHALL be linked to AB00000312, AB00000301 SHALL be 沒對到, and the toast SHALL read 「已換成 AB00000312」 with 復原
+
 ### Requirement: E-invoice settings section
 
 記帳設定 SHALL show a 發票 section containing:
 
-- the link status from `GET /einvoices/preferences`: enabled, the last import time and the auto-linked count;
+- the link status from `GET /einvoices/preferences`: 「最近匯入 MM/DD · 已自動連結 N 張」, or 還沒有匯入;
 - 提醒沒有帳的發票;
 - 對帳日期範圍, a ±0–7 day stepper;
-- 同一家標幾次後問要不要不提醒, a 1–10 stepper;
-- 不提醒的商家, with 移除;
-- 已標成不用記帳: the newest three, then a link to all, each with 復原, and runbook dismissals labelled 規則自動標記.
+- 同一家標幾次後，建議以後都不提醒, a 1–10 stepper;
+- 不提醒的商家 (titled 統編 X when the seller has no name), each with 恢復提醒;
+- 已標成不用記帳: the newest three, then 看全部 N 張 (with 收起, and 只列最近 100 張 at the API cap), each with 放回, and runbook dismissals labelled 規則自動標記.
 
 The switch and the steppers SHALL save through `PATCH /einvoices/preferences`.
 
 #### Scenario: Widen the date window
 - **WHEN** the owner raises 對帳日期範圍 from ±3 to ±5 天
 - **THEN** `PATCH /einvoices/preferences` SHALL be sent with `date_window_days: 5`
+
+### Requirement: E-invoice settings feedback
+
+A failed stepper save in 記帳設定 › 發票 SHALL say 「沒存到，已改回 <value>」 right under its row, with 重試. 恢復提醒 and 放回 SHALL each confirm with a toast whose 復原 undoes it.
+
+#### Scenario: Undo 放回
+- **WHEN** the owner taps 放回 on a 不用記帳 invoice and then the toast's 復原
+- **THEN** the invoice SHALL be 不用記帳 again and back in the list
+
+#### Scenario: Stepper save fails
+- **WHEN** raising 對帳日期範圍 from ±3 to ±4 天 fails
+- **THEN** the stepper SHALL show ±3 天 and its row SHALL be followed by 「沒存到，已改回 ±3 天」 and 重試

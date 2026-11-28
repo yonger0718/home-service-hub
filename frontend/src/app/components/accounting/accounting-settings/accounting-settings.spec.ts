@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { OwnerRule } from '../inbox/inbox.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { ToastService } from '../../../services/toast.service';
 import { AccountingSettingsComponent } from './accounting-settings';
 
 const PREFERENCE = {
@@ -793,13 +794,13 @@ describe('AccountingSettingsComponent', () => {
 
     it('lists muted sellers by name, else by tax id', () => {
       expect(texts('.einvoice-head')).toContain('不提醒的商家 · 2');
-      expect(texts('.mute-row .mute-name')).toEqual(['測試超市', '00000002']);
+      expect(texts('.mute-row .mute-name')).toEqual(['測試超市', '統編 00000002']);
       expect(texts('.mute-row .mute-meta')[0]).toMatch(/^統編 00000001 · 11\/0[12] 起不提醒$/);
       expect(texts('.mute-row .mute-meta')[1]).toMatch(/^11\/0[23] 起不提醒$/);
     });
 
     it('shows the link status line with the last import and the auto-linked count', () => {
-      expect(texts('.einvoice-status')).toEqual(['電子發票對帳已開啟 · 最近匯入 11/06（自動連結 42）']);
+      expect(texts('.einvoice-status')).toEqual(['最近匯入 11/06 · 已自動連結 42 張']);
       expect(el.querySelector('#einvoice-settings')!.textContent).toContain('發票');
     });
 
@@ -808,6 +809,8 @@ describe('AccountingSettingsComponent', () => {
       expect(el.querySelector('.pref-prompt .val')!.textContent?.trim()).toBe('3 次');
       expect(el.textContent).toContain('發票日期前後幾天內的帳都算候選（0–7）');
       expect(el.textContent).toContain('標「不用記帳」到這個次數，下次就會出現「這家以後都不提醒」（1–10）');
+      expect(el.textContent).toContain('同一家標幾次後，建議以後都不提醒');
+      expect(el.textContent).not.toContain('同一家標幾次後問要不要不提醒');
     });
 
     it('widening 對帳日期範圍 from ±3 to ±5 sends date_window_days: 5 (spec scenario), one PATCH in flight', () => {
@@ -864,7 +867,7 @@ describe('AccountingSettingsComponent', () => {
       prompt.flush({ ...EINVOICE_PREFS, mute_prompt_after: 2, last_import_at: '2026-11-07T04:10:00Z', auto_linked_count: 50, version: 5 });
       window.flush({ ...EINVOICE_PREFS, date_window_days: 4, version: 4 });
       fixture.detectChanges();
-      expect(el.querySelector('.einvoice-status')!.textContent?.trim()).toBe('電子發票對帳已開啟 · 最近匯入 11/07（自動連結 50）');
+      expect(el.querySelector('.einvoice-status')!.textContent?.trim()).toBe('最近匯入 11/07 · 已自動連結 50 張');
       expect(el.querySelector('.pref-window .val')!.textContent?.trim()).toBe('±4 天');
     });
 
@@ -879,29 +882,67 @@ describe('AccountingSettingsComponent', () => {
       fixture.detectChanges();
       expect(el.querySelector('.pref-window .val')!.textContent?.trim()).toBe('±3 天');
       expect(el.querySelector('.pref-prompt .val')!.textContent?.trim()).toBe('2 次');
-      expect(el.querySelector('.einvoice-message')!.textContent).toContain('沒成功');
+      expect(texts('.pref-failed .pref-failed-text')).toEqual(['沒存到，已改回 ±3 天']);
     });
 
-    it('a failed PATCH reverts the stepper and says why', () => {
+    it('a failed PATCH reverts the stepper and says so right under that row, with 重試', () => {
       el.querySelector<HTMLButtonElement>('.pref-window .inc')!.click();
       fixture.detectChanges();
       http.expectOne(r => r.method === 'PATCH').flush({ detail: 'x' }, { status: 500, statusText: 'err' });
       fixture.detectChanges();
       expect(el.querySelector('.pref-window .val')!.textContent?.trim()).toBe('±3 天');
-      expect(el.querySelector('.einvoice-message')!.textContent).toContain('沒成功');
+      const failed = el.querySelector('.pref-failed')!;
+      expect(failed.previousElementSibling?.querySelector('.pref-window')).not.toBeNull();
+      expect(failed.querySelector('.pref-failed-text')!.textContent?.trim()).toBe('沒存到，已改回 ±3 天');
+      expect(failed.getAttribute('role')).toBe('alert');
+      failed.querySelector<HTMLButtonElement>('.pref-retry')!.click();
+      fixture.detectChanges();
+      const again = http.expectOne(r => r.method === 'PATCH');
+      expect(again.request.body).toEqual({ date_window_days: 4 });
+      expect(el.querySelector('.pref-failed')).toBeNull();
+      again.flush({ ...EINVOICE_PREFS, date_window_days: 4, version: 4 });
+      fixture.detectChanges();
+      expect(el.querySelector('.pref-window .val')!.textContent?.trim()).toBe('±4 天');
     });
 
-    it('removes a mute after confirm', () => {
-      const button = () => el.querySelector<HTMLButtonElement>('.mute-row .row-delete')!;
-      expect(button().textContent).toContain('移除');
-      button().click();
+    it('a failed 同一家標幾次 says 已改回 N 次 under its own row', () => {
+      el.querySelector<HTMLButtonElement>('.pref-prompt .dec')!.click();
       fixture.detectChanges();
-      http.expectNone(r => r.method === 'DELETE');
-      button().click();
+      http.expectOne(r => r.method === 'PATCH').flush({ detail: 'x' }, { status: 500, statusText: 'err' });
+      fixture.detectChanges();
+      const failed = el.querySelector('.pref-failed')!;
+      expect(failed.previousElementSibling?.querySelector('.pref-prompt')).not.toBeNull();
+      expect(failed.textContent).toContain('沒存到，已改回 3 次');
+    });
+
+    it('恢復提醒 in one tap, says so with 復原; 復原 mutes the seller again', () => {
+      const toast = () => TestBed.inject(ToastService).current();
+      const button = el.querySelector<HTMLButtonElement>('.mute-row .mute-unmute')!;
+      expect(button.textContent?.trim()).toBe('恢復提醒');
+      expect(el.querySelector('.mute-row .row-delete')).toBeNull();
+      button.click();
       http.expectOne(r => r.method === 'DELETE' && r.url === `${EINVOICE_URL}/mutes/00000001`).flush(null, { status: 204, statusText: 'No Content' });
       answer(http, `${EINVOICE_URL}/mutes`, [MUTES[1]]);
       fixture.detectChanges();
-      expect(texts('.mute-row .mute-name')).toEqual(['00000002']);
+      expect(texts('.mute-row .mute-name')).toEqual(['統編 00000002']);
+      expect(toast()).toMatchObject({ kind: 'done', text: '已恢復提醒：測試超市', action: { label: '復原' } });
+      toast()!.action!.run();
+      http.expectOne(r => r.method === 'POST' && r.url === `${EINVOICE_URL}/mutes/00000001`).flush(null, { status: 204, statusText: 'No Content' });
+      answer(http, `${EINVOICE_URL}/mutes`, MUTES);
+      fixture.detectChanges();
+      expect(texts('.mute-row .mute-name')).toEqual(['測試超市', '統編 00000002']);
+      expect(toast()).toMatchObject({ kind: 'done', text: '已復原：測試超市 不提醒' });
+    });
+
+    it('a failed 復原 of 恢復提醒 says why', () => {
+      const toast = () => TestBed.inject(ToastService).current();
+      el.querySelector<HTMLButtonElement>('.mute-row .mute-unmute')!.click();
+      http.expectOne(r => r.method === 'DELETE').flush(null, { status: 204, statusText: 'No Content' });
+      answer(http, `${EINVOICE_URL}/mutes`, [MUTES[1]]);
+      toast()!.action!.run();
+      http.expectOne(r => r.method === 'POST' && r.url === `${EINVOICE_URL}/mutes/00000001`).flush({ detail: 'x' }, { status: 500, statusText: 'err' });
+      expect(toast()?.kind).toBe('error');
+      expect(toast()?.text).toMatch(/^復原沒成功/);
     });
 
     it('lists dismissed invoices and restores one', () => {
@@ -910,13 +951,23 @@ describe('AccountingSettingsComponent', () => {
       expect(texts('.dismissed-row .dismissed-meta')).toEqual(['11/03 · 筆記本、原子筆 · 你標的', '11/04 · 規則自動標記']);
       expect(el.querySelector('.dismissed-all')).toBeNull();
       const restore = el.querySelector<HTMLButtonElement>('.dismissed-row .restore')!;
-      expect(restore.textContent).toContain('復原');
+      expect(restore.textContent?.trim()).toBe('放回');
       restore.click();
       http.expectOne(r => r.method === 'POST' && r.url === `${EINVOICE_URL}/71/undismiss`).flush({ id: 71, state: 'unmatched', dismiss_reason: null, linked_by: null });
       answer(http, `${EINVOICE_URL}/dismissed`, [DISMISSED[1]]);
       fixture.detectChanges();
       expect(el.querySelectorAll('.dismissed-row').length).toBe(1);
       expect(el.textContent).not.toContain('測試書店');
+      const toast = () => TestBed.inject(ToastService).current();
+      expect(toast()).toMatchObject({ kind: 'done', text: '已放回：測試書店 $350', action: { label: '復原' } });
+      toast()!.action!.run();
+      const again = http.expectOne(r => r.method === 'POST' && r.url === `${EINVOICE_URL}/71/dismiss`);
+      expect(again.request.body).toEqual({ mute_seller: false });
+      again.flush({ id: 71, state: 'dismissed', dismiss_reason: 'owner', linked_by: null });
+      answer(http, `${EINVOICE_URL}/dismissed`, DISMISSED);
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.dismissed-row').length).toBe(2);
+      expect(toast()).toMatchObject({ kind: 'done', text: '已復原：測試書店 $350' });
     });
 
     it('shows the server reason when 復原 is refused', () => {
@@ -951,6 +1002,13 @@ describe('AccountingSettingsComponent', () => {
       fixture.detectChanges();
       expect(names().length).toBe(5);
       expect(el.querySelector('.dismissed-all')).toBeNull();
+      expect(el.querySelector('.dismissed-cap')).toBeNull();
+      const fold = el.querySelector<HTMLButtonElement>('.dismissed-fold')!;
+      expect(fold.textContent?.trim()).toBe('收起');
+      fold.click();
+      fixture.detectChanges();
+      expect(names().length).toBe(3);
+      expect(el.querySelector('.dismissed-fold')).toBeNull();
     });
 
     it('disables + at the top bound and − at the bottom bound', () => {
@@ -959,7 +1017,26 @@ describe('AccountingSettingsComponent', () => {
     });
 
     it('says 還沒有匯入 before the first import', () => {
-      expect(el.querySelector('.einvoice-status')!.textContent?.trim()).toBe('電子發票對帳已開啟 · 還沒有匯入');
+      expect(el.querySelector('.einvoice-status')!.textContent?.trim()).toBe('還沒有匯入');
+    });
+  });
+
+  describe('發票 with 100 dismissed (the API cap)', () => {
+    beforeAll(() => {
+      einvoiceInit = {
+        prefs: EINVOICE_PREFS, mutes: [],
+        dismissed: Array.from({ length: 100 }, (_, i) => ({ ...DISMISSED[0], id: 1000 + i, seller_name: `測試店${i + 1}` })),
+      };
+    });
+    afterAll(() => {
+      einvoiceInit = DEFAULT_EINVOICE_INIT;
+    });
+
+    it('看全部 lists them and says 只列最近 100 張', () => {
+      el.querySelector<HTMLButtonElement>('.dismissed-all')!.click();
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.dismissed-row').length).toBe(100);
+      expect(el.querySelector('.dismissed-cap')!.textContent?.trim()).toBe('只列最近 100 張');
     });
   });
 
@@ -1108,3 +1185,4 @@ describe('AccountingSettingsComponent 專案 › 不計入報表', () => {
   });
 
 });
+

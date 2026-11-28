@@ -152,13 +152,15 @@ def entry_einvoice(db: Session, entry: LedgerEntry) -> dict | None:
             "items": _items_by_invoice(db, [inv.id]).get(inv.id, [])}
 
 
-def picker(db: Session, entry_id: int) -> dict:
+def picker(db: Session, entry_id: int, *, replace: bool = False) -> dict:
     """Invoices the owner can link to this entry (or its split group): non-void, no link row, issued within
     `PICKER_DAYS` of the entry date, closest total first. An entry stamped with an invoice number only gets that
-    number offered (the link's own rule, `einvoice_service._eligible`)."""
+    number offered (the link's own rule, `einvoice_service._eligible`). `replace` (換一張發票): see `_replace_picker`."""
     entry = db.get(LedgerEntry, entry_id)
     if entry is None:
         raise NotFoundError(f"entry {entry_id} not found")
+    if replace:
+        return _replace_picker(db, entry)
     own = entry_target(db, entry_id)
     group = group_target(db, entry.group_id) if entry.group_id is not None else None
     window = timedelta(days=PICKER_DAYS)
@@ -172,3 +174,25 @@ def picker(db: Session, entry_id: int) -> dict:
     items = _items_by_invoice(db, [i.id for i in rows])
     return {"entry_eligible": own is not None, "group_id": entry.group_id, "group_eligible": group is not None,
             "invoices": [_summary(i, items) for i in rows]}
+
+
+def _replace_picker(db: Session, entry: LedgerEntry) -> dict:
+    """換一張發票: the invoices that could take the place of the one linked to this entry (or its split group), on
+    the same target. The stamp is the linked invoice's own number, so it does not narrow the list; the replace call
+    re-checks eligibility. Closest to the recorded amount first."""
+    link = db.scalar(select(EinvoiceLink).where(EinvoiceLink.entry_id == entry.id))
+    if link is None and entry.group_id is not None:
+        link = db.scalar(select(EinvoiceLink).where(EinvoiceLink.group_id == entry.group_id))
+    if link is None:
+        raise CodedConflictError("not_linked")
+    window = timedelta(days=PICKER_DAYS)
+    rows = list(db.scalars(
+        select(Einvoice).where(
+            Einvoice.state != "void", ~exists().where(EinvoiceLink.invoice_id == Einvoice.id),
+            Einvoice.issue_date.between(entry.entry_date - window, entry.entry_date + window))))
+    recorded = linked_recorded_amount(db, entry_id=link.entry_id, group_id=link.group_id)
+    net = recorded if recorded is not None else abs(Decimal(entry.amount))
+    rows.sort(key=lambda i: (abs(Decimal(i.total_amount) - net), abs((i.issue_date - entry.entry_date).days), i.id))
+    items = _items_by_invoice(db, [i.id for i in rows])
+    return {"entry_eligible": link.entry_id is not None, "group_id": entry.group_id,
+            "group_eligible": link.group_id is not None, "invoices": [_summary(i, items) for i in rows]}

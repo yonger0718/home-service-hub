@@ -340,6 +340,90 @@ def test_undismiss_rejected_while_seller_muted(client, db_session):
     _conflict(client.post(f"/einvoices/{_row(db_session).id}/undismiss"), "not_dismissed")
 
 
+# --- replace (D12 換一張發票) ---------------------------------------------------------------------------------
+
+def _replace(client, db, old, new, *, status=200):
+    res = client.post(f"/einvoices/{_row(db, old).id}/replace", json={"with_invoice_id": _row(db, new).id})
+    assert res.status_code == status, res.text
+    return res
+
+
+def _second(client, **kw):
+    import_(client, invoice(number="AB00000002", issue_date="2026-10-06", seller_tax_id="00000002", total="125",
+                            items=(("測試品項二", "125"),), **kw))
+
+
+def test_replace_moves_the_link_and_old_returns_to_unmatched(client, db_session, seed):
+    entry = _auto_linked(client, db_session, seed)
+    _second(client)
+    out = _replace(client, db_session, "AB00000001", "AB00000002").json()
+    old_id, new_id = _row(db_session).id, _row(db_session, "AB00000002").id
+    assert out == {"previous": {"id": old_id, "state": "unmatched", "dismiss_reason": None, "linked_by": None,
+                                "entry_id": None, "group_id": None},
+                   "current": {"id": new_id, "state": "linked", "dismiss_reason": None, "linked_by": "owner",
+                               "entry_id": entry.id, "group_id": None}}
+    assert _stamp(db_session, entry.id) == "AB00000002" and _links(db_session) == 1
+    _match(client)  # the old one is offered again, but this entry is taken
+    assert _state(db_session) == ("unmatched", None) and _link(db_session, "AB00000002").entry_id == entry.id
+
+    _replace(client, db_session, "AB00000002", "AB00000001")  # 復原 is the same call the other way round
+    assert _state(db_session, "AB00000002") == ("unmatched", None)
+    assert _state(db_session) == ("linked", None) and _link(db_session).linked_by == "owner"
+    assert _stamp(db_session, entry.id) == "AB00000001" and _links(db_session) == 1
+
+
+def test_replace_old_of_muted_seller_goes_back_to_seller_muted(client, db_session, seed):
+    _auto_linked(client, db_session, seed)
+    _second(client)
+    db_session.add(EinvoiceSellerMute(seller_tax_id="00000001"))
+    db_session.commit()
+    _replace(client, db_session, "AB00000001", "AB00000002")
+    assert _state(db_session) == ("dismissed", "seller_muted")
+
+
+def test_replace_keeps_a_group_link_on_the_group(client, db_session, seed):
+    a = seed.account("A")
+    g = seed.group()
+    seed.entry(a, "-100", day=D, group_id=g.id)
+    seed.entry(a, "-20", day=D, group_id=g.id)
+    db_session.commit()
+    import_(client, invoice())
+    _second(client)
+    _post(client, "AB00000001", "link", {"group_id": g.id}, db=db_session)
+    out = _replace(client, db_session, "AB00000001", "AB00000002").json()
+    assert (out["current"]["group_id"], out["current"]["entry_id"]) == (g.id, None)
+    assert _link(db_session) is None and _state(db_session) == ("unmatched", None)
+
+
+def test_replace_refusals_change_nothing(client, db_session, seed):
+    entry = _auto_linked(client, db_session, seed)
+    _second(client)
+    import_(client, invoice(number="AB00000003", status="作廢"), invoice(number="AB00000004", seller_tax_id="00000004"))
+    other = seed.entry(seed.account("B"), "-9", day=D)
+    db_session.commit()
+    _post(client, "AB00000004", "link", {"entry_id": other.id}, db=db_session)
+
+    def unchanged():
+        assert _state(db_session) == ("linked", None) and _link(db_session).entry_id == entry.id
+        assert _stamp(db_session, entry.id) == "AB00000001" and _state(db_session, "AB00000002") == ("unmatched", None)
+
+    _conflict(_replace(client, db_session, "AB00000001", "AB00000003", status=409), "einvoice_void")
+    unchanged()
+    _conflict(_replace(client, db_session, "AB00000001", "AB00000004", status=409), "einvoice_linked")
+    unchanged()
+    _conflict(_replace(client, db_session, "AB00000002", "AB00000001", status=409), "not_linked")
+    unchanged()
+    assert _replace(client, db_session, "AB00000001", "AB00000001", status=422)
+    unchanged()
+    db_session.execute(update(LedgerEntry).where(LedgerEntry.id == entry.id).values(kind="income", amount=120))
+    db_session.commit()
+    _conflict(_replace(client, db_session, "AB00000001", "AB00000002", status=409), "target_ineligible")
+    unchanged()
+    res = client.post(f"/einvoices/{_row(db_session).id}/replace", json={"with_invoice_id": 999999})
+    assert res.status_code == 404, res.text
+    unchanged()
+
+
 # --- mutes ----------------------------------------------------------------------------------------------------
 
 def _keeps_questions_and_links(db, linked_entry_id):
@@ -382,6 +466,23 @@ def test_mute_converts_unmatched_and_removal_restores(client, db_session, seed):
     _keeps_questions_and_links(db_session, linked.id)
     assert client.get("/einvoices/mutes").json() == []
     assert client.delete("/einvoices/mutes/00000001").status_code == 404
+
+
+def test_mute_create_route_is_the_undo_of_removal(client, db_session):
+    import_(client, invoice(), invoice(number="AB00000002", seller_tax_id="00000002"))
+    _set_state(db_session, "AB00000001", "dismissed", "seller_muted")
+    db_session.add(EinvoiceSellerMute(seller_tax_id="00000001"))
+    db_session.commit()
+    assert client.delete("/einvoices/mutes/00000001").status_code == 204
+    assert _state(db_session) == ("unmatched", None)
+    for _ in range(2):  # idempotent
+        res = client.post("/einvoices/mutes/00000001")
+        assert res.status_code == 204, res.text
+    assert _state(db_session) == ("dismissed", "seller_muted")
+    assert _state(db_session, "AB00000002") == ("unmatched", None)
+    assert [m["seller_tax_id"] for m in client.get("/einvoices/mutes").json()] == ["00000001"]
+    for bad in ("x" * 17, "a b"):
+        assert client.post(f"/einvoices/mutes/{bad}").status_code == 422, bad
 
 
 def test_mute_needs_tax_id(client, db_session):
@@ -495,6 +596,8 @@ def test_owner_routes_need_write(client, monkeypatch, db_session):
     monkeypatch.setenv(auth.SCOPES_ENV, SCOPES)
     hermes = {"Authorization": "Bearer hermes-token"}
     for method, path, body in (("POST", "/einvoices/1/link", {"entry_id": 1}),
+                               ("POST", "/einvoices/1/replace", {"with_invoice_id": 2}),
+                               ("POST", "/einvoices/mutes/00000001", None),
                                ("PATCH", "/einvoices/preferences", {"remind_unmatched": False}),
                                ("GET", "/einvoices/mutes", None), ("GET", "/einvoices/preferences", None)):
         res = client.request(method, path, headers=hermes, json=body)

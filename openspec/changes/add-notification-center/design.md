@@ -119,15 +119,16 @@ The row opens `/notifications/einvoices?state=unmatched`, a page grouped by sell
   - Source chip: 自動連結 or 手動連結.
 - **Body:** seller, date, number; then the items (the first three, then 「… 另外 N 項」) with a total row. For a group invoice the title reads 發票 · 整組, with 看 N 項明細.
 - **Without an invoice:** unchanged. The row #408 shipped stays as the main spec's `Calendar entry drawer invoice link` defines it (dashed row with the ±7-day hint in the drawer, hidden when not eligible; a plain 連結發票… button on the full page). ±7 days is the picker's window, not `date_window_days`.
-- **解除連結** says what it does: 「之後不會再自動連回」, because unlink dismisses.
+- **解除連結** says what it does: 「之後不會再自動連回」, because unlink dismisses. A toast 「已解除連結 <number>」 offers 復原 (link it back).
+- **換一張發票** (owner design review, 2026-11-28): pick first, then swap. The list uses the 選帳 sheet's rows (seller, date · items, the total without a sign, 金額差 / 日期差 against this entry); 取消 changes nothing. A pick calls `POST /einvoices/{id}/replace`, which moves the link in one transaction and returns the old invoice to `unmatched` (not dismissed). Toast 「已換成 <number>」 with 復原 (the same call reversed).
 
 **記帳設定 › 發票:**
 
-- A status line: enabled, last import, auto-linked count. `GET /einvoices/preferences` gains read-only `last_import_at` and `auto_linked_count` for it.
+- A status line: 「最近匯入 MM/DD · 已自動連結 N 張」. `GET /einvoices/preferences` gains read-only `last_import_at` and `auto_linked_count` for it.
 - 提醒沒有帳的發票 (`remind_unmatched`), with the hint that 要你確認 cards still show.
-- Two steppers: 對帳日期範圍 ±0–7 天 (`date_window_days`) and 同一家標幾次後問要不要不提醒 1–10 次 (`mute_prompt_after`).
-- 不提醒的商家, with 移除.
-- 已標成不用記帳 (newest 3, then 看全部 N 張), with 復原. A runbook dismissal is labelled 規則自動標記.
+- Two steppers: 對帳日期範圍 ±0–7 天 (`date_window_days`) and 同一家標幾次後，建議以後都不提醒 1–10 次 (`mute_prompt_after`). A failed save says 「沒存到，已改回 ±3 天」 under its row, with 重試.
+- 不提醒的商家, with 恢復提醒 (toast with 復原, through `POST /einvoices/mutes/{tax_id}`).
+- 已標成不用記帳 (newest 3, then 看全部 N 張 with 收起; 只列最近 100 張 at the API cap), with 放回 (toast with 復原). A runbook dismissal is labelled 規則自動標記.
 
 All three settings save through `PATCH /einvoices/preferences`, which this change extends to the two numeric fields (write scope, merged into the stored document, `version` bumped, as the design doc's §8 requires for `remind_unmatched`).
 

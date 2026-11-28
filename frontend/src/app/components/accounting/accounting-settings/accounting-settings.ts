@@ -16,6 +16,7 @@ import {
   Project,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { injectToasts } from '../../../services/toast.service';
 import { AutoPaySwitch, AutoPaySwitchChange } from '../billing/auto-pay';
 import { InboxService } from '../inbox/inbox.service';
 import { EINVOICE_SETTINGS_FRAGMENT, einvoiceErrorText, invoiceAmount } from '../inbox/einvoice-format';
@@ -57,6 +58,7 @@ type EinvoicePrefField = 'date_window_days' | 'mute_prompt_after';
 
 /** The API's bounds (`EinvoicePreferencesIn`). */
 const PREF_BOUNDS: Record<EinvoicePrefField, [number, number]> = { date_window_days: [0, 7], mute_prompt_after: [1, 10] };
+const DISMISSED_CAP = 100;
 const DISMISSED_SHOWN = 3;
 
 /** A server timestamp's local calendar day as `MM/DD`. */
@@ -142,6 +144,11 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   /** Stepper values shown while their PATCH is pending (D12); cleared once the server answers with the last one. */
   readonly prefDraft = signal<Partial<Record<EinvoicePrefField, number>>>({});
   private readonly prefInFlight = new Set<EinvoicePrefField>();
+  /** A stepper whose PATCH failed: the value it tried, for 重試; shown right under that row. */
+  readonly prefFailed = signal<Partial<Record<EinvoicePrefField, number>>>({});
+  private readonly toasts = injectToasts();
+  /** The API lists the newest 100 dismissed invoices. */
+  readonly dismissedCap = DISMISSED_CAP;
   /** 已標成不用記帳: newest three until 看全部 is tapped. */
   readonly dismissedAll = signal(false);
   readonly shownDismissed = computed(() => {
@@ -154,9 +161,7 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
       return '';
     }
     const last = prefs.last_import_at;
-    return last
-      ? `電子發票對帳已開啟 · 最近匯入 ${localDay(last)}（自動連結 ${prefs.auto_linked_count}）`
-      : '電子發票對帳已開啟 · 還沒有匯入';
+    return last ? `最近匯入 ${localDay(last)} · 已自動連結 ${prefs.auto_linked_count} 張` : '還沒有匯入';
   });
 
   readonly visibleCounterparties = computed(() => {
@@ -358,6 +363,7 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
       return;
     }
     this.prefDraft.update(draft => ({ ...draft, [field]: value }));
+    this.clearFailed(field);
     if (!this.prefInFlight.has(field)) {
       this.sendPref(field);
     }
@@ -385,10 +391,12 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
           this.sendPref(field);
         }
       },
-      error: (err: unknown) => {
+      error: () => {
+        // The shown value goes back to the server's; the row says so and 重試 sends the newest value it tried.
+        const tried = this.prefDraft()[field] ?? value;
         this.prefInFlight.delete(field);
         this.clearDraft(field);
-        this.einvoiceMessage.set(einvoiceErrorText(err));
+        this.prefFailed.update(failed => ({ ...failed, [field]: tried }));
       },
     });
   }
@@ -407,6 +415,26 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
         ...(newest ? { last_import_at: saved.last_import_at, auto_linked_count: saved.auto_linked_count } : {}),
         version: Math.max(current.version, saved.version),
       };
+    });
+  }
+
+  /** `沒存到，已改回 ±3 天` / `沒存到，已改回 3 次`: the value now shown. */
+  prefFailedText(prefs: EinvoicePreferences, field: EinvoicePrefField): string {
+    return field === 'date_window_days' ? `沒存到，已改回 ±${prefs[field]} 天` : `沒存到，已改回 ${prefs[field]} 次`;
+  }
+
+  retryPref(field: EinvoicePrefField): void {
+    const tried = this.prefFailed()[field];
+    if (tried !== undefined) {
+      this.setPref(field, tried);
+    }
+  }
+
+  private clearFailed(field: EinvoicePrefField): void {
+    this.prefFailed.update(failed => {
+      const next = { ...failed };
+      delete next[field];
+      return next;
     });
   }
 
@@ -434,20 +462,44 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
     return [shortDate(invoice.issue_date), items, who].filter(Boolean).join(' · ');
   }
 
-  removeMute(taxId: string): void {
+  /** The mute row's title: the seller name, else `統編 X`. */
+  muteName(mute: EinvoiceMute): string {
+    return mute.seller_name || `統編 ${mute.seller_tax_id}`;
+  }
+
+  /** 恢復提醒: one tap; the toast's 復原 mutes the seller again (as F2/F3). */
+  unmute(mute: EinvoiceMute): void {
+    const name = this.muteName(mute);
     this.einvoiceMessage.set(null);
-    this.einvoice.deleteMute(taxId).subscribe({
-      next: () => this.loadMutes(),
+    this.einvoice.deleteMute(mute.seller_tax_id).subscribe({
+      next: () => {
+        this.loadMutes();
+        this.toasts.done(`已恢復提醒：${name}`, { undo: () => this.undo(this.einvoice.createMute(mute.seller_tax_id), `已復原：${name} 不提醒`, () => this.loadMutes()) });
+      },
       error: err => this.einvoiceMessage.set(einvoiceErrorText(err)),
     });
   }
 
-  /** One tap: 復原 is reversible. */
-  restoreInvoice(id: number): void {
+  /** 放回: back to 沒對到 (one tap); the toast's 復原 marks it 不用記帳 again. */
+  restoreInvoice(invoice: EinvoiceDismissed): void {
+    const what = `${invoice.seller_name} ${invoiceAmount(invoice.total_amount)}`;
     this.einvoiceMessage.set(null);
-    this.einvoice.undismiss(id).subscribe({
-      next: () => this.loadDismissed(),
+    this.einvoice.undismiss(invoice.id).subscribe({
+      next: () => {
+        this.loadDismissed();
+        this.toasts.done(`已放回：${what}`, { undo: () => this.undo(this.einvoice.dismiss(invoice.id), `已復原：${what}`, () => this.loadDismissed()) });
+      },
       error: err => this.einvoiceMessage.set(einvoiceErrorText(err)),
+    });
+  }
+
+  private undo(call: Observable<unknown>, done: string, reload: () => void): void {
+    call.subscribe({
+      next: () => {
+        reload();
+        this.toasts.done(done);
+      },
+      error: (err: unknown) => this.toasts.error(`復原沒成功：${einvoiceErrorText(err).replace(/^沒成功[：，]/, '')}`),
     });
   }
 

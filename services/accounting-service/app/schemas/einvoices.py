@@ -80,6 +80,11 @@ class EinvoiceLinkIn(BaseModel):
         return self
 
 
+class EinvoiceReplaceIn(BaseModel):
+    model_config = Strict
+    with_invoice_id: Int32
+
+
 class EinvoiceDismissIn(BaseModel):
     model_config = Strict
     mute_seller: bool = False
@@ -194,3 +199,10 @@ class EinvoicePickerOut(BaseModel):
     group_id: int | None
     group_eligible: bool
     invoices: list[EinvoiceSummaryOut]
+
+
+class EinvoiceReplaceOut(BaseModel):
+    """換一張發票: the invoice the link left (`previous`) and the one it moved to (`current`)."""
+    model_config = Strict
+    previous: EinvoiceStateOut
+    current: EinvoiceStateOut

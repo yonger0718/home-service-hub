@@ -97,4 +97,10 @@ export interface EinvoiceStateOut {
   group_id: number | null;
 }
 
+/** 換一張發票: the invoice the link left and the one it moved to. */
+export interface EinvoiceReplaceOut {
+  previous: EinvoiceStateOut;
+  current: EinvoiceStateOut;
+}
+
 export type EinvoiceLinkTarget = { entry_id: number } | { group_id: number };

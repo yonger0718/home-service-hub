@@ -16,7 +16,7 @@
           @if (menuOpen()) {
             <div #menu class="einv-menu" role="menu" aria-label="發票動作" (keydown)="menuKey($event)">
               @if (canReplace()) {
-                <button type="button" role="menuitem" (click)="replace(inv.id)">換一張發票</button>
+                <button type="button" role="menuitem" (click)="replace()">換一張發票</button>
               }
               <button type="button" role="menuitem" (click)="unlinkFromMenu(inv.id)">
                 <span>解除連結</span>
@@ -28,7 +28,7 @@
       </div>
       <span class="einv-meta">{{ c.meta }}</span>
       @if (c.toggle; as label) {
-        <button type="button" class="einv-toggle" [attr.aria-expanded]="itemsOpen()" (click)="itemsOpen.set(!itemsOpen())">{{ label }}&ngsp;<span aria-hidden="true">›</span></button>
+        <button type="button" class="einv-toggle" [attr.aria-expanded]="itemsOpen()" (click)="itemsOpen.set(!itemsOpen())">@if (itemsOpen()) {收起} @else {{{ label }}&ngsp;<span aria-hidden="true">›</span>}</button>
       }
       @if (c.rows.length && (!c.toggle || itemsOpen())) {
         <div class="einv-items">
@@ -38,6 +38,43 @@
               <span>{{ row.amount }}</span>
             </div>
           }
+        </div>
+      }
+      @if (swapState(); as swap) {
+        <div class="swap" role="group" aria-labelledby="einv-swap-title" (keydown)="swapKey($event)">
+          <div class="swap-title" id="einv-swap-title">換成哪一張發票</div>
+          @if (swap.status === 'loading') {
+            <p class="swap-note" role="status" aria-busy="true">讀取中</p>
+          } @else if (swap.status === 'failed') {
+            <p class="swap-note" role="alert">讀取失敗</p>
+          } @else {
+            <div class="targets">
+              @for (row of swap.rows; track row.id) {
+                <button type="button" class="target-row" [disabled]="busy()" (click)="swapTo(row)">
+                  <span class="target-body">
+                    <span class="target-name">{{ row.name }}</span>
+                    <span class="target-sub">{{ row.sub }}</span>
+                    @if (row.chips.length) {
+                      <span class="target-diffs">
+                        @for (chip of row.chips; track chip) {
+                          <span class="target-diff">{{ chip }}</span>
+                        }
+                      </span>
+                    }
+                  </span>
+                  <span class="target-amount">{{ row.amount }}</span>
+                </button>
+              } @empty {
+                <p class="swap-note swap-empty" tabindex="-1">前後 7 天沒有可換的發票</p>
+              }
+            </div>
+          }
+          <div class="swap-actions">
+            @if (swap.status === 'failed') {
+              <button type="button" class="swap-retry" (click)="loadSwap()">重試</button>
+            }
+            <button type="button" class="swap-cancel" (click)="cancelSwap()">取消</button>
+          </div>
         </div>
       }
     </article>
@@ -74,7 +111,7 @@
     @if (state.status === 'ready') {
       @if (eligible(state.picker)) {
         @if (!state.picker.invoices.length) {
-          <div class="einvoice-sub einvoice-empty" tabindex="-1">沒有可連結的發票</div>
+          <div class="einvoice-sub">沒有可連結的發票</div>
         } @else if (askScope(state.picker)) {
           <div class="einvoice-actions">
             <button type="button" (click)="choose('entry')">這筆</button>
