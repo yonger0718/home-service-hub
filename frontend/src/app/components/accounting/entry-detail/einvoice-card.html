@@ -74,7 +74,7 @@
     @if (state.status === 'ready') {
       @if (eligible(state.picker)) {
         @if (!state.picker.invoices.length) {
-          <div class="einvoice-sub">沒有可連結的發票</div>
+          <div class="einvoice-sub einvoice-empty" tabindex="-1">沒有可連結的發票</div>
         } @else if (askScope(state.picker)) {
           <div class="einvoice-actions">
             <button type="button" (click)="choose('entry')">這筆</button>

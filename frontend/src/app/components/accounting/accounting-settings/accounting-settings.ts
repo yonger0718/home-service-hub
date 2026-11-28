@@ -393,11 +393,20 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
     });
   }
 
-  /** Takes the saved field (and the read-only status) only, so one field's late answer cannot undo another's. */
+  /**
+   * Takes the saved field only, so one field's late answer cannot undo another's. The read-only import status is not
+   * versioned by `version`; it is taken from an answer no older than what is shown, so a late answer cannot roll it back.
+   */
   private mergePrefs(saved: EinvoicePreferences, field: EinvoicePrefField | 'remind_unmatched'): void {
-    this.einvoicePrefs.update(current => current && {
-      ...current, [field]: saved[field], last_import_at: saved.last_import_at, auto_linked_count: saved.auto_linked_count,
-      version: Math.max(current.version, saved.version),
+    this.einvoicePrefs.update(current => {
+      if (!current) return current;
+      const newest = saved.version >= current.version;
+      return {
+        ...current,
+        [field]: saved[field],
+        ...(newest ? { last_import_at: saved.last_import_at, auto_linked_count: saved.auto_linked_count } : {}),
+        version: Math.max(current.version, saved.version),
+      };
     });
   }
 

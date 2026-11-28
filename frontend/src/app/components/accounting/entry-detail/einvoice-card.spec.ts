@@ -557,6 +557,17 @@ describe('AppEntryEinvoiceCardComponent', () => {
         expect(root.querySelector('.einv-card')).toBeNull();
       });
 
+      it('換一張發票 whose picker is empty keeps keyboard focus on the empty note', async () => {
+        menuItem(root, '換一張發票').click();
+        http.expectOne('/api/accounting/einvoices/9/unlink').flush({ id: 9, state: 'dismissed' });
+        reload();
+        http.expectOne(pickerUrl).flush({ entry_eligible: true, group_id: null, group_eligible: false, invoices: [] });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(document.activeElement?.textContent?.trim()).toBe('沒有可連結的發票');
+        expect(document.activeElement).not.toBe(document.body);
+      });
+
       it('換一張發票 whose picker fails shows 讀取失敗 and focuses 連結發票… to retry', async () => {
         menuItem(root, '換一張發票').click();
         http.expectOne('/api/accounting/einvoices/9/unlink').flush({ id: 9, state: 'dismissed' });

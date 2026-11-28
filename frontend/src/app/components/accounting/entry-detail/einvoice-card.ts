@@ -305,10 +305,16 @@ export class AppEntryEinvoiceCardComponent {
     }
   }
 
-  /** After the ⋯ button leaves: the first pick / choice, else 連結發票…. Nothing focusable (card hidden): no move. */
+  /**
+   * After the ⋯ button leaves: the first pick / choice, the empty-picker note, else 連結發票….
+   * Nothing focusable (card hidden): no move.
+   */
   private focusCard(): void {
     afterNextRender(
-      () => this.host.nativeElement.querySelector<HTMLElement>('.einvoice-pick, .einvoice-actions button, .einvoice-open')?.focus(),
+      () =>
+        this.host.nativeElement
+          .querySelector<HTMLElement>('.einvoice-pick, .einvoice-actions button, .einvoice-empty, .einvoice-open')
+          ?.focus(),
       { injector: this.injector },
     );
   }

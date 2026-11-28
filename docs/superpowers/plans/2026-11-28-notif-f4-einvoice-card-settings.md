@@ -78,7 +78,7 @@
 **Behaviour (section shown as today: when enabled, or when the read failed):**
 - Status line: 「電子發票對帳已開啟 · 最近匯入 M/D（自動連結 N）」; 「還沒有匯入」 when `last_import_at` is null. (The artboard's imported-invoice count has no API field; ruling: omitted.)
 - 提醒沒有帳的發票 switch (`remind_unmatched`) with hint 「關掉後「有發票沒有帳」不再出現；對不太上的發票照樣會問」.
-- Steppers (`app-stepper`, shared since #349): 對帳日期範圍 `±N 天`, 0–7, hint 「發票日期前後幾天內的帳都算候選（0–7）」; 同一家標幾次後問要不要不提醒 `N 次`, 1–10, hint 「標「不用記帳」到這個次數，下次就會出現「這家以後都不提醒」（1–10）」. Each change PATCHes `{field: value}` (the endpoint merges any subset and bumps `version` itself; it takes no `version`). One PATCH in flight per field: taps while it runs update the shown value and send once more with the last value; the response replaces the stored preferences. An error shows `einvoiceErrorText` inline and reverts to the last server value.
+- Steppers (`app-stepper`, shared since #349): 對帳日期範圍 `±N 天`, 0–7, hint 「發票日期前後幾天內的帳都算候選（0–7）」; 同一家標幾次後問要不要不提醒 `N 次`, 1–10, hint 「標「不用記帳」到這個次數，下次就會出現「這家以後都不提醒」（1–10）」. Each change PATCHes `{field: value}` (the endpoint merges any subset and bumps `version` itself; it takes no `version`). One PATCH in flight per field: taps while it runs update the shown value and send once more with the last value; the response merges only the field it sent (plus the higher `version`; the read-only import status only from an answer no older than the shown one). An error shows `einvoiceErrorText` inline, reverts that field to its last server value and drops any queued draft for it.
 - 不提醒的商家 · N: name (or 統編 when no name), meta 「統編 X · M/D 起不提醒」, 移除 (`DELETE /mutes/{tax_id}`; toast 「已恢復提醒：name」). (The artboard's 「收起 N 張」 has no API field; ruling: omitted.)
 - 已標成不用記帳 · N (N = rows returned, up to the API's 100): the newest three, then 看全部 N 張 › expanding the list in place; each row 「seller · $amount」, meta 「M/D · first item[、second] · 你標的 | 規則自動標記」, 復原 (`undismiss`, row leaves, toast 「已復原：seller $amount」).
 - The section anchor id `einvoice-settings` so 有發票沒有帳 can deep-link.
@@ -117,3 +117,10 @@
 - recorded_amount boundary written into Task 1 (numeric equality, not eligibility); extra tests; F1 regression refs.
 - Group expand: all rows (Task 2).
 
+
+## Re-check AGENT-636 (CHANGES) — resolutions
+
+- P2 empty picker focus: the empty note is `.einvoice-empty` with `tabindex="-1"` and is in `focusCard()`'s list; test 「換一張發票 whose picker is empty keeps keyboard focus on the empty note」 (RED before).
+- P3 import status rollback: status merges only from an answer with `version` ≥ the shown one; test 「an older answer arriving last does not roll the import status back」 (RED before).
+- P3 plan contradiction: the stepper bullet above now says per-field merge and that a failure drops the field's queued draft.
+- Backend runtime evidence: the reviewer's venv could not import alembic; the author's runner passed `test_einvoice_entry_read.py` 21/21 and the full accounting suite (6149 passed, 3 skipped).

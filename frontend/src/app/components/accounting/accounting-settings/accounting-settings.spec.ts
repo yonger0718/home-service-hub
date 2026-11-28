@@ -855,6 +855,19 @@ describe('AccountingSettingsComponent', () => {
       expect(el.querySelector('.pref-prompt .val')!.textContent?.trim()).toBe('2 次');
     });
 
+    it('an older answer arriving last does not roll the import status back', () => {
+      el.querySelector<HTMLButtonElement>('.pref-window .inc')!.click();
+      fixture.detectChanges();
+      el.querySelector<HTMLButtonElement>('.pref-prompt .dec')!.click();
+      fixture.detectChanges();
+      const [window, prompt] = http.match(r => r.method === 'PATCH' && r.url === `${EINVOICE_URL}/preferences`);
+      prompt.flush({ ...EINVOICE_PREFS, mute_prompt_after: 2, last_import_at: '2026-11-07T04:10:00Z', auto_linked_count: 50, version: 5 });
+      window.flush({ ...EINVOICE_PREFS, date_window_days: 4, version: 4 });
+      fixture.detectChanges();
+      expect(el.querySelector('.einvoice-status')!.textContent?.trim()).toBe('電子發票對帳已開啟 · 最近匯入 11/07（自動連結 50）');
+      expect(el.querySelector('.pref-window .val')!.textContent?.trim()).toBe('±4 天');
+    });
+
     it('one field failing reverts that field only; the other keeps its saved value', () => {
       el.querySelector<HTMLButtonElement>('.pref-window .inc')!.click();
       fixture.detectChanges();
