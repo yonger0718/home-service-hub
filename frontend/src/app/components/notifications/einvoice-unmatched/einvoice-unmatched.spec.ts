@@ -214,6 +214,59 @@ describe('EinvoiceUnmatchedComponent', () => {
     http.match((r) => r.url === INBOX_URL).forEach((r) => r.flush({ ...makeInbox([]), einvoices: LIST.filter((i) => i.id !== 2) }));
   });
 
+  it('mute 復原 halfway before the confirming read: the invoices the server put back show again', () => {
+    open();
+    button(groups()[0], '.unm-mute').click();
+    post('2/dismiss').flush({ id: 2, state: 'dismissed' });
+    detect(); // the confirming read is still out
+    expect(sellers()).not.toContain('測試書店');
+    toast()!.action!.run();
+    detect();
+    http.expectOne((r) => r.method === 'DELETE').flush(null);
+    detect();
+    post('2/undismiss').flush({ detail: 'x' }, { status: 500, statusText: 'err' });
+    detect();
+    // The mute is gone: invoice 1 (seller_muted) is unmatched again; 2 stays 不用記帳.
+    http.match((r) => r.url === INBOX_URL).forEach((r) => r.flush({ ...makeInbox([]), einvoices: LIST.filter((i) => i.id !== 2) }));
+    detect();
+    expect(row(1)).not.toBeNull();
+    expect(row(2)).toBeNull();
+  });
+
+  it('bulk 復原 failing partway: the ones undismissed show again after the re-read', () => {
+    open();
+    button(groups()[0], '.unm-dismiss-all').click();
+    post('2/dismiss').flush({ id: 2, state: 'dismissed' });
+    detect();
+    post('1/dismiss').flush({ id: 1, state: 'dismissed' });
+    detect(); // the confirming read is still out
+    toast()!.action!.run();
+    detect();
+    post('2/undismiss').flush({ id: 2, state: 'unmatched' });
+    detect();
+    post('1/undismiss').flush({ detail: 'x' }, { status: 500, statusText: 'err' });
+    detect();
+    http.match((r) => r.url === INBOX_URL).forEach((r) => r.flush({ ...makeInbox([]), einvoices: LIST.filter((i) => i.id !== 1) }));
+    detect();
+    expect(row(2)).not.toBeNull();
+    expect(row(1)).toBeNull();
+  });
+
+  it('no visible rows while unlisted ones remain: 讀取中…, never 都整理好了; a failed re-read offers 重試', () => {
+    open(LIST.filter((i) => i.seller_name === '測試書店'), { einvoice_unmatched: 5 });
+    button(groups()[0], '.unm-dismiss-all').click();
+    post('2/dismiss').flush({ id: 2, state: 'dismissed' });
+    detect();
+    post('1/dismiss').flush({ id: 1, state: 'dismissed' });
+    detect();
+    expect(el.textContent).not.toContain('都整理好了');
+    expect(text(el.querySelector('.flow-loading'))).toBe('讀取中…');
+    http.match((r) => r.url === INBOX_URL).forEach((r) => r.flush({ detail: 'x' }, { status: 500, statusText: 'err' }));
+    detect();
+    expect(el.querySelector('app-banner')).not.toBeNull();
+    expect(el.textContent).not.toContain('都整理好了');
+  });
+
   it('選帳… opens the target sheet; a pick links and toasts 已連結', () => {
     open();
     button(row(3), '.unm-pick').click();

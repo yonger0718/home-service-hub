@@ -422,7 +422,7 @@ export class NotificationsComponent {
         scroller?.scrollTo?.({ top: 0 });
       }
     }
-    this.host.querySelector<HTMLElement>('app-recon-flow, app-einvoice-flow')?.focus({ preventScroll: true });
+    this.host.querySelector<HTMLElement>('app-recon-flow, app-einvoice-flow, app-einvoice-unmatched')?.focus({ preventScroll: true });
   }
 
   /**

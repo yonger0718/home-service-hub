@@ -2290,6 +2290,13 @@ describe('NotificationsComponent', () => {
       expect(q('.notif-page')).toBeNull();
     });
 
+    for (const mode of ['panes', 'phone'] as const) {
+      it(`?state=unmatched (${mode}): focus moves to the page host, never left on the body`, async () => {
+        await openAt(mode, '/notifications/einvoices?state=unmatched');
+        await vi.waitFor(() => expect(document.activeElement).toBe(q('app-einvoice-unmatched')));
+      });
+    }
+
     it('below panes only the flow renders', async () => {
       await openAt('phone', '/notifications/einvoices');
       expect(flow()).not.toBeNull();

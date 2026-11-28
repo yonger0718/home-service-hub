@@ -90,6 +90,9 @@
           <a class="unm-btn unm-btn--primary unm-to-flow" [routerLink]="flowRoute">去確認發票</a>
         </div>
       }
+      @case ('pending') {
+        <p class="flow-loading" role="status">讀取中…</p>
+      }
       @case ('off') {
         <div class="unm-empty">
           <p class="unm-empty-title">提醒已關閉</p>

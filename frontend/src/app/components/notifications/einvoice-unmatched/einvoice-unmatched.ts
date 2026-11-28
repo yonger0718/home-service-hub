@@ -32,7 +32,7 @@ import { EINVOICE_FLOW_ROUTE, INBOX_READ_LIMIT } from '../sources/recon';
 import { UnmatchedGroup, unmatchedGroups, unmatchedHeadline } from './einvoice-unmatched-view';
 
 /** What the page shows below its header. */
-export type UnmatchedView = 'list' | 'blocked' | 'off' | 'empty';
+export type UnmatchedView = 'list' | 'blocked' | 'pending' | 'off' | 'empty';
 
 /** The error text without its 「沒成功：」 lead, for a sentence that already says what failed. */
 function why(err: unknown): string {
@@ -103,9 +103,14 @@ export class EinvoiceUnmatchedComponent {
   readonly headline = computed(() => unmatchedHeadline(this.groups()));
   /** Unmatched invoices the read did not list (the page is shared with the questions, which come first). */
   readonly missing = computed(() => Math.max(0, this.count() - this.invoices().length));
+  /**
+   * pending: every listed invoice is answered (hidden) but the last count says more exist beyond the page; the
+   * re-read the answer triggered lists them. Never 都整理好了 while the count is above what this page answered.
+   */
   readonly view = computed<UnmatchedView>(() => {
     if (this.groups().length > 0) return 'list';
     if (this.count() > 0 && this.invoices().length === 0) return 'blocked';
+    if (this.count() - this.invoices().length > 0) return 'pending';
     if (this.remindOn() === false) return 'off';
     return 'empty';
   });
@@ -150,7 +155,8 @@ export class EinvoiceUnmatchedComponent {
         },
         error: () => {
           if (seq !== this.readSeq) return;
-          if (this.load() !== 'ready') this.load.set('failed');
+          // A failed refresh keeps a usable list; with nothing left to show it offers 重試 instead.
+          if (this.load() !== 'ready' || this.view() === 'pending') this.load.set('failed');
         },
       });
   }
@@ -282,6 +288,11 @@ export class EinvoiceUnmatchedComponent {
       },
       error: (err: unknown) => {
         this.busy.set(false);
+        // Part of it may have gone through (the mute deleted, some undismissed): stop hiding them and let a fresh read
+        // show what the server lists. Ones still 不用記帳 are not listed, so they stay out.
+        const ids = new Set(list.map((invoice) => invoice.id));
+        this.hidden.update((set) => new Set([...set].filter((id) => !ids.has(id))));
+        this.read();
         this.toasts.error(failText(err));
       },
     });
